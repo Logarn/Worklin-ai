@@ -16,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { asRetentionAudit, RetentionAuditReport } from "@/components/audits/retention-audit-canvas";
 import { cn } from "@/lib/utils";
 
 type ApiEnvelope = {
@@ -29,13 +30,13 @@ type WorkflowSummary = {
   type: string;
   status: string;
   error: string | null;
-  metadata: Record<string, unknown> | null;
+  metadata: unknown;
   createdAt: string;
   updatedAt: string;
 };
 
 type WorkflowDetail = WorkflowSummary & {
-  input: Record<string, unknown> | null;
+  input: unknown;
   output: unknown;
 };
 
@@ -191,6 +192,7 @@ function formatDate(value: string | null | undefined) {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
   }).format(date);
 }
 
@@ -203,6 +205,7 @@ function formatDateTime(value: string | null | undefined) {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: "UTC",
   }).format(date);
 }
 
@@ -250,7 +253,100 @@ function messageList(items: QaMessage[] | undefined, emptyText: string, tone: "i
   );
 }
 
-export function AgentWorkflowCanvas() {
+function WorkflowLoadingShell({ error }: { error: string | null }) {
+  return (
+    <div className="w-full space-y-5 p-4 md:p-6">
+      <header className="rounded-2xl border border-white/10 bg-[rgba(10,14,22,0.72)] px-5 py-4 shadow-[0_18px_60px_rgba(2,6,23,0.32)]">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-300/15 text-orange-200">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </span>
+          <div>
+            <h1 className="text-xl font-semibold text-slate-50">Opening workflow</h1>
+            <p className="text-sm text-slate-400">Loading the selected WorkflowRun.</p>
+          </div>
+        </div>
+      </header>
+
+      {error ? (
+        <div className="flex items-start gap-3 rounded-xl border border-red-300/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error}</p>
+        </div>
+      ) : null}
+
+      <section className="surface-soft flex min-h-[420px] flex-col items-center justify-center gap-4 p-4 text-center md:p-6">
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-orange-300/25 bg-orange-300/10">
+          <Loader2 className="h-6 w-6 animate-spin text-orange-200" />
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-slate-100">Loading workflow</h2>
+          <p className="mt-1 text-sm text-slate-400">Worklin is opening the saved workflow output.</p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RetentionWorkflowShell({
+  workflow,
+  audit,
+  error,
+}: {
+  workflow: WorkflowDetail;
+  audit: NonNullable<ReturnType<typeof asRetentionAudit>> | null;
+  error: string | null;
+}) {
+  const generatedAt = audit?.metadata.generatedAt ?? workflow.createdAt;
+
+  return (
+    <div className="w-full space-y-5 p-4 md:p-6">
+      <header className="rounded-2xl border border-white/10 bg-[rgba(10,14,22,0.72)] px-5 py-4 shadow-[0_18px_60px_rgba(2,6,23,0.32)] md:px-6 md:py-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">real connected-account audit</Badge>
+              <Badge variant={statusVariant(workflow.status)}>{workflow.status}</Badge>
+            </div>
+            <h1 className="mt-3 text-2xl font-semibold text-slate-50">Retention Audit</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              Worklin prepared this report from the persisted Retention Audit WorkflowRun.
+            </p>
+          </div>
+          <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-slate-400 md:text-right">
+            <p>Generated {formatDateTime(generatedAt)}</p>
+            <p className="mt-1 break-all">Workflow {workflow.id}</p>
+          </div>
+        </div>
+      </header>
+
+      {error ? (
+        <div className="flex items-start gap-3 rounded-xl border border-red-300/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error}</p>
+        </div>
+      ) : null}
+
+      <section className="surface-soft min-h-[420px] p-4 md:p-6 xl:p-7">
+        {audit ? (
+          <RetentionAuditReport audit={audit} compact />
+        ) : (
+          <div className="rounded-xl border border-amber-300/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+            This WorkflowRun is marked as a retention audit, but the saved output could not be parsed as a Retention Audit response.
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+export function AgentWorkflowCanvas({
+  initialWorkflow = null,
+  initialWorkflowId = null,
+}: {
+  initialWorkflow?: WorkflowDetail | null;
+  initialWorkflowId?: string | null;
+} = {}) {
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -258,13 +354,20 @@ export function AgentWorkflowCanvas() {
   const [focus, setFocus] = useState("repeat purchase");
   const [constraints, setConstraints] = useState("no discounts, include one VIP campaign");
   const [recentRuns, setRecentRuns] = useState<WorkflowSummary[]>([]);
-  const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowDetail | null>(null);
+  const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowDetail | null>(initialWorkflow);
   const [loadingRuns, setLoadingRuns] = useState(true);
-  const [loadingWorkflowId, setLoadingWorkflowId] = useState<string | null>(null);
+  const [loadingWorkflowId, setLoadingWorkflowId] = useState<string | null>(
+    initialWorkflow ? null : initialWorkflowId,
+  );
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const output = useMemo(() => asWorkflowOutput(selectedWorkflow?.output), [selectedWorkflow]);
+  const retentionAudit = useMemo(
+    () => asRetentionAudit(selectedWorkflow?.output, selectedWorkflow?.id),
+    [selectedWorkflow],
+  );
+  const selectedWorkflowIsRetentionAudit = selectedWorkflow?.type === "retention-audit" || Boolean(retentionAudit);
   const qaByBriefId = useMemo(() => {
     const map = new Map<string, WorkflowQaResult>();
     for (const qa of getWorkflowQaResults(output)) {
@@ -276,9 +379,19 @@ export function AgentWorkflowCanvas() {
   const loadRuns = useCallback(async () => {
     setLoadingRuns(true);
     try {
-      const response = await fetch("/api/agent/workflows?type=plan-brief-qa&limit=8");
-      const data = await parseApiResponse<WorkflowListResponse>(response);
-      setRecentRuns(asArray<WorkflowSummary>(data.workflows));
+      const [planResponse, retentionResponse] = await Promise.all([
+        fetch("/api/agent/workflows?type=plan-brief-qa&limit=8"),
+        fetch("/api/agent/workflows?type=retention-audit&limit=4"),
+      ]);
+      const [planData, retentionData] = await Promise.all([
+        parseApiResponse<WorkflowListResponse>(planResponse),
+        parseApiResponse<WorkflowListResponse>(retentionResponse),
+      ]);
+      const workflows = [
+        ...asArray<WorkflowSummary>(planData.workflows),
+        ...asArray<WorkflowSummary>(retentionData.workflows),
+      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setRecentRuns(workflows.slice(0, 8));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load workflows");
     } finally {
@@ -288,6 +401,7 @@ export function AgentWorkflowCanvas() {
 
   const loadWorkflow = useCallback(async (id: string) => {
     setLoadingWorkflowId(id);
+    setSelectedWorkflow(null);
     setError(null);
     try {
       const response = await fetch(`/api/agent/workflows/${id}`);
@@ -305,9 +419,10 @@ export function AgentWorkflowCanvas() {
   }, [loadRuns]);
 
   useEffect(() => {
-    const workflowId = new URLSearchParams(window.location.search).get("workflowId");
+    const workflowId = initialWorkflowId ?? new URLSearchParams(window.location.search).get("workflowId");
+    if (workflowId && initialWorkflow?.id === workflowId) return;
     if (workflowId) void loadWorkflow(workflowId);
-  }, [loadWorkflow]);
+  }, [initialWorkflow?.id, initialWorkflowId, loadWorkflow]);
 
   async function runWorkflow(event?: React.FormEvent | React.MouseEvent) {
     event?.preventDefault();
@@ -350,6 +465,14 @@ export function AgentWorkflowCanvas() {
     }
   }
 
+  if (loadingWorkflowId && !selectedWorkflow) {
+    return <WorkflowLoadingShell error={error} />;
+  }
+
+  if (selectedWorkflow && selectedWorkflowIsRetentionAudit) {
+    return <RetentionWorkflowShell workflow={selectedWorkflow} audit={retentionAudit} error={error} />;
+  }
+
   return (
     <div className="w-full space-y-5 p-4 md:p-6">
       <header className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-[rgba(10,14,22,0.72)] px-5 py-4 shadow-[0_18px_60px_rgba(2,6,23,0.32)] md:flex-row md:items-center md:justify-between">
@@ -359,7 +482,7 @@ export function AgentWorkflowCanvas() {
               <Sparkles className="h-5 w-5" />
             </span>
             <div>
-              <h1 className="text-xl font-semibold tracking-tight text-slate-50">Agent canvas</h1>
+              <h1 className="text-xl font-semibold text-slate-50">Agent canvas</h1>
               <p className="text-sm text-slate-400">Prompt to plan, brief, and QA.</p>
             </div>
           </div>
@@ -377,134 +500,134 @@ export function AgentWorkflowCanvas() {
       ) : null}
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <section className="space-y-5">
-          <form onSubmit={runWorkflow} className="surface-soft space-y-4 p-4 md:p-5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <WandSparkles className="h-4 w-4 text-orange-200" />
-                <h2 className="text-sm font-semibold text-slate-100">Request</h2>
+          <section className="space-y-5">
+            <form onSubmit={runWorkflow} className="surface-soft space-y-4 p-4 md:p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <WandSparkles className="h-4 w-4 text-orange-200" />
+                  <h2 className="text-sm font-semibold text-slate-100">Request</h2>
+                </div>
+                <Button type="button" onClick={runWorkflow} disabled={running} className="shrink-0">
+                  {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
+                  Run workflow
+                </Button>
               </div>
-              <Button type="button" onClick={runWorkflow} disabled={running} className="shrink-0">
-                {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
-                Run workflow
+
+              <textarea
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                className="textarea-base min-h-[108px] resize-y"
+                placeholder="Plan retention campaigns for next week..."
+                disabled={running}
+              />
+
+              <div className="grid gap-3 md:grid-cols-5">
+                <label className="space-y-1.5">
+                  <span className="text-xs font-medium text-slate-400">Start</span>
+                  <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} disabled={running} />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-medium text-slate-400">End</span>
+                  <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} disabled={running} />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-medium text-slate-400">Count</span>
+                  <Input value={campaignCount} onChange={(event) => setCampaignCount(event.target.value)} disabled={running} />
+                </label>
+                <label className="space-y-1.5 md:col-span-2">
+                  <span className="text-xs font-medium text-slate-400">Focus</span>
+                  <Input value={focus} onChange={(event) => setFocus(event.target.value)} disabled={running} />
+                </label>
+              </div>
+
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-slate-400">Constraints</span>
+                <Input
+                  value={constraints}
+                  onChange={(event) => setConstraints(event.target.value)}
+                  placeholder="no discounts, include one VIP campaign"
+                  disabled={running}
+                />
+              </label>
+            </form>
+
+            <section className="surface-soft min-h-[420px] p-4 md:p-5">
+              {running ? (
+                <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-orange-300/25 bg-orange-300/10">
+                    <Loader2 className="h-6 w-6 animate-spin text-orange-200" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-semibold text-slate-100">Running workflow</h2>
+                    <p className="mt-1 text-sm text-slate-400">Planning, briefing, and checking QA.</p>
+                  </div>
+                </div>
+              ) : selectedWorkflow ? (
+                <WorkflowOutputView workflow={selectedWorkflow} output={output} qaByBriefId={qaByBriefId} />
+              ) : (
+                <div className="flex min-h-[360px] flex-col items-center justify-center gap-3 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
+                    <FileText className="h-6 w-6 text-slate-300" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-semibold text-slate-100">No workflow open</h2>
+                    <p className="mt-1 text-sm text-slate-400">Run a request or reopen a recent workflow.</p>
+                  </div>
+                </div>
+              )}
+            </section>
+          </section>
+
+          <aside className="surface-soft h-fit p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Clock3 className="h-4 w-4 text-slate-300" />
+                <h2 className="text-sm font-semibold text-slate-100">Recent runs</h2>
+              </div>
+              <Button type="button" variant="ghost" className="h-8 px-2" onClick={() => void loadRuns()} disabled={loadingRuns}>
+                <RefreshCw className={cn("h-4 w-4", loadingRuns && "animate-spin")} />
               </Button>
             </div>
 
-            <textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              className="textarea-base min-h-[108px] resize-y"
-              placeholder="Plan retention campaigns for next week..."
-              disabled={running}
-            />
-
-            <div className="grid gap-3 md:grid-cols-5">
-              <label className="space-y-1.5">
-                <span className="text-xs font-medium text-slate-400">Start</span>
-                <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} disabled={running} />
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-xs font-medium text-slate-400">End</span>
-                <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} disabled={running} />
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-xs font-medium text-slate-400">Count</span>
-                <Input value={campaignCount} onChange={(event) => setCampaignCount(event.target.value)} disabled={running} />
-              </label>
-              <label className="space-y-1.5 md:col-span-2">
-                <span className="text-xs font-medium text-slate-400">Focus</span>
-                <Input value={focus} onChange={(event) => setFocus(event.target.value)} disabled={running} />
-              </label>
-            </div>
-
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-slate-400">Constraints</span>
-              <Input
-                value={constraints}
-                onChange={(event) => setConstraints(event.target.value)}
-                placeholder="no discounts, include one VIP campaign"
-                disabled={running}
-              />
-            </label>
-          </form>
-
-          <section className="surface-soft min-h-[420px] p-4 md:p-5">
-            {running ? (
-              <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 text-center">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-orange-300/25 bg-orange-300/10">
-                  <Loader2 className="h-6 w-6 animate-spin text-orange-200" />
-                </div>
-                <div>
-                  <h2 className="text-base font-semibold text-slate-100">Running workflow</h2>
-                  <p className="mt-1 text-sm text-slate-400">Planning, briefing, and checking QA.</p>
-                </div>
+            {loadingRuns ? (
+              <div className="space-y-2">
+                {[0, 1, 2].map((item) => (
+                  <div key={item} className="h-16 animate-pulse rounded-xl bg-white/5" />
+                ))}
               </div>
-            ) : selectedWorkflow ? (
-              <WorkflowOutputView workflow={selectedWorkflow} output={output} qaByBriefId={qaByBriefId} />
+            ) : recentRuns.length ? (
+              <div className="space-y-2">
+                {recentRuns.map((workflow) => {
+                  const active = selectedWorkflow?.id === workflow.id;
+                  const loading = loadingWorkflowId === workflow.id;
+                  return (
+                    <button
+                      key={workflow.id}
+                      type="button"
+                      onClick={() => void loadWorkflow(workflow.id)}
+                      className={cn(
+                        "w-full rounded-xl border px-3 py-3 text-left transition-colors",
+                        active
+                          ? "border-orange-300/35 bg-orange-300/10"
+                          : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant={statusVariant(workflow.status)}>{workflow.status}</Badge>
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                      </div>
+                      <p className="mt-2 truncate text-sm font-medium text-slate-100">{workflow.type}</p>
+                      <p className="mt-1 text-xs text-slate-500">{formatDateTime(workflow.createdAt)}</p>
+                    </button>
+                  );
+                })}
+              </div>
             ) : (
-              <div className="flex min-h-[360px] flex-col items-center justify-center gap-3 text-center">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
-                  <FileText className="h-6 w-6 text-slate-300" />
-                </div>
-                <div>
-                  <h2 className="text-base font-semibold text-slate-100">No workflow open</h2>
-                  <p className="mt-1 text-sm text-slate-400">Run a request or reopen a recent workflow.</p>
-                </div>
-              </div>
+              <p className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-4 text-sm text-slate-400">
+                No saved workflows yet.
+              </p>
             )}
-          </section>
-        </section>
-
-        <aside className="surface-soft h-fit p-4">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Clock3 className="h-4 w-4 text-slate-300" />
-              <h2 className="text-sm font-semibold text-slate-100">Recent runs</h2>
-            </div>
-            <Button type="button" variant="ghost" className="h-8 px-2" onClick={() => void loadRuns()} disabled={loadingRuns}>
-              <RefreshCw className={cn("h-4 w-4", loadingRuns && "animate-spin")} />
-            </Button>
-          </div>
-
-          {loadingRuns ? (
-            <div className="space-y-2">
-              {[0, 1, 2].map((item) => (
-                <div key={item} className="h-16 animate-pulse rounded-xl bg-white/5" />
-              ))}
-            </div>
-          ) : recentRuns.length ? (
-            <div className="space-y-2">
-              {recentRuns.map((workflow) => {
-                const active = selectedWorkflow?.id === workflow.id;
-                const loading = loadingWorkflowId === workflow.id;
-                return (
-                  <button
-                    key={workflow.id}
-                    type="button"
-                    onClick={() => void loadWorkflow(workflow.id)}
-                    className={cn(
-                      "w-full rounded-xl border px-3 py-3 text-left transition-colors",
-                      active
-                        ? "border-orange-300/35 bg-orange-300/10"
-                        : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <Badge variant={statusVariant(workflow.status)}>{workflow.status}</Badge>
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
-                    </div>
-                    <p className="mt-2 truncate text-sm font-medium text-slate-100">{workflow.type}</p>
-                    <p className="mt-1 text-xs text-slate-500">{formatDateTime(workflow.createdAt)}</p>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-4 text-sm text-slate-400">
-              No saved workflows yet.
-            </p>
-          )}
-        </aside>
+          </aside>
       </div>
     </div>
   );
@@ -519,6 +642,11 @@ function WorkflowOutputView({
   output: WorkflowOutput | null;
   qaByBriefId: Map<string, WorkflowQaResult>;
 }) {
+  const retentionAudit = asRetentionAudit(workflow.output, workflow.id);
+  if (retentionAudit) {
+    return <RetentionAuditReport audit={retentionAudit} compact />;
+  }
+
   if (!output) {
     return (
       <div className="space-y-4">
