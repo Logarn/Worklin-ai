@@ -2,6 +2,8 @@ import type { AgentContextResult } from "@/lib/agent/context/types";
 import type { LlmProviderAttempt, LlmProviderName } from "@/lib/llm";
 
 export const WORKLIN_INTENTS = [
+  "retention_audit",
+  "audit_fix_run",
   "plan_brief_qa",
   "approve_workflow",
   "list_workflows",

@@ -129,6 +129,68 @@ type WorkflowOutput = ApiEnvelope & {
   recommendedNextAction?: string;
 };
 
+type AuditFixRunPreparedFix = {
+  id: string;
+  title: string;
+  fixType: string;
+  priority: string;
+  riskLevel: string;
+  approvalRequired: boolean;
+  canGoLiveNow: false;
+  externalActionTaken: false;
+  whatRemainsBlocked?: string[];
+  suggestedNextStep?: string;
+};
+
+type AuditFixRunBlockedFix = {
+  id: string;
+  title: string;
+  fixType: string;
+  missingCapability: string;
+  reason: string;
+  safeAlternative: string;
+  canGoLiveNow: false;
+  externalActionTaken: false;
+};
+
+type AuditFixRunOutput = ApiEnvelope & {
+  mode: "safe_prepare";
+  sourceWorkflowId: string;
+  summary: {
+    prepared: number;
+    blocked: number;
+    needsApproval: number;
+    chatSummary: string;
+  };
+  preparedFixes: AuditFixRunPreparedFix[];
+  blockedFixes: AuditFixRunBlockedFix[];
+  approvalPackage: {
+    readyForApproval: boolean;
+    approvalSummary: string;
+    items: Array<{
+      id: string;
+      title: string;
+      fixType: string;
+      priority: string;
+      approvalRequired: boolean;
+      canGoLiveNow: false;
+      externalActionTaken: false;
+    }>;
+  };
+  fixGroups: Record<string, AuditFixRunPreparedFix[]>;
+  nextUserMessage: string;
+  caveats?: Array<{ message: string }>;
+  metadata?: {
+    generatedAt?: string;
+    safePrepareOnly?: boolean;
+    externalActionsTaken?: boolean;
+    writesPerformed?: boolean;
+    liveCapabilitiesBlocked?: string[];
+  };
+  workflowId?: string | null;
+  workflowPersistence?: "persisted" | "skipped";
+};
+
 const defaultPrompt =
   "Plan 3 retention campaigns for next week. No discounts. Include one VIP campaign.";
 
@@ -151,6 +213,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function asWorkflowOutput(value: unknown): WorkflowOutput | null {
   if (!isRecord(value)) return null;
   return value as WorkflowOutput;
+}
+
+function asAuditFixRun(value: unknown): AuditFixRunOutput | null {
+  if (!isRecord(value)) return null;
+  if (value.ok !== true || value.mode !== "safe_prepare") return null;
+  if (!isRecord(value.summary) || !Array.isArray(value.preparedFixes) || !Array.isArray(value.blockedFixes)) return null;
+  return value as AuditFixRunOutput;
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -340,6 +409,269 @@ function RetentionWorkflowShell({
   );
 }
 
+function groupCounts(fixRun: AuditFixRunOutput) {
+  return Object.entries(fixRun.fixGroups ?? {}).map(([key, items]) => ({
+    key,
+    count: Array.isArray(items) ? items.length : 0,
+  }));
+}
+
+function AuditFixRunSummary({ fixRun }: { fixRun: AuditFixRunOutput }) {
+  const liveCapabilitiesBlocked = fixRun.metadata?.liveCapabilitiesBlocked ?? [];
+  const safetyOk = fixRun.preparedFixes.every((fix) => fix.externalActionTaken === false && fix.canGoLiveNow === false) &&
+    fixRun.blockedFixes.every((fix) => fix.externalActionTaken === false && fix.canGoLiveNow === false);
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-200" />
+          <div>
+            <h2 className="text-base font-semibold text-emerald-50">Safe fix package prepared</h2>
+            <p className="mt-1 text-sm leading-6 text-emerald-50/85">
+              {fixRun.summary.chatSummary || "Worklin prepared the safe fixes from this retention audit."}
+            </p>
+            <p className="mt-2 text-xs text-emerald-50/70">
+              Nothing was sent, scheduled, synced, drafted, created live, or changed externally.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-3">
+        <Metric label="Prepared" value={String(fixRun.summary.prepared ?? 0)} />
+        <Metric label="Blocked live" value={String(fixRun.summary.blocked ?? 0)} />
+        <Metric label="Need approval" value={String(fixRun.summary.needsApproval ?? 0)} />
+      </section>
+
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">Prepared fix groups</h2>
+            <p className="mt-1 text-sm text-slate-400">Packages Worklin prepared for review.</p>
+          </div>
+          <Badge variant={safetyOk ? "success" : "warning"}>
+            {safetyOk ? "externalActionTaken false" : "check safety flags"}
+          </Badge>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {groupCounts(fixRun).map((group) => (
+            <Badge key={group.key} variant="outline">
+              {group.key}: {group.count}
+            </Badge>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-slate-100">Prepared fixes</h2>
+        <div className="grid gap-3 xl:grid-cols-2">
+          {fixRun.preparedFixes.slice(0, 8).map((fix) => (
+            <article key={fix.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-100">{fix.title}</h3>
+                  <p className="mt-1 text-xs text-slate-500">{fix.fixType} · {fix.priority} · risk {fix.riskLevel}</p>
+                </div>
+                <Badge variant="secondary">prepared</Badge>
+              </div>
+              {fix.suggestedNextStep ? (
+                <p className="mt-3 text-sm leading-6 text-slate-300">{fix.suggestedNextStep}</p>
+              ) : null}
+              {fix.whatRemainsBlocked?.length ? (
+                <ul className="mt-3 space-y-1 text-xs leading-5 text-slate-400">
+                  {fix.whatRemainsBlocked.slice(0, 2).map((item) => (
+                    <li key={item}>Blocked: {item}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-slate-100">Blocked live actions</h2>
+        {fixRun.blockedFixes.length ? (
+          <div className="grid gap-3">
+            {fixRun.blockedFixes.map((fix) => (
+              <article key={fix.id} className="rounded-xl border border-amber-300/20 bg-amber-400/10 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-amber-50">{fix.title}</h3>
+                    <p className="mt-1 text-xs text-amber-100/70">{fix.missingCapability}</p>
+                  </div>
+                  <Badge variant="warning">blocked</Badge>
+                </div>
+                <p className="mt-3 text-sm leading-6 text-amber-50/85">{fix.reason}</p>
+                <p className="mt-2 text-xs text-amber-100/70">Safe alternative: {fix.safeAlternative}</p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-400">
+            No blocked live actions were returned for this scope.
+          </p>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <h2 className="text-sm font-semibold text-slate-100">Approval package</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          {fixRun.approvalPackage?.approvalSummary ?? "No approval summary was saved."}
+        </p>
+        {liveCapabilitiesBlocked.length ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {liveCapabilitiesBlocked.map((capability) => (
+              <Badge key={capability} variant="outline">{capability}</Badge>
+            ))}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function AuditFixRunWorkflowShell({
+  workflow,
+  fixRun,
+  error,
+}: {
+  workflow: WorkflowDetail;
+  fixRun: AuditFixRunOutput | null;
+  error: string | null;
+}) {
+  const generatedAt = fixRun?.metadata?.generatedAt ?? workflow.createdAt;
+
+  return (
+    <div className="w-full space-y-5 p-4 md:p-6">
+      <header className="rounded-2xl border border-white/10 bg-[rgba(10,14,22,0.72)] px-5 py-4 shadow-[0_18px_60px_rgba(2,6,23,0.32)] md:px-6 md:py-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">prepare-only fix package</Badge>
+              <Badge variant={statusVariant(workflow.status)}>{workflow.status}</Badge>
+            </div>
+            <h1 className="mt-3 text-2xl font-semibold text-slate-50">Audit Fix Run</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              Worklin prepared safe fixes from a Retention Audit WorkflowRun. No live external action was taken.
+            </p>
+          </div>
+          <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs text-slate-400 md:text-right">
+            <p>Generated {formatDateTime(generatedAt)}</p>
+            <p className="mt-1 break-all">Workflow {workflow.id}</p>
+            {fixRun?.sourceWorkflowId ? <p className="mt-1 break-all">Source audit {fixRun.sourceWorkflowId}</p> : null}
+          </div>
+        </div>
+      </header>
+
+      {error ? (
+        <div className="flex items-start gap-3 rounded-xl border border-red-300/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error}</p>
+        </div>
+      ) : null}
+
+      <section className="surface-soft min-h-[420px] p-4 md:p-6 xl:p-7">
+        {fixRun ? (
+          <AuditFixRunSummary fixRun={fixRun} />
+        ) : (
+          <div className="rounded-xl border border-amber-300/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+            This WorkflowRun is marked as an audit fix run, but the saved output could not be parsed as an Audit Fix Run response.
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+export function WorkflowCanvasById({
+  workflowId,
+  embedded = false,
+}: {
+  workflowId: string;
+  embedded?: boolean;
+}) {
+  const [workflow, setWorkflow] = useState<WorkflowDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const output = useMemo(() => asWorkflowOutput(workflow?.output), [workflow]);
+  const retentionAudit = useMemo(() => asRetentionAudit(workflow?.output, workflow?.id), [workflow]);
+  const auditFixRun = useMemo(() => asAuditFixRun(workflow?.output), [workflow]);
+  const qaByBriefId = useMemo(() => {
+    const map = new Map<string, WorkflowQaResult>();
+    for (const qa of getWorkflowQaResults(output)) {
+      if (qa?.briefId) map.set(qa.briefId, qa);
+    }
+    return map;
+  }, [output]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadWorkflow() {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetch(`/api/agent/workflows/${workflowId}`);
+        const data = await parseApiResponse<WorkflowDetailResponse>(response);
+        if (!cancelled) setWorkflow(data.workflow);
+      } catch (loadError) {
+        if (!cancelled) {
+          setWorkflow(null);
+          setError(loadError instanceof Error ? loadError.message : "Failed to load workflow");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadWorkflow();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowId]);
+
+  if (loading && !workflow) {
+    return <WorkflowLoadingShell error={error} />;
+  }
+
+  if (!workflow) {
+    return (
+      <div className={cn("w-full", embedded ? "p-4" : "p-4 md:p-6")}>
+        <div className="flex items-start gap-3 rounded-xl border border-red-300/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error ?? "Workflow run not found."}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (workflow.type === "retention-audit" || retentionAudit) {
+    return <RetentionWorkflowShell workflow={workflow} audit={retentionAudit} error={error} />;
+  }
+
+  if (workflow.type === "audit-fix-run" || auditFixRun) {
+    return <AuditFixRunWorkflowShell workflow={workflow} fixRun={auditFixRun} error={error} />;
+  }
+
+  return (
+    <div className={cn("w-full space-y-5", embedded ? "p-4" : "p-4 md:p-6")}>
+      {error ? (
+        <div className="flex items-start gap-3 rounded-xl border border-red-300/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error}</p>
+        </div>
+      ) : null}
+      <section className="surface-soft min-h-[420px] p-4 md:p-5">
+        <WorkflowOutputView workflow={workflow} output={output} qaByBriefId={qaByBriefId} />
+      </section>
+    </div>
+  );
+}
+
 export function AgentWorkflowCanvas({
   initialWorkflow = null,
   initialWorkflowId = null,
@@ -367,7 +699,9 @@ export function AgentWorkflowCanvas({
     () => asRetentionAudit(selectedWorkflow?.output, selectedWorkflow?.id),
     [selectedWorkflow],
   );
+  const auditFixRun = useMemo(() => asAuditFixRun(selectedWorkflow?.output), [selectedWorkflow]);
   const selectedWorkflowIsRetentionAudit = selectedWorkflow?.type === "retention-audit" || Boolean(retentionAudit);
+  const selectedWorkflowIsAuditFixRun = selectedWorkflow?.type === "audit-fix-run" || Boolean(auditFixRun);
   const qaByBriefId = useMemo(() => {
     const map = new Map<string, WorkflowQaResult>();
     for (const qa of getWorkflowQaResults(output)) {
@@ -379,17 +713,20 @@ export function AgentWorkflowCanvas({
   const loadRuns = useCallback(async () => {
     setLoadingRuns(true);
     try {
-      const [planResponse, retentionResponse] = await Promise.all([
+      const [planResponse, retentionResponse, fixRunResponse] = await Promise.all([
         fetch("/api/agent/workflows?type=plan-brief-qa&limit=8"),
         fetch("/api/agent/workflows?type=retention-audit&limit=4"),
+        fetch("/api/agent/workflows?type=audit-fix-run&limit=4"),
       ]);
-      const [planData, retentionData] = await Promise.all([
+      const [planData, retentionData, fixRunData] = await Promise.all([
         parseApiResponse<WorkflowListResponse>(planResponse),
         parseApiResponse<WorkflowListResponse>(retentionResponse),
+        parseApiResponse<WorkflowListResponse>(fixRunResponse),
       ]);
       const workflows = [
         ...asArray<WorkflowSummary>(planData.workflows),
         ...asArray<WorkflowSummary>(retentionData.workflows),
+        ...asArray<WorkflowSummary>(fixRunData.workflows),
       ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setRecentRuns(workflows.slice(0, 8));
     } catch (loadError) {
@@ -471,6 +808,10 @@ export function AgentWorkflowCanvas({
 
   if (selectedWorkflow && selectedWorkflowIsRetentionAudit) {
     return <RetentionWorkflowShell workflow={selectedWorkflow} audit={retentionAudit} error={error} />;
+  }
+
+  if (selectedWorkflow && selectedWorkflowIsAuditFixRun) {
+    return <AuditFixRunWorkflowShell workflow={selectedWorkflow} fixRun={auditFixRun} error={error} />;
   }
 
   return (

@@ -56,7 +56,13 @@ function asPlaybookType(value: unknown): "flow" | "campaign" | undefined {
 }
 
 function detectSendOrSchedule(message: string) {
-  return /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message);
+  return (
+    /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message) ||
+    /\b(sync|syncing|push|publish)\b.*\b(segments?|profiles?|flows?|campaigns?|klaviyo)\b/i.test(message) ||
+    /\b(create|update|delete|remove|change|modify|activate|enable)\b.*\b(live\s+)?(klaviyo\s+)?flows?\b/i.test(message) ||
+    /\b(create|update|delete|remove|change|modify)\b.*\b(live\s+)?(segments?|profiles?)\b/i.test(message) ||
+    /\bdestructive\b.*\bklaviyo\b/i.test(message)
+  );
 }
 
 function detectApproval(message: string) {
@@ -93,6 +99,36 @@ function detectRecommendFlows(message: string) {
     /\b(recover|recovery)\b.*\b(abandoned?\s+checkouts?|checkout\s+abandon|abandoned?\s+carts?|cart\s+abandon)\b/i.test(message) ||
     /\b(increase|grow|improve)\b.*\b(repeat\s+purchases?|reorders?|restock|replenishment)\b.*\b(flows?|automations?)\b/i.test(message) ||
     /\bwhat\s+automations?\s+should\s+this\s+brand\s+have\b/i.test(message)
+  );
+}
+
+function detectRetentionAudit(message: string) {
+  const text = normalized(message);
+  const narrowAuditDomain =
+    /\b(flows?|campaigns?|segments?|audiences?|products?|metrics?)\b/.test(text) &&
+    !/\b(retention|account|setup|lifecycle)\b/.test(text);
+
+  if (narrowAuditDomain && /\baudit\b/.test(text)) return false;
+
+  return (
+    /\b(audit|check|review|diagnose|inspect)\b.*\b(retention\s+setup|retention\s+system|retention|account)\b/i.test(text) ||
+    /\brun\s+(?:a|an|another|a\s+fresh|fresh)\s+(?:retention\s+)?audit\b/i.test(text) ||
+    /\brefresh\s+(?:the\s+)?(?:retention\s+)?audit\b/i.test(text) ||
+    /\bre[-\s]?audit\s+(?:this\s+|the\s+|my\s+)?(?:account|retention|setup)\b/i.test(text) ||
+    /\bcheck\s+(?:my|the|this)?\s*retention\s+again\b/i.test(text) ||
+    /\bwhat'?s\s+broken\s+in\s+retention\b/i.test(text) ||
+    /\bhow\s+healthy\s+is\s+(my|the)\s+retention\b/i.test(text)
+  );
+}
+
+function detectFixConfirmation(message: string) {
+  return (
+    /\bfix\s+all\b/i.test(message) ||
+    /\bfix\s+(all\s+)?(this|it|these|what\s+you\s+can)\b/i.test(message) ||
+    /\bprepare\s+(the\s+)?(safe\s+)?fixes\b/i.test(message) ||
+    /\bhandle\s+(the\s+)?safe\s+fixes\b/i.test(message) ||
+    /\bprepare\s+everything\s+safe\b/i.test(message) ||
+    /\bfix\s+what\s+you\s+can\b/i.test(message)
   );
 }
 
@@ -176,8 +212,21 @@ export function deterministicParseIntent(message: string, workflowId?: string | 
 
   if (detectSendOrSchedule(message)) {
     confidence = 0.99;
-    reasoningSummary = "The user asked to send, schedule, launch, or go live, which must stay refusal-safe.";
-    clarificationQuestion = "Worklin is draft-only. Do you want me to create drafts for an approved workflow instead?";
+    reasoningSummary = "The user asked for a live external action, which must stay refusal-safe.";
+    clarificationQuestion =
+      "I cannot send, schedule, sync, create live flows or segments, or make destructive Klaviyo changes from chat. I can prepare the safe package for review instead.";
+  } else if (detectRetentionAudit(message)) {
+    intent = "retention_audit";
+    confidence = 0.94;
+    reasoningSummary = "The user asked Worklin to audit the retention setup.";
+    clarificationQuestion = undefined;
+  } else if (detectFixConfirmation(message)) {
+    intent = "audit_fix_run";
+    confidence = 0.9;
+    reasoningSummary = "The user asked Worklin to prepare safe fixes from a retention audit.";
+    clarificationQuestion = extractedWorkflowId
+      ? undefined
+      : "Which retention audit should I prepare fixes for?";
   } else if (detectApproval(message)) {
     intent = "approve_workflow";
     confidence = 0.9;
@@ -278,6 +327,8 @@ function buildLlmPrompt(message: string, workflowId: string | null | undefined, 
   const tools = agentToolRegistry
     .filter((tool) =>
       [
+        "workflow.retentionAudit",
+        "workflow.auditFixRun",
         "workflow.planBriefQa",
         "workflow.approveAndCreateDrafts",
         "workflow.list",
@@ -298,8 +349,12 @@ function buildLlmPrompt(message: string, workflowId: string | null | undefined, 
 
 Rules:
 - You classify and structure only. Never execute tools.
-- Only use these intents: plan_brief_qa, approve_workflow, list_workflows, get_workflow, list_playbooks, recommend_flows, clarify.
-- If the user asks to send, schedule, launch, or go live, use intent "clarify".
+- Only use these intents: retention_audit, audit_fix_run, plan_brief_qa, approve_workflow, list_workflows, get_workflow, list_playbooks, recommend_flows, clarify.
+- If the user asks to send, schedule, launch, go live, sync segments/profiles, create or update live Klaviyo flows, or make destructive Klaviyo changes, use intent "clarify".
+- Use "retention_audit" when the user asks to audit, check, review, diagnose, refresh, re-audit, or inspect the retention setup/account/system. Examples include "audit my retention setup", "run an audit", "run another audit", "refresh the audit", "check my retention again", and "what's broken in retention?".
+- Use "audit_fix_run" when the user asks in natural language to prepare safe fixes from a retention audit. Examples include "fix all this", "handle what you can safely", "turn that audit into fixes", "prepare the safe fixes", and "go prepare the safe package".
+- For bare vague confirmations such as "yes", "ok", or "sure", use "clarify" unless the provided context clearly indicates the user is answering a safe-fixes confirmation. Deterministic routing will validate that context before executing.
+- If no retention-audit workflowId/context is available for a fix request, still classify clear fix-preparation language as audit_fix_run and let deterministic routing clarify.
 - Approval may only mean draft creation after deterministic validation. Do not assume a workflow if none is provided.
 - Use "recommend_flows" for Klaviyo flow audits, missing lifecycle flows, automation recommendations, abandoned checkout/cart recovery flows, replenishment/repeat purchase flows, and questions about which automations the brand should have.
 - Do not use "recommend_flows" for saved Worklin workflow history requests like "show recent workflows" or "open this workflow".
@@ -322,7 +377,7 @@ ${JSON.stringify(tools)}
 
 Return JSON:
 {
-  "intent": "plan_brief_qa | approve_workflow | list_workflows | get_workflow | list_playbooks | recommend_flows | clarify",
+  "intent": "retention_audit | audit_fix_run | plan_brief_qa | approve_workflow | list_workflows | get_workflow | list_playbooks | recommend_flows | clarify",
   "confidence": 0,
   "parameters": {
     "campaignCount": 0,

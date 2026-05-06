@@ -5,7 +5,7 @@ import { DEFAULT_STORE_ID } from "../../brain/profile/store";
 export const maxDuration = 10;
 
 const GREETING =
-  "Hey! 👋 I'm Worklin — your AI retention marketer. Think of me as that brilliant marketing friend who works 24/7 and never asks for equity. What are we working on?";
+  "Want me to audit your retention setup? I can check products, campaigns, flows, audiences, performance readiness, and lifecycle coverage, then tell you what needs fixing.";
 
 export async function GET(request: Request) {
   try {
