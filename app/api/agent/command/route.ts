@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { POST as approveWorkflow } from "@/app/api/agent/commands/approve-workflow/route";
+import { POST as auditFixRun } from "@/app/api/audits/fix-run/route";
+import { POST as auditRetention } from "@/app/api/audits/retention/route";
 import { POST as recommendFlows } from "@/app/api/flows/recommend/route";
 import {
   cleanWorkflowId,
@@ -26,10 +28,13 @@ const commandSchema = z
   .object({
     message: z.string().trim().min(1, "message is required.").max(MAX_MESSAGE_LENGTH),
     workflowId: z.string().trim().min(1).max(200).optional(),
+    safeFixPromptContext: z.boolean().optional(),
   })
   .passthrough();
 
 type CommandIntent =
+  | "retention_audit"
+  | "audit_fix_run"
   | "plan_brief_qa"
   | "approve_workflow"
   | "list_workflows"
@@ -39,6 +44,8 @@ type CommandIntent =
   | "clarify";
 
 type ToolName =
+  | "workflow.retentionAudit"
+  | "workflow.auditFixRun"
   | "workflow.planBriefQa"
   | "workflow.approveAndCreateDrafts"
   | "workflow.list"
@@ -155,7 +162,13 @@ function normalized(message: string) {
 }
 
 function detectsSendOrScheduleIntent(message: string) {
-  return /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message);
+  return (
+    /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message) ||
+    /\b(sync|syncing|push|publish)\b.*\b(segments?|profiles?|flows?|campaigns?|klaviyo)\b/i.test(message) ||
+    /\b(create|update|delete|remove|change|modify|activate|enable)\b.*\b(live\s+)?(klaviyo\s+)?flows?\b/i.test(message) ||
+    /\b(create|update|delete|remove|change|modify)\b.*\b(live\s+)?(segments?|profiles?)\b/i.test(message) ||
+    /\bdestructive\b.*\bklaviyo\b/i.test(message)
+  );
 }
 
 function detectsApprovalIntent(message: string) {
@@ -201,6 +214,40 @@ function detectsRecommendFlowsIntent(message: string) {
   );
 }
 
+function detectsRetentionAuditIntent(message: string) {
+  const text = normalized(message);
+  const narrowAuditDomain =
+    /\b(flows?|campaigns?|segments?|audiences?|products?|metrics?)\b/.test(text) &&
+    !/\b(retention|account|setup|lifecycle)\b/.test(text);
+
+  if (narrowAuditDomain && /\baudit\b/.test(text)) return false;
+
+  return (
+    /\b(audit|check|review|diagnose|inspect)\b.*\b(retention\s+setup|retention\s+system|retention|account)\b/i.test(text) ||
+    /\brun\s+(?:a|an|another|a\s+fresh|fresh)\s+(?:retention\s+)?audit\b/i.test(text) ||
+    /\brefresh\s+(?:the\s+)?(?:retention\s+)?audit\b/i.test(text) ||
+    /\bre[-\s]?audit\s+(?:this\s+|the\s+|my\s+)?(?:account|retention|setup)\b/i.test(text) ||
+    /\bcheck\s+(?:my|the|this)?\s*retention\s+again\b/i.test(text) ||
+    /\bwhat'?s\s+broken\s+in\s+retention\b/i.test(text) ||
+    /\bhow\s+healthy\s+is\s+(my|the)\s+retention\b/i.test(text)
+  );
+}
+
+function detectsExplicitFixConfirmationIntent(message: string) {
+  return (
+    /\bfix\s+all\b/i.test(message) ||
+    /\bfix\s+(all\s+)?(this|it|these|what\s+you\s+can)\b/i.test(message) ||
+    /\bprepare\s+(the\s+)?(safe\s+)?fixes\b/i.test(message) ||
+    /\bhandle\s+(the\s+)?safe\s+fixes\b/i.test(message) ||
+    /\bprepare\s+everything\s+safe\b/i.test(message) ||
+    /\bfix\s+what\s+you\s+can\b/i.test(message)
+  );
+}
+
+function detectsVagueFixConfirmationIntent(message: string) {
+  return /^\s*(yes|yeah|yep|sure|ok|okay|do it|go ahead|please do)\s*[.!]?\s*$/i.test(message);
+}
+
 function inferPlaybookType(message: string): PlaybookType | undefined {
   const text = normalized(message);
   if (/\bflows?\b/.test(text)) return "flow";
@@ -210,6 +257,8 @@ function inferPlaybookType(message: string): PlaybookType | undefined {
 
 function inferIntent(message: string, workflowId?: string): CommandIntent {
   if (detectsSendOrScheduleIntent(message)) return "clarify";
+  if (detectsRetentionAuditIntent(message)) return "retention_audit";
+  if (detectsExplicitFixConfirmationIntent(message)) return "audit_fix_run";
   if (detectsApprovalIntent(message)) return workflowId ? "approve_workflow" : "clarify";
   if (detectsListPlaybooksIntent(message)) return "list_playbooks";
   if (detectsGetWorkflowIntent(message)) return workflowId ? "get_workflow" : "clarify";
@@ -425,6 +474,322 @@ async function routeRecommendFlows(
   });
 }
 
+function workflowUrl(workflowId: string) {
+  return `/agent/workflows?workflowId=${encodeURIComponent(workflowId)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function asArray<T = unknown>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function issueTitles(items: unknown, limit: number) {
+  return asArray<Record<string, unknown>>(items)
+    .map((item) => asString(item.title))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, limit);
+}
+
+function uniquePriorityTitles(...groups: string[][]) {
+  const seen = new Set<string>();
+  const titles: string[] = [];
+  for (const title of groups.flat()) {
+    const clean = cleanPriorityTitle(title);
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    titles.push(clean);
+  }
+  return titles;
+}
+
+function cleanPriorityTitle(title: string) {
+  const trimmed = title.trim().replace(/[.!?]+$/, "");
+  if (/revenue performance setup needs a verified conversion metric/i.test(trimmed)) {
+    return "Confirm Klaviyo conversion metric before trusting performance-backed recommendations";
+  }
+  if (/retention foundation needs sequencing before action plans/i.test(trimmed)) {
+    return "Define sequencing and suppression guardrails before preparing campaigns or flows";
+  }
+  if (/suppression guardrails/i.test(trimmed)) {
+    return "Define suppression guardrails before preparing campaigns or flows";
+  }
+  return trimmed.replace(/\baction plans?\b/gi, "safe fix prep");
+}
+
+function numberedLines(items: string[], limit = 3) {
+  return items.slice(0, limit).map((item, index) => `${index + 1}. ${item}.`);
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function compactRetentionAuditResult(data: unknown) {
+  const audit = isRecord(data) ? data : {};
+  const health = isRecord(audit.overallRetentionHealth) ? audit.overallRetentionHealth : {};
+  const summary = isRecord(audit.summary) ? audit.summary : {};
+  const workflowId = asString(audit.workflowId);
+
+  return {
+    workflowId,
+    workflowUrl: workflowId ? workflowUrl(workflowId) : null,
+    workflowType: "retention_audit",
+    workflowPersistence: asString(audit.workflowPersistence),
+    overallRetentionHealth: {
+      score: typeof health.score === "number" ? health.score : null,
+      status: asString(health.status),
+      label: asString(health.label),
+    },
+    executiveSummary: asString(summary.executiveSummary),
+    topIssues: issueTitles(audit.topIssues, 5),
+    topOpportunities: issueTitles(audit.topOpportunities, 5),
+    prioritizedActions: issueTitles(audit.prioritizedActions, 5),
+    caveatCount: asArray(audit.caveats).length,
+    asksForFixConfirmation: true,
+  };
+}
+
+function retentionAuditChatMessage(result: ReturnType<typeof compactRetentionAuditResult>) {
+  const priorities = uniquePriorityTitles(
+    result.topIssues,
+    result.prioritizedActions,
+    result.topOpportunities,
+  );
+  const priorityLines = priorities.length
+    ? numberedLines(priorities)
+    : ["1. Review the audit caveats before preparing fixes."];
+
+  return [
+    "I audited your retention setup.",
+    "",
+    "Top priorities:",
+    ...priorityLines,
+    "",
+    "Open the full audit canvas:",
+    result.workflowId
+      ? `[Open Retention Audit](${workflowUrl(result.workflowId)})`
+      : "The audit ran, but the WorkflowRun id was not returned.",
+    "",
+    "Want me to prepare the safe fixes?",
+    "",
+    "Nothing will be sent, scheduled, synced, created live, or changed externally.",
+  ].join("\n");
+}
+
+async function routeRetentionAudit(contextSummary: CommandContextSummary) {
+  const { response, data } = await callJsonRoute(
+    auditRetention,
+    "/api/audits/retention",
+    {},
+  );
+  const result = compactRetentionAuditResult(data);
+
+  return commandResponse({
+    ok: response.ok && isRecord(data) && data.ok !== false,
+    intent: "retention_audit",
+    tool: "workflow.retentionAudit",
+    result,
+    message: response.ok
+      ? retentionAuditChatMessage(result)
+      : "I could not complete the retention audit. No sends, schedules, syncs, drafts, or live changes were attempted.",
+    status: response.status,
+    contextSummary,
+  });
+}
+
+function completedRetentionAuditCandidates(contextSummary: CommandContextSummary) {
+  return contextSummary.recentWorkflows.filter((workflow) =>
+    workflow.type === "retention-audit" && workflow.status === "completed",
+  );
+}
+
+async function resolveRetentionAuditWorkflowId(
+  workflowId: string | undefined,
+  contextSummary: CommandContextSummary,
+  options: { allowLatestFallback?: boolean } = {},
+) {
+  const id = cleanWorkflowId(workflowId);
+
+  if (id) {
+    const workflow = await prisma.workflowRun.findUnique({
+      where: { id },
+      select: { id: true, type: true, status: true, createdAt: true },
+    });
+    if (!workflow) {
+      return {
+        ok: false as const,
+        status: 404,
+        reason: "workflow_not_found",
+        message: "I could not find that workflow. Send the retention audit workflowId you want me to prepare fixes for.",
+        candidates: [],
+      };
+    }
+    if (workflow.type !== "retention-audit") {
+      return {
+        ok: false as const,
+        status: 400,
+        reason: "not_retention_audit",
+        message: "That workflow is not a retention audit. I can only prepare safe fixes from a retention-audit WorkflowRun.",
+        candidates: completedRetentionAuditCandidates(contextSummary),
+      };
+    }
+    if (workflow.status !== "completed") {
+      return {
+        ok: false as const,
+        status: 400,
+        reason: "retention_audit_not_completed",
+        message: "That retention audit is not completed yet. I can prepare safe fixes after the audit finishes.",
+        candidates: completedRetentionAuditCandidates(contextSummary),
+      };
+    }
+    return { ok: true as const, workflowId: workflow.id, source: "explicit" as const };
+  }
+
+  const candidates = completedRetentionAuditCandidates(contextSummary);
+  if (options.allowLatestFallback && candidates.length === 1) {
+    return { ok: true as const, workflowId: candidates[0].id, source: "latest_recent" as const };
+  }
+
+  return {
+    ok: false as const,
+    status: 200,
+    reason: candidates.length ? "multiple_retention_audits" : "missing_retention_audit_context",
+    message: candidates.length
+      ? "I found more than one recent retention audit. Which one should I prepare safe fixes for?"
+      : "Do you mean you want me to prepare the safe fixes for the latest retention audit? Send the retention audit workflowId so I do not guess.",
+    candidates,
+  };
+}
+
+function compactFixRunResult(data: unknown) {
+  const fixRun = isRecord(data) ? data : {};
+  const summary = isRecord(fixRun.summary) ? fixRun.summary : {};
+  const workflowId = asString(fixRun.workflowId);
+  const fixGroups = isRecord(fixRun.fixGroups) ? fixRun.fixGroups : {};
+
+  return {
+    workflowId,
+    workflowUrl: workflowId ? workflowUrl(workflowId) : null,
+    sourceWorkflowId: asString(fixRun.sourceWorkflowId),
+    workflowType: "audit_fix_run",
+    workflowPersistence: asString(fixRun.workflowPersistence),
+    summary: {
+      prepared: typeof summary.prepared === "number" ? summary.prepared : 0,
+      blocked: typeof summary.blocked === "number" ? summary.blocked : 0,
+      needsApproval: typeof summary.needsApproval === "number" ? summary.needsApproval : 0,
+      chatSummary: asString(summary.chatSummary),
+    },
+    fixGroups: {
+      campaigns: asArray(fixGroups.campaigns).length,
+      flows: asArray(fixGroups.flows).length,
+      audiences: asArray(fixGroups.audiences).length,
+      performance: asArray(fixGroups.performance).length,
+      suppression: asArray(fixGroups.suppression).length,
+    },
+    blockedFixes: asArray<Record<string, unknown>>(fixRun.blockedFixes)
+      .map((item) => ({
+        title: asString(item.title),
+        missingCapability: asString(item.missingCapability),
+      }))
+      .slice(0, 5),
+    safety: {
+      externalActionTaken: false,
+      canGoLiveNow: false,
+      sent: false,
+      scheduled: false,
+      synced: false,
+      createdLive: false,
+      changedExternally: false,
+    },
+  };
+}
+
+function fixRunChatMessage(result: ReturnType<typeof compactFixRunResult>) {
+  const blocked = result.summary.blocked;
+  const groupParts = [
+    result.fixGroups.campaigns ? countLabel(result.fixGroups.campaigns, "campaign fix", "campaign fixes") : null,
+    result.fixGroups.flows ? countLabel(result.fixGroups.flows, "flow fix", "flow fixes") : null,
+    result.fixGroups.audiences ? countLabel(result.fixGroups.audiences, "audience fix", "audience fixes") : null,
+    result.fixGroups.performance ? countLabel(result.fixGroups.performance, "performance setup fix", "performance setup fixes") : null,
+    result.fixGroups.suppression ? countLabel(result.fixGroups.suppression, "suppression guardrail") : null,
+  ].filter((item): item is string => Boolean(item));
+
+  return [
+    "I prepared the safe fix package.",
+    "",
+    "Prepared fixes:",
+    ...(groupParts.length ? groupParts.map((item) => `- ${item}`) : [`- ${result.summary.prepared} fixes prepared for review`]),
+    "",
+    blocked
+      ? `${blocked} live execution steps are blocked because the required live capabilities are not enabled yet.`
+      : "No live execution step was attempted.",
+    "",
+    result.workflowId
+      ? `[Open Prepared Fix Package](${workflowUrl(result.workflowId)})`
+      : "The fix package ran, but no WorkflowRun id was returned.",
+    "",
+    "Nothing was sent, scheduled, synced, drafted, created live, or changed externally.",
+  ].join("\n");
+}
+
+async function routeAuditFixRun(
+  workflowId: string | undefined,
+  contextSummary: CommandContextSummary,
+  options: { allowLatestFallback?: boolean } = {},
+) {
+  const resolved = await resolveRetentionAuditWorkflowId(workflowId, contextSummary, options);
+
+  if (!resolved.ok) {
+    return commandResponse({
+      ok: false,
+      intent: "audit_fix_run",
+      tool: "workflow.auditFixRun",
+      result: {
+        reason: resolved.reason,
+        workflowId: workflowId ?? null,
+        retentionAuditCandidates: resolved.candidates,
+      },
+      message: resolved.message,
+      status: resolved.status,
+      contextSummary,
+    });
+  }
+
+  const { response, data } = await callJsonRoute(
+    auditFixRun,
+    "/api/audits/fix-run",
+    {
+      workflowId: resolved.workflowId,
+      mode: "safe_prepare",
+      scope: "all",
+    },
+  );
+  const result = compactFixRunResult(data);
+
+  return commandResponse({
+    ok: response.ok && isRecord(data) && data.ok !== false,
+    intent: "audit_fix_run",
+    tool: "workflow.auditFixRun",
+    result: {
+      ...result,
+      contextResolution: resolved.source,
+    },
+    message: response.ok
+      ? fixRunChatMessage(result)
+      : "I could not prepare the safe fix package. Nothing was sent, scheduled, synced, drafted, created live, or changed externally.",
+    status: response.status,
+    contextSummary,
+  });
+}
+
 async function routeListWorkflows(contextSummary: CommandContextSummary) {
   const workflows = await prisma.workflowRun.findMany({
     orderBy: { createdAt: "desc" },
@@ -521,7 +886,7 @@ function routeClarify(message: string, contextSummary: CommandContextSummary, wo
         workflowId: workflowId ?? null,
       },
       message:
-        "I cannot send or schedule campaigns from this command. Worklin is in draft-only mode; I can create Klaviyo drafts only after clear approval.",
+        "I cannot send, schedule, sync, create live flows or segments, or make destructive Klaviyo changes from chat. I can prepare the safe fix package for review; nothing live will be changed.",
       contextSummary,
     });
   }
@@ -560,6 +925,8 @@ function routeClarify(message: string, contextSummary: CommandContextSummary, wo
     result: {
       supportedIntents: [
         "plan_brief_qa",
+        "retention_audit",
+        "audit_fix_run",
         "approve_workflow",
         "list_workflows",
         "get_workflow",
@@ -568,7 +935,7 @@ function routeClarify(message: string, contextSummary: CommandContextSummary, wo
       ],
     },
     message:
-      "I am not sure which Worklin action you want. Try asking me to plan campaigns, audit flows, approve a workflow, show recent workflows, open a workflow, or list playbooks.",
+      "I am not sure which Worklin action you want. Try asking me to audit retention, prepare safe fixes for a retention audit, plan campaigns, audit flows, approve a workflow, show recent workflows, open a workflow, or list playbooks.",
     contextSummary,
   });
 }
@@ -596,7 +963,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { message, workflowId } = parsed.data;
+    const { message, workflowId, safeFixPromptContext } = parsed.data;
     parsedMessage = message;
     parsedWorkflowId = workflowId;
 
@@ -618,6 +985,18 @@ export async function POST(request: Request) {
       parsedIntent.intent === "clarify" && deterministicIntent !== "clarify"
         ? deterministicIntent
         : parsedIntent.intent;
+    const hasRetentionAuditContext =
+      contextSummary.referencedWorkflow?.type === "retention-audit" ||
+      (resolvedWorkflowId && contextSummary.recentWorkflows.some((workflow) =>
+        workflow.id === resolvedWorkflowId && workflow.type === "retention-audit",
+      ));
+  const shouldPrepareFixes =
+      detectsExplicitFixConfirmationIntent(message) ||
+      (intent === "audit_fix_run" &&
+        (!detectsVagueFixConfirmationIntent(message) || Boolean(safeFixPromptContext))) ||
+      (detectsVagueFixConfirmationIntent(message) &&
+        Boolean(hasRetentionAuditContext) &&
+        Boolean(safeFixPromptContext));
 
     if (parsedIntent.safety.sendOrScheduleRequested || detectsSendOrScheduleIntent(message)) {
       return routeClarify(message, contextSummary, resolvedWorkflowId);
@@ -627,6 +1006,29 @@ export async function POST(request: Request) {
       return routeClarify(message, contextSummary, resolvedWorkflowId);
     }
 
+    if (intent === "retention_audit" || detectsRetentionAuditIntent(message)) return routeRetentionAudit(contextSummary);
+    if (
+      detectsVagueFixConfirmationIntent(message) &&
+      Boolean(hasRetentionAuditContext) &&
+      !safeFixPromptContext
+    ) {
+      return commandResponse({
+        intent: "clarify",
+        tool: "workflow.auditFixRun",
+        result: {
+          reason: "needs_safe_fix_confirmation_context",
+          workflowId: resolvedWorkflowId ?? null,
+        },
+        message:
+          "Do you mean you want me to prepare the safe fixes for the latest retention audit?",
+        contextSummary,
+      });
+    }
+    if (shouldPrepareFixes) {
+      return routeAuditFixRun(resolvedWorkflowId, contextSummary, {
+        allowLatestFallback: Boolean(safeFixPromptContext),
+      });
+    }
     if (intent === "plan_brief_qa") return routePlanBriefQa(message, contextSummary, parsedIntent.parameters);
     if (intent === "recommend_flows") return routeRecommendFlows(message, contextSummary, parsedIntent.parameters);
     if (intent === "approve_workflow" && resolvedWorkflowId) {

@@ -12,7 +12,8 @@ import {
 } from "ai";
 import { useChat } from "@ai-sdk/react";
 import ReactMarkdown from "react-markdown";
-import { Brain, ChevronDown, Loader2, Paperclip, Plus, SendHorizontal, Sparkles, Trash2 } from "lucide-react";
+import { Brain, ChevronDown, ExternalLink, Loader2, Paperclip, Plus, SendHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { WorkflowCanvasById } from "@/components/agent/agent-workflow-canvas";
 import { Button } from "@/components/ui/button";
 
 type DbMessage = {
@@ -81,6 +82,11 @@ const THINKING_ROTATION = [
   "Brewing up something good...",
 ];
 
+const AUDIT_STARTER_TEXT =
+  "Want me to audit your retention setup? I can check products, campaigns, flows, audiences, performance readiness, and lifecycle coverage, then tell you what needs fixing.";
+
+const OLD_GENERIC_GREETING_PATTERN = /Hey!.*I'm Worklin.*your AI retention marketer.*What are we working on\?/i;
+
 function mapDbRoleToUi(role: string): "user" | "assistant" {
   if (role === "user") return "user";
   return "assistant";
@@ -90,7 +96,13 @@ function messagesFromDb(rows: DbMessage[]): UIMessage[] {
   return rows.map((m) => ({
     id: m.id,
     role: mapDbRoleToUi(m.role),
-    parts: [{ type: "text" as const, text: m.content, state: "done" as const }],
+    parts: [
+      {
+        type: "text" as const,
+        text: OLD_GENERIC_GREETING_PATTERN.test(m.content) ? AUDIT_STARTER_TEXT : m.content,
+        state: "done" as const,
+      },
+    ],
   }));
 }
 
@@ -108,6 +120,18 @@ function getRenderableTextParts(parts: UIMessage["parts"]): Array<{ key: string;
     i += 1;
   }
   return out;
+}
+
+function messageText(message: UIMessage) {
+  return getRenderableTextParts(message.parts)
+    .map((part) => part.text)
+    .join("\n");
+}
+
+function isAuditStarterOnly(messages: UIMessage[]) {
+  return messages.length === 1 &&
+    messages[0].role === "assistant" &&
+    /Want me to audit your retention setup\?/i.test(messageText(messages[0]));
 }
 
 function toolLineFromPart(part: unknown): string | null {
@@ -150,7 +174,38 @@ function detectsApprovalIntent(message: string) {
 }
 
 function detectsSendOrScheduleIntent(message: string) {
-  return /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message);
+  return (
+    /\b(send|sending|sent|schedule|scheduled|scheduling|launch|launching|go\s+live)\b/i.test(message) ||
+    /\b(sync|syncing|push|publish)\b.*\b(segments?|profiles?|flows?|campaigns?|klaviyo)\b/i.test(message) ||
+    /\b(create|update|delete|remove|change|modify|activate|enable)\b.*\b(live\s+)?(klaviyo\s+)?flows?\b/i.test(message) ||
+    /\b(create|update|delete|remove|change|modify)\b.*\b(live\s+)?(segments?|profiles?)\b/i.test(message) ||
+    /\bdestructive\b.*\bklaviyo\b/i.test(message)
+  );
+}
+
+function detectsExplicitFixConfirmationIntent(message: string) {
+  return (
+    /\bfix\s+all\b/i.test(message) ||
+    /\bfix\s+(all\s+)?(this|it|these|what\s+you\s+can)\b/i.test(message) ||
+    /\bprepare\s+(the\s+)?(safe\s+)?fixes\b/i.test(message) ||
+    /\bhandle\s+(the\s+)?safe\s+fixes\b/i.test(message) ||
+    /\bprepare\s+everything\s+safe\b/i.test(message) ||
+    /\bfix\s+what\s+you\s+can\b/i.test(message)
+  );
+}
+
+function detectsVagueFixConfirmationIntent(message: string) {
+  return /^\s*(yes|yeah|yep|sure|ok|okay|do it|go ahead|please do)\s*[.!]?\s*$/i.test(message);
+}
+
+function recentAssistantAskedForSafeFixes(messages: DbMessage[]) {
+  for (let index = messages.length - 1; index >= Math.max(0, messages.length - 4); index -= 1) {
+    const message = messages[index];
+    if (message.role === "user") return false;
+    if (message.role !== "assistant") continue;
+    return /want\s+me\s+to\s+prepare\s+the\s+safe\s+fixes/i.test(message.content);
+  }
+  return false;
 }
 
 function workflowUrl(workflowId: string) {
@@ -185,6 +240,8 @@ function getWorkflowIdFromCommand(response: CommandResponse) {
 }
 
 function formatWorkflowLines(response: CommandResponse) {
+  if (response.intent === "retention_audit" || response.intent === "audit_fix_run") return [];
+
   const result = isRecord(response.result) ? response.result : {};
   const workflowId = getWorkflowIdFromCommand(response);
   const lines: string[] = [];
@@ -258,7 +315,10 @@ function formatCommandResponse(response: CommandResponse) {
     ...formatDraftLines(response),
   ].filter(Boolean);
 
-  const contextLine = formatContextSummary(response.contextSummary);
+  const contextLine =
+    response.intent === "retention_audit" || response.intent === "audit_fix_run"
+      ? null
+      : formatContextSummary(response.contextSummary);
   if (contextLine) {
     lines.push("");
     lines.push(contextLine);
@@ -282,6 +342,7 @@ function AgentChatPanel({
   const [toast, setToast] = useState<string | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(() => findLatestWorkflowId(session.messages));
+  const [canvasWorkflowId, setCanvasWorkflowId] = useState<string | null>(null);
   const [thinkingIdx, setThinkingIdx] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -350,11 +411,13 @@ function AgentChatPanel({
 
   const aiBusy = status === "streaming" || status === "submitted";
   const busy = aiBusy || commandBusy;
+  const showAuditStarterActions = isAuditStarterOnly(messages) && !busy;
 
   async function handleNewChat() {
     const res = await fetch("/api/agent/sessions", { method: "POST" });
     const data = (await res.json()) as { session: ChatSession };
     onSessionChange(data.session);
+    setCanvasWorkflowId(null);
     await onReloadSessions();
     setPickerOpen(false);
   }
@@ -363,6 +426,7 @@ function AgentChatPanel({
     const res = await fetch(`/api/agent/sessions/${id}`);
     const data = (await res.json()) as { session: ChatSession };
     onSessionChange(data.session);
+    setCanvasWorkflowId(findLatestWorkflowId(data.session.messages));
     setPickerOpen(false);
   }
 
@@ -399,8 +463,20 @@ function AgentChatPanel({
   }
 
   async function runCommand(text: string) {
-    const payload: { message: string; workflowId?: string } = { message: text };
-    if (activeWorkflowId && (detectsApprovalIntent(text) || detectsSendOrScheduleIntent(text))) {
+    const promptAskedForSafeFixes = recentAssistantAskedForSafeFixes(session.messages);
+    const explicitFixConfirmation = detectsExplicitFixConfirmationIntent(text);
+    const vagueFixConfirmation = detectsVagueFixConfirmationIntent(text) && promptAskedForSafeFixes;
+    const payload: { message: string; workflowId?: string; safeFixPromptContext?: boolean } = { message: text };
+    if (vagueFixConfirmation) {
+      payload.safeFixPromptContext = true;
+    }
+    if (
+      activeWorkflowId &&
+      (detectsApprovalIntent(text) ||
+        detectsSendOrScheduleIntent(text) ||
+        explicitFixConfirmation ||
+        vagueFixConfirmation)
+    ) {
       payload.workflowId = activeWorkflowId;
     }
 
@@ -415,9 +491,25 @@ function AgentChatPanel({
     }
 
     const workflowId = getWorkflowIdFromCommand(data);
-    if (workflowId) setActiveWorkflowId(workflowId);
+    if (workflowId) {
+      setActiveWorkflowId(workflowId);
+      setCanvasWorkflowId(workflowId);
+    }
 
     await saveCommandExchange(text, formatCommandResponse(data));
+  }
+
+  async function runAuditStarter() {
+    if (busy) return;
+    setCommandBusy(true);
+    try {
+      await runCommand("Audit my retention setup");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Command router failed");
+      window.setTimeout(() => setToast(null), 8000);
+    } finally {
+      setCommandBusy(false);
+    }
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -523,8 +615,41 @@ function AgentChatPanel({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div className={`min-h-0 flex-1 overflow-y-auto px-4 py-4 ${canvasWorkflowId ? "lg:mr-[52vw]" : ""}`}>
         <div className="mx-auto max-w-3xl space-y-4">
+          {messages.length === 0 && !busy ? (
+            <div className="rounded-2xl border border-indigo-300/20 bg-indigo-300/[0.06] p-5 text-zinc-100 shadow-2xl shadow-black/20">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-400/15">
+                  <Sparkles className="h-5 w-5 text-indigo-200" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">Start with a retention audit</p>
+                  <p className="mt-2 text-sm leading-6 text-zinc-300">
+                    Want me to audit your retention setup? I can check products, campaigns, flows,
+                    audiences, performance readiness, and lifecycle coverage, then tell you what needs fixing.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      className="h-8 bg-indigo-600 px-3 text-xs hover:bg-indigo-500"
+                      onClick={() => void runAuditStarter()}
+                    >
+                      Audit retention setup
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 border-white/15 px-3 text-xs"
+                      onClick={() => setInput("Audit my retention setup")}
+                    >
+                      Put it in chat
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
           {messages.map((m) => {
             const isUser = m.role === "user";
             return (
@@ -593,6 +718,27 @@ function AgentChatPanel({
               </div>
             );
           })}
+          {showAuditStarterActions ? (
+            <div className="flex justify-start">
+              <div className="flex flex-wrap gap-2 pl-12">
+                <Button
+                  type="button"
+                  className="h-8 bg-indigo-600 px-3 text-xs hover:bg-indigo-500"
+                  onClick={() => void runAuditStarter()}
+                >
+                  Audit retention setup
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 border-white/15 px-3 text-xs"
+                  onClick={() => setInput("Audit my retention setup")}
+                >
+                  Put it in chat
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {busy ? (
             <div className="flex justify-start">
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-zinc-400">
@@ -605,13 +751,48 @@ function AgentChatPanel({
         </div>
       </div>
 
+      {canvasWorkflowId ? (
+        <aside className="fixed bottom-0 right-0 top-16 z-30 hidden w-[52vw] min-w-[520px] flex-col border-l border-white/10 bg-zinc-950/95 shadow-2xl shadow-black/40 backdrop-blur lg:flex">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Canvas</p>
+              <p className="mt-1 truncate text-sm font-semibold text-zinc-100">Workflow artifact</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link
+                href={workflowUrl(canvasWorkflowId)}
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 text-xs font-semibold text-zinc-100 hover:bg-white/10"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Full
+              </Link>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-8 px-2 text-zinc-400 hover:text-zinc-100"
+                onClick={() => setCanvasWorkflowId(null)}
+                aria-label="Close canvas"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <WorkflowCanvasById workflowId={canvasWorkflowId} embedded />
+          </div>
+        </aside>
+      ) : null}
+
       {toast ? (
         <div className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-red-500/90 px-4 py-2 text-xs text-white">
           {toast}
         </div>
       ) : null}
 
-      <form onSubmit={onSubmit} className="shrink-0 border-t border-white/10 bg-zinc-950/95 px-4 py-3 backdrop-blur">
+      <form
+        onSubmit={onSubmit}
+        className={`shrink-0 border-t border-white/10 bg-zinc-950/95 px-4 py-3 backdrop-blur ${canvasWorkflowId ? "lg:mr-[52vw]" : ""}`}
+      >
         <div className="mx-auto flex max-w-3xl gap-2">
           <input ref={fileRef} type="file" className="hidden" accept=".txt,.md,.pdf,.doc,.docx" onChange={onFilePick} />
           <Button

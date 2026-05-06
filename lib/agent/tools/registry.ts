@@ -23,6 +23,68 @@ export const AGENT_TOOL_PERMISSION_LEVELS: AgentToolPermissionLevel[] = [
 
 export const agentToolRegistry: AgentToolDefinition[] = [
   {
+    name: "workflow.retentionAudit",
+    description:
+      "Run Worklin's read-only Retention Audit Workflow and persist a WorkflowRun for the audit canvas.",
+    category: "workflow",
+    inputSchema: {
+      type: "object",
+      description: "Optional retention audit controls.",
+      properties: {
+        timeframe: {
+          type: "string",
+          description: "Optional audit timeframe such as last_365_days.",
+        },
+      },
+    },
+    outputDescription:
+      "A persisted retention-audit WorkflowRun with summary, scorecards, insights, actions, caveats, and canvas-ready output.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "POST /api/audits/retention",
+    handlerReference: "app/api/audits/retention/route.ts",
+    notes: [
+      "Read-only. Does not create drafts, send, schedule, sync, or mutate Klaviyo.",
+      "Agent should offer to prepare safe fixes after the audit, but must not run fix-run automatically.",
+    ],
+  },
+  {
+    name: "workflow.auditFixRun",
+    description:
+      "Prepare a safe fix package from a persisted retention-audit WorkflowRun and persist an audit-fix-run WorkflowRun.",
+    category: "workflow",
+    inputSchema: {
+      type: "object",
+      description: "Retention audit WorkflowRun id and optional safe preparation scope.",
+      required: ["workflowId"],
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "Persisted retention-audit WorkflowRun id.",
+          required: true,
+        },
+        scope: {
+          type: "string",
+          description: "Optional scope: all, fix_first, campaigns, flows, audiences, or performance.",
+        },
+      },
+    },
+    outputDescription:
+      "A persisted audit-fix-run WorkflowRun containing prepared fixes, blocked live actions, approval package, caveats, and metadata.",
+    permissionLevel: "generate",
+    requiresApproval: true,
+    riskLevel: "medium",
+    currentStatus: "available",
+    backingRoute: "POST /api/audits/fix-run",
+    handlerReference: "app/api/audits/fix-run/route.ts",
+    notes: [
+      "Prepare-only. Does not create drafts, create flows, sync segments, send, schedule, or change external systems.",
+      "Requires explicit user confirmation after a retention audit.",
+    ],
+  },
+  {
     name: "workflow.planBriefQa",
     description:
       "Generate a campaign plan, create briefs for the plan items, run QA for each brief, and persist the workflow run.",
