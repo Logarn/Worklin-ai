@@ -299,6 +299,27 @@ model WorkflowRun {
   @@index([createdAt])
 }
 
+model Approval {
+  id            String    @id @default(cuid())
+  targetType    String
+  targetId      String
+  status        String    @default("pending")
+  targetTitle   String?
+  targetSummary String?   @db.Text
+  requestNote   String?   @db.Text
+  decisionNote  String?   @db.Text
+  requestedBy   String?
+  decidedBy     String?
+  decidedAt     DateTime?
+  metadata      Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([targetType, targetId])
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
