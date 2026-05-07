@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { toPrismaJson } from "@/app/api/agent/workflows/shared";
+import { logActionEvent } from "@/lib/action-log/action-log";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -145,6 +146,93 @@ function safeError(status: number, error: string, issues: string[] = []) {
     },
     { status },
   );
+}
+
+function actionLogResponse(
+  result: Awaited<ReturnType<typeof logActionEvent>>,
+) {
+  return result.ok
+    ? { actionLog: { id: result.actionLog.id } }
+    : {
+        actionLog: { warning: result.warning },
+        warnings: ["Action logging failed, but the approval state response was preserved."],
+      };
+}
+
+function workflowRunIdForApprovalTarget(targetType: string, targetId: string) {
+  return ["audit-fix-run", "workflow-run", "flow-package", "audience-package"].includes(targetType)
+    ? targetId
+    : null;
+}
+
+async function logApprovalRequested(approval: ApprovalRow) {
+  return logActionEvent({
+    eventType: "approval.requested",
+    actionType: "request_approval",
+    status: "requested",
+    actorType: approval.requestedBy ? "user" : "system",
+    targetType: approval.targetType,
+    targetId: approval.targetId,
+    workflowRunId: workflowRunIdForApprovalTarget(approval.targetType, approval.targetId),
+    approvalId: approval.id,
+    riskLevel: "medium",
+    requiresApproval: true,
+    approvalStatus: approval.status,
+    externalActionTaken: false,
+    canGoLiveNow: false,
+    summary: `Approval requested for ${approval.targetType}.`,
+    inputSummary: {
+      targetType: approval.targetType,
+      targetId: approval.targetId,
+      hasTargetTitle: Boolean(approval.targetTitle),
+      requestedBy: approval.requestedBy,
+      hasRequestNote: Boolean(approval.requestNote),
+    },
+    outputSummary: {
+      approvalId: approval.id,
+      status: approval.status,
+      stateOnly: true,
+      externalActionsTaken: false,
+    },
+    metadata: {
+      route: "POST /api/approvals/request",
+    },
+  });
+}
+
+async function logApprovalTransition(approval: ApprovalRow, nextStatus: TerminalApprovalStatus) {
+  return logActionEvent({
+    eventType: `approval.${nextStatus}`,
+    actionType: "transition_approval",
+    status: nextStatus,
+    actorType: approval.decidedBy ? "user" : "system",
+    targetType: approval.targetType,
+    targetId: approval.targetId,
+    workflowRunId: workflowRunIdForApprovalTarget(approval.targetType, approval.targetId),
+    approvalId: approval.id,
+    riskLevel: "medium",
+    requiresApproval: true,
+    approvalStatus: approval.status,
+    externalActionTaken: false,
+    canGoLiveNow: false,
+    summary: `Approval state changed to ${nextStatus}.`,
+    inputSummary: {
+      approvalId: approval.id,
+      targetType: approval.targetType,
+      targetId: approval.targetId,
+      decidedBy: approval.decidedBy,
+      hasDecisionNote: Boolean(approval.decisionNote),
+    },
+    outputSummary: {
+      approvalId: approval.id,
+      status: approval.status,
+      stateOnly: true,
+      externalActionsTaken: false,
+    },
+    metadata: {
+      route: `POST /api/approvals/[id]/${nextStatus}`,
+    },
+  });
 }
 
 async function findPendingApproval(targetType: ApprovalTargetType, targetId: string) {
@@ -425,6 +513,8 @@ export async function requestApproval(request: Request) {
       throw error;
     }
 
+    const actionLog = await logApprovalRequested(approval);
+
     return NextResponse.json(
       {
         ok: true,
@@ -433,6 +523,7 @@ export async function requestApproval(request: Request) {
         externalActionsTaken: false,
         message: "Approval was requested. No external work was executed.",
         approval: serializeApproval(approval),
+        ...actionLogResponse(actionLog),
       },
       { status: 201 },
     );
@@ -584,12 +675,15 @@ export async function transitionApproval(
       return safeError(404, "Approval not found");
     }
 
+    const actionLog = await logApprovalTransition(updated, nextStatus);
+
     return NextResponse.json({
       ok: true,
       stateOnly: true,
       externalActionsTaken: false,
       message: `Approval state changed to ${nextStatus}. No external work was executed.`,
       approval: serializeApproval(updated),
+      ...actionLogResponse(actionLog),
     });
   } catch (error) {
     console.error(`POST /api/approvals/[id]/${nextStatus} failed`, error);

@@ -6,6 +6,11 @@ import {
   auditRetentionSetup,
   type RetentionAuditInput,
 } from "@/lib/audits/retention-audit";
+import {
+  actionLogWarningCaveat,
+  logActionEvent,
+  type ActionLogInput,
+} from "@/lib/action-log/action-log";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -49,6 +54,67 @@ function enabledSourceCount(input: RetentionAuditRequest) {
   ].filter(Boolean).length;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function countItems(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function retentionAuditInputSummary(input: RetentionAuditInput) {
+  return {
+    timeframe: input.timeframe ?? "last_365_days",
+    includeProduct: input.includeProduct !== false,
+    includeCampaigns: input.includeCampaigns !== false,
+    includeFlows: input.includeFlows !== false,
+    includeAudiences: input.includeAudiences !== false,
+    includeMetricDiscovery: input.includeMetricDiscovery !== false,
+    campaignLimit: input.campaignLimit ?? null,
+    flowLimit: input.flowLimit ?? null,
+    audienceLimit: input.audienceLimit ?? null,
+  };
+}
+
+function retentionAuditOutputSummary(output: unknown) {
+  const audit = isRecord(output) ? output : {};
+  const health = isRecord(audit.overallRetentionHealth) ? audit.overallRetentionHealth : {};
+  const summary = isRecord(audit.summary) ? audit.summary : {};
+
+  return {
+    ok: audit.ok === true,
+    readOnly: audit.readOnly === true,
+    workflowType: audit.workflowType ?? "retention_audit",
+    overallScore: typeof health.score === "number" ? health.score : null,
+    overallStatus: typeof health.status === "string" ? health.status : null,
+    executiveSummary: typeof summary.executiveSummary === "string" ? summary.executiveSummary : null,
+    topIssueCount: countItems(audit.topIssues),
+    topOpportunityCount: countItems(audit.topOpportunities),
+    prioritizedActionCount: countItems(audit.prioritizedActions),
+    caveatCount: countItems(audit.caveats),
+    sourceStatusCount: isRecord(audit.sourceStatuses) ? Object.keys(audit.sourceStatuses).length : 0,
+  };
+}
+
+async function logRetentionAuditEvent(input: ActionLogInput) {
+  return logActionEvent({
+    actorType: "workflow",
+    riskLevel: "low",
+    requiresApproval: false,
+    externalActionTaken: false,
+    canGoLiveNow: false,
+    ...input,
+    metadata: {
+      route: "POST /api/audits/retention",
+      ...(isRecord(input.metadata) ? input.metadata : {}),
+    },
+  });
+}
+
 async function persistWorkflowRun(input: RetentionAuditInput, output: unknown) {
   try {
     const workflow = await prisma.workflowRun.create({
@@ -74,8 +140,23 @@ async function persistWorkflowRun(input: RetentionAuditInput, output: unknown) {
   }
 }
 
-function safeRetentionAuditError(error: unknown) {
+async function safeRetentionAuditError(error: unknown, input?: RetentionAuditInput) {
   console.error("POST /api/audits/retention failed", error);
+  const actionLog = await logRetentionAuditEvent({
+    eventType: "retention_audit.failed",
+    actionType: "run_retention_audit",
+    status: "failed",
+    targetType: "workflow-run",
+    summary: "Retention audit failed before a completed audit response was returned.",
+    inputSummary: input ? retentionAuditInputSummary(input) : null,
+    outputSummary: {
+      ok: false,
+      readOnly: true,
+      externalActionTaken: false,
+    },
+    errorMessage: errorMessage(error),
+  });
+
   return NextResponse.json(
     {
       ok: false,
@@ -97,12 +178,14 @@ function safeRetentionAuditError(error: unknown) {
           evidenceType: "caveat",
           severity: "unknown",
         },
+        ...actionLogWarningCaveat(actionLog),
       ],
       sourceStatuses: {},
       metadata: {
         generatedAt: new Date().toISOString(),
         readOnly: true,
       },
+      actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
     },
     { status: 500 },
   );
@@ -148,6 +231,25 @@ export async function POST(request: Request) {
     const input: RetentionAuditInput = parsed.data;
     const output = await auditRetentionSetup(input);
     const workflowId = await persistWorkflowRun(input, output);
+    const actionLog = await logRetentionAuditEvent({
+      eventType: "retention_audit.completed",
+      actionType: "run_retention_audit",
+      status: "completed",
+      targetType: "workflow-run",
+      targetId: workflowId,
+      workflowRunId: workflowId,
+      summary: workflowId
+        ? "Retention audit completed and was persisted as a WorkflowRun."
+        : "Retention audit completed, but WorkflowRun persistence was skipped.",
+      inputSummary: retentionAuditInputSummary(input),
+      outputSummary: {
+        ...retentionAuditOutputSummary(output),
+        workflowId,
+      },
+      metadata: {
+        workflowPersistence: workflowId ? "persisted" : "skipped",
+      },
+    });
     const persistenceCaveats = workflowId
       ? []
       : [{
@@ -160,9 +262,10 @@ export async function POST(request: Request) {
       ...output,
       workflowId,
       workflowPersistence: workflowId ? "persisted" : "skipped",
-      caveats: [...output.caveats, ...persistenceCaveats],
+      caveats: [...output.caveats, ...persistenceCaveats, ...actionLogWarningCaveat(actionLog)],
+      actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
     });
   } catch (error) {
-    return safeRetentionAuditError(error);
+    return safeRetentionAuditError(error, parsed.data);
   }
 }

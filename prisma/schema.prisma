@@ -320,6 +320,38 @@ model Approval {
   @@index([createdAt])
 }
 
+model ActionLog {
+  id                  String   @id @default(cuid())
+  eventType           String
+  actionType          String
+  status              String
+  actorType           String   @default("system")
+  targetType          String?
+  targetId            String?
+  workflowRunId       String?
+  approvalId          String?
+  riskLevel           String   @default("low")
+  requiresApproval    Boolean  @default(false)
+  approvalStatus      String?
+  externalActionTaken Boolean  @default(false)
+  canGoLiveNow        Boolean  @default(false)
+  summary             String   @db.Text
+  inputSummary        Json?
+  outputSummary       Json?
+  errorMessage        String?  @db.Text
+  metadata            Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([eventType, createdAt])
+  @@index([actionType, createdAt])
+  @@index([status, createdAt])
+  @@index([workflowRunId, createdAt])
+  @@index([approvalId, createdAt])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
