@@ -35,9 +35,9 @@ Current expected local repo state after the latest sync:
 branch: main
 remote: origin/main
 status: main is up to date with origin/main
-latest local main commit: afc548f Add durable approval state v0 (#42)
-latest merged PR: PR #42 Durable Approval State v0
-PR #42 verification: gh pr view reported state=MERGED, isDraft=false, mergedAt=2026-05-07T01:16:15Z, baseRefName=main, headRefName=feature/durable-approval-state-v0
+latest local main commit: 61e8355 Add action log v0 (#44)
+latest merged PR: PR #44 Action Log v0
+PR #44 verification: git log -1 main reported 61e8355 Add action log v0 (#44); main was clean and up to date with origin/main after git pull on 2026-05-07
 stash: approval-gate-v0-wip still exists and must not be touched unless explicitly requested
 ```
 
@@ -237,8 +237,52 @@ Latest audit-to-fix layers:
 - Audit Fix Run v0
 - Agent Audit Starter + Fix Confirmation v0
 - Durable Approval State v0
+- Action Log v0
 
 ## Recently Merged PRs
+
+### PR #44: Action Log v0
+
+Status: completed and merged into `main`.
+
+URL:
+
+```text
+https://github.com/Logarn/ai-retention-marketer-/pull/44
+```
+
+Latest main commit after merge:
+
+```text
+61e8355 Add action log v0 (#44)
+```
+
+Adds:
+
+- Durable `ActionLog` model.
+- Additive Prisma migration `20260507120000_action_log_v0`.
+- Read-only action log routes:
+  - `GET /api/action-log`
+  - `GET /api/action-log/[id]`
+- Shared action logging helper with secret redaction and safe failure behavior.
+- Action log writes from retention audit, audit fix run, approval state changes, and agent command flows.
+
+Behavior:
+
+- Records proposed, prepared, approved, rejected, revision-requested, refused, skipped, completed, and failed work.
+- Links entries to targets such as WorkflowRun rows and Approval rows where available.
+- Preserves the primary workflow/API response if action logging fails.
+- Supports filtered read-only inspection of action log entries.
+
+Safety:
+
+- Action logging is local persistence only.
+- No Klaviyo writes.
+- No draft creation.
+- No campaign/flow/segment creation.
+- No profile sync.
+- No sending/scheduling.
+- Action log reads are read-only.
 
 ### PR #42: Durable Approval State v0
 
@@ -569,32 +613,32 @@ Completed audit-to-fix milestone:
 5. Audit Fix Run v0
 6. Agent Audit Starter + Fix Confirmation v0
 7. Durable Approval State v0
+8. Action Log v0
 
 Current next/pending:
 
-1. Action Log v0
-2. Tool Execution Runtime v0
-3. Results Ingestion + Learning Loop
-4. Recommendation Outcome Tracking
-5. Campaign Fix Executor / Audit -> Campaign Workflow Integration
-6. Flow Fix Package / Audit -> Flow Build Plan v0
-7. Audience Fix Package / Segment Definition Builder
-8. Segment/Profile Sync v0
-9. Flow Definition Builder v0
-10. Klaviyo Flow Creation / Update v0
-11. Send/Schedule Execution
-12. Skill Registry / Skill Runner v0
-13. Web Research Tool v0
-14. Cron Jobs / Scheduled Checks v0
-15. Heartbeats / Proactive Recommendation Queue
-16. BYOK + AI Settings
-17. Nano Banana / Gemini Visual Layer
-18. Image-heavy Email Understanding
-19. Sub-agents / Child Workflows
+1. Tool Execution Runtime v0
+2. Results Ingestion + Learning Loop
+3. Recommendation Outcome Tracking
+4. Campaign Fix Executor / Audit -> Campaign Workflow Integration
+5. Flow Fix Package / Audit -> Flow Build Plan v0
+6. Audience Fix Package / Segment Definition Builder
+7. Segment/Profile Sync v0
+8. Flow Definition Builder v0
+9. Klaviyo Flow Creation / Update v0
+10. Send/Schedule Execution
+11. Skill Registry / Skill Runner v0
+12. Web Research Tool v0
+13. Cron Jobs / Scheduled Checks v0
+14. Heartbeats / Proactive Recommendation Queue
+15. BYOK + AI Settings
+16. Nano Banana / Gemini Visual Layer
+17. Image-heavy Email Understanding
+18. Sub-agents / Child Workflows
 
 Roadmap notes:
 
-- Action Log v0 should come next because approvals now exist but approved work still does not execute. Before execution exists, Worklin needs a durable history of what was proposed, approved, rejected, revised, skipped, blocked, and eventually executed.
+- Action Log v0 is now merged and provides durable history for what was proposed, approved, rejected, revised, skipped, blocked, and eventually executed.
 - Tool Execution Runtime v0 should remain guarded and separate from approval state.
 - Results Ingestion + Learning Loop should connect outcomes back to recommendations and future audits.
 - Skills should be defined later through a Q&A session where Steve explains his expert process and Worklin converts it into repeatable skills.
