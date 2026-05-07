@@ -8,6 +8,11 @@ import {
   type AuditFixRunOutput,
   type AuditFixRunScope,
 } from "@/lib/audits/fix-run";
+import {
+  actionLogWarningCaveat,
+  logActionEvent,
+  type ActionLogInput,
+} from "@/lib/action-log/action-log";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -30,8 +35,81 @@ function issueMessages(error: z.ZodError) {
   });
 }
 
-function safeFixRunError(error: unknown) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function countItems(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function fixRunInputSummary(input: Partial<AuditFixRunRequest> | null) {
+  return {
+    workflowId: input?.workflowId ?? null,
+    mode: input?.mode ?? "safe_prepare",
+    scope: input?.scope ?? "all",
+  };
+}
+
+function fixRunOutputSummary(output: unknown) {
+  const fixRun = isRecord(output) ? output : {};
+  const summary = isRecord(fixRun.summary) ? fixRun.summary : {};
+
+  return {
+    ok: fixRun.ok === true,
+    readOnly: fixRun.readOnly === true,
+    mode: fixRun.mode ?? "safe_prepare",
+    sourceWorkflowId: fixRun.sourceWorkflowId ?? null,
+    prepared: typeof summary.prepared === "number" ? summary.prepared : countItems(fixRun.preparedFixes),
+    blocked: typeof summary.blocked === "number" ? summary.blocked : countItems(fixRun.blockedFixes),
+    needsApproval: typeof summary.needsApproval === "number" ? summary.needsApproval : null,
+    preparedFixCount: countItems(fixRun.preparedFixes),
+    blockedFixCount: countItems(fixRun.blockedFixes),
+    caveatCount: countItems(fixRun.caveats),
+    externalActionTaken: false,
+    canGoLiveNow: false,
+  };
+}
+
+async function logFixRunEvent(input: ActionLogInput) {
+  return logActionEvent({
+    actorType: "workflow",
+    riskLevel: "medium",
+    requiresApproval: true,
+    approvalStatus: "not_requested",
+    externalActionTaken: false,
+    canGoLiveNow: false,
+    ...input,
+    metadata: {
+      route: "POST /api/audits/fix-run",
+      ...(isRecord(input.metadata) ? input.metadata : {}),
+    },
+  });
+}
+
+async function safeFixRunError(error: unknown, input?: Partial<AuditFixRunRequest> | null) {
   console.error("POST /api/audits/fix-run failed", error);
+  const actionLog = await logFixRunEvent({
+    eventType: "audit_fix_run.failed",
+    actionType: "prepare_safe_audit_fixes",
+    status: "failed",
+    targetType: "workflow-run",
+    targetId: input?.workflowId ?? null,
+    summary: "Audit Fix Run failed before a prepared fix package was returned.",
+    inputSummary: fixRunInputSummary(input ?? null),
+    outputSummary: {
+      ok: false,
+      readOnly: true,
+      externalActionTaken: false,
+      canGoLiveNow: false,
+    },
+    errorMessage: errorMessage(error),
+  });
+
   return NextResponse.json(
     {
       ok: false,
@@ -58,6 +136,7 @@ function safeFixRunError(error: unknown) {
           evidenceType: "caveat",
           severity: "unknown",
         },
+        ...actionLogWarningCaveat(actionLog),
       ],
       metadata: {
         generatedAt: new Date().toISOString(),
@@ -65,6 +144,7 @@ function safeFixRunError(error: unknown) {
         externalActionsTaken: false,
         writesPerformed: false,
       },
+      actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
     },
     { status: 500 },
   );
@@ -103,6 +183,25 @@ export async function POST(request: Request) {
   const parsed = fixRunSchema.safeParse(body ?? {});
 
   if (!parsed.success) {
+    const actionLog = await logFixRunEvent({
+      eventType: "audit_fix_run.failed",
+      actionType: "prepare_safe_audit_fixes",
+      status: "failed",
+      targetType: "workflow-run",
+      targetId: null,
+      summary: "Audit Fix Run request validation failed before any workflow read.",
+      inputSummary: {
+        receivedWorkflowId: isRecord(body) && typeof body.workflowId === "string" ? body.workflowId : null,
+        issues: issueMessages(parsed.error),
+      },
+      outputSummary: {
+        ok: false,
+        statusCode: 400,
+        externalActionTaken: false,
+        canGoLiveNow: false,
+      },
+    });
+
     return NextResponse.json(
       {
         ok: false,
@@ -118,7 +217,9 @@ export async function POST(request: Request) {
             evidenceType: "caveat",
             severity: "unknown",
           },
+          ...actionLogWarningCaveat(actionLog),
         ],
+        actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
       },
       { status: 400 },
     );
@@ -130,6 +231,22 @@ export async function POST(request: Request) {
     });
 
     if (!workflow) {
+      const actionLog = await logFixRunEvent({
+        eventType: "audit_fix_run.failed",
+        actionType: "prepare_safe_audit_fixes",
+        status: "failed",
+        targetType: "workflow-run",
+        targetId: parsed.data.workflowId,
+        summary: "Audit Fix Run could not find the requested retention audit WorkflowRun.",
+        inputSummary: fixRunInputSummary(parsed.data),
+        outputSummary: {
+          ok: false,
+          statusCode: 404,
+          externalActionTaken: false,
+          canGoLiveNow: false,
+        },
+      });
+
       return NextResponse.json(
         {
           ok: false,
@@ -145,7 +262,9 @@ export async function POST(request: Request) {
               evidenceType: "caveat",
               severity: "unknown",
             },
+            ...actionLogWarningCaveat(actionLog),
           ],
+          actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
         },
         { status: 404 },
       );
@@ -153,6 +272,25 @@ export async function POST(request: Request) {
 
     const validation = validateRetentionAuditWorkflow(workflow);
     if (!validation.ok) {
+      const actionLog = await logFixRunEvent({
+        eventType: "audit_fix_run.failed",
+        actionType: "prepare_safe_audit_fixes",
+        status: "failed",
+        targetType: "workflow-run",
+        targetId: workflow.id,
+        workflowRunId: workflow.id,
+        summary: "Audit Fix Run received a WorkflowRun that cannot be used as a completed retention audit.",
+        inputSummary: fixRunInputSummary(parsed.data),
+        outputSummary: {
+          ok: false,
+          statusCode: validation.status,
+          error: validation.error,
+          issueCount: validation.issues.length,
+          externalActionTaken: false,
+          canGoLiveNow: false,
+        },
+      });
+
       return NextResponse.json(
         {
           ok: false,
@@ -169,7 +307,9 @@ export async function POST(request: Request) {
               evidenceType: "caveat",
               severity: "unknown",
             },
+            ...actionLogWarningCaveat(actionLog),
           ],
+          actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
         },
         { status: validation.status },
       );
@@ -182,6 +322,26 @@ export async function POST(request: Request) {
       scope: parsed.data.scope as AuditFixRunScope,
     });
     const workflowId = await persistWorkflowRun(parsed.data, result);
+    const actionLog = await logFixRunEvent({
+      eventType: "audit_fix_run.prepared",
+      actionType: "prepare_safe_audit_fixes",
+      status: "prepared",
+      targetType: "workflow-run",
+      targetId: workflowId ?? parsed.data.workflowId,
+      workflowRunId: workflowId,
+      summary: workflowId
+        ? "Audit Fix Run prepared a safe fix package and persisted it as a WorkflowRun."
+        : "Audit Fix Run prepared a safe fix package, but WorkflowRun persistence was skipped.",
+      inputSummary: fixRunInputSummary(parsed.data),
+      outputSummary: {
+        ...fixRunOutputSummary(result),
+        workflowId,
+      },
+      metadata: {
+        sourceWorkflowId: parsed.data.workflowId,
+        workflowPersistence: workflowId ? "persisted" : "skipped",
+      },
+    });
     const persistenceCaveats = workflowId
       ? []
       : [{
@@ -194,9 +354,10 @@ export async function POST(request: Request) {
       ...result,
       workflowId,
       workflowPersistence: workflowId ? "persisted" : "skipped",
-      caveats: [...result.caveats, ...persistenceCaveats],
+      caveats: [...result.caveats, ...persistenceCaveats, ...actionLogWarningCaveat(actionLog)],
+      actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
     });
   } catch (error) {
-    return safeFixRunError(error);
+    return safeFixRunError(error, parsed.data);
   }
 }

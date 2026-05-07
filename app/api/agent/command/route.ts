@@ -13,6 +13,7 @@ import { POST as planBriefQaWorkflow } from "@/app/api/agent/workflows/plan-brie
 import { buildAgentContext } from "@/lib/agent/context/build-context";
 import { parseAgentIntent } from "@/lib/agent/intent/parse-intent";
 import { getAgentToolByName } from "@/lib/agent/tools/registry";
+import { logActionEvent } from "@/lib/action-log/action-log";
 import { prisma } from "@/lib/prisma";
 import { isPlaybookType, listPlaybooks } from "@/lib/playbooks";
 import type { AgentContextResult } from "@/lib/agent/context/types";
@@ -876,14 +877,50 @@ function routeListPlaybooks(
   });
 }
 
-function routeClarify(message: string, contextSummary: CommandContextSummary, workflowId?: string) {
+async function routeClarify(message: string, contextSummary: CommandContextSummary, workflowId?: string) {
   if (detectsSendOrScheduleIntent(message)) {
+    const actionLog = await logActionEvent({
+      eventType: "agent.live_action_refused",
+      actionType: "refuse_live_action",
+      status: "refused",
+      actorType: "agent",
+      targetType: workflowId ? "workflow-run" : "agent-command",
+      targetId: workflowId ?? null,
+      workflowRunId: workflowId ?? null,
+      riskLevel: "high",
+      requiresApproval: true,
+      approvalStatus: "not_requested",
+      externalActionTaken: false,
+      canGoLiveNow: false,
+      summary: "Agent refused a live external action request from chat.",
+      inputSummary: {
+        messageLength: message.length,
+        workflowId: workflowId ?? null,
+        detectedSendOrScheduleIntent: true,
+        triggerSignals: {
+          sendOrSchedule: true,
+          syncOrPublish: /\b(sync|syncing|push|publish)\b/i.test(message),
+          liveFlowOrSegmentMutation: /\b(create|update|delete|remove|change|modify|activate|enable)\b/i.test(message),
+        },
+      },
+      outputSummary: {
+        refused: true,
+        externalActionTaken: false,
+        canGoLiveNow: false,
+        safetyLanguage: "prepare-only alternative offered",
+      },
+      metadata: {
+        route: "POST /api/agent/command",
+      },
+    });
+
     return commandResponse({
       intent: "clarify",
       tool: null,
       result: {
         reason: "draft_only_refusal",
         workflowId: workflowId ?? null,
+        actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
       },
       message:
         "I cannot send, schedule, sync, create live flows or segments, or make destructive Klaviyo changes from chat. I can prepare the safe fix package for review; nothing live will be changed.",
