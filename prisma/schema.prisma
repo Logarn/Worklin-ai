@@ -391,6 +391,38 @@ model RecommendationOutcome {
   @@index([createdAt])
 }
 
+model RecommendationResult {
+  id                      String    @id @default(cuid())
+  sourceType              String
+  sourceId                String
+  recommendationOutcomeId String?
+  workflowRunId           String?
+  campaignMemoryId        String?
+  externalPlatform        String?
+  externalId              String?
+  resultType              String
+  status                  String    @default("received")
+  timeframeStart          DateTime?
+  timeframeEnd            DateTime?
+  metrics                 Json?
+  summary                 String?   @db.Text
+  learningSignal          String
+  learningStatus          String    @default("learned")
+  lessons                 Json?
+  metadata                Json?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([sourceType, sourceId])
+  @@index([recommendationOutcomeId, createdAt])
+  @@index([workflowRunId, createdAt])
+  @@index([campaignMemoryId, createdAt])
+  @@index([externalPlatform, externalId])
+  @@index([resultType, status])
+  @@index([learningSignal, createdAt])
+  @@index([createdAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
