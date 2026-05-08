@@ -14,6 +14,7 @@ import {
   type ActionLogInput,
 } from "@/lib/action-log/action-log";
 import { prisma } from "@/lib/prisma";
+import { trackAuditFixRunOutcomes } from "@/lib/recommendations/outcomes";
 
 export const runtime = "nodejs";
 
@@ -342,10 +343,22 @@ export async function POST(request: Request) {
         workflowPersistence: workflowId ? "persisted" : "skipped",
       },
     });
+    const recommendationOutcomes = await trackAuditFixRunOutcomes({
+      workflowRunId: workflowId,
+      output: result,
+      actionLogId: actionLog.ok ? actionLog.actionLog.id : null,
+    });
     const persistenceCaveats = workflowId
       ? []
       : [{
           message: "WorkflowRun persistence was skipped for Audit Fix Run v0; the prepared fix package was still returned.",
+          evidenceType: "caveat" as const,
+          severity: "unknown" as const,
+        }];
+    const outcomeCaveats = recommendationOutcomes.ok
+      ? []
+      : [{
+          message: recommendationOutcomes.warning,
           evidenceType: "caveat" as const,
           severity: "unknown" as const,
         }];
@@ -354,8 +367,16 @@ export async function POST(request: Request) {
       ...result,
       workflowId,
       workflowPersistence: workflowId ? "persisted" : "skipped",
-      caveats: [...result.caveats, ...persistenceCaveats, ...actionLogWarningCaveat(actionLog)],
+      caveats: [...result.caveats, ...persistenceCaveats, ...outcomeCaveats, ...actionLogWarningCaveat(actionLog)],
       actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
+      recommendationOutcomes: recommendationOutcomes.ok
+        ? {
+            tracked: recommendationOutcomes.count,
+            created: recommendationOutcomes.created,
+            updated: recommendationOutcomes.updated,
+            ids: recommendationOutcomes.outcomes.map((outcome) => outcome.id),
+          }
+        : { warning: recommendationOutcomes.warning },
     });
   } catch (error) {
     return safeFixRunError(error, parsed.data);

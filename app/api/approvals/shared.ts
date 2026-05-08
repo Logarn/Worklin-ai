@@ -4,6 +4,10 @@ import { z } from "zod";
 import { toPrismaJson } from "@/app/api/agent/workflows/shared";
 import { logActionEvent } from "@/lib/action-log/action-log";
 import { prisma } from "@/lib/prisma";
+import {
+  syncRecommendationOutcomesForApprovalRequest,
+  syncRecommendationOutcomesForApprovalTransition,
+} from "@/lib/recommendations/outcomes";
 
 export const runtime = "nodejs";
 
@@ -159,6 +163,15 @@ function actionLogResponse(
       };
 }
 
+function recommendationOutcomeSyncResponse(result: Awaited<ReturnType<typeof syncRecommendationOutcomesForApprovalRequest>>) {
+  return result.ok
+    ? { recommendationOutcomeSync: { updated: result.updated } }
+    : {
+        recommendationOutcomeSync: { warning: result.warning },
+        warnings: ["Recommendation outcome sync failed, but approval state was preserved."],
+      };
+}
+
 function workflowRunIdForApprovalTarget(targetType: string, targetId: string) {
   return ["audit-fix-run", "workflow-run", "flow-package", "audience-package"].includes(targetType)
     ? targetId
@@ -246,7 +259,9 @@ async function findPendingApproval(targetType: ApprovalTargetType, targetId: str
   });
 }
 
-function existingPendingApprovalResponse(approval: ApprovalRow) {
+async function existingPendingApprovalResponse(approval: ApprovalRow) {
+  const outcomeSync = await syncRecommendationOutcomesForApprovalRequest(approval);
+
   return NextResponse.json({
     ok: true,
     created: false,
@@ -254,6 +269,7 @@ function existingPendingApprovalResponse(approval: ApprovalRow) {
     externalActionsTaken: false,
     message: "Approval is already pending for this target.",
     approval: serializeApproval(approval),
+    ...recommendationOutcomeSyncResponse(outcomeSync),
   });
 }
 
@@ -514,6 +530,10 @@ export async function requestApproval(request: Request) {
     }
 
     const actionLog = await logApprovalRequested(approval);
+    const outcomeSync = await syncRecommendationOutcomesForApprovalRequest(
+      approval,
+      actionLog.ok ? actionLog.actionLog.id : null,
+    );
 
     return NextResponse.json(
       {
@@ -524,6 +544,7 @@ export async function requestApproval(request: Request) {
         message: "Approval was requested. No external work was executed.",
         approval: serializeApproval(approval),
         ...actionLogResponse(actionLog),
+        ...recommendationOutcomeSyncResponse(outcomeSync),
       },
       { status: 201 },
     );
@@ -676,6 +697,11 @@ export async function transitionApproval(
     }
 
     const actionLog = await logApprovalTransition(updated, nextStatus);
+    const outcomeSync = await syncRecommendationOutcomesForApprovalTransition(
+      updated,
+      nextStatus,
+      actionLog.ok ? actionLog.actionLog.id : null,
+    );
 
     return NextResponse.json({
       ok: true,
@@ -684,6 +710,7 @@ export async function transitionApproval(
       message: `Approval state changed to ${nextStatus}. No external work was executed.`,
       approval: serializeApproval(updated),
       ...actionLogResponse(actionLog),
+      ...recommendationOutcomeSyncResponse(outcomeSync),
     });
   } catch (error) {
     console.error(`POST /api/approvals/[id]/${nextStatus} failed`, error);

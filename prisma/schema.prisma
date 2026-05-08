@@ -352,6 +352,45 @@ model ActionLog {
   @@index([createdAt])
 }
 
+model RecommendationOutcome {
+  id                  String    @id @default(cuid())
+  sourceType          String
+  sourceId            String
+  sourceWorkflowRunId String?
+  recommendationId    String?
+  title               String
+  summary             String?   @db.Text
+  domain              String?
+  actionType          String?
+  targetType          String?
+  targetId            String?
+  status              String    @default("recommended")
+  priority            String?
+  confidence          Float?
+  approvalId          String?
+  actionLogId         String?
+  decisionNote        String?   @db.Text
+  outcomeNote         String?   @db.Text
+  metadata            Json?
+  decidedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([sourceWorkflowRunId, recommendationId])
+  @@index([sourceType, sourceId])
+  @@index([sourceType, sourceId, recommendationId])
+  @@index([sourceWorkflowRunId, status])
+  @@index([recommendationId])
+  @@index([status, updatedAt])
+  @@index([domain, status])
+  @@index([actionType, status])
+  @@index([targetType, targetId])
+  @@index([approvalId])
+  @@index([actionLogId])
+  @@index([createdAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
