@@ -423,6 +423,55 @@ model RecommendationResult {
   @@index([createdAt])
 }
 
+model WorklinSkill {
+  id                       String    @id
+  name                     String
+  description              String    @db.Text
+  category                 String
+  status                   String    @default("draft")
+  origin                   String    @default("agent_created")
+  scope                    String    @default("workspace")
+  runMode                  String    @default("assist")
+  triggerExamples          Json?
+  requiredInputs           Json?
+  optionalInputs           Json?
+  preferredSources         Json?
+  fallbackSources          Json?
+  requiredArtifacts        Json?
+  optionalArtifacts        Json?
+  missingSourceBehavior    Json?
+  connectorDependencies    Json?
+  requiredContext          Json?
+  toolsUsed                Json?
+  procedureSteps           Json?
+  verificationChecklist    Json?
+  pitfalls                 Json?
+  safetyLevel              String    @default("low")
+  approvalRequirements     Json?
+  outputShape              Json?
+  caveats                  Json?
+  version                  String    @default("0.1.0")
+  usageCount               Int       @default(0)
+  lastUsedAt               DateTime?
+  createdFromWorkflowRunId String?
+  createdFromActionLogId   String?
+  missingCapabilities      Json?
+  workspaceContextSuggestions Json?
+  oneOffDetailsNotSavedToSkill Json?
+  metadata                 Json?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  @@index([status, category])
+  @@index([runMode, status])
+  @@index([origin, status])
+  @@index([scope, status])
+  @@index([createdFromWorkflowRunId])
+  @@index([createdFromActionLogId])
+  @@index([lastUsedAt])
+  @@index([createdAt])
+}
+
 model MessageTemplate {
   id        String   @id @default(cuid())
   name      String
