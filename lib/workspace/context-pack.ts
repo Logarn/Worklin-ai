@@ -14,6 +14,7 @@ import {
   summarizeConnectorForContext,
 } from "@/lib/sources/connectors";
 import type { SourceConnector } from "@/lib/sources/connectors";
+import { klaviyoSnapshotContextStatus } from "@/lib/sources/klaviyo-snapshot";
 
 export const WORKSPACE_CONTEXT_PACK_PURPOSES = [
   "skill_run",
@@ -813,8 +814,12 @@ function sourceStatusesForSkill(
     ...sources.requiredArtifactSources,
     ...sources.optionalArtifactSources,
   ]));
+  const scopedSources = allSources.length ? allSources : ["klaviyo_snapshot"];
 
-  return allSources.map((source) => sourceStatusForArtifactSource(source, connectors, requiredSources.has(source)));
+  return scopedSources.map((source) => {
+    const status = sourceStatusForArtifactSource(source, connectors, requiredSources.has(source));
+    return source === "klaviyo_snapshot" ? klaviyoSnapshotContextStatus({ connectorStatus: status }) : status;
+  });
 }
 
 function missingCapabilitiesFor(input: {
