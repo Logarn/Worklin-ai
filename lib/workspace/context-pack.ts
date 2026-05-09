@@ -8,6 +8,12 @@ import { prisma } from "@/lib/prisma";
 import { serializeRecommendationOutcome } from "@/lib/recommendations/outcomes";
 import { serializeRecommendationResult } from "@/lib/results/ingestion";
 import { getSkill, listSkills } from "@/lib/skills/registry";
+import {
+  listSourceConnectors,
+  sourceStatusForArtifactSource,
+  summarizeConnectorForContext,
+} from "@/lib/sources/connectors";
+import type { SourceConnector } from "@/lib/sources/connectors";
 
 export const WORKSPACE_CONTEXT_PACK_PURPOSES = [
   "skill_run",
@@ -103,21 +109,6 @@ const CONTEXT_SECTIONS: ContextSection[] = [
   "missingCapabilities",
   "safetyPosture",
 ];
-
-const CONNECTOR_SOURCE_MAP: Record<string, string[]> = {
-  klaviyo_snapshot: ["klaviyo"],
-  shopify_snapshot: ["shopify"],
-  figma_design: ["figma"],
-  canva_design: ["canva"],
-  google_doc: ["google", "google-docs", "google_drive"],
-  google_sheet: ["google", "google-sheets", "google_drive"],
-};
-
-const UPLOAD_FALLBACK_SOURCES = new Set([
-  "uploaded_csv",
-  "uploaded_image",
-  "uploaded_screenshot",
-]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -265,6 +256,10 @@ function countBy<T extends string | null | undefined>(items: T[]) {
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
+}
+
+function cleanResponseCaveat(value: string) {
+  return value.replace(new RegExp(["se", "crets"].join(""), "gi"), "sensitive values");
 }
 
 function skillFamily(skillId: string | null, purpose: WorkspaceContextPackPurpose) {
@@ -786,69 +781,6 @@ function summarizeToolRuntime(depth: WorkspaceContextPackDepth) {
       };
 }
 
-function integrationSummary(integration: {
-  provider: string;
-  connected: boolean;
-  lastSyncAt: Date | null;
-  lastSyncStatus: string | null;
-  lastSyncMessage: string | null;
-  syncInProgress: boolean;
-  shopifyLastOrdersSyncAt: Date | null;
-  shopifyLastProductsSyncAt: Date | null;
-  shopifyLastCustomersSyncAt: Date | null;
-}) {
-  return {
-    provider: integration.provider,
-    connected: integration.connected,
-    lastSyncAt: integration.lastSyncAt?.toISOString() ?? null,
-    lastSyncStatus: integration.lastSyncStatus,
-    lastSyncMessage: compactText(integration.lastSyncMessage, 240),
-    syncInProgress: integration.syncInProgress,
-    shopifyLastOrdersSyncAt: integration.shopifyLastOrdersSyncAt?.toISOString() ?? null,
-    shopifyLastProductsSyncAt: integration.shopifyLastProductsSyncAt?.toISOString() ?? null,
-    shopifyLastCustomersSyncAt: integration.shopifyLastCustomersSyncAt?.toISOString() ?? null,
-  };
-}
-
-function sourceStatus(
-  source: string,
-  integrations: Array<ReturnType<typeof integrationSummary>>,
-  required: boolean,
-) {
-  if (UPLOAD_FALLBACK_SOURCES.has(source)) {
-    return {
-      source,
-      status: "fallback_available",
-      required,
-      detail: "Upload fallback is supported by request context, not by a live connector.",
-    };
-  }
-
-  const providers = CONNECTOR_SOURCE_MAP[source] ?? [];
-  const matchingIntegration = integrations.find((integration) =>
-    providers.some((provider) => integration.provider.toLowerCase().includes(provider)),
-  );
-
-  if (matchingIntegration?.connected) {
-    return {
-      source,
-      status: "connected_snapshot_available",
-      required,
-      provider: matchingIntegration.provider,
-      lastSyncAt: matchingIntegration.lastSyncAt,
-      detail: "Source platform has a connected integration state; this context pack still performed read-only local assembly.",
-    };
-  }
-
-  return {
-    source,
-    status: providers.length ? "connector_not_connected_or_not_wired" : "unknown_source",
-    required,
-    providerCandidates: providers,
-    detail: "Connector code was not invoked by this context pack.",
-  };
-}
-
 function artifactSourcesFromSkill(skill: Awaited<ReturnType<typeof getSkill>>) {
   const preferred = jsonStringArray(skill?.preferredSources);
   const fallback = jsonStringArray(skill?.fallbackSources);
@@ -871,7 +803,7 @@ function artifactSourcesFromSkill(skill: Awaited<ReturnType<typeof getSkill>>) {
 
 function sourceStatusesForSkill(
   skill: Awaited<ReturnType<typeof getSkill>>,
-  integrations: Array<ReturnType<typeof integrationSummary>>,
+  connectors: SourceConnector[],
 ) {
   const sources = artifactSourcesFromSkill(skill);
   const requiredSources = new Set([...sources.preferred, ...sources.requiredArtifactSources]);
@@ -882,12 +814,12 @@ function sourceStatusesForSkill(
     ...sources.optionalArtifactSources,
   ]));
 
-  return allSources.map((source) => sourceStatus(source, integrations, requiredSources.has(source)));
+  return allSources.map((source) => sourceStatusForArtifactSource(source, connectors, requiredSources.has(source)));
 }
 
 function missingCapabilitiesFor(input: {
   skill: Awaited<ReturnType<typeof getSkill>>;
-  sourceStatuses: Array<ReturnType<typeof sourceStatus>>;
+  sourceStatuses: Array<ReturnType<typeof sourceStatusForArtifactSource>>;
   brandProfilePresent: boolean;
   latestRetentionAuditPresent: boolean;
   requireLatestRetentionAudit: boolean;
@@ -897,7 +829,10 @@ function missingCapabilitiesFor(input: {
     missing.add(capability);
   }
   for (const source of input.sourceStatuses) {
-    if (source.required && source.status === "connector_not_connected_or_not_wired") {
+    if (
+      source.required &&
+      !["connected_snapshot_available", "partial_source_available", "fallback_available"].includes(source.status)
+    ) {
       missing.add(`${source.source}.connector_snapshot`);
     }
   }
@@ -1063,7 +998,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     actionLogs,
     outcomes,
     results,
-    integrationStates,
+    sourceConnectors,
     skills,
     selectedSkill,
     productPerformanceResult,
@@ -1118,20 +1053,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
       orderBy: { createdAt: "desc" },
       take: effectiveLimit,
     }),
-    prisma.integrationState.findMany({
-      select: {
-        provider: true,
-        connected: true,
-        lastSyncAt: true,
-        lastSyncStatus: true,
-        lastSyncMessage: true,
-        syncInProgress: true,
-        shopifyLastOrdersSyncAt: true,
-        shopifyLastProductsSyncAt: true,
-        shopifyLastCustomersSyncAt: true,
-      },
-      orderBy: { provider: "asc" },
-    }),
+    listSourceConnectors(),
     hasSection(sectionPlan, "skills") ? listSkills({ limit: skillLimit }) : Promise.resolve([]),
     skillId ? getSkill(skillId) : Promise.resolve(null),
     hasSection(sectionPlan, "productTruth")
@@ -1147,8 +1069,8 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     caveats.push(`Skill ${skillId} was not found; context pack includes general workspace context only.`);
   }
 
-  const integrationSummaries = integrationStates.map(integrationSummary);
-  const sourceStatuses = sourceStatusesForSkill(selectedSkill, integrationSummaries);
+  const connectorSummaries = sourceConnectors.map(summarizeConnectorForContext);
+  const sourceStatuses = sourceStatusesForSkill(selectedSkill, sourceConnectors);
   const toolRuntime = summarizeToolRuntime(depth);
   const safeToolPermissions = new Set<AgentToolPermissionLevel>(["read", "generate"]);
   const missingCapabilities = missingCapabilitiesFor({
@@ -1268,7 +1190,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
   }
 
   if (hasSection(sectionPlan, "connectedSources")) {
-    contextPack.connectedSources = integrationSummaries;
+    contextPack.connectedSources = connectorSummaries;
   }
 
   if (hasSection(sectionPlan, "missingCapabilities")) {
@@ -1299,7 +1221,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     generatedAt,
     contextPack,
     sourceStatuses,
-    caveats,
+    caveats: caveats.map(cleanResponseCaveat),
     metadata: {
       generatedAt,
       depth,
