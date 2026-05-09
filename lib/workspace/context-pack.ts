@@ -15,6 +15,7 @@ import {
 } from "@/lib/sources/connectors";
 import type { SourceConnector } from "@/lib/sources/connectors";
 import { klaviyoSnapshotContextStatus } from "@/lib/sources/klaviyo-snapshot";
+import { shopifySnapshotContextStatus } from "@/lib/sources/shopify-snapshot";
 
 export const WORKSPACE_CONTEXT_PACK_PURPOSES = [
   "skill_run",
@@ -814,11 +815,13 @@ function sourceStatusesForSkill(
     ...sources.requiredArtifactSources,
     ...sources.optionalArtifactSources,
   ]));
-  const scopedSources = allSources.length ? allSources : ["klaviyo_snapshot"];
+  const scopedSources = allSources.length ? allSources : ["klaviyo_snapshot", "shopify_snapshot"];
 
   return scopedSources.map((source) => {
     const status = sourceStatusForArtifactSource(source, connectors, requiredSources.has(source));
-    return source === "klaviyo_snapshot" ? klaviyoSnapshotContextStatus({ connectorStatus: status }) : status;
+    if (source === "klaviyo_snapshot") return klaviyoSnapshotContextStatus({ connectorStatus: status });
+    if (source === "shopify_snapshot") return shopifySnapshotContextStatus({ connectorStatus: status });
+    return status;
   });
 }
 
