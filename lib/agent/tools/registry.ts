@@ -361,6 +361,48 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     ],
   },
   {
+    name: "memory.getCustomerFeatureStore",
+    description:
+      "Read persisted Customer Feature Store v0 records with local customer-level retention facts, signals, labels, and caveats.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional persisted feature-store filters.",
+      properties: {
+        identityId: {
+          type: "string",
+          description: "Optional unified customer identity id.",
+        },
+        timeframeDays: {
+          type: "number",
+          description: "Optional feature timeframe to read.",
+        },
+        status: {
+          type: "string",
+          description: "Optional feature status: available, partial, or unavailable.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of feature records to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only compact customer feature summaries from local persisted records. No scoring, segment sync, profile sync, or external action.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/customers/features",
+    handlerReference: "app/api/customers/features/route.ts",
+    notes: [
+      "Reads local CustomerFeatureStore records only.",
+      "Does not compute predictive scores or final segments.",
+      "Does not return raw emails, phones, addresses, raw orders, raw profiles, or source payloads.",
+      "Does not write Shopify, Klaviyo, drafts, sends, schedules, segments, or profile syncs.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",

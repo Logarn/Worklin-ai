@@ -3,6 +3,7 @@ import { DEFAULT_STORE_ID } from "@/app/api/brain/profile/store";
 import { redactSensitiveText } from "@/lib/action-log/action-log";
 import { listAgentTools } from "@/lib/agent/tools/registry";
 import type { AgentToolPermissionLevel } from "@/lib/agent/tools/types";
+import { customerFeatureStoreContextSummary } from "@/lib/customers/feature-store";
 import { getProductPerformanceIntelligence } from "@/lib/products/product-performance-intelligence";
 import { prisma } from "@/lib/prisma";
 import { serializeRecommendationOutcome } from "@/lib/recommendations/outcomes";
@@ -82,6 +83,7 @@ const DEPTH_BUDGETS = {
 type ContextSection =
   | "brand"
   | "campaignMemory"
+  | "customerFeatureStore"
   | "productTruth"
   | "workflows"
   | "approvals"
@@ -98,6 +100,7 @@ type ContextSection =
 const CONTEXT_SECTIONS: ContextSection[] = [
   "brand",
   "campaignMemory",
+  "customerFeatureStore",
   "productTruth",
   "workflows",
   "approvals",
@@ -307,7 +310,7 @@ function buildSectionPlan(input: {
   depth: WorkspaceContextPackDepth;
   skillId: string | null;
 }) {
-  const include = new Set<ContextSection>(["brand", "sourceStatuses", "missingCapabilities", "safetyPosture"]);
+  const include = new Set<ContextSection>(["brand", "customerFeatureStore", "sourceStatuses", "missingCapabilities", "safetyPosture"]);
   const family = skillFamily(input.skillId, input.purpose);
 
   if (input.depth === "full") {
@@ -1010,6 +1013,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     skills,
     selectedSkill,
     productPerformanceResult,
+    customerFeatureStore,
   ] = await Promise.all([
     prisma.brandProfile.findUnique({ where: { storeId: DEFAULT_STORE_ID } }),
     prisma.brandCTA.findMany({
@@ -1071,6 +1075,13 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
       return null;
       })
       : Promise.resolve(null),
+    hasSection(sectionPlan, "customerFeatureStore")
+      ? customerFeatureStoreContextSummary().catch((error) => {
+          caveats.push("Customer Feature Store summary could not be assembled; context pack omits feature-store status.");
+          console.warn("Workspace context customer feature store read failed", error);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   if (skillId && !selectedSkill) {
@@ -1104,6 +1115,10 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
 
   if (hasSection(sectionPlan, "campaignMemory")) {
     contextPack.campaignMemory = summarizeCampaignMemory(campaignMemories, effectiveLimit);
+  }
+
+  if (hasSection(sectionPlan, "customerFeatureStore")) {
+    contextPack.customerFeatureStore = customerFeatureStore;
   }
 
   if (hasSection(sectionPlan, "productTruth")) {
