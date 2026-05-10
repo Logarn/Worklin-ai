@@ -15,6 +15,7 @@ import {
   UNIFIED_CUSTOMER_IDENTITY_DEPTHS,
 } from "@/lib/customers/unified-identity";
 import { listCustomerFeatureStore } from "@/lib/customers/feature-store";
+import { listCustomerScores } from "@/lib/customers/scoring";
 import { prisma } from "@/lib/prisma";
 import { getPlaybookById, isPlaybookType, listPlaybooks } from "@/lib/playbooks";
 
@@ -85,6 +86,21 @@ const unifiedCustomerIdentitySchema = z
   .passthrough();
 
 const customerFeatureStoreSchema = z
+  .object({
+    identityId: z.string().trim().min(1).max(220).optional(),
+    timeframeDays: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(730).optional()),
+    status: z.enum(["available", "partial", "unavailable"]).optional(),
+    limit: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(200).optional()),
+  })
+  .passthrough();
+
+const customerScoreStoreSchema = z
   .object({
     identityId: z.string().trim().min(1).max(220).optional(),
     timeframeDays: z.preprocess((value) => {
@@ -612,6 +628,33 @@ async function customerFeatureStore(input: unknown): Promise<ToolHandlerResult> 
   };
 }
 
+async function customerScoreStore(input: unknown): Promise<ToolHandlerResult> {
+  const parsed = parseToolInput(customerScoreStoreSchema, input);
+  const result = await listCustomerScores(parsed);
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "invalid_customer_score_store_request",
+      result: {
+        ok: false,
+        readOnly: true,
+        issues: result.issues,
+        externalActionTaken: false,
+        rawContactFieldsReturned: false,
+        canGoLiveNow: false,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    result,
+  };
+}
+
 async function brandContext(): Promise<ToolHandlerResult> {
   const storeId = DEFAULT_STORE_ID;
   const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
@@ -714,6 +757,7 @@ const SAFE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.getCampaignInsights": campaignInsights,
   "memory.getUnifiedCustomerIdentity": unifiedCustomerIdentity,
   "memory.getCustomerFeatureStore": customerFeatureStore,
+  "memory.getCustomerScores": customerScoreStore,
   "brain.readBrandContext": brandContext,
   "workflow.retentionAudit": retentionAudit,
   "workflow.auditFixRun": auditFixRun,
@@ -736,7 +780,7 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       status: 404,
       toolInput,
       approvalStatus: null,
-      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, brain.readBrandContext, or audit.runRetentionAudit.",
+      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, brain.readBrandContext, or audit.runRetentionAudit.",
       roadmapHint: "Add new capabilities to the Tool Registry and SAFE_TOOL_HANDLERS only after a safety review.",
     });
   }
