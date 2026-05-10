@@ -542,6 +542,65 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     ],
   },
   {
+    name: "memory.getMicroCampaignPackages",
+    description:
+      "Read persisted Micro-Campaign Factory v0 prepared packages derived from campaign opportunities.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional micro-campaign package filters.",
+      properties: {
+        packageKey: {
+          type: "string",
+          description: "Optional micro-campaign package key.",
+        },
+        opportunityKey: {
+          type: "string",
+          description: "Optional source campaign opportunity key.",
+        },
+        microSegmentDefinitionKey: {
+          type: "string",
+          description: "Optional linked micro-segment definition key.",
+        },
+        timeframeDays: {
+          type: "number",
+          description: "Optional package timeframe to read.",
+        },
+        status: {
+          type: "string",
+          description: "Optional package status: prepared, blocked, or needs_review.",
+        },
+        packageType: {
+          type: "string",
+          description: "Optional package type: campaign, flow, suppression, policy, lifecycle, or review.",
+        },
+        approvalStatus: {
+          type: "string",
+          description:
+            "Optional approval status: not_requested, audience_review_required, policy_required, suppression_review_required, or review_required.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of packages to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only prepared package summaries with audience logic, message angle, product/offer direction, subject/copy brief direction, QA risks, approval readiness, and blocked next actions.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/campaigns/micro-campaigns",
+    handlerReference: "app/api/campaigns/micro-campaigns/route.ts",
+    notes: [
+      "Reads local MicroCampaignPackageStore records only.",
+      "Packages are activationStatus=package_only and externalActionTaken=false.",
+      "Does not generate campaign briefs, create plans, run QA, create Klaviyo drafts, create segments, sync profiles, create campaigns or flows, send, schedule, or perform live actions.",
+      "Does not return raw emails, phones, addresses, member lists, raw customer/profile payloads, or source payloads.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",

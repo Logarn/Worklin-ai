@@ -234,6 +234,52 @@ model CampaignOpportunityStore {
   @@index([recommendedCampaignType])
 }
 
+model MicroCampaignPackageStore {
+  id                       String   @id @default(cuid())
+  packageKey               String
+  packageVersion           String
+  opportunityKey           String
+  opportunityId            String?
+  opportunityVersion       String
+  timeframeDays            Int
+  computedAt               DateTime
+  status                   String
+  packageType              String
+  name                     String
+  description              String   @db.Text
+  priority                 Int
+  confidence               String
+  activationStatus         String
+  approvalStatus           String
+  sourceOpportunity        Json
+  linkedMicroSegment       Json
+  audienceLogic            Json
+  messageAngle             Json
+  productOfferDirection    Json
+  subjectCopyBriefDirection Json
+  qaRisks                  Json
+  approvalReadiness        Json
+  blockedNextActions       Json
+  futureArtifact           Json
+  plannerHandoff           Json
+  briefHandoff             Json
+  sourceSummary            Json
+  caveats                  Json
+  metadata                 Json
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@unique([packageKey, timeframeDays, packageVersion])
+  @@index([packageKey])
+  @@index([opportunityKey])
+  @@index([opportunityId])
+  @@index([computedAt])
+  @@index([status])
+  @@index([priority])
+  @@index([packageType])
+  @@index([approvalStatus])
+}
+
 model Campaign {
   id          String            @id @default(cuid())
   name        String
