@@ -4,6 +4,7 @@ import { redactSensitiveText } from "@/lib/action-log/action-log";
 import { listAgentTools } from "@/lib/agent/tools/registry";
 import type { AgentToolPermissionLevel } from "@/lib/agent/tools/types";
 import { customerFeatureStoreContextSummary } from "@/lib/customers/feature-store";
+import { customerScoringContextSummary } from "@/lib/customers/scoring";
 import { getProductPerformanceIntelligence } from "@/lib/products/product-performance-intelligence";
 import { prisma } from "@/lib/prisma";
 import { serializeRecommendationOutcome } from "@/lib/recommendations/outcomes";
@@ -84,6 +85,7 @@ type ContextSection =
   | "brand"
   | "campaignMemory"
   | "customerFeatureStore"
+  | "customerScoring"
   | "productTruth"
   | "workflows"
   | "approvals"
@@ -101,6 +103,7 @@ const CONTEXT_SECTIONS: ContextSection[] = [
   "brand",
   "campaignMemory",
   "customerFeatureStore",
+  "customerScoring",
   "productTruth",
   "workflows",
   "approvals",
@@ -310,7 +313,7 @@ function buildSectionPlan(input: {
   depth: WorkspaceContextPackDepth;
   skillId: string | null;
 }) {
-  const include = new Set<ContextSection>(["brand", "customerFeatureStore", "sourceStatuses", "missingCapabilities", "safetyPosture"]);
+  const include = new Set<ContextSection>(["brand", "customerFeatureStore", "customerScoring", "sourceStatuses", "missingCapabilities", "safetyPosture"]);
   const family = skillFamily(input.skillId, input.purpose);
 
   if (input.depth === "full") {
@@ -1014,6 +1017,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     selectedSkill,
     productPerformanceResult,
     customerFeatureStore,
+    customerScoring,
   ] = await Promise.all([
     prisma.brandProfile.findUnique({ where: { storeId: DEFAULT_STORE_ID } }),
     prisma.brandCTA.findMany({
@@ -1082,6 +1086,13 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
           return null;
         })
       : Promise.resolve(null),
+    hasSection(sectionPlan, "customerScoring")
+      ? customerScoringContextSummary().catch((error) => {
+          caveats.push("Customer Scoring summary could not be assembled; context pack omits scoring status.");
+          console.warn("Workspace context customer scoring read failed", error);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   if (skillId && !selectedSkill) {
@@ -1119,6 +1130,10 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
 
   if (hasSection(sectionPlan, "customerFeatureStore")) {
     contextPack.customerFeatureStore = customerFeatureStore;
+  }
+
+  if (hasSection(sectionPlan, "customerScoring")) {
+    contextPack.customerScoring = customerScoring;
   }
 
   if (hasSection(sectionPlan, "productTruth")) {

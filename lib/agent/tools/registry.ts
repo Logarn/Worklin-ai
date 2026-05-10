@@ -403,6 +403,49 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     ],
   },
   {
+    name: "memory.getCustomerScores",
+    description:
+      "Read persisted Rule-Based Customer Scoring v0 records with lifecycle and retention scores derived from Customer Feature Store facts.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional persisted score-store filters.",
+      properties: {
+        identityId: {
+          type: "string",
+          description: "Optional unified customer identity id.",
+        },
+        timeframeDays: {
+          type: "number",
+          description: "Optional scoring timeframe to read.",
+        },
+        status: {
+          type: "string",
+          description: "Optional score status: available, partial, or unavailable.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of score records to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only compact customer score summaries from local persisted records. No segment, campaign, profile sync, or external action.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/customers/scores",
+    handlerReference: "app/api/customers/scores/route.ts",
+    notes: [
+      "Reads local CustomerScoreStore records only.",
+      "Scores are deterministic 0-1000 rule signals with tiers, confidence, reasons, source features, and caveats.",
+      "Does not assign final segments or create campaigns, flows, drafts, sends, schedules, or profile syncs.",
+      "Does not return raw emails, phones, addresses, raw orders, raw profiles, or source payloads.",
+      "Does not write Shopify or Klaviyo.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",

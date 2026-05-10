@@ -119,6 +119,42 @@ model CustomerFeatureStore {
   @@index([status])
 }
 
+model CustomerScoreStore {
+  id                   String   @id @default(cuid())
+  identityId           String
+  worklinCustomerId    String?
+  shopifyCustomerId    String?
+  klaviyoProfileId     String?
+  sourceFeatureStoreId String?
+  featureVersion       String
+  scoringVersion       String
+  timeframeDays        Int
+  computedAt           DateTime
+  status               String
+  identityConfidence   String
+  featureStatus        String
+  scores               Json
+  scoreSummary         Json
+  actionPriorityHints  Json
+  arbitrationMetadata  Json
+  sourceFeatureSummary Json
+  sourceCoverage       Json
+  missingCapabilities  Json
+  caveats              Json
+  metadata             Json
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([identityId, timeframeDays, scoringVersion])
+  @@index([identityId])
+  @@index([worklinCustomerId])
+  @@index([shopifyCustomerId])
+  @@index([klaviyoProfileId])
+  @@index([sourceFeatureStoreId])
+  @@index([computedAt])
+  @@index([status])
+}
+
 model Campaign {
   id          String            @id @default(cuid())
   name        String
