@@ -23,7 +23,8 @@ The app helps lifecycle/CRM teams turn Shopify data, Klaviyo data, brand knowled
 - safe tool runtime execution for explicitly wired read/prep tools
 - reusable skills, compact workspace context packs, source connector status, and source snapshots
 - prepare-only commerce cohort to Klaviyo enrichment planning
-- later: unified customer identity, feature store, scoring, segment builder, scheduled checks, and proactive heartbeat recommendations
+- safe local unified customer identity, customer feature store, and rule-based customer scoring
+- later: micro-segment definitions, campaign opportunity engine, micro-campaign factory, arbitration/frequency guardrails, approved sync, scheduled checks, proactive recommendations, and autopilot policy execution
 
 Important naming note:
 
@@ -39,10 +40,12 @@ Current expected local repo state after the latest sync:
 branch: main
 remote: origin/main
 status: main is up to date with origin/main
-latest local main commit: 2a336ff Add commerce cohort Klaviyo enrichment plan v0 (#54)
-latest merged PR: PR #54 Commerce Cohort -> Klaviyo Enrichment Plan v0
-PR #54 squash commit: 2a336ffecb54ca5354c8f3b4671887f49d26813f
-recent milestone range now reflected: PR #49 through PR #54
+latest local main commit: 3c5f33a Rule-Based Customer Scoring v0 (#58)
+latest merged PR: PR #58 Rule-Based Customer Scoring v0
+PR #56 squash commit: a806e66e6df4d1df7b8e2f01724d7391b2010098
+PR #57 squash commit: c85b963ee8022203928575404dbe5d484ee1603a
+PR #58 squash commit: 3c5f33ad77507d15bbf567b24bec404809f44e94
+recent milestone range now reflected: PR #49 through PR #58
 stash: approval-gate-v0-wip still exists and must not be touched unless explicitly requested
 ```
 
@@ -70,7 +73,14 @@ Current stack:
 
 ## Product North Star
 
-The current Worklin product direction is audit-to-fix.
+Worklin is not just audit software. It is moving toward an autonomous personalized campaign factory for lifecycle retention:
+
+- many precise micro-campaigns instead of 3-4 broad campaigns per week
+- micro-segments mapped to specific messaging, product, offer, timing, and channel logic
+- scoring, segmentation, arbitration, QA, approval, and learning as one operating loop
+- the human sets policy; Worklin handles routine retention work and escalates exceptions
+
+The current usable product direction is still audit-to-fix, but the customer engine milestone turns that loop into the substrate for personalized campaign automation.
 
 User says:
 
@@ -86,10 +96,16 @@ Product truth -> campaign truth -> flow truth -> audience/segment truth -> perfo
 
 Then Worklin can prepare safe fixes after user confirmation.
 
-The magical end-state is not audit-to-plan. It is audit-to-fix:
+Near-term magic is not audit-to-plan. It is audit-to-fix:
 
 ```text
 Audit -> user says "fix all this" -> Worklin prepares/fixes safe items in background -> returns one approval-ready package -> user approves/revises
+```
+
+Longer-term magic is policy-led autonomous retention work:
+
+```text
+Observe customers -> update identities/features/scores -> define micro-segment opportunities -> arbitrate timing/offer/message/channel -> prepare campaigns/fixes -> QA -> approval/policy gate -> learn from outcomes
 ```
 
 Important current limitation:
@@ -150,6 +166,12 @@ Worklin now has a backend-first audit-to-fix and agent spine:
        Reusable procedures, matching, proposals, patching, lifecycle, safe run modes
   -> Commerce Cohort -> Klaviyo Enrichment Plan
        Prepare-only property/segment/use-case definitions for future approved sync
+  -> Unified Customer Identity
+       Local read-only Worklin/Shopify/Klaviyo identity spine with confidence and caveats
+  -> Customer Feature Store
+       Durable customer-level facts/signals from local identity, Shopify, and available local Klaviyo/engagement data
+  -> Rule-Based Customer Scoring
+       Deterministic lifecycle/retention scores from feature records, with reasons, confidence, and advisory arbitration hints
   -> Shared Audit Layer
        Audit Insight Framework -> ranked insights, evidence, caveats, recommended actions, chart hints
 ```
@@ -162,23 +184,21 @@ Current strong stack:
 Source Connector Registry
   -> Klaviyo Source Snapshot
   -> Shopify Commerce + Cohort Snapshot
+  -> Unified Customer Identity
+  -> Customer Feature Store
+  -> Rule-Based Customer Scoring
   -> Workspace Context Pack
   -> Skill Registry / Skill Runner
   -> Tool Runtime / Approval / Action Log / Outcomes / Results
 ```
 
-Important architecture re-center after PR #54:
+Important architecture re-center after the customer engine milestone:
 
-- Worklin now has several useful prep, planning, context, source, and skill layers.
-- Stop adding more planning layers for now.
-- Pivot back to the original OSCAR autonomy engine:
-  - Unified Customer Identity v0
-  - Customer Feature Store v0
-  - Rule-Based Customer Scoring v0
-  - Segment Definition Builder v0
-  - Cron / Scheduled Checks v0
-  - Heartbeat / Proactive Recommendation Queue v0
-- The original OSCAR architecture requires unified profiles, a feature store, predictive/rule-based scoring, and a segment builder before true autonomy.
+- Worklin now has the first local customer engine: identity spine -> feature facts/signals -> rule-based scores.
+- Unified Customer Identity v0 is not full Shopify-to-Klaviyo identity resolution yet; it is a safe local identity summary.
+- Customer Feature Store v0 stores facts/signals, not final decisions.
+- Rule-Based Customer Scoring v0 interprets feature records into deterministic 0-1000 lifecycle/retention scores, not segments or campaigns.
+- The immediate next layer is Micro-Segment / Segment Definition Builder v0: turn scores into definition-only audience opportunities without duplicating Klaviyo segmentation or creating live segments.
 - Worklin's sci-fi goal is near-zero prompting: Worklin wakes up, observes accounts, updates snapshots/features/scores, detects opportunities, prepares/executes within policy, escalates exceptions, and learns from outcomes.
 
 ## Current Safety Rules
@@ -213,6 +233,10 @@ Non-negotiable safety posture:
 - Read routes should return safe JSON and caveats instead of crashing when config, scopes, or data are missing.
 - Connector verification must not be overstated.
 - Context packs must stay compact, purpose-scoped, and free of raw payloads or PII-heavy data.
+- Customer identity, feature store, and scoring APIs must not return raw contact fields, raw customer/order/profile/event payloads, secrets, or PII-heavy data.
+- Unified Customer Identity, Customer Feature Store, and Customer Scoring Tool Runtime tools are read-only and local-data based.
+- Customer Feature Store features remain separate from Rule-Based Customer Scoring scores.
+- Rule-Based Customer Scoring scores are advisory lifecycle/retention signals and do not create segments, campaigns, drafts, sends, schedules, syncs, or live actions.
 - Uploads are fallback sources; connected sources and source snapshots should be preferred when available and verified/caveated correctly.
 - For individual expert skills, ask Steve targeted questions before finalizing the expert process.
 
@@ -307,8 +331,11 @@ Latest audit-to-fix layers:
 - Klaviyo Source Snapshot v0
 - Shopify Commerce + Cohort Snapshot v0
 - Commerce Cohort -> Klaviyo Enrichment Plan v0
+- Unified Customer Identity v0
+- Customer Feature Store v0
+- Rule-Based Customer Scoring v0
 
-Completed/merged through PR #54:
+Completed/merged through PR #58:
 
 - audit-to-fix loop
 - approvals
@@ -322,8 +349,123 @@ Completed/merged through PR #54:
 - Klaviyo source snapshot
 - Shopify commerce/cohort snapshot
 - prepare-only Klaviyo enrichment plan
+- unified customer identity spine
+- customer feature store
+- rule-based customer scoring
 
 ## Recently Merged PRs
+
+### PR #58: Rule-Based Customer Scoring v0
+
+Status: completed and merged into `main`.
+
+URL:
+
+```text
+https://github.com/Logarn/ai-retention-marketer-/pull/58
+```
+
+Squash commit:
+
+```text
+3c5f33ad77507d15bbf567b24bec404809f44e94
+```
+
+Adds:
+
+- Durable `CustomerScoreStore` model and APIs.
+- Computes 16 deterministic lifecycle/retention scores from persisted `CustomerFeatureStore` records.
+- Scores use a 0-1000 scale with tier, confidence, reasons, source features, caveats, and `computedAt`.
+- Supports multi-score customers; no forced single bucket.
+- Adds advisory next-best-action/arbitration hints.
+- Missing engagement data lowers confidence and adds caveats instead of punishing customers.
+- Adds read-only Tool Runtime tool `memory.getCustomerScores`.
+- Workspace Context Pack exposes only a compact `customerScoring` pointer/status, not full score dumps.
+
+Safety:
+
+- No Segment Builder yet.
+- No Segment/Profile Sync.
+- No campaign/flow/segment/profile creation.
+- No draft creation, sending, scheduling, Shopify write, Klaviyo write, or live external action.
+- No raw contact fields, PII-heavy payloads, raw customer/order/profile/event payloads, secrets, or token-like values returned.
+
+### PR #57: Customer Feature Store v0
+
+Status: completed and merged into `main`.
+
+URL:
+
+```text
+https://github.com/Logarn/ai-retention-marketer-/pull/57
+```
+
+Squash commit:
+
+```text
+c85b963ee8022203928575404dbe5d484ee1603a
+```
+
+Adds:
+
+- Durable `CustomerFeatureStore` model and APIs.
+- Computes customer-level features from Unified Customer Identity, local Shopify data, and local Klaviyo/engagement data where available.
+- Feature families:
+  - identity
+  - commerce
+  - product/cohort
+  - engagement
+  - intent
+  - lifecycle signals
+  - derived labels
+  - source coverage
+  - missing capabilities
+- Keeps features/facts/signals separate from scores and final decisions.
+- Klaviyo engagement and intent remain local-only and are caveated when local event/profile linkage is missing.
+- Adds read-only Tool Runtime tool `memory.getCustomerFeatureStore`.
+- Workspace Context Pack exposes only a compact feature-store pointer/status.
+
+Safety:
+
+- No raw contact fields, raw customer/order/profile/event payloads, secrets, or PII-heavy output.
+- No Shopify writes.
+- No Klaviyo writes.
+- No drafts, sends, schedules, profile sync, segment creation, campaign creation, or flow creation.
+
+### PR #56: Unified Customer Identity v0
+
+Status: completed and merged into `main`.
+
+URL:
+
+```text
+https://github.com/Logarn/ai-retention-marketer-/pull/56
+```
+
+Squash commit:
+
+```text
+a806e66e6df4d1df7b8e2f01724d7391b2010098
+```
+
+Adds:
+
+- Safe local customer identity spine:
+  - Shopify customer id where locally available
+  - Klaviyo profile id acknowledged/caveated where not locally linked
+  - Worklin identity confidence and caveats
+- `GET /api/customers/identity`
+- `POST /api/customers/identity`
+- Read-only Tool Runtime tool `memory.getUnifiedCustomerIdentity`.
+- Local identity summary only; not full Shopify-to-Klaviyo identity resolution yet.
+
+Safety:
+
+- Raw contact fields are not returned by default.
+- No raw email, phone, address, customer array, profile payload, or PII-heavy output by default.
+- No Shopify writes.
+- No Klaviyo writes.
+- No profile sync, segment creation, draft creation, send, schedule, or live external action.
 
 ### PR #54: Commerce Cohort -> Klaviyo Enrichment Plan v0
 
@@ -515,40 +657,36 @@ Safety:
 
 ## Current Roadmap
 
-Completed/merged through PR #54:
+Completed/merged through PR #58:
 
 - audit-to-fix loop
 - approvals/action logs/outcomes/results
 - tool runtime
 - skills/context/source connectors/source snapshots/enrichment plan
+- unified customer identity
+- customer feature store
+- rule-based customer scoring
 
 Current next locked sequence:
 
-1. Unified Customer Identity v0
-2. Customer Feature Store v0
-3. Rule-Based Customer Scoring v0
-4. Segment Definition Builder v0
-5. Missing Capability Registry v0
-6. Cron / Scheduled Checks v0
-7. Heartbeat / Proactive Recommendation Queue v0
-8. Daily Brief v0
-9. Weekly Retention Planner v0
-10. Segment/Profile Sync v0
-11. Campaign Opportunity Engine / Campaign Fix Executor
-12. Flow Fix Package / Flow Build Plan
-13. Audience Fix Package
-14. Approval Queue / Autopilot Policies
-15. Change Snapshot / Rollback Plan
-16. Send / Schedule Execution much later
+1. Micro-Segment / Segment Definition Builder v0
+2. Campaign Opportunity Engine v0
+3. Campaign Variant / Micro-Campaign Factory v0
+4. Arbitration + Frequency Guardrails v0
+5. Approval Queue / Campaign Review Canvas v0
+6. Segment/Profile Sync v0
+7. Cron / Scheduled Checks v0
+8. Heartbeat / Proactive Recommendation Queue v0
+9. Autopilot Policies v0
 
 Roadmap notes:
 
-- After PR #54, stop adding more planning layers for now.
-- Pivot to the intelligence engine required for true autonomy: unified identity, feature store, scoring, and segment definition.
-- Missing Capability Registry should capture blocked source/tool/write dependencies clearly instead of scattering caveats.
-- Cron and Heartbeat features should come after the core intelligence substrate exists.
-- Segment/Profile Sync must remain behind approvals, Tool Runtime gates, missing-capability checks, and future policy controls.
-- Planning/prep layers are allowed, but do not keep adding them before the intelligence engine.
+- After PR #58, the first customer engine milestone exists: unified identity, feature store, and rule-based scoring.
+- The immediate next feature is Micro-Segment / Segment Definition Builder v0.
+- Micro-Segment / Segment Definition Builder v0 should turn scores into definition-only audience opportunities without duplicating Klaviyo segmentation or creating live segments.
+- Campaign Opportunity Engine and Micro-Campaign Factory should build on segment definitions and score explanations rather than raw customer payloads.
+- Arbitration and frequency guardrails should stay advisory until policy/approval surfaces are built.
+- Segment/Profile Sync must remain behind approvals, Tool Runtime gates, missing-capability checks, future policy controls, and explicit user approval.
 - Future executors must preserve prepare/approve/execute separation.
 - Sending/scheduling/live external actions remain much later.
 
@@ -743,7 +881,7 @@ Worklin should keep moving in useful, safe increments:
 
 - Build backend truth layers before UI polish when the audit engine needs them.
 - Keep v0 features deterministic and fallback-based unless live AI is explicitly requested and guarded.
-- Use Product Performance Intelligence, Flow Audit, Campaign Audit, Segment / Audience Audit, Metric Discovery, Retention Audit Workflow, Audit Fix Run, Durable Approval State, Action Log, Recommendation Outcomes, Results, Tool Runtime, Skill Registry, Workspace Context Pack, Source Connector Registry, and Source Snapshots as reusable substrate for future audit-to-fix work.
+- Use Product Performance Intelligence, Flow Audit, Campaign Audit, Segment / Audience Audit, Metric Discovery, Retention Audit Workflow, Audit Fix Run, Durable Approval State, Action Log, Recommendation Outcomes, Results, Tool Runtime, Skill Registry, Workspace Context Pack, Source Connector Registry, Source Snapshots, Unified Customer Identity, Customer Feature Store, and Rule-Based Customer Scoring as reusable substrate for future audit-to-fix and personalized campaign factory work.
 - Use Audit Insight Framework for all new audit findings so outputs are ranked, evidenced, caveated, and chart-ready.
 - Preserve existing `/agent`, `/agent/workflows`, `/planner`, Klaviyo, Shopify, product, flow, campaign, audience, metric, audit, approval, action log, outcome, result, skill, source, context-pack, and enrichment routes while adding new features.
 - Do not add scheduling, sending, autopilot, external live actions, PDF ingestion, Slack automation, profile sync, segment creation, or Klaviyo flow creation until explicitly requested.
