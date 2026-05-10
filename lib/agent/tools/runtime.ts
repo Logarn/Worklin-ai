@@ -10,6 +10,10 @@ import { GET as campaignInsightsRoute } from "@/app/api/memory/insights/route";
 import { logActionEvent } from "@/lib/action-log/action-log";
 import { getAgentToolByName } from "@/lib/agent/tools/registry";
 import type { AgentToolDefinition } from "@/lib/agent/tools/types";
+import {
+  buildUnifiedCustomerIdentity,
+  UNIFIED_CUSTOMER_IDENTITY_DEPTHS,
+} from "@/lib/customers/unified-identity";
 import { prisma } from "@/lib/prisma";
 import { getPlaybookById, isPlaybookType, listPlaybooks } from "@/lib/playbooks";
 
@@ -21,6 +25,8 @@ const TOOL_ALIASES: Record<string, string> = {
   "audit.runRetentionAudit": "workflow.retentionAudit",
   "audit.prepareFixRun": "workflow.auditFixRun",
 };
+
+const PURE_READ_NO_ACTION_LOG_TOOLS = new Set(["memory.getUnifiedCustomerIdentity"]);
 
 const runtimeInputSchema = z.object({
   toolName: z.string().trim().min(1, "toolName is required.").max(160),
@@ -62,6 +68,18 @@ const playbookListSchema = z
 const playbookGetSchema = z
   .object({
     id: z.string().trim().min(1).max(200),
+  })
+  .passthrough();
+
+const unifiedCustomerIdentitySchema = z
+  .object({
+    customerId: z.string().trim().min(1).max(200).optional(),
+    email: z.string().trim().min(3).max(320).optional(),
+    externalId: z.string().trim().min(1).max(200).optional(),
+    depth: z.enum(UNIFIED_CUSTOMER_IDENTITY_DEPTHS).optional(),
+    limit: optionalLimitSchema,
+    includeProfiles: z.boolean().optional(),
+    includeMergeCandidates: z.boolean().optional(),
   })
   .passthrough();
 
@@ -217,6 +235,19 @@ function targetFromResult(toolName: string, input: unknown, result: unknown) {
     return { targetType: "workflow-run", targetId: workflowId, workflowRunId: workflowId };
   }
   return targetFromInput(toolName, input);
+}
+
+function shouldSkipRuntimeActionLog(tool: AgentToolDefinition | null) {
+  return Boolean(tool && PURE_READ_NO_ACTION_LOG_TOOLS.has(tool.name) && tool.permissionLevel === "read");
+}
+
+function skippedRuntimeActionLog(toolName: string) {
+  return {
+    id: null,
+    skipped: true,
+    reason: "pure_read_identity_summary",
+    toolName,
+  };
 }
 
 async function logRuntimeEvent(input: {
@@ -512,6 +543,32 @@ async function campaignInsights(): Promise<ToolHandlerResult> {
   };
 }
 
+async function unifiedCustomerIdentity(input: unknown): Promise<ToolHandlerResult> {
+  const parsed = parseToolInput(unifiedCustomerIdentitySchema, input);
+  const result = await buildUnifiedCustomerIdentity(parsed);
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "invalid_unified_customer_identity_request",
+      result: {
+        ok: false,
+        readOnly: true,
+        issues: result.issues,
+        externalActionTaken: false,
+        canGoLiveNow: false,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    result,
+  };
+}
+
 async function brandContext(): Promise<ToolHandlerResult> {
   const storeId = DEFAULT_STORE_ID;
   const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
@@ -612,6 +669,7 @@ const SAFE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   "playbooks.list": playbooksList,
   "playbooks.get": playbooksGet,
   "memory.getCampaignInsights": campaignInsights,
+  "memory.getUnifiedCustomerIdentity": unifiedCustomerIdentity,
   "brain.readBrandContext": brandContext,
   "workflow.retentionAudit": retentionAudit,
   "workflow.auditFixRun": auditFixRun,
@@ -634,7 +692,7 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       status: 404,
       toolInput,
       approvalStatus: null,
-      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, brain.readBrandContext, or audit.runRetentionAudit.",
+      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, brain.readBrandContext, or audit.runRetentionAudit.",
       roadmapHint: "Add new capabilities to the Tool Registry and SAFE_TOOL_HANDLERS only after a safety review.",
     });
   }
@@ -720,23 +778,25 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
     const target = ok
       ? targetFromResult(tool.name, toolInput, execution.result)
       : targetFromInput(tool.name, toolInput);
-    const actionLog = await logRuntimeEvent({
-      tool,
-      requestedToolName,
-      toolName,
-      aliasUsed,
-      runtimeStatus: ok ? "completed" : "failed",
-      reason: execution.reason,
-      summary: ok
-        ? "Agent tool executed through Tool Execution Runtime v0."
-        : "Agent tool execution returned a safe failure response.",
-      toolInput,
-      result: execution.result,
-      statusCode: execution.status,
-      approvalStatus,
-      target,
-      errorMessage: ok ? null : execution.reason ?? "Tool execution failed",
-    });
+    const actionLog = shouldSkipRuntimeActionLog(tool)
+      ? null
+      : await logRuntimeEvent({
+          tool,
+          requestedToolName,
+          toolName,
+          aliasUsed,
+          runtimeStatus: ok ? "completed" : "failed",
+          reason: execution.reason,
+          summary: ok
+            ? "Agent tool executed through Tool Execution Runtime v0."
+            : "Agent tool execution returned a safe failure response.",
+          toolInput,
+          result: execution.result,
+          statusCode: execution.status,
+          approvalStatus,
+          target,
+          errorMessage: ok ? null : execution.reason ?? "Tool execution failed",
+        });
 
     return {
       ok,
@@ -747,7 +807,9 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       toolMetadata: compactTool(tool),
       result: execution.result,
       safety: safetyBlock(tool, approvalStatus, false),
-      actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
+      actionLog: actionLog
+        ? actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning }
+        : skippedRuntimeActionLog(tool.name),
       status: execution.status,
     };
   } catch (error) {
@@ -758,20 +820,22 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       ? "Invalid tool input."
       : "Agent tool execution failed.";
     const issues = error instanceof RuntimeInputError ? error.issues : [];
-    const actionLog = await logRuntimeEvent({
-      tool,
-      requestedToolName,
-      toolName,
-      aliasUsed,
-      runtimeStatus: "failed",
-      reason,
-      summary: message,
-      toolInput,
-      result: { ok: false, reason, issues },
-      statusCode: status,
-      approvalStatus,
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
+    const actionLog = shouldSkipRuntimeActionLog(tool)
+      ? null
+      : await logRuntimeEvent({
+          tool,
+          requestedToolName,
+          toolName,
+          aliasUsed,
+          runtimeStatus: "failed",
+          reason,
+          summary: message,
+          toolInput,
+          result: { ok: false, reason, issues },
+          statusCode: status,
+          approvalStatus,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
 
     return {
       ok: false,
@@ -783,7 +847,9 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       toolMetadata: compactTool(tool),
       result: null,
       safety: safetyBlock(tool, approvalStatus, true),
-      actionLog: actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning },
+      actionLog: actionLog
+        ? actionLog.ok ? { id: actionLog.actionLog.id } : { warning: actionLog.warning }
+        : skippedRuntimeActionLog(tool.name),
       status,
     };
   }

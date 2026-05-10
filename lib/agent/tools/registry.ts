@@ -311,6 +311,56 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     handlerReference: "app/api/memory/insights/route.ts",
   },
   {
+    name: "memory.getUnifiedCustomerIdentity",
+    description:
+      "Read Worklin's derived Unified Customer Identity v0 snapshot from local customer, order, event, and campaign receipt rows.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional identity lookup filters and response controls.",
+      properties: {
+        customerId: {
+          type: "string",
+          description: "Optional local Customer id.",
+        },
+        email: {
+          type: "string",
+          description: "Optional customer email lookup; raw email is not returned.",
+        },
+        externalId: {
+          type: "string",
+          description: "Optional Shopify/local external customer id.",
+        },
+        depth: {
+          type: "string",
+          description: "Optional depth: compact, standard, or full.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of identity profiles to return.",
+        },
+        includeMergeCandidates: {
+          type: "boolean",
+          description: "Whether to include review-only merge candidate hints from shared phone hashes.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only identity graph summary and pseudonymous customer identity profiles. No profile merge, sync, or external action.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/customers/identity",
+    handlerReference: "app/api/customers/identity/route.ts",
+    notes: [
+      "Derived from local data only.",
+      "Does not return raw email or phone values.",
+      "Does not merge profiles, sync profiles, create segments, send, or schedule.",
+      "Tool Runtime treats this as a pure read and does not write an ActionLog entry for successful reads.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",
