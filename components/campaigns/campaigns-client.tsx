@@ -23,17 +23,8 @@ type Campaign = {
 };
 
 export function CampaignsClient() {
-  const { data, isLoading, mutate } = useSWR<Campaign[]>("/api/campaigns", fetcher);
+  const { data, isLoading } = useSWR<Campaign[]>("/api/campaigns", fetcher);
   const campaigns = data ?? [];
-
-  const toggleStatus = async (campaign: Campaign) => {
-    const endpoint =
-      campaign.status === "active"
-        ? `/api/campaigns/${campaign.id}/pause`
-        : `/api/campaigns/${campaign.id}/activate`;
-    await fetch(endpoint, { method: "POST" });
-    await mutate();
-  };
 
   return (
     <div className="space-y-4">
@@ -71,8 +62,12 @@ export function CampaignsClient() {
                   {(campaign.metrics?.revenue ?? 0).toFixed(2)}
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={() => void toggleStatus(campaign)}>
-                    {campaign.status === "active" ? "Pause" : "Activate"}
+                  <Button
+                    variant="outline"
+                    disabled
+                    title="Legacy local status controls are disabled in the primary product path."
+                  >
+                    Status controls disabled
                   </Button>
                   <Link href={`/campaigns/${campaign.id}`}>
                     <Button variant="ghost">View</Button>

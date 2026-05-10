@@ -5,6 +5,7 @@ import { use } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LegacySurfaceNotice } from "@/components/legacy-surface-notice";
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -20,6 +21,10 @@ export default function CustomerDetailPage({
 
   return (
     <div className="space-y-6">
+      <LegacySurfaceNotice title="Legacy raw customer detail">
+        This page exposes the older raw customer record. Agent tools should use the PII-safe identity, feature,
+        scoring, and micro-segment APIs.
+      </LegacySurfaceNotice>
       {isLoading || !customer ? (
         <>
           <Skeleton className="h-24" />

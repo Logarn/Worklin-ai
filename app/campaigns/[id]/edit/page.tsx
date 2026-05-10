@@ -2,6 +2,7 @@
 
 import { use } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LegacySurfaceNotice } from "@/components/legacy-surface-notice";
 import { FLOW_TEMPLATES } from "@/lib/constants";
 
 export default function EditCampaignPage({
@@ -12,6 +13,10 @@ export default function EditCampaignPage({
   const { id } = use(params);
   return (
     <div className="space-y-6">
+      <LegacySurfaceNotice title="Legacy flow template editor">
+        This hardcoded template editor is retained for internal reference only. Real flow work should use read-only
+        flow audits and future agent-side flow definition packages.
+      </LegacySurfaceNotice>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Edit Campaign Flow</h1>
         <p className="mt-1 text-sm text-zinc-400">
@@ -42,4 +47,3 @@ export default function EditCampaignPage({
     </div>
   );
 }
-

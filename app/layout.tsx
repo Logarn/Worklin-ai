@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Retention Marketer",
-  description: "E-commerce retention analytics, AI messaging, and campaign automation",
+  title: "Worklin",
+  description: "Agent-first retention operating system for audit-led campaign work",
 };
 
 export default function RootLayout({
