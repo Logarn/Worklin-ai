@@ -2,7 +2,7 @@
 
 Use this file to start a new Codex/chat session with enough context to continue Worklin AI without rereading the whole prior thread.
 
-Last updated: 2026-05-07
+Last updated: 2026-05-10
 
 ## Product Summary
 
@@ -19,7 +19,11 @@ The app helps lifecycle/CRM teams turn Shopify data, Klaviyo data, brand knowled
 - campaign, flow, audience, and full-retention audit insights
 - prepare-only fix packages
 - durable approval state for prepared work
-- later: guarded execution, action logs, learning loops, scheduled checks, and proactive heartbeat recommendations
+- durable action logs, recommendation outcomes, results/learning signals
+- safe tool runtime execution for explicitly wired read/prep tools
+- reusable skills, compact workspace context packs, source connector status, and source snapshots
+- prepare-only commerce cohort to Klaviyo enrichment planning
+- later: unified customer identity, feature store, scoring, segment builder, scheduled checks, and proactive heartbeat recommendations
 
 Important naming note:
 
@@ -35,9 +39,10 @@ Current expected local repo state after the latest sync:
 branch: main
 remote: origin/main
 status: main is up to date with origin/main
-latest local main commit: afc548f Add durable approval state v0 (#42)
-latest merged PR: PR #42 Durable Approval State v0
-PR #42 verification: gh pr view reported state=MERGED, isDraft=false, mergedAt=2026-05-07T01:16:15Z, baseRefName=main, headRefName=feature/durable-approval-state-v0
+latest local main commit: 2a336ff Add commerce cohort Klaviyo enrichment plan v0 (#54)
+latest merged PR: PR #54 Commerce Cohort -> Klaviyo Enrichment Plan v0
+PR #54 squash commit: 2a336ffecb54ca5354c8f3b4671887f49d26813f
+recent milestone range now reflected: PR #49 through PR #54
 stash: approval-gate-v0-wip still exists and must not be touched unless explicitly requested
 ```
 
@@ -90,7 +95,9 @@ Audit -> user says "fix all this" -> Worklin prepares/fixes safe items in backgr
 Important current limitation:
 
 - Worklin can prepare safe fixes and track approval state.
-- Worklin does not execute approved work yet.
+- Worklin can execute only explicitly wired safe tools through Tool Runtime.
+- Most execution remains read-only or prepare-only.
+- Worklin does not perform Segment/Profile Sync, live Klaviyo segment creation, live flow creation, sending, or scheduling yet.
 - External live actions remain blocked.
 
 ## Current Architecture Spine
@@ -125,11 +132,54 @@ Worklin now has a backend-first audit-to-fix and agent spine:
        Retention Audit WorkflowRun -> prepare-only audit-fix-run WorkflowRun
   -> Durable Approval State
        Approval rows for pending, approved, rejected, revision_requested decisions
+  -> Action Log
+       Durable safe event history for important agent/tool/workflow actions
+  -> Recommendation Outcomes
+       Lifecycle state for recommendations and prepared fixes over time
+  -> Results / Learning Loop
+       Read-only ingestion of performance results into learning signals
+  -> Tool Execution Runtime
+       Executes only registered, explicitly wired safe tools; blocks live/external actions
+  -> Source Connector Registry
+       Capability/status map for Klaviyo, Shopify, Figma, Canva, Google Docs, Google Sheets, uploaded files
+  -> Source Snapshots
+       Klaviyo Source Snapshot + Shopify Commerce/Cohort Snapshot, compact and read-only
+  -> Workspace Context Pack
+       Purpose/skill-scoped account memory bundle for workflows and skills
+  -> Skill Registry / Skill Runner
+       Reusable procedures, matching, proposals, patching, lifecycle, safe run modes
+  -> Commerce Cohort -> Klaviyo Enrichment Plan
+       Prepare-only property/segment/use-case definitions for future approved sync
   -> Shared Audit Layer
        Audit Insight Framework -> ranked insights, evidence, caveats, recommended actions, chart hints
 ```
 
 This matters because Worklin should not jump from raw Klaviyo data to generic recommendations. Useful audits need product truth, asset truth, audience truth, evidence, confidence, caveats, and executive-friendly summaries before recommending action.
+
+Current strong stack:
+
+```text
+Source Connector Registry
+  -> Klaviyo Source Snapshot
+  -> Shopify Commerce + Cohort Snapshot
+  -> Workspace Context Pack
+  -> Skill Registry / Skill Runner
+  -> Tool Runtime / Approval / Action Log / Outcomes / Results
+```
+
+Important architecture re-center after PR #54:
+
+- Worklin now has several useful prep, planning, context, source, and skill layers.
+- Stop adding more planning layers for now.
+- Pivot back to the original OSCAR autonomy engine:
+  - Unified Customer Identity v0
+  - Customer Feature Store v0
+  - Rule-Based Customer Scoring v0
+  - Segment Definition Builder v0
+  - Cron / Scheduled Checks v0
+  - Heartbeat / Proactive Recommendation Queue v0
+- The original OSCAR architecture requires unified profiles, a feature store, predictive/rule-based scoring, and a segment builder before true autonomy.
+- Worklin's sci-fi goal is near-zero prompting: Worklin wakes up, observes accounts, updates snapshots/features/scores, detects opportunities, prepares/executes within policy, escalates exceptions, and learns from outcomes.
 
 ## Current Safety Rules
 
@@ -142,6 +192,12 @@ Non-negotiable safety posture:
 - Audits and reads are read-only.
 - Audit Fix Run is prepare-only.
 - Approval state only updates `Approval` rows and does not execute actions.
+- Tool Runtime only executes explicitly wired safe handlers and blocks unknown, unwired, approval-required, or `external_live_action` tools.
+- Skills without explicit safe runners must refuse safely and must not execute arbitrary tools or LLM output.
+- Skill proposals, matches, patches, and lifecycle transitions do not enable live actions by themselves.
+- Source snapshots are read-only summaries and must keep connector verification separate from snapshot read status.
+- Commerce Cohort -> Klaviyo Enrichment Plan is definition/planning only.
+- Klaviyo enrichment properties and segments remain `not_synced` until future Segment/Profile Sync is explicitly built and approved.
 - Segment/profile sync and Klaviyo flow creation are not built into the audit-to-fix execution path yet.
 - Klaviyo flow reads are read-only.
 - Klaviyo campaign metadata reads are read-only.
@@ -155,6 +211,10 @@ Non-negotiable safety posture:
 - Warning briefs are held unless explicitly included.
 - Provider keys, Klaviyo keys, Shopify keys, database URLs, and GitHub tokens stay server-only and must never be printed or returned.
 - Read routes should return safe JSON and caveats instead of crashing when config, scopes, or data are missing.
+- Connector verification must not be overstated.
+- Context packs must stay compact, purpose-scoped, and free of raw payloads or PII-heavy data.
+- Uploads are fallback sources; connected sources and source snapshots should be preferred when available and verified/caveated correctly.
+- For individual expert skills, ask Steve targeted questions before finalizing the expert process.
 
 Current Klaviyo write surface:
 
@@ -237,370 +297,270 @@ Latest audit-to-fix layers:
 - Audit Fix Run v0
 - Agent Audit Starter + Fix Confirmation v0
 - Durable Approval State v0
+- Action Log v0
+- Tool Execution Runtime v0
+- Recommendation Outcome Tracking v0
+- Results Ingestion + Learning Loop v0
+- Skill Registry / Skill Runner v0
+- Workspace Context Pack v0
+- Source Connector Registry v0
+- Klaviyo Source Snapshot v0
+- Shopify Commerce + Cohort Snapshot v0
+- Commerce Cohort -> Klaviyo Enrichment Plan v0
+
+Completed/merged through PR #54:
+
+- audit-to-fix loop
+- approvals
+- action logs
+- recommendation outcomes
+- results/learning signals
+- tool runtime
+- skills
+- compact workspace context
+- source connector registry
+- Klaviyo source snapshot
+- Shopify commerce/cohort snapshot
+- prepare-only Klaviyo enrichment plan
 
 ## Recently Merged PRs
 
-### PR #42: Durable Approval State v0
+### PR #54: Commerce Cohort -> Klaviyo Enrichment Plan v0
 
 Status: completed and merged into `main`.
 
 URL:
 
 ```text
-https://github.com/Logarn/ai-retention-marketer-/pull/42
+https://github.com/Logarn/ai-retention-marketer-/pull/54
 ```
 
-Latest main commit after merge:
+Squash commit:
 
 ```text
-afc548f Add durable approval state v0 (#42)
+2a336ffecb54ca5354c8f3b4671887f49d26813f
 ```
 
 Adds:
 
-- Durable `Approval` model.
-- Additive Prisma migration `20260507000000_add_approval_state`.
-- Postgres partial unique-index migration `20260507001000_add_pending_approval_unique_index` for one pending approval per target.
-- Approval routes:
-  - `POST /api/approvals/request`
-  - `POST /api/approvals/[id]/approve`
-  - `POST /api/approvals/[id]/reject`
-  - `POST /api/approvals/[id]/request-revision`
-  - `GET /api/approvals`
-  - `GET /api/approvals/[id]`
-
-Approval model shape:
-
-```text
-id
-targetType
-targetId
-status: pending | approved | rejected | revision_requested
-targetTitle
-targetSummary
-requestNote
-decisionNote
-requestedBy
-decidedBy
-decidedAt
-metadata
-createdAt
-updatedAt
-```
-
-Supported target types:
-
-- `audit-fix-run`
-- `workflow-run`
-- `campaign-brief`
-- `flow-package`
-- `audience-package`
-- `klaviyo-draft`
-
-Behavior:
-
-- Requests approval for supported targets.
-- For workflow-related targets, validates that the target WorkflowRun exists before creating approval state.
-- For `audit-fix-run`, requires a completed `audit-fix-run` WorkflowRun.
-- Duplicate pending approval requests for the same target return the existing pending approval.
-- Only pending approvals can move to `approved`, `rejected`, or `revision_requested`.
-- Invalid transitions return safe `409`.
-- Invalid targets return safe errors without raw Prisma details.
+- `POST /api/enrichment/klaviyo/plan`
+- Prepare-only Klaviyo enrichment planning route.
+- Converts Shopify Commerce + Cohort Snapshot intelligence into Klaviyo-ready profile property and segment definitions.
+- Includes recommended properties, segment definitions, campaign use cases, flow use cases, suppression use cases, refresh policy, approval package, risks, and caveats.
+- Explicitly remains a definition/planning layer, not Customer Feature Store, Predictive Scoring, Segment Builder, Segment/Profile Sync, or live execution.
+- Every property/segment/use case is `not_synced`, `approvalRequired`, and `externalActionTaken=false`.
 
 Safety:
 
-- Approval only updates approval state.
+- No Klaviyo writes.
+- No Shopify writes.
+- No profile sync.
+- No segment creation.
+- No flow/campaign creation.
+- No send/schedule behavior.
+
+### PR #53: Shopify Commerce + Cohort Snapshot v0
+
+Status: completed and merged into `main`.
+
+Adds:
+
+- `GET /api/sources/shopify/snapshot`
+- `POST /api/sources/shopify/snapshot`
+- Local Prisma Shopify data only:
+  - `Customer`
+  - `Order`
+  - `OrderItem`
+  - `Product`
+  - `IntegrationState`
+- Commerce summary, lifetime customer value, first-purchase cohorts, product-entry cohorts, product performance, lifecycle signals, and Klaviyo enrichment candidates.
+- Connector verification stays separate from snapshot read status.
+- `snapshotReadMethod: local_data`; Shopify is not marked live-verified.
+- Cohort denominators and data coverage.
+- Small cohorts marked directional with `minimumUsefulCohortSize: 10`.
+- Klaviyo enrichment labels proposed only; no sync/write.
+- Context Pack advertises Shopify snapshot availability without embedding or running the full snapshot.
+
+Safety:
+
+- No raw PII-heavy output.
+- No Shopify/Klaviyo writes.
+- No sends, schedules, syncs, flow creation, segment creation, or profile changes.
+
+### PR #52: Klaviyo Source Snapshot v0
+
+Status: completed and merged into `main`.
+
+Adds:
+
+- `GET /api/sources/klaviyo/snapshot`
+- Compact read-only Klaviyo source snapshot.
+- Connector verification separated from snapshot read status.
+- `snapshotReadStatus`, `verifiedSections`, `caveatedSections`, and `snapshotAvailability`.
+- Safe summaries of campaigns, flows, audiences, metrics, drafts, lifecycle, and safety where available.
+- Audiences and metrics can be partial when caveated without marking the whole connector live-verified.
+- Raw Klaviyo payloads, full workflow outputs, secrets, env values, and PII-heavy data are omitted.
+
+Safety:
+
 - No Klaviyo writes.
 - No draft creation.
-- No campaign/flow/segment creation.
-- No profile sync.
-- No sending/scheduling.
-- Approval does not run tools or mutate external systems.
+- No sends, schedules, syncs, flow creation, segment creation, or profile changes.
 
-Known caveat:
-
-- Smoke tests inserted dev DB records into `worklin_dev_clean`.
-- Prisma schema cannot represent the partial unique index directly, so that index lives in SQL migration.
-
-### PR #41: Agent Audit Starter + Fix Confirmation v0
+### PR #51: Source Connector Registry v0
 
 Status: completed and merged into `main`.
-
-URL:
-
-```text
-https://github.com/Logarn/ai-retention-marketer-/pull/41
-```
-
-Latest main commit after merge:
-
-```text
-709884f Add agent audit starter and fix confirmation v0 (#41)
-```
-
-Behavior:
-
-- `/agent` now starts with an audit-first offer.
-- User can request a retention audit anytime via chat.
-- Audit runs the real Retention Audit Workflow.
-- Retention Audit Canvas opens inside `/agent` beside chat.
-- Worklin asks before preparing safe fixes.
-- User can say `fix all` or `fix all this` to run safe prepare-only Audit Fix Run.
-- Prepared Fix Package opens inside `/agent` beside chat.
-- Live send/schedule/sync/go-live requests are refused.
-
-Safety:
-
-- No Klaviyo writes.
-- No sending.
-- No scheduling.
-- No segment/profile sync.
-- No flow creation/update.
-- No live go-live behavior.
-
-### PR #40: Audit Fix Run v0
-
-Status: completed and merged into `main`.
-
-URL:
-
-```text
-https://github.com/Logarn/ai-retention-marketer-/pull/40
-```
-
-Latest main commit after merge:
-
-```text
-02675ed Add audit fix run v0 (#40)
-```
 
 Adds:
 
-- `POST /api/audits/fix-run`
-- persisted prepare-only fix package as WorkflowRun type `audit-fix-run`
-
-Behavior:
-
-- Loads a persisted `retention-audit` WorkflowRun.
-- Produces grouped safe prepared fixes in:
-  - campaigns
-  - flows
-  - audiences
-  - performance
-  - suppression
-- Every prepared or blocked item has:
-  - `externalActionTaken: false`
-  - `canGoLiveNow: false`
-- Returns blocked items with explanations when Worklin cannot safely prepare a fix.
-
-Safety:
-
-- Prepare-only.
-- No Klaviyo draft creation.
-- No flow creation/update.
-- No segment creation/update.
-- No profile sync.
-- No sending.
-- No scheduling.
-- No Klaviyo writes.
-
-### PR #39: Audit Canvas / Visual Summary v0
-
-Status: completed and merged into `main`.
-
-URL:
-
-```text
-https://github.com/Logarn/ai-retention-marketer-/pull/39
-```
-
-Latest main commit after merge:
-
-```text
-90f6b6d Add retention audit canvas v0 (#39)
-```
-
-Behavior:
-
-- Renders real Retention Audit Workflow output.
-- Primary experience is inside `/agent/workflows` and now supports in-agent canvas patterns.
-- `/audits/retention` may exist as a secondary/dev route.
-- Uses real connected-account audit data, not mock data.
-- Inspired by Kraymer-style audit structure:
-  - executive summary
-  - product truth
-  - campaign truth
-  - flow truth
-  - audience truth
-  - lifecycle coverage
-  - priority matrix
-  - action preview
-  - caveats/data confidence
+- `GET /api/sources/connectors`
+- `GET /api/sources/connectors/[id]`
+- Capability map for:
+  - Klaviyo
+  - Shopify
+  - Figma
+  - Canva
+  - Google Docs
+  - Google Sheets
+  - uploaded files
+- `verificationStatus`, `verificationMethod`, and `lastVerifiedAt` so configured sources are not mistaken for live-verified sources.
+- Klaviyo and Shopify are configured/partial unless separately live-verified.
+- Figma, Canva, Google Docs, and Google Sheets are `not_connected` with upload fallbacks.
+- Uploaded files are available as fallback.
+- Workspace Context Pack uses connector registry statuses.
 
 Safety:
 
-- Visualizes persisted audit output.
-- No Klaviyo writes.
-- No sending.
-- No scheduling.
+- No live connector actions.
+- No external writes.
+- No syncs.
 
-### PR #38: Retention Audit Workflow v0
+### PR #50: Workspace Context Pack v0
 
 Status: completed and merged into `main`.
-
-URL:
-
-```text
-https://github.com/Logarn/ai-retention-marketer-/pull/38
-```
-
-Latest main commit after merge:
-
-```text
-43d21f5 Add retention audit workflow v0 (#38)
-```
 
 Adds:
 
-- `POST /api/audits/retention`
-
-Behavior:
-
-- Orchestrates product, campaign, flow, audience, and metric/performance readiness.
-- Returns:
-  - summary
-  - overallRetentionHealth
-  - domainScorecards
-  - lifecycleCoverage
-  - topIssues
-  - topOpportunities
-  - prioritizedActions
-  - insights
-  - chartHints
-  - caveats
-  - sourceStatuses
-  - metadata
-- Persists a parent Retention Audit WorkflowRun.
-- Does not pollute child campaign/flow/segment WorkflowRuns.
+- `GET /api/workspace/context-pack`
+- `POST /api/workspace/context-pack`
+- `compact`, `standard`, and `full` depth support.
+- Default compact context pack is purpose/skill-scoped.
+- Safe account memory/context from brand context, campaign memory, product truth, recent workflows, approvals, action logs, recommendation outcomes, results, skills, connector/source status, and safety posture where relevant.
+- Metadata:
+  - `sizeBytes`
+  - `depth`
+  - `effectiveLimit`
+  - `omittedSections`
+  - `truncatedSections`
 
 Safety:
 
-- Backend-only.
-- Read-only.
-- No Klaviyo writes.
-- No sending.
-- No scheduling.
+- Omits raw workflow input/output, full audit/fix JSON, raw payloads, secrets/env values, and PII-heavy data.
+- Gives skills/workflows useful account memory without dumping everything.
 
-### PR #37: Klaviyo Metric Discovery / Performance Setup v0
+### PR #49: Skill Registry / Skill Runner v0
 
 Status: completed and merged into `main`.
 
-URL:
+Adds:
 
-```text
-https://github.com/Logarn/ai-retention-marketer-/pull/37
-```
+- `WorklinSkill` model and migrations.
+- Skill list/detail/run/propose/match/patch/transition routes.
+- Global/workspace/hybrid skill scopes.
+- Shadow/assist/execute run modes.
+- Source/artifact metadata:
+  - `preferredSources`
+  - `fallbackSources`
+  - `requiredArtifacts`
+  - `optionalArtifacts`
+  - `connectorDependencies`
+  - `missingSourceBehavior`
+- 16 core DTC starter skills plus optional/hybrid `lead_magnet_analysis`.
+- Agent-created skill proposals, skill matching, skill patching, and lifecycle transitions.
 
-Latest main commit after merge:
+Core DTC starter skills:
 
-```text
-6dea1cc Klaviyo Metric Discovery / Performance Setup v0
-```
+- `retention_audit`
+- `audit_fix_run`
+- `campaign_calendar_builder`
+- `campaign_copywriting`
+- `campaign_copy_qa`
+- `email_design_review`
+- `email_slice_review`
+- `flow_audit`
+- `flow_fix_planning`
+- `audience_strategy`
+- `deliverability_review`
+- `weekly_retention_reporting`
+- `performance_reporting`
+- `klaviyo_build_qa`
+- `product_campaign_strategy`
+- `post_purchase_lifecycle_optimization`
 
-Behavior:
+Optional/hybrid skill:
 
-- Adds read-only metric discovery.
-- Helps identify likely Klaviyo conversion metrics.
-- Keeps missing/unsupported metric access caveated.
-- Does not select a metric permanently yet.
-- Does not write env/config.
+- `lead_magnet_analysis`, for workspaces with lead magnets, quizzes, freebies, guides, or acquisition cohorts.
 
-Safety:
+Runtime behavior:
 
-- Read-only.
-- No env/config writes.
-- No Klaviyo object writes.
-- No permanent metric selection.
-
-### PR #36: Segment / Audience Audit v0
-
-Status: completed and merged into `main`.
-
-URL:
-
-```text
-https://github.com/Logarn/ai-retention-marketer-/pull/36
-```
-
-Latest main commit after merge:
-
-```text
-7c1fac6 Segment / Audience Audit v0 (#36)
-```
-
-Behavior:
-
-- Adds operator-grade audience audit output.
-- Includes:
-  - `audienceQualityScorecard`
-  - `audienceBuildPlan`
-  - `lifecycleActivationMatrix`
-  - `suppressionRisks`
-  - `nextAudienceQuestions`
-  - suppression guardrail insight
-  - product-interest dedupe fix
-- Uses Klaviyo audience inventory where available plus local customer/order/event signals.
-- Returns caveats when Klaviyo audience reads or local signals are incomplete.
+- Only `retention_audit` and `audit_fix_run` are runnable through Tool Runtime.
+- Planned/proposed skills refuse safely unless explicitly wired.
+- Skills are reusable procedures; brand facts belong in Brand Brain / Workspace Context.
 
 Safety:
 
-- Read-only.
-- No segment/profile sync.
+- No arbitrary tool execution.
 - No Klaviyo writes.
+- No sends or schedules.
 
 ## Current Roadmap
 
-Completed audit-to-fix milestone:
+Completed/merged through PR #54:
 
-1. Segment / Audience Audit v0
-2. Klaviyo Metric Discovery / Performance Setup v0
-3. Retention Audit Workflow v0
-4. Audit Canvas / Visual Summary v0
-5. Audit Fix Run v0
-6. Agent Audit Starter + Fix Confirmation v0
-7. Durable Approval State v0
+- audit-to-fix loop
+- approvals/action logs/outcomes/results
+- tool runtime
+- skills/context/source connectors/source snapshots/enrichment plan
 
-Current next/pending:
+Current next locked sequence:
 
-1. Action Log v0
-2. Tool Execution Runtime v0
-3. Results Ingestion + Learning Loop
-4. Recommendation Outcome Tracking
-5. Campaign Fix Executor / Audit -> Campaign Workflow Integration
-6. Flow Fix Package / Audit -> Flow Build Plan v0
-7. Audience Fix Package / Segment Definition Builder
-8. Segment/Profile Sync v0
-9. Flow Definition Builder v0
-10. Klaviyo Flow Creation / Update v0
-11. Send/Schedule Execution
-12. Skill Registry / Skill Runner v0
-13. Web Research Tool v0
-14. Cron Jobs / Scheduled Checks v0
-15. Heartbeats / Proactive Recommendation Queue
-16. BYOK + AI Settings
-17. Nano Banana / Gemini Visual Layer
-18. Image-heavy Email Understanding
-19. Sub-agents / Child Workflows
+1. Unified Customer Identity v0
+2. Customer Feature Store v0
+3. Rule-Based Customer Scoring v0
+4. Segment Definition Builder v0
+5. Missing Capability Registry v0
+6. Cron / Scheduled Checks v0
+7. Heartbeat / Proactive Recommendation Queue v0
+8. Daily Brief v0
+9. Weekly Retention Planner v0
+10. Segment/Profile Sync v0
+11. Campaign Opportunity Engine / Campaign Fix Executor
+12. Flow Fix Package / Flow Build Plan
+13. Audience Fix Package
+14. Approval Queue / Autopilot Policies
+15. Change Snapshot / Rollback Plan
+16. Send / Schedule Execution much later
 
 Roadmap notes:
 
-- Action Log v0 should come next because approvals now exist but approved work still does not execute. Before execution exists, Worklin needs a durable history of what was proposed, approved, rejected, revised, skipped, blocked, and eventually executed.
-- Tool Execution Runtime v0 should remain guarded and separate from approval state.
-- Results Ingestion + Learning Loop should connect outcomes back to recommendations and future audits.
-- Skills should be defined later through a Q&A session where Steve explains his expert process and Worklin converts it into repeatable skills.
-- Build future features closer to 80% useful v0s, not ultra-thin slices, while preserving safety.
-- Audit outputs should be chart/visual-ready for founders/CMOs, not giant walls of text.
-- Future executors must preserve the current prepare/approve/execute separation.
+- After PR #54, stop adding more planning layers for now.
+- Pivot to the intelligence engine required for true autonomy: unified identity, feature store, scoring, and segment definition.
+- Missing Capability Registry should capture blocked source/tool/write dependencies clearly instead of scattering caveats.
+- Cron and Heartbeat features should come after the core intelligence substrate exists.
+- Segment/Profile Sync must remain behind approvals, Tool Runtime gates, missing-capability checks, and future policy controls.
+- Planning/prep layers are allowed, but do not keep adding them before the intelligence engine.
+- Future executors must preserve prepare/approve/execute separation.
+- Sending/scheduling/live external actions remain much later.
+
+Preserved product rules:
+
+- No sending, scheduling, or live external actions unless explicitly built later and approval/policy allows.
+- Planning/prep layers are allowed, but do not keep adding them before the intelligence engine.
+- Skills are reusable procedures; brand facts live in Brand Brain / Workspace Context.
+- Uploads are fallback; connected sources/snapshots should be preferred when available.
+- Connector verification must not be overstated.
+- Context packs must stay compact and purpose-scoped.
+- For individual skills, ask Steve targeted questions before finalizing expert process.
 
 ## Working Process Rules
 
@@ -783,7 +743,7 @@ Worklin should keep moving in useful, safe increments:
 
 - Build backend truth layers before UI polish when the audit engine needs them.
 - Keep v0 features deterministic and fallback-based unless live AI is explicitly requested and guarded.
-- Use Product Performance Intelligence, Flow Audit, Campaign Audit, Segment / Audience Audit, Metric Discovery, Retention Audit Workflow, Audit Fix Run, and Durable Approval State as reusable substrate for future audit-to-fix work.
+- Use Product Performance Intelligence, Flow Audit, Campaign Audit, Segment / Audience Audit, Metric Discovery, Retention Audit Workflow, Audit Fix Run, Durable Approval State, Action Log, Recommendation Outcomes, Results, Tool Runtime, Skill Registry, Workspace Context Pack, Source Connector Registry, and Source Snapshots as reusable substrate for future audit-to-fix work.
 - Use Audit Insight Framework for all new audit findings so outputs are ranked, evidenced, caveated, and chart-ready.
-- Preserve existing `/agent`, `/agent/workflows`, `/planner`, Klaviyo, product, flow, campaign, audience, metric, audit, approval, and performance routes while adding new features.
-- Do not add scheduling, sending, autopilot, external live actions, PDF ingestion, Slack automation, profile sync, or Klaviyo flow creation until explicitly requested.
+- Preserve existing `/agent`, `/agent/workflows`, `/planner`, Klaviyo, Shopify, product, flow, campaign, audience, metric, audit, approval, action log, outcome, result, skill, source, context-pack, and enrichment routes while adding new features.
+- Do not add scheduling, sending, autopilot, external live actions, PDF ingestion, Slack automation, profile sync, segment creation, or Klaviyo flow creation until explicitly requested.
