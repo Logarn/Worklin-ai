@@ -10,6 +10,7 @@ import { GET as campaignInsightsRoute } from "@/app/api/memory/insights/route";
 import { logActionEvent } from "@/lib/action-log/action-log";
 import { getAgentToolByName } from "@/lib/agent/tools/registry";
 import type { AgentToolDefinition } from "@/lib/agent/tools/types";
+import { listCampaignOpportunities } from "@/lib/campaigns/opportunity-engine";
 import {
   buildUnifiedCustomerIdentity,
   UNIFIED_CUSTOMER_IDENTITY_DEPTHS,
@@ -32,6 +33,7 @@ const TOOL_ALIASES: Record<string, string> = {
 const PURE_READ_NO_ACTION_LOG_TOOLS = new Set([
   "memory.getUnifiedCustomerIdentity",
   "memory.getMicroSegmentDefinitions",
+  "memory.getCampaignOpportunities",
 ]);
 
 const runtimeInputSchema = z.object({
@@ -127,6 +129,24 @@ const microSegmentDefinitionStoreSchema = z
       return typeof value === "string" ? Number(value) : value;
     }, z.number().int().min(1).max(730).optional()),
     status: z.enum(["available", "partial", "unavailable"]).optional(),
+    limit: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(100).optional()),
+  })
+  .passthrough();
+
+const campaignOpportunityStoreSchema = z
+  .object({
+    opportunityKey: z.string().trim().min(1).max(180).optional(),
+    microSegmentDefinitionKey: z.string().trim().min(1).max(180).optional(),
+    timeframeDays: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(730).optional()),
+    status: z.enum(["available", "partial", "unavailable"]).optional(),
+    opportunityType: z.enum(["campaign", "flow", "suppression", "policy", "lifecycle", "review"]).optional(),
+    recommendedCampaignType: z.string().trim().min(1).max(120).optional(),
     limit: z.preprocess((value) => {
       if (value === undefined || value === null || value === "") return undefined;
       return typeof value === "string" ? Number(value) : value;
@@ -702,6 +722,34 @@ async function microSegmentDefinitionStore(input: unknown): Promise<ToolHandlerR
   };
 }
 
+async function campaignOpportunityStore(input: unknown): Promise<ToolHandlerResult> {
+  const parsed = parseToolInput(campaignOpportunityStoreSchema, input);
+  const result = await listCampaignOpportunities(parsed);
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "invalid_campaign_opportunity_store_request",
+      result: {
+        ok: false,
+        readOnly: true,
+        issues: result.issues,
+        activationStatus: "opportunity_only",
+        externalActionTaken: false,
+        rawContactFieldsReturned: false,
+        canGoLiveNow: false,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    result,
+  };
+}
+
 async function brandContext(): Promise<ToolHandlerResult> {
   const storeId = DEFAULT_STORE_ID;
   const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
@@ -806,6 +854,7 @@ const SAFE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.getCustomerFeatureStore": customerFeatureStore,
   "memory.getCustomerScores": customerScoreStore,
   "memory.getMicroSegmentDefinitions": microSegmentDefinitionStore,
+  "memory.getCampaignOpportunities": campaignOpportunityStore,
   "brain.readBrandContext": brandContext,
   "workflow.retentionAudit": retentionAudit,
   "workflow.auditFixRun": auditFixRun,
@@ -828,7 +877,7 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       status: 404,
       toolInput,
       approvalStatus: null,
-      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, memory.getMicroSegmentDefinitions, brain.readBrandContext, or audit.runRetentionAudit.",
+      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, memory.getMicroSegmentDefinitions, memory.getCampaignOpportunities, brain.readBrandContext, or audit.runRetentionAudit.",
       roadmapHint: "Add new capabilities to the Tool Registry and SAFE_TOOL_HANDLERS only after a safety review.",
     });
   }

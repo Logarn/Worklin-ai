@@ -191,6 +191,49 @@ model MicroSegmentDefinitionStore {
   @@index([priority])
 }
 
+model CampaignOpportunityStore {
+  id                                      String   @id @default(cuid())
+  opportunityKey                          String
+  opportunityVersion                      String
+  timeframeDays                           Int
+  computedAt                              DateTime
+  status                                  String
+  opportunityType                         String
+  name                                    String
+  description                             String   @db.Text
+  priority                                Int
+  confidence                              String
+  activationStatus                        String
+  linkedMicroSegment                      Json
+  audienceEstimate                        Json
+  whyNow                                  Json
+  whyItMatters                            Json
+  recommendedCampaignType                 String
+  recommendedUseCase                      Json
+  recommendedProductOfferMessageDirection Json
+  recommendedChannel                      String?
+  suppressionCollisionHints               Json
+  requiredFutureCapabilities              Json
+  futureArtifact                          Json
+  blockedByMissingCapabilities            Json
+  sourceDefinitionVersion                 String
+  sourceScoringVersion                    String
+  sourceFeatureVersion                    String
+  sourceSummary                           Json
+  caveats                                 Json
+  metadata                                Json
+  createdAt                               DateTime @default(now())
+  updatedAt                               DateTime @updatedAt
+
+  @@unique([opportunityKey, timeframeDays, opportunityVersion])
+  @@index([opportunityKey])
+  @@index([computedAt])
+  @@index([status])
+  @@index([priority])
+  @@index([opportunityType])
+  @@index([recommendedCampaignType])
+}
+
 model Campaign {
   id          String            @id @default(cuid())
   name        String
