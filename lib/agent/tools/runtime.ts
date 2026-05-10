@@ -15,6 +15,7 @@ import {
   UNIFIED_CUSTOMER_IDENTITY_DEPTHS,
 } from "@/lib/customers/unified-identity";
 import { listCustomerFeatureStore } from "@/lib/customers/feature-store";
+import { listMicroSegmentDefinitions } from "@/lib/customers/micro-segment-definitions";
 import { listCustomerScores } from "@/lib/customers/scoring";
 import { prisma } from "@/lib/prisma";
 import { getPlaybookById, isPlaybookType, listPlaybooks } from "@/lib/playbooks";
@@ -28,7 +29,10 @@ const TOOL_ALIASES: Record<string, string> = {
   "audit.prepareFixRun": "workflow.auditFixRun",
 };
 
-const PURE_READ_NO_ACTION_LOG_TOOLS = new Set(["memory.getUnifiedCustomerIdentity"]);
+const PURE_READ_NO_ACTION_LOG_TOOLS = new Set([
+  "memory.getUnifiedCustomerIdentity",
+  "memory.getMicroSegmentDefinitions",
+]);
 
 const runtimeInputSchema = z.object({
   toolName: z.string().trim().min(1, "toolName is required.").max(160),
@@ -112,6 +116,21 @@ const customerScoreStoreSchema = z
       if (value === undefined || value === null || value === "") return undefined;
       return typeof value === "string" ? Number(value) : value;
     }, z.number().int().min(1).max(200).optional()),
+  })
+  .passthrough();
+
+const microSegmentDefinitionStoreSchema = z
+  .object({
+    definitionKey: z.string().trim().min(1).max(180).optional(),
+    timeframeDays: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(730).optional()),
+    status: z.enum(["available", "partial", "unavailable"]).optional(),
+    limit: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(100).optional()),
   })
   .passthrough();
 
@@ -277,7 +296,7 @@ function skippedRuntimeActionLog(toolName: string) {
   return {
     id: null,
     skipped: true,
-    reason: "pure_read_identity_summary",
+    reason: "pure_read_memory_summary",
     toolName,
   };
 }
@@ -655,6 +674,34 @@ async function customerScoreStore(input: unknown): Promise<ToolHandlerResult> {
   };
 }
 
+async function microSegmentDefinitionStore(input: unknown): Promise<ToolHandlerResult> {
+  const parsed = parseToolInput(microSegmentDefinitionStoreSchema, input);
+  const result = await listMicroSegmentDefinitions(parsed);
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "invalid_micro_segment_definition_store_request",
+      result: {
+        ok: false,
+        readOnly: true,
+        issues: result.issues,
+        activationStatus: "definition_only",
+        externalActionTaken: false,
+        rawContactFieldsReturned: false,
+        canGoLiveNow: false,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    result,
+  };
+}
+
 async function brandContext(): Promise<ToolHandlerResult> {
   const storeId = DEFAULT_STORE_ID;
   const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
@@ -758,6 +805,7 @@ const SAFE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.getUnifiedCustomerIdentity": unifiedCustomerIdentity,
   "memory.getCustomerFeatureStore": customerFeatureStore,
   "memory.getCustomerScores": customerScoreStore,
+  "memory.getMicroSegmentDefinitions": microSegmentDefinitionStore,
   "brain.readBrandContext": brandContext,
   "workflow.retentionAudit": retentionAudit,
   "workflow.auditFixRun": auditFixRun,
@@ -780,7 +828,7 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       status: 404,
       toolInput,
       approvalStatus: null,
-      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, brain.readBrandContext, or audit.runRetentionAudit.",
+      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, memory.getMicroSegmentDefinitions, brain.readBrandContext, or audit.runRetentionAudit.",
       roadmapHint: "Add new capabilities to the Tool Registry and SAFE_TOOL_HANDLERS only after a safety review.",
     });
   }

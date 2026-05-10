@@ -155,6 +155,42 @@ model CustomerScoreStore {
   @@index([status])
 }
 
+model MicroSegmentDefinitionStore {
+  id                       String   @id @default(cuid())
+  definitionKey            String
+  definitionVersion        String
+  timeframeDays            Int
+  computedAt               DateTime
+  status                   String
+  name                     String
+  description              String   @db.Text
+  priority                 Int
+  confidence               String
+  activationStatus         String
+  qualifyingLogic          Json
+  audienceEstimate         Json
+  whyItMatters             Json
+  recommendedUseCases      Json
+  productOrOfferDirection  Json
+  collisionArbitrationHints Json
+  klaviyoNativePossible    Boolean  @default(false)
+  requiresWorklinProperties Boolean @default(true)
+  sourceScoringVersion     String
+  sourceFeatureVersion     String
+  sourceScoreSummary       Json
+  missingCapabilities      Json
+  caveats                  Json
+  metadata                 Json
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@unique([definitionKey, timeframeDays, definitionVersion])
+  @@index([definitionKey])
+  @@index([computedAt])
+  @@index([status])
+  @@index([priority])
+}
+
 model Campaign {
   id          String            @id @default(cuid())
   name        String
