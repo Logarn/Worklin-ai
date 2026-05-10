@@ -14,6 +14,7 @@ import {
   buildUnifiedCustomerIdentity,
   UNIFIED_CUSTOMER_IDENTITY_DEPTHS,
 } from "@/lib/customers/unified-identity";
+import { listCustomerFeatureStore } from "@/lib/customers/feature-store";
 import { prisma } from "@/lib/prisma";
 import { getPlaybookById, isPlaybookType, listPlaybooks } from "@/lib/playbooks";
 
@@ -80,6 +81,21 @@ const unifiedCustomerIdentitySchema = z
     limit: optionalLimitSchema,
     includeProfiles: z.boolean().optional(),
     includeMergeCandidates: z.boolean().optional(),
+  })
+  .passthrough();
+
+const customerFeatureStoreSchema = z
+  .object({
+    identityId: z.string().trim().min(1).max(220).optional(),
+    timeframeDays: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(730).optional()),
+    status: z.enum(["available", "partial", "unavailable"]).optional(),
+    limit: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(200).optional()),
   })
   .passthrough();
 
@@ -569,6 +585,33 @@ async function unifiedCustomerIdentity(input: unknown): Promise<ToolHandlerResul
   };
 }
 
+async function customerFeatureStore(input: unknown): Promise<ToolHandlerResult> {
+  const parsed = parseToolInput(customerFeatureStoreSchema, input);
+  const result = await listCustomerFeatureStore(parsed);
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "invalid_customer_feature_store_request",
+      result: {
+        ok: false,
+        readOnly: true,
+        issues: result.issues,
+        externalActionTaken: false,
+        rawContactFieldsReturned: false,
+        canGoLiveNow: false,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    result,
+  };
+}
+
 async function brandContext(): Promise<ToolHandlerResult> {
   const storeId = DEFAULT_STORE_ID;
   const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
@@ -670,6 +713,7 @@ const SAFE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   "playbooks.get": playbooksGet,
   "memory.getCampaignInsights": campaignInsights,
   "memory.getUnifiedCustomerIdentity": unifiedCustomerIdentity,
+  "memory.getCustomerFeatureStore": customerFeatureStore,
   "brain.readBrandContext": brandContext,
   "workflow.retentionAudit": retentionAudit,
   "workflow.auditFixRun": auditFixRun,
