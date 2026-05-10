@@ -4,6 +4,7 @@ import { redactSensitiveText } from "@/lib/action-log/action-log";
 import { listAgentTools } from "@/lib/agent/tools/registry";
 import type { AgentToolPermissionLevel } from "@/lib/agent/tools/types";
 import { campaignOpportunitiesContextSummary } from "@/lib/campaigns/opportunity-engine";
+import { microCampaignPackagesContextSummary } from "@/lib/campaigns/micro-campaign-factory";
 import { customerFeatureStoreContextSummary } from "@/lib/customers/feature-store";
 import { microSegmentDefinitionsContextSummary } from "@/lib/customers/micro-segment-definitions";
 import { customerScoringContextSummary } from "@/lib/customers/scoring";
@@ -90,6 +91,7 @@ type ContextSection =
   | "customerScoring"
   | "microSegmentDefinitions"
   | "campaignOpportunities"
+  | "microCampaignPackages"
   | "productTruth"
   | "workflows"
   | "approvals"
@@ -110,6 +112,7 @@ const CONTEXT_SECTIONS: ContextSection[] = [
   "customerScoring",
   "microSegmentDefinitions",
   "campaignOpportunities",
+  "microCampaignPackages",
   "productTruth",
   "workflows",
   "approvals",
@@ -325,6 +328,7 @@ function buildSectionPlan(input: {
     "customerScoring",
     "microSegmentDefinitions",
     "campaignOpportunities",
+    "microCampaignPackages",
     "sourceStatuses",
     "missingCapabilities",
     "safetyPosture",
@@ -1035,6 +1039,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     customerScoring,
     microSegmentDefinitions,
     campaignOpportunities,
+    microCampaignPackages,
   ] = await Promise.all([
     prisma.brandProfile.findUnique({ where: { storeId: DEFAULT_STORE_ID } }),
     prisma.brandCTA.findMany({
@@ -1124,6 +1129,13 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
           return null;
         })
       : Promise.resolve(null),
+    hasSection(sectionPlan, "microCampaignPackages")
+      ? microCampaignPackagesContextSummary().catch((error) => {
+          caveats.push("Micro-campaign package summary could not be assembled; context pack omits package status.");
+          console.warn("Workspace context micro-campaign package read failed", error);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   if (skillId && !selectedSkill) {
@@ -1173,6 +1185,10 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
 
   if (hasSection(sectionPlan, "campaignOpportunities")) {
     contextPack.campaignOpportunities = campaignOpportunities;
+  }
+
+  if (hasSection(sectionPlan, "microCampaignPackages")) {
+    contextPack.microCampaignPackages = microCampaignPackages;
   }
 
   if (hasSection(sectionPlan, "productTruth")) {
