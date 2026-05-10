@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { LegacySurfaceNotice } from "@/components/legacy-surface-notice";
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -30,6 +31,10 @@ export default function CampaignDetailPage({
 
   return (
     <div className="space-y-6">
+      <LegacySurfaceNotice title="Legacy campaign record">
+        This is a local campaign record from the older manual workflow. Use the agent campaign workflow for new
+        draft-only campaign work.
+      </LegacySurfaceNotice>
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">{data.name}</h1>
         <div className="flex items-center gap-2">

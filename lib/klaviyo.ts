@@ -10,6 +10,7 @@ import {
 } from "klaviyo-api";
 import { prisma } from "@/lib/prisma";
 import { SEGMENT_LABELS } from "@/lib/constants";
+import { blockLegacyExternalExecution } from "@/lib/legacy-execution-gate";
 
 type KlaviyoClient = {
   profiles: ProfilesApi;
@@ -33,6 +34,7 @@ function ensureKlaviyoClient() {
 }
 
 export async function syncProfilesToKlaviyo(limit = 500) {
+  blockLegacyExternalExecution("Klaviyo profile sync");
   const client = ensureKlaviyoClient();
   const customers = await prisma.customer.findMany({
     take: limit,
@@ -74,6 +76,7 @@ export async function syncProfilesToKlaviyo(limit = 500) {
 }
 
 export async function syncSegmentsToKlaviyo() {
+  blockLegacyExternalExecution("Klaviyo segment sync");
   const client = ensureKlaviyoClient();
   const grouped = await prisma.customer.groupBy({
     by: ["segment"],
@@ -143,6 +146,7 @@ export async function sendKlaviyoCampaignMessage(input: {
   subject?: string;
   body: string;
 }) {
+  blockLegacyExternalExecution("Klaviyo send");
   const client = ensureKlaviyoClient();
   const recipients = Array.from(new Set(input.recipients.filter(Boolean)));
   if (!recipients.length) {
@@ -204,6 +208,7 @@ export async function sendKlaviyoCampaignMessage(input: {
 }
 
 export async function triggerKlaviyoFlow(flowId: string, profileEmail: string) {
+  blockLegacyExternalExecution("Klaviyo flow trigger");
   const client = ensureKlaviyoClient();
   await client.events.createEvent({
     data: {

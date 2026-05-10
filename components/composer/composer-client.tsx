@@ -52,7 +52,6 @@ export function ComposerClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
-  const [sendingKlaviyo, setSendingKlaviyo] = useState<number | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const { data: customersResponse } = useSWR<{ data: Customer[] }>("/api/customers?pageSize=50", fetcher);
@@ -140,39 +139,6 @@ export function ComposerClient() {
 
   function copyText(text: string) {
     void navigator.clipboard.writeText(text);
-  }
-
-  async function sendViaKlaviyo(index: number) {
-    const variant = variants[index];
-    if (!variant) return;
-    setSendingKlaviyo(index);
-    setSaveMessage(null);
-    try {
-      const response = await fetch("/api/klaviyo/send-campaign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel,
-          customerId: selectedCustomer?.id,
-          customerEmail: selectedCustomer?.email,
-          message:
-            "body" in variant
-              ? {
-                  subject: variant.subject,
-                  body: variant.body,
-                  preview: variant.preview,
-                }
-              : { message: variant.message },
-        }),
-      });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error || "Failed to send via Klaviyo");
-      setSaveMessage("Sent via Klaviyo successfully.");
-    } catch (err) {
-      setSaveMessage(err instanceof Error ? err.message : "Failed to send via Klaviyo");
-    } finally {
-      setSendingKlaviyo(null);
-    }
   }
 
   return (
@@ -323,12 +289,8 @@ export function ComposerClient() {
                         <Button variant="outline" onClick={() => void saveVariantAsTemplate(idx)} disabled={savingTemplate}>
                           Save template
                         </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => void sendViaKlaviyo(idx)}
-                          disabled={sendingKlaviyo !== null}
-                        >
-                          {sendingKlaviyo === idx ? "Sending..." : "Send via Klaviyo"}
+                        <Button variant="outline" disabled title="Use the agent workflow to create QA-approved drafts.">
+                          Live send disabled
                         </Button>
                       </div>
                     </>
@@ -353,12 +315,8 @@ export function ComposerClient() {
                         <Button variant="outline" onClick={() => void saveVariantAsTemplate(idx)} disabled={savingTemplate}>
                           Save template
                         </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => void sendViaKlaviyo(idx)}
-                          disabled={sendingKlaviyo !== null}
-                        >
-                          {sendingKlaviyo === idx ? "Sending..." : "Send via Klaviyo"}
+                        <Button variant="outline" disabled title="Use the agent workflow to create QA-approved drafts.">
+                          Live send disabled
                         </Button>
                       </div>
                     </>
