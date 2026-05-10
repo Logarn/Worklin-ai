@@ -446,6 +446,48 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     ],
   },
   {
+    name: "memory.getMicroSegmentDefinitions",
+    description:
+      "Read persisted Micro-Segment / Segment Definition Builder v0 definitions derived from CustomerScoreStore records.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional micro-segment definition filters.",
+      properties: {
+        definitionKey: {
+          type: "string",
+          description: "Optional micro-segment definition key.",
+        },
+        timeframeDays: {
+          type: "number",
+          description: "Optional definition timeframe to read.",
+        },
+        status: {
+          type: "string",
+          description: "Optional definition status: available, partial, or unavailable.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of definitions to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only micro-segment definition summaries with qualifying logic, audience estimates, use cases, caveats, and arbitration hints. No activation or external action.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/customers/segment-definitions",
+    handlerReference: "app/api/customers/segment-definitions/route.ts",
+    notes: [
+      "Reads local MicroSegmentDefinitionStore records only.",
+      "Definitions are activationStatus=definition_only and externalActionTaken=false.",
+      "Does not create Klaviyo segments, sync profiles, create campaigns or flows, send, schedule, or perform live actions.",
+      "Does not return raw emails, phones, addresses, member lists, raw customer/profile payloads, or source payloads.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",

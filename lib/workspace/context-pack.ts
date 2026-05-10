@@ -4,6 +4,7 @@ import { redactSensitiveText } from "@/lib/action-log/action-log";
 import { listAgentTools } from "@/lib/agent/tools/registry";
 import type { AgentToolPermissionLevel } from "@/lib/agent/tools/types";
 import { customerFeatureStoreContextSummary } from "@/lib/customers/feature-store";
+import { microSegmentDefinitionsContextSummary } from "@/lib/customers/micro-segment-definitions";
 import { customerScoringContextSummary } from "@/lib/customers/scoring";
 import { getProductPerformanceIntelligence } from "@/lib/products/product-performance-intelligence";
 import { prisma } from "@/lib/prisma";
@@ -86,6 +87,7 @@ type ContextSection =
   | "campaignMemory"
   | "customerFeatureStore"
   | "customerScoring"
+  | "microSegmentDefinitions"
   | "productTruth"
   | "workflows"
   | "approvals"
@@ -104,6 +106,7 @@ const CONTEXT_SECTIONS: ContextSection[] = [
   "campaignMemory",
   "customerFeatureStore",
   "customerScoring",
+  "microSegmentDefinitions",
   "productTruth",
   "workflows",
   "approvals",
@@ -313,7 +316,15 @@ function buildSectionPlan(input: {
   depth: WorkspaceContextPackDepth;
   skillId: string | null;
 }) {
-  const include = new Set<ContextSection>(["brand", "customerFeatureStore", "customerScoring", "sourceStatuses", "missingCapabilities", "safetyPosture"]);
+  const include = new Set<ContextSection>([
+    "brand",
+    "customerFeatureStore",
+    "customerScoring",
+    "microSegmentDefinitions",
+    "sourceStatuses",
+    "missingCapabilities",
+    "safetyPosture",
+  ]);
   const family = skillFamily(input.skillId, input.purpose);
 
   if (input.depth === "full") {
@@ -1018,6 +1029,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     productPerformanceResult,
     customerFeatureStore,
     customerScoring,
+    microSegmentDefinitions,
   ] = await Promise.all([
     prisma.brandProfile.findUnique({ where: { storeId: DEFAULT_STORE_ID } }),
     prisma.brandCTA.findMany({
@@ -1093,6 +1105,13 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
           return null;
         })
       : Promise.resolve(null),
+    hasSection(sectionPlan, "microSegmentDefinitions")
+      ? microSegmentDefinitionsContextSummary().catch((error) => {
+          caveats.push("Micro-segment definition summary could not be assembled; context pack omits segment-definition status.");
+          console.warn("Workspace context micro-segment definition read failed", error);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   if (skillId && !selectedSkill) {
@@ -1134,6 +1153,10 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
 
   if (hasSection(sectionPlan, "customerScoring")) {
     contextPack.customerScoring = customerScoring;
+  }
+
+  if (hasSection(sectionPlan, "microSegmentDefinitions")) {
+    contextPack.microSegmentDefinitions = microSegmentDefinitions;
   }
 
   if (hasSection(sectionPlan, "productTruth")) {
