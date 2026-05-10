@@ -488,6 +488,60 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     ],
   },
   {
+    name: "memory.getCampaignOpportunities",
+    description:
+      "Read persisted Campaign Opportunity Engine v0 opportunities derived from micro-segment definitions and local customer intelligence.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional campaign opportunity filters.",
+      properties: {
+        opportunityKey: {
+          type: "string",
+          description: "Optional campaign opportunity key.",
+        },
+        microSegmentDefinitionKey: {
+          type: "string",
+          description: "Optional linked micro-segment definition key.",
+        },
+        timeframeDays: {
+          type: "number",
+          description: "Optional opportunity timeframe to read.",
+        },
+        status: {
+          type: "string",
+          description: "Optional opportunity status: available, partial, or unavailable.",
+        },
+        opportunityType: {
+          type: "string",
+          description: "Optional opportunity type: campaign, flow, suppression, policy, lifecycle, or review.",
+        },
+        recommendedCampaignType: {
+          type: "string",
+          description: "Optional recommended campaign type filter.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of opportunities to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only campaign opportunity summaries with opportunity type, linked micro-segment, audience estimate, why now, why it matters, use case, product/offer/message direction, future artifact, suppression hints, future capability blockers, and caveats.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/campaigns/opportunities",
+    handlerReference: "app/api/campaigns/opportunities/route.ts",
+    notes: [
+      "Reads local CampaignOpportunityStore records only.",
+      "Opportunities are activationStatus=opportunity_only and externalActionTaken=false.",
+      "Does not generate campaign briefs, create Klaviyo drafts, create segments, sync profiles, create campaigns or flows, send, schedule, or perform live actions.",
+      "Does not return raw emails, phones, addresses, member lists, raw customer/profile payloads, or source payloads.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",
