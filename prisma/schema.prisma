@@ -280,6 +280,62 @@ model MicroCampaignPackageStore {
   @@index([approvalStatus])
 }
 
+model MicroCampaignArbitrationStore {
+  id                       String   @id @default(cuid())
+  arbitrationKey           String
+  arbitrationVersion       String
+  packageKey               String
+  packageId                String?
+  opportunityKey           String?
+  opportunityId            String?
+  microSegmentDefinitionKey String?
+  identityId               String?
+  worklinCustomerId        String?
+  shopifyCustomerId        String?
+  klaviyoProfileId         String?
+  timeframeDays            Int
+  computedAt               DateTime
+  decision                 String
+  priority                 Int
+  rank                     Int
+  confidence               String
+  activationStatus         String
+  packageType              String
+  packageStatus            String
+  frequencyStatus          Json
+  cooldownRecommendation   Json
+  guardrailFlags           Json
+  winningReason            String   @db.Text
+  losingReasons            Json
+  conflictNotes            Json
+  suppressedPackageKeys    Json
+  suppressedByPackageKeys  Json
+  recommendedNextStep      String   @db.Text
+  sourcePackage            Json
+  sourceOpportunity        Json
+  sourceMicroSegment       Json
+  caveats                  Json
+  externalActionTaken      Boolean  @default(false)
+  canGoLiveNow             Boolean  @default(false)
+  metadata                 Json
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@unique([arbitrationKey, timeframeDays, arbitrationVersion])
+  @@index([arbitrationKey])
+  @@index([packageKey])
+  @@index([packageId])
+  @@index([opportunityKey])
+  @@index([microSegmentDefinitionKey])
+  @@index([identityId])
+  @@index([computedAt])
+  @@index([decision])
+  @@index([rank])
+  @@index([priority])
+  @@index([packageType])
+  @@index([packageStatus])
+}
+
 model Campaign {
   id          String            @id @default(cuid())
   name        String

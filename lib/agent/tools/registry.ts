@@ -601,6 +601,68 @@ export const agentToolRegistry: AgentToolDefinition[] = [
     ],
   },
   {
+    name: "memory.getMicroCampaignArbitrations",
+    description:
+      "Read persisted Arbitration + Frequency Guardrails v0 decisions derived from micro-campaign packages.",
+    category: "memory",
+    inputSchema: {
+      type: "object",
+      description: "Optional micro-campaign arbitration filters.",
+      properties: {
+        arbitrationKey: {
+          type: "string",
+          description: "Optional arbitration key.",
+        },
+        packageKey: {
+          type: "string",
+          description: "Optional source micro-campaign package key.",
+        },
+        opportunityKey: {
+          type: "string",
+          description: "Optional source campaign opportunity key.",
+        },
+        microSegmentDefinitionKey: {
+          type: "string",
+          description: "Optional linked micro-segment definition key.",
+        },
+        timeframeDays: {
+          type: "number",
+          description: "Optional arbitration timeframe to read.",
+        },
+        decision: {
+          type: "string",
+          description: "Optional decision filter: advance, wait, suppress, block, or needs_review.",
+        },
+        packageStatus: {
+          type: "string",
+          description: "Optional source package status: prepared, blocked, or needs_review.",
+        },
+        packageType: {
+          type: "string",
+          description: "Optional source package type: campaign, flow, suppression, policy, lifecycle, or review.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional positive whole number of arbitrations to return.",
+        },
+      },
+    },
+    outputDescription:
+      "Read-only arbitration summaries with decision, priority, cooldown guidance, conflict notes, suppression details, next safe step, and canGoLiveNow=false.",
+    permissionLevel: "read",
+    requiresApproval: false,
+    riskLevel: "low",
+    currentStatus: "available",
+    backingRoute: "GET /api/campaigns/arbitrations",
+    handlerReference: "app/api/campaigns/arbitrations/route.ts",
+    notes: [
+      "Reads local MicroCampaignArbitrationStore records only.",
+      "Arbitrations are activationStatus=advisory_only, externalActionTaken=false, and canGoLiveNow=false.",
+      "Does not generate plans, briefs, QA, Klaviyo drafts, segments, profile syncs, campaigns, flows, sends, schedules, or live external actions.",
+      "Does not return raw emails, phones, addresses, member lists, raw customer/profile payloads, or source payloads.",
+    ],
+  },
+  {
     name: "workflow.list",
     description: "List saved Worklin agent workflow runs.",
     category: "workflow",
