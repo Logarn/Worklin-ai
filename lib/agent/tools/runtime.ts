@@ -11,6 +11,7 @@ import { logActionEvent } from "@/lib/action-log/action-log";
 import { getAgentToolByName } from "@/lib/agent/tools/registry";
 import type { AgentToolDefinition } from "@/lib/agent/tools/types";
 import { listCampaignOpportunities } from "@/lib/campaigns/opportunity-engine";
+import { listMicroCampaignArbitrations } from "@/lib/campaigns/arbitration-frequency-guardrails";
 import { listMicroCampaignPackages } from "@/lib/campaigns/micro-campaign-factory";
 import {
   buildUnifiedCustomerIdentity,
@@ -36,6 +37,7 @@ const PURE_READ_NO_ACTION_LOG_TOOLS = new Set([
   "memory.getMicroSegmentDefinitions",
   "memory.getCampaignOpportunities",
   "memory.getMicroCampaignPackages",
+  "memory.getMicroCampaignArbitrations",
 ]);
 
 const runtimeInputSchema = z.object({
@@ -174,6 +176,26 @@ const microCampaignPackageStoreSchema = z
       "suppression_review_required",
       "review_required",
     ]).optional(),
+    limit: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(100).optional()),
+  })
+  .passthrough();
+
+const microCampaignArbitrationStoreSchema = z
+  .object({
+    arbitrationKey: z.string().trim().min(1).max(180).optional(),
+    packageKey: z.string().trim().min(1).max(180).optional(),
+    opportunityKey: z.string().trim().min(1).max(180).optional(),
+    microSegmentDefinitionKey: z.string().trim().min(1).max(180).optional(),
+    timeframeDays: z.preprocess((value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      return typeof value === "string" ? Number(value) : value;
+    }, z.number().int().min(1).max(730).optional()),
+    decision: z.enum(["advance", "wait", "suppress", "block", "needs_review"]).optional(),
+    packageStatus: z.enum(["prepared", "blocked", "needs_review"]).optional(),
+    packageType: z.enum(["campaign", "flow", "suppression", "policy", "lifecycle", "review"]).optional(),
     limit: z.preprocess((value) => {
       if (value === undefined || value === null || value === "") return undefined;
       return typeof value === "string" ? Number(value) : value;
@@ -805,6 +827,34 @@ async function microCampaignPackageStore(input: unknown): Promise<ToolHandlerRes
   };
 }
 
+async function microCampaignArbitrationStore(input: unknown): Promise<ToolHandlerResult> {
+  const parsed = parseToolInput(microCampaignArbitrationStoreSchema, input);
+  const result = await listMicroCampaignArbitrations(parsed);
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: 400,
+      reason: "invalid_micro_campaign_arbitration_store_request",
+      result: {
+        ok: false,
+        readOnly: true,
+        issues: result.issues,
+        activationStatus: "advisory_only",
+        externalActionTaken: false,
+        rawContactFieldsReturned: false,
+        canGoLiveNow: false,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    result,
+  };
+}
+
 async function brandContext(): Promise<ToolHandlerResult> {
   const storeId = DEFAULT_STORE_ID;
   const [profile, rules, ctas, phrases, customVoiceDimensions] = await Promise.all([
@@ -911,6 +961,7 @@ const SAFE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   "memory.getMicroSegmentDefinitions": microSegmentDefinitionStore,
   "memory.getCampaignOpportunities": campaignOpportunityStore,
   "memory.getMicroCampaignPackages": microCampaignPackageStore,
+  "memory.getMicroCampaignArbitrations": microCampaignArbitrationStore,
   "brain.readBrandContext": brandContext,
   "workflow.retentionAudit": retentionAudit,
   "workflow.auditFixRun": auditFixRun,
@@ -933,7 +984,7 @@ export async function executeAgentToolRuntime(input: AgentToolRuntimeRequest) {
       status: 404,
       toolInput,
       approvalStatus: null,
-      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, memory.getMicroSegmentDefinitions, memory.getCampaignOpportunities, memory.getMicroCampaignPackages, brain.readBrandContext, or audit.runRetentionAudit.",
+      safeAlternative: "Use a registered safe tool such as workflow.list, workflow.get, playbooks.list, playbooks.get, memory.getCampaignInsights, memory.getUnifiedCustomerIdentity, memory.getCustomerFeatureStore, memory.getCustomerScores, memory.getMicroSegmentDefinitions, memory.getCampaignOpportunities, memory.getMicroCampaignPackages, memory.getMicroCampaignArbitrations, brain.readBrandContext, or audit.runRetentionAudit.",
       roadmapHint: "Add new capabilities to the Tool Registry and SAFE_TOOL_HANDLERS only after a safety review.",
     });
   }

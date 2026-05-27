@@ -4,6 +4,7 @@ import { redactSensitiveText } from "@/lib/action-log/action-log";
 import { listAgentTools } from "@/lib/agent/tools/registry";
 import type { AgentToolPermissionLevel } from "@/lib/agent/tools/types";
 import { campaignOpportunitiesContextSummary } from "@/lib/campaigns/opportunity-engine";
+import { microCampaignArbitrationsContextSummary } from "@/lib/campaigns/arbitration-frequency-guardrails";
 import { microCampaignPackagesContextSummary } from "@/lib/campaigns/micro-campaign-factory";
 import { customerFeatureStoreContextSummary } from "@/lib/customers/feature-store";
 import { microSegmentDefinitionsContextSummary } from "@/lib/customers/micro-segment-definitions";
@@ -92,6 +93,7 @@ type ContextSection =
   | "microSegmentDefinitions"
   | "campaignOpportunities"
   | "microCampaignPackages"
+  | "microCampaignArbitrations"
   | "productTruth"
   | "workflows"
   | "approvals"
@@ -113,6 +115,7 @@ const CONTEXT_SECTIONS: ContextSection[] = [
   "microSegmentDefinitions",
   "campaignOpportunities",
   "microCampaignPackages",
+  "microCampaignArbitrations",
   "productTruth",
   "workflows",
   "approvals",
@@ -329,6 +332,7 @@ function buildSectionPlan(input: {
     "microSegmentDefinitions",
     "campaignOpportunities",
     "microCampaignPackages",
+    "microCampaignArbitrations",
     "sourceStatuses",
     "missingCapabilities",
     "safetyPosture",
@@ -1040,6 +1044,7 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
     microSegmentDefinitions,
     campaignOpportunities,
     microCampaignPackages,
+    microCampaignArbitrations,
   ] = await Promise.all([
     prisma.brandProfile.findUnique({ where: { storeId: DEFAULT_STORE_ID } }),
     prisma.brandCTA.findMany({
@@ -1136,6 +1141,13 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
           return null;
         })
       : Promise.resolve(null),
+    hasSection(sectionPlan, "microCampaignArbitrations")
+      ? microCampaignArbitrationsContextSummary().catch((error) => {
+          caveats.push("Micro-campaign arbitration summary could not be assembled; context pack omits arbitration status.");
+          console.warn("Workspace context micro-campaign arbitration read failed", error);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   if (skillId && !selectedSkill) {
@@ -1189,6 +1201,10 @@ export async function buildWorkspaceContextPack(input: WorkspaceContextPackInput
 
   if (hasSection(sectionPlan, "microCampaignPackages")) {
     contextPack.microCampaignPackages = microCampaignPackages;
+  }
+
+  if (hasSection(sectionPlan, "microCampaignArbitrations")) {
+    contextPack.microCampaignArbitrations = microCampaignArbitrations;
   }
 
   if (hasSection(sectionPlan, "productTruth")) {
