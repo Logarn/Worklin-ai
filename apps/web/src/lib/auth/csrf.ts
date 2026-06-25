@@ -15,6 +15,9 @@ import { isElectron } from "@/runtime/is-electron";
 const CSRF_COOKIE_NAME = import.meta.env.PROD
   ? "__Secure-csrftoken"
   : "csrftoken";
+const LOCAL_CSRF_COOKIE_ATTRIBUTES = import.meta.env.PROD
+  ? "path=/; secure; samesite=lax"
+  : "path=/; samesite=lax";
 
 /**
  * Read the CSRF token from the browser cookie jar.
@@ -28,6 +31,10 @@ export function getCsrfToken(): string | undefined {
     .split("; ")
     .findLast((row) => row.startsWith(`${CSRF_COOKIE_NAME}=`));
   return match?.split("=").slice(1).join("=");
+}
+
+function persistReadableCsrfToken(token: string): void {
+  document.cookie = `${CSRF_COOKIE_NAME}=${token}; ${LOCAL_CSRF_COOKIE_ATTRIBUTES}`;
 }
 
 function clearDuplicateCsrfCookies(): void {
@@ -54,9 +61,13 @@ export async function ensureCsrfCookie(): Promise<void> {
     csrfBootstrap = (async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          await getAllauthByClientV1AuthSession({
+          const { response } = await getAllauthByClientV1AuthSession({
             path: { client: "browser" },
           });
+          const exposedCsrfToken = response?.headers.get("X-CSRFToken");
+          if (exposedCsrfToken) {
+            persistReadableCsrfToken(exposedCsrfToken);
+          }
           if (getCsrfToken()) return;
         } catch {
           console.warn(

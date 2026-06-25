@@ -208,6 +208,7 @@ function setCorsHeaders(req: Request, res: Response): void {
     "Access-Control-Allow-Headers",
     "Authorization,Content-Type,X-CSRFToken,X-Session-Token,Vellum-Device-Id,Vellum-Organization-Id,X-Vellum-Client-Id,X-Vellum-Interface-Id",
   );
+  res.setHeader("Access-Control-Expose-Headers", "X-CSRFToken");
 }
 
 function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
@@ -255,6 +256,7 @@ function ensureCsrf(req: Request, res: Response): string {
   const existing = parseCookies(req)[csrfCookieName];
   const csrf = existing || randomToken(24);
   appendCookie(res, cookie(csrfCookieName, csrf, `Path=/; Max-Age=2592000; ${cookieSecurityAttributes()}`));
+  res.setHeader("X-CSRFToken", csrf);
   return csrf;
 }
 
