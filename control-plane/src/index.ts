@@ -14,6 +14,8 @@ const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
 const LOCAL_CSRF_COOKIE = "csrftoken";
 const AUTH0_SESSION_COOKIE = "worklin_auth0_session";
+const LEGACY_VERCEL_WEB_ORIGIN = "https://worklin-ai.vercel.app";
+const CURRENT_VERCEL_WEB_ORIGIN = "https://ai-retention-marketer.vercel.app";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const ACTOR_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const POLICY_EPOCH = 1;
@@ -185,8 +187,22 @@ function authConfigPayload() {
   };
 }
 
+function allowedWebOrigins(): Set<string> {
+  return new Set([
+    env.webOrigin,
+    LEGACY_VERCEL_WEB_ORIGIN,
+    CURRENT_VERCEL_WEB_ORIGIN,
+  ]);
+}
+
+function publicWebOrigin(): string {
+  return env.webOrigin === LEGACY_VERCEL_WEB_ORIGIN
+    ? CURRENT_VERCEL_WEB_ORIGIN
+    : env.webOrigin;
+}
+
 function allowedOriginValue(origin: string): boolean {
-  if (origin === env.webOrigin) return true;
+  if (allowedWebOrigins().has(origin)) return true;
   return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 }
 
@@ -530,7 +546,8 @@ async function handleProviderRedirect(req: Request, res: Response): Promise<void
     return;
   }
 
-  const callbackUrl = form.get("callback_url") || `${env.webOrigin}/account/provider/callback`;
+  const callbackUrl =
+    form.get("callback_url") || `${publicWebOrigin()}/account/provider/callback`;
   if (!isAllowedCallbackUrl(callbackUrl)) {
     sendJson(req, res, { detail: "Callback URL is not allowed." }, 400);
     return;
@@ -758,7 +775,7 @@ if (auth0Configured()) {
       },
       routes: {
         callback: "/callback",
-        postLogoutRedirect: env.webOrigin + "/account/login",
+        postLogoutRedirect: publicWebOrigin() + "/account/login",
       },
       session: {
         name: AUTH0_SESSION_COOKIE,
