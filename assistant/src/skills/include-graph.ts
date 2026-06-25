@@ -1,0 +1,207 @@
+import type { SkillSummary } from "../config/skills.js";
+
+interface IncludeGraphResult {
+  /** Ordered list of all skill IDs visited during traversal (including the root). */
+  visited: string[];
+}
+
+/**
+ * Build an index of skills by their exact ID for O(1) lookup.
+ */
+export function indexCatalogById(
+  catalog: SkillSummary[],
+): Map<string, SkillSummary> {
+  const index = new Map<string, SkillSummary>();
+  for (const skill of catalog) {
+    index.set(skill.id, skill);
+  }
+  return index;
+}
+
+/**
+ * Get the immediate child skill summaries for a given parent.
+ * Returns only children that exist in the catalog.
+ */
+export function getImmediateChildren(
+  parentId: string,
+  catalogIndex: Map<string, SkillSummary>,
+): SkillSummary[] {
+  const parent = catalogIndex.get(parentId);
+  if (!parent?.includes || parent.includes.length === 0) return [];
+
+  const children: SkillSummary[] = [];
+  for (const childId of parent.includes) {
+    const child = catalogIndex.get(childId);
+    if (child) children.push(child);
+  }
+  return children;
+}
+
+interface IncludeValidationSuccess {
+  ok: true;
+  visited: string[];
+}
+
+interface IncludeValidationError {
+  ok: false;
+  error: "missing";
+  missingChildId: string;
+  parentId: string;
+  path: string[]; // full path from root to the parent that referenced the missing child
+}
+
+interface IncludeValidationCycleError {
+  ok: false;
+  error: "cycle";
+  cyclePath: string[]; // the IDs forming the cycle, e.g. ['a', 'b', 'c', 'a']
+}
+
+type IncludeValidationResult =
+  | IncludeValidationSuccess
+  | IncludeValidationError
+  | IncludeValidationCycleError;
+
+function validateIncludeGraph(
+  rootId: string,
+  catalogIndex: Map<string, SkillSummary>,
+  options: { failOnMissing: boolean },
+): IncludeValidationResult {
+  const visited: string[] = [];
+  type State = "unseen" | "visiting" | "done";
+  const state = new Map<string, State>();
+  const ancestry: string[] = []; // current DFS path for cycle reporting
+
+  function dfs(
+    id: string,
+  ): IncludeValidationError | IncludeValidationCycleError | null {
+    const currentState = state.get(id) ?? "unseen";
+
+    if (currentState === "done") return null;
+
+    if (currentState === "visiting") {
+      // Found a cycle — build the cycle path from the point where id first appears
+      const cycleStart = ancestry.indexOf(id);
+      const cyclePath = [...ancestry.slice(cycleStart), id];
+      return { ok: false, error: "cycle", cyclePath };
+    }
+
+    state.set(id, "visiting");
+    ancestry.push(id);
+    visited.push(id);
+
+    const skill = catalogIndex.get(id);
+    if (skill?.includes) {
+      for (const childId of skill.includes) {
+        if (!catalogIndex.has(childId)) {
+          if (options.failOnMissing) {
+            return {
+              ok: false,
+              error: "missing",
+              missingChildId: childId,
+              parentId: id,
+              path: [...ancestry],
+            };
+          }
+          continue;
+        }
+        const childError = dfs(childId);
+        if (childError) return childError;
+      }
+    }
+
+    ancestry.pop();
+    state.set(id, "done");
+    return null;
+  }
+
+  const error = dfs(rootId);
+  if (error) return error;
+  return { ok: true, visited };
+}
+
+/**
+ * Validate the include graph starting from the given root skill ID.
+ * Uses three-state DFS (unseen/visiting/done) to detect both missing children
+ * and cycles. Returns the first error encountered in DFS order.
+ */
+export function validateIncludes(
+  rootId: string,
+  catalogIndex: Map<string, SkillSummary>,
+): IncludeValidationResult {
+  return validateIncludeGraph(rootId, catalogIndex, { failOnMissing: true });
+}
+
+/**
+ * Validate only cycle safety for a graph that may intentionally have missing
+ * advisory includes. Missing child IDs are skipped during traversal.
+ */
+export function validateIncludeCycles(
+  rootId: string,
+  catalogIndex: Map<string, SkillSummary>,
+): IncludeValidationResult {
+  return validateIncludeGraph(rootId, catalogIndex, { failOnMissing: false });
+}
+
+/**
+ * Recursively traverse the include graph starting from the given root skill ID.
+ * Returns all visited skill IDs in DFS pre-order.
+ * Happy-path only — skips missing children silently.
+ */
+export function traverseIncludes(
+  rootId: string,
+  catalogIndex: Map<string, SkillSummary>,
+): IncludeGraphResult {
+  const visited: string[] = [];
+  const seen = new Set<string>();
+
+  function dfs(id: string): void {
+    if (seen.has(id)) return;
+    seen.add(id);
+    visited.push(id);
+
+    const skill = catalogIndex.get(id);
+    if (!skill?.includes) return;
+
+    for (const childId of skill.includes) {
+      if (seen.has(childId)) continue;
+      // Only traverse children that exist in the catalog
+      if (!catalogIndex.has(childId)) continue;
+      dfs(childId);
+    }
+  }
+
+  dfs(rootId);
+  return { visited };
+}
+
+/**
+ * Collect all missing skill IDs reachable from the root's include graph.
+ * DFS traversal that tracks visited nodes to prevent infinite loops on cycles.
+ * The root itself is never reported as missing (it's already loaded by the caller).
+ */
+export function collectAllMissing(
+  rootId: string,
+  catalogIndex: Map<string, SkillSummary>,
+): Set<string> {
+  const missing = new Set<string>();
+  const visited = new Set<string>();
+
+  function dfs(id: string): void {
+    if (visited.has(id)) return;
+    visited.add(id);
+
+    const skill = catalogIndex.get(id);
+    if (!skill?.includes) return;
+
+    for (const childId of skill.includes) {
+      if (!catalogIndex.has(childId)) {
+        missing.add(childId);
+      } else if (!visited.has(childId)) {
+        dfs(childId);
+      }
+    }
+  }
+
+  dfs(rootId);
+  return missing;
+}

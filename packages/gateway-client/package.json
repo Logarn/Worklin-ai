@@ -1,0 +1,25 @@
+{
+  "name": "@vellumai/gateway-client",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gateway-ipc-contracts": "./src/gateway-ipc-contracts.ts",
+    "./http-delivery": "./src/http-delivery.ts",
+    "./ipc-client": "./src/ipc-client.ts"
+  },
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test src/"
+  },
+  "dependencies": {
+    "@vellumai/service-contracts": "file:../service-contracts",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.10",
+    "typescript": "5.9.3"
+  }
+}

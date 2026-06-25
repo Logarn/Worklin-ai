@@ -1,0 +1,147 @@
+/**
+ * Transport-agnostic route errors.
+ *
+ * Handlers in the shared ROUTES array throw these instead of returning
+ * HTTP responses. Each transport adapter maps them to the appropriate
+ * wire format — the HTTP adapter uses `statusCode`, the IPC adapter can
+ * return structured `{ code, message }` objects, etc.
+ */
+
+export class RouteError extends Error {
+  readonly code: string;
+  readonly statusCode: number;
+  /**
+   * Optional structured payload surfaced to clients in the standard
+   * error envelope as `error.details`. Use sparingly — only when the
+   * client genuinely needs machine-readable context beyond `code` and
+   * `message` (e.g. mirroring a platform-side response shape).
+   */
+  readonly details?: unknown;
+
+  constructor(
+    message: string,
+    code: string,
+    statusCode: number,
+    details?: unknown,
+  ) {
+    super(message);
+    this.name = "RouteError";
+    this.code = code;
+    this.statusCode = statusCode;
+    if (details !== undefined) {
+      this.details = details;
+    }
+  }
+}
+
+export class UnauthorizedError extends RouteError {
+  constructor(message: string) {
+    super(message, "UNAUTHORIZED", 401);
+    this.name = "UnauthorizedError";
+  }
+}
+
+export class BadRequestError extends RouteError {
+  constructor(message: string) {
+    super(message, "BAD_REQUEST", 400);
+    this.name = "BadRequestError";
+  }
+}
+
+export class TooManyRequestsError extends RouteError {
+  constructor(message: string) {
+    super(message, "RATE_LIMITED", 429);
+    this.name = "TooManyRequestsError";
+  }
+}
+
+export class ForbiddenError extends RouteError {
+  constructor(message: string) {
+    super(message, "FORBIDDEN", 403);
+    this.name = "ForbiddenError";
+  }
+}
+
+export class NotFoundError extends RouteError {
+  constructor(message: string) {
+    super(message, "NOT_FOUND", 404);
+    this.name = "NotFoundError";
+  }
+}
+
+export class UnprocessableEntityError extends RouteError {
+  constructor(message: string, details?: unknown) {
+    super(message, "UNPROCESSABLE_ENTITY", 422, details);
+    this.name = "UnprocessableEntityError";
+  }
+}
+
+export class ConflictError extends RouteError {
+  constructor(message: string, details?: unknown) {
+    super(message, "CONFLICT", 409, details);
+    this.name = "ConflictError";
+  }
+}
+
+export class PayloadTooLargeError extends RouteError {
+  constructor(message: string) {
+    super(message, "PAYLOAD_TOO_LARGE", 413);
+    this.name = "PayloadTooLargeError";
+  }
+}
+
+export class UnsupportedMediaTypeError extends RouteError {
+  constructor(message: string) {
+    super(message, "UNSUPPORTED_MEDIA_TYPE", 415);
+    this.name = "UnsupportedMediaTypeError";
+  }
+}
+
+export class RangeNotSatisfiableError extends RouteError {
+  constructor(message: string) {
+    super(message, "RANGE_NOT_SATISFIABLE", 416);
+    this.name = "RangeNotSatisfiableError";
+  }
+}
+
+export class FailedDependencyError extends RouteError {
+  constructor(message: string) {
+    super(message, "FAILED_DEPENDENCY", 424);
+    this.name = "FailedDependencyError";
+  }
+}
+
+export class BadGatewayError extends RouteError {
+  constructor(message: string) {
+    super(message, "BAD_GATEWAY", 502);
+    this.name = "BadGatewayError";
+  }
+}
+
+export class ServiceUnavailableError extends RouteError {
+  constructor(message: string) {
+    super(message, "SERVICE_UNAVAILABLE", 503);
+    this.name = "ServiceUnavailableError";
+  }
+}
+
+export class GoneError extends RouteError {
+  constructor(message: string) {
+    super(message, "GONE", 410);
+    this.name = "GoneError";
+  }
+}
+
+export class GatewayTimeoutError extends RouteError {
+  constructor(message: string) {
+    super(message, "GATEWAY_TIMEOUT", 504);
+    this.name = "GatewayTimeoutError";
+  }
+}
+
+export class InternalError extends RouteError {
+  constructor(message: string) {
+    super(message, "INTERNAL_ERROR", 500);
+    this.name = "InternalError";
+  }
+}

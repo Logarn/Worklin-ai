@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "app_create",
+      "description": "Create a persistent multi-file TSX app scaffold with a name, optional description, and JSON schema. Write source files under src/ with file tools, then call app_refresh.",
+      "category": "apps",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Optional name of the app. When omitted, defaults to the preview card title (or \"New App\" if there is none); rename later via app_update."
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional description of the app"
+          },
+          "schema_json": {
+            "type": "string",
+            "description": "JSON schema defining the app data structure"
+          },
+          "auto_open": {
+            "type": "boolean",
+            "description": "When true (default), an inline preview card is shown in chat after creation. The app is NOT automatically opened in a workspace panel \u2014 users can open it explicitly via the 'Open App' button on the inline card."
+          },
+          "preview": {
+            "type": "object",
+            "description": "Inline preview card shown in chat after creation. Always include this so users see a compact summary of what was built. Required fields: title.",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Preview card title"
+              },
+              "subtitle": {
+                "type": "string",
+                "description": "Optional subtitle"
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional short description"
+              },
+              "icon": {
+                "type": "string",
+                "description": "Optional icon \u2014 image URL preferred when available (logo, favicon, photo, etc.), emoji as fallback"
+              },
+              "metrics": {
+                "type": "array",
+                "description": "Optional key-value metrics",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["label", "value"]
+                }
+              }
+            },
+            "required": ["title"]
+          },
+          "source_files": {
+            "type": "object",
+            "description": "Map of file paths to file contents to write under the app directory. Supply the real app source here instead of making separate file_write calls. Paths are relative to the app directory (e.g. 'src/main.tsx', 'src/components/App.tsx', 'src/styles.css'). When src/main.tsx is included, no scaffold placeholder is created and the app compiles immediately with real content.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "change_summary": {
+            "type": "string",
+            "description": "Short summary of what changed, using git conventional commit format (e.g. 'feat: add coin flip app', 'fix: correct button alignment'). Used as the version history entry."
+          },
+          "icon": {
+            "type": "string",
+            "description": "Lenient alias. Prefer preview.icon. An emoji or image URL passed here is folded into preview.icon automatically."
+          },
+          "html": {
+            "type": "string",
+            "description": "Lenient alias. Prefer source_files. Raw HTML passed here is folded into source_files['src/index.html'] automatically."
+          },
+          "pages": {
+            "description": "Retired. Multi-page apps route inside the Preact app under src/components/. Passing this returns a guidance error."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/app-create.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "app_update",
+      "description": "Update an existing app: change its name, description, or schema, and/or rewrite source files, then recompile. Use this to iterate on an app you already created instead of calling app_create again (which would make a duplicate). Resolve the app_id with app_list first if you don't have it.",
+      "category": "apps",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "description": "The ID of the app to update"
+          },
+          "name": {
+            "type": "string",
+            "description": "New name for the app. Omit to leave the name unchanged."
+          },
+          "description": {
+            "type": "string",
+            "description": "New description for the app. Omit to leave the description unchanged."
+          },
+          "schema_json": {
+            "type": "string",
+            "description": "New JSON schema for the app data structure. Omit to leave the schema unchanged."
+          },
+          "source_files": {
+            "type": "object",
+            "description": "Map of relative file paths to file contents to write under the app directory (e.g. 'src/main.tsx', 'src/components/App.tsx', 'src/styles.css'). Supply changed source here instead of separate file_write calls. The app is recompiled after writing.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "change_summary": {
+            "type": "string",
+            "description": "Short summary of what changed, using git conventional commit format (e.g. 'fix: correct totals', 'feat: add dark mode'). Used as the version history entry."
+          }
+        },
+        "required": ["app_id"]
+      },
+      "executor": "tools/app-update.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "app_delete",
+      "description": "Delete a persistent app and all its records.",
+      "category": "apps",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "description": "The ID of the app to delete"
+          },
+          "change_summary": {
+            "type": "string",
+            "description": "Short summary of what changed, using git conventional commit format (e.g. 'chore: delete unused app'). Used as the version history entry."
+          }
+        },
+        "required": ["app_id"]
+      },
+      "executor": "tools/app-delete.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "app_refresh",
+      "description": "Trigger recompilation and surface refresh for an app after making file changes. Call this once after you finish editing app files with generic file tools.",
+      "category": "apps",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "description": "The ID of the app to refresh"
+          },
+          "change_summary": {
+            "type": "string",
+            "description": "Short summary of what changed, using git conventional commit format (e.g. 'feat: add dark mode toggle', 'fix: form validation'). Used as the version history entry."
+          }
+        },
+        "required": ["app_id"]
+      },
+      "executor": "tools/app-refresh.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "app_generate_icon",
+      "description": "Generate or regenerate an AI-designed icon for an app. Uses Gemini to create a professional app icon. Call this when the user wants a new or different icon for their app.",
+      "category": "apps",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "description": "The ID of the app to generate an icon for"
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional description to guide icon generation (e.g. 'a blue calendar with a checkmark'). If omitted, the app name and description are used."
+          },
+          "change_summary": {
+            "type": "string",
+            "description": "Short summary of what changed, using git conventional commit format (e.g. 'feat: generate app icon'). Used as the version history entry."
+          }
+        },
+        "required": ["app_id"]
+      },
+      "executor": "tools/app-generate-icon.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "app_list",
+      "description": "List the persistent apps the user has built, returning each app's app_id, name, description, and timestamps (most recently updated first). Pass `query` to resolve an app the user mentions by name to its app_id before calling app_open. Use this whenever the user refers to an existing app and you don't already have its app_id in context.",
+      "category": "apps",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Optional name (or partial name) the user mentioned. When provided, only matching apps are returned: an exact case-insensitive name match if one exists, otherwise substring matches in either direction (e.g. 'habit tracker' resolves 'Habit Tracker'). Omit to list all apps."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/app-list.ts",
+      "execution_target": "host"
+    }
+  ]
+}

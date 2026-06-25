@@ -1,0 +1,196 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { credentialKey } from "../../security/credential-key.js";
+import {
+  getProviderKeyAsync,
+  getSecureKeyAsync,
+} from "../../security/secure-keys.js";
+import type { WorkspaceMigration } from "./types.js";
+
+// Inlined per workspace-migration self-containment rule (see migrations
+// AGENTS.md). Mirrors the runtime prefix logic in `media/types.ts` and
+// `media/image-service.ts`; kept strict (`gpt-`/`dall-e-`) to match.
+function providerForImageModelPrefix(model: string): "gemini" | "openai" {
+  if (model.startsWith("gpt-") || model.startsWith("dall-e-")) {
+    return "openai";
+  }
+  return "gemini";
+}
+
+export const servicesConfigMigration: WorkspaceMigration = {
+  id: "006-services-config",
+  description:
+    "Move top-level provider/model/imageGenModel/webSearchProvider into services object with mode",
+  async run(workspaceDir: string): Promise<void> {
+    const configPath = join(workspaceDir, "config.json");
+    if (!existsSync(configPath)) return;
+
+    let config: Record<string, unknown>;
+    try {
+      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+      config = raw as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    // Skip if no legacy fields remain — either already migrated or a fresh install
+    // where schema defaults are correct. We check for legacy fields instead of
+    // services existence because legacy daemons (before defaults were applied
+    // only in-memory) may have written a default services object to disk
+    // before migrations run.
+    const hasLegacyFields =
+      "provider" in config ||
+      "model" in config ||
+      "imageGenModel" in config ||
+      "webSearchProvider" in config;
+    if (!hasLegacyFields) return;
+
+    // Start from existing services (legacy daemons may have written a
+    // schema-default services object to disk before this migration runs)
+    // so we don't discard any non-default values already written there.
+    const existingServices =
+      config.services != null &&
+      typeof config.services === "object" &&
+      !Array.isArray(config.services)
+        ? (config.services as Record<string, Record<string, unknown>>)
+        : {};
+
+    // Determine inference mode
+    let inferenceMode: "managed" | "your-own" = "your-own";
+    try {
+      // Check if the user has ANY inference provider key configured.
+      // If so, keep "your-own" regardless of managed credentials.
+      const inferenceProviders = [
+        "anthropic",
+        "openai",
+        "gemini",
+        "fireworks",
+        "openrouter",
+      ];
+      let hasAnyUserKey = false;
+      for (const p of inferenceProviders) {
+        if (await getProviderKeyAsync(p)) {
+          hasAnyUserKey = true;
+          break;
+        }
+      }
+      if (!hasAnyUserKey) {
+        const apiKey = await getSecureKeyAsync(
+          credentialKey("vellum", "assistant_api_key"),
+        );
+        const baseUrl = await getSecureKeyAsync(
+          credentialKey("vellum", "platform_base_url"),
+        );
+        if (apiKey && baseUrl) {
+          inferenceMode = "managed";
+        }
+      }
+    } catch {
+      // Can't determine -- default to "your-own"
+    }
+
+    const services: Record<string, Record<string, unknown>> = {
+      ...existingServices,
+    };
+
+    // Legacy top-level fields (provider, model) are the user's actual
+    // configuration from before the services structure existed. If they're
+    // present as strings they take precedence over any `existingServices`
+    // values, which on legacy daemons may just be schema defaults that an
+    // older loader wrote to disk. The spread preserves any extra keys that
+    // legacy daemons may have written alongside.
+    services.inference = {
+      ...(existingServices.inference ?? {}),
+      mode: inferenceMode,
+      provider:
+        typeof config.provider === "string"
+          ? config.provider
+          : (existingServices.inference?.provider ?? "anthropic"),
+      model:
+        typeof config.model === "string"
+          ? config.model
+          : (existingServices.inference?.model ?? "claude-opus-4-6"),
+    };
+
+    const imageGenModel =
+      typeof config.imageGenModel === "string"
+        ? config.imageGenModel
+        : typeof existingServices["image-generation"]?.model === "string"
+          ? (existingServices["image-generation"].model as string)
+          : "gemini-2.5-flash-image";
+    services["image-generation"] = {
+      ...(existingServices["image-generation"] ?? {}),
+      mode: "your-own",
+      provider: providerForImageModelPrefix(imageGenModel),
+      model: imageGenModel,
+    };
+
+    services["web-search"] = {
+      ...(existingServices["web-search"] ?? {}),
+      mode: "your-own",
+      provider:
+        typeof config.webSearchProvider === "string"
+          ? config.webSearchProvider
+          : (existingServices["web-search"]?.provider ?? "anthropic-native"),
+    };
+
+    config.services = services;
+    delete config.provider;
+    delete config.model;
+    delete config.imageGenModel;
+    delete config.webSearchProvider;
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  },
+  down(workspaceDir: string): void {
+    const configPath = join(workspaceDir, "config.json");
+    if (!existsSync(configPath)) return;
+
+    let config: Record<string, unknown>;
+    try {
+      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+      config = raw as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    const services = config.services;
+    if (!services || typeof services !== "object" || Array.isArray(services))
+      return;
+
+    const svc = services as Record<string, Record<string, unknown>>;
+
+    // Extract inference provider and model back to top-level fields.
+    // Note: inferenceMode is lost in this rollback — the original config did
+    // not store a mode field. This is an accepted lossy reversal.
+    if (svc.inference) {
+      if (typeof svc.inference.provider === "string") {
+        config.provider = svc.inference.provider;
+      }
+      if (typeof svc.inference.model === "string") {
+        config.model = svc.inference.model;
+      }
+    }
+
+    // Extract image generation model back to top-level
+    if (svc["image-generation"]) {
+      if (typeof svc["image-generation"].model === "string") {
+        config.imageGenModel = svc["image-generation"].model;
+      }
+    }
+
+    // Extract web search provider back to top-level
+    if (svc["web-search"]) {
+      if (typeof svc["web-search"].provider === "string") {
+        config.webSearchProvider = svc["web-search"].provider;
+      }
+    }
+
+    delete config.services;
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  },
+};

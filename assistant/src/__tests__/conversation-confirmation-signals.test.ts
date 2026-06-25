@@ -1,0 +1,507 @@
+/**
+ * Behavioral tests for centralized confirmation state emissions and
+ * activity version ordering.
+ *
+ * Covers:
+ * - handleConfirmationResponse emits both confirmation_state_changed and
+ *   assistant_activity_state events centrally
+ * - emitActivityState produces monotonically increasing activityVersion
+ * - sendToClient receives state signals (confirmation_state_changed, assistant_activity_state)
+ * - "deny" decisions produce 'denied' state, "allow" produces 'approved'
+ */
+import { describe, expect, mock, test } from "bun:test";
+
+import { CompactionCircuit } from "../agent/compaction-circuit.js";
+import type { AgentEvent } from "../agent/loop.js";
+import type { ServerMessage } from "../daemon/message-protocol.js";
+import type { Message, ProviderResponse } from "../providers/types.js";
+
+// ---------------------------------------------------------------------------
+// Mocks — must precede Conversation import
+// ---------------------------------------------------------------------------
+
+function makeLoggerStub(): Record<string, unknown> {
+  const stub: Record<string, unknown> = {};
+  for (const m of [
+    "info",
+    "warn",
+    "error",
+    "debug",
+    "trace",
+    "fatal",
+    "silent",
+    "child",
+  ]) {
+    stub[m] = m === "child" ? () => makeLoggerStub() : () => {};
+  }
+  return stub;
+}
+
+mock.module("../util/logger.js", () => ({
+  getLogger: () => makeLoggerStub(),
+}));
+
+mock.module("../providers/registry.js", () => ({
+  getProvider: () => ({ name: "mock-provider" }),
+  initializeProviders: async () => {},
+}));
+
+mock.module("../config/loader.js", () => ({
+  getConfig: () => ({
+    ui: {},
+    llm: {
+      default: {
+        provider: "mock-provider",
+        model: "mock-model",
+        maxTokens: 4096,
+        effort: "max" as const,
+        speed: "standard" as const,
+        temperature: null,
+        thinking: { enabled: false, streamThinking: true },
+        contextWindow: {
+          enabled: true,
+          maxInputTokens: 100000,
+          targetBudgetRatio: 0.3,
+          compactThreshold: 0.8,
+          summaryBudgetRatio: 0.05,
+          overflowRecovery: {
+            enabled: true,
+            safetyMarginRatio: 0.05,
+            maxAttempts: 3,
+            interactiveLatestTurnCompression: "summarize",
+            nonInteractiveLatestTurnCompression: "truncate",
+          },
+        },
+      },
+      profiles: {},
+      callSites: {},
+      pricingOverrides: [],
+    },
+    rateLimit: { maxRequestsPerMinute: 0 },
+    timeouts: { permissionTimeoutSec: 1 },
+    skills: { entries: {}, allowBundled: true },
+    permissions: {},
+  }),
+  loadRawConfig: () => ({}),
+  saveRawConfig: () => {},
+  invalidateConfigCache: () => {},
+}));
+
+mock.module("../prompts/system-prompt.js", () => ({
+  buildSystemPrompt: () => "system prompt",
+}));
+
+mock.module("../config/skills.js", () => ({
+  loadSkillCatalog: () => [],
+  loadSkillBySelector: () => ({ skill: null }),
+  ensureSkillIcon: async () => null,
+}));
+
+mock.module("../config/skill-state.js", () => ({
+  resolveSkillStates: () => [],
+}));
+
+mock.module("../permissions/trust-store.js", () => ({
+  addRule: () => {},
+  findHighestPriorityRule: () => null,
+  clearCache: () => {},
+}));
+
+mock.module("../security/secret-allowlist.js", () => ({
+  resetAllowlist: () => {},
+}));
+
+mock.module("../memory/conversation-crud.js", () => ({
+  setConversationOriginChannelIfUnset: () => {},
+  updateConversationContextWindow: () => {},
+  deleteMessageById: () => {},
+  provenanceFromTrustContext: () => ({
+    source: "user",
+    trustContext: undefined,
+  }),
+  getConversationOriginInterface: () => null,
+  getConversationOriginChannel: () => null,
+  getMessages: () => [],
+  getConversation: () => ({
+    id: "conv-1",
+    contextSummary: null,
+    contextCompactedMessageCount: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalEstimatedCost: 0,
+  }),
+  createConversation: () => ({ id: "conv-1" }),
+  addMessage: () => ({ id: `msg-${Date.now()}` }),
+  updateConversationUsage: () => {},
+  updateConversationTitle: () => {},
+  reserveMessage: mock(async () => ({ id: "msg-reserve" })),
+}));
+
+mock.module("../memory/conversation-queries.js", () => ({
+  listConversations: () => [],
+}));
+
+mock.module("../memory/attachments-store.js", () => ({
+  uploadAttachment: () => ({ id: `att-${Date.now()}` }),
+  linkAttachmentToMessage: () => {},
+}));
+
+mock.module("../memory/retriever.js", () => ({
+  buildMemoryRecall: async () => ({
+    enabled: false,
+    degraded: false,
+    injectedText: "",
+
+    semanticHits: 0,
+    injectedTokens: 0,
+    latencyMs: 0,
+  }),
+  injectMemoryRecallAsUserBlock: (msgs: Message[]) => msgs,
+}));
+
+mock.module("../plugins/defaults/compaction/window-manager.js", () => ({
+  ContextWindowManager: class {
+    constructor() {}
+    updateConfig() {}
+    shouldCompact() {
+      return { needed: false, estimatedTokens: 0 };
+    }
+    async maybeCompact() {
+      return { compacted: false };
+    }
+    resetOverflowRecovery() {}
+  },
+  createContextSummaryMessage: () => ({
+    role: "user",
+    content: [{ type: "text", text: "summary" }],
+  }),
+  getSummaryFromContextMessage: () => null,
+}));
+
+mock.module("../memory/llm-usage-store.js", () => ({
+  recordUsageEvent: () => ({ id: "mock-id", createdAt: Date.now() }),
+  listUsageEvents: () => [],
+}));
+
+mock.module("../agent/loop.js", () => ({
+  AgentLoop: class {
+    compactionCircuit = new CompactionCircuit("test-conv");
+    constructor() {}
+    getToolTokenBudget() {
+      return 0;
+    }
+    getResolvedTools() {
+      return [];
+    }
+    getActiveModel() {
+      return undefined;
+    }
+    async run(_options: {
+      messages: Message[];
+      onEvent: (event: AgentEvent) => void;
+    }): Promise<Message[]> {
+      return [];
+    }
+  },
+}));
+
+mock.module("../memory/canonical-guardian-store.js", () => ({
+  listPendingCanonicalGuardianRequestsByDestinationConversation: () => [],
+  listCanonicalGuardianRequests: () => [],
+  listPendingRequestsByConversationScope: () => [],
+  createCanonicalGuardianRequest: () => ({
+    id: "mock-cg-id",
+    code: "MOCK",
+    status: "pending",
+  }),
+  getCanonicalGuardianRequest: () => null,
+  getCanonicalGuardianRequestByCode: () => null,
+  updateCanonicalGuardianRequest: () => {},
+  resolveCanonicalGuardianRequest: () => {},
+  createCanonicalGuardianDelivery: () => ({ id: "mock-cgd-id" }),
+  listCanonicalGuardianDeliveries: () => [],
+  listPendingCanonicalGuardianRequestsByDestinationChat: () => [],
+  updateCanonicalGuardianDelivery: () => {},
+  generateCanonicalRequestCode: () => "MOCK-CODE",
+}));
+
+// ---------------------------------------------------------------------------
+// Import Conversation AFTER mocks
+// ---------------------------------------------------------------------------
+
+import { Conversation } from "../daemon/conversation.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeProvider() {
+  return {
+    name: "mock",
+    async sendMessage(): Promise<ProviderResponse> {
+      return {
+        content: [],
+        model: "mock",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        stopReason: "end_turn",
+      };
+    },
+  };
+}
+
+function makeConversation(
+  sendToClient?: (msg: ServerMessage) => void,
+): Conversation {
+  return new Conversation(
+    "conv-signals-test",
+    makeProvider(),
+    "system prompt",
+    sendToClient ?? (() => {}),
+    process.env.VELLUM_WORKSPACE_DIR!,
+    { maxTokens: 4096 },
+  );
+}
+
+/**
+ * Seed a pending confirmation directly in the prompter's internal map.
+ * This avoids calling `prompt()` which has complex side effects (sends
+ * a confirmation_request message, needs allowlistOptions, etc.).
+ */
+function seedPendingConfirmation(
+  conversation: Conversation,
+  requestId: string,
+): void {
+  // Access private ownedIds so denyAllPending/dispose can find this request.
+  // promptResolve/promptReject callbacks are stored in pendingInteractions via
+  // registerPendingInteraction, which is called separately in each test.
+  const prompter = conversation["prompter"] as unknown as {
+    ownedIds: Set<string>;
+  };
+  prompter.ownedIds.add(requestId);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("centralized confirmation emissions", () => {
+  test("handleConfirmationResponse emits confirmation_state_changed with approved state for allow decision", () => {
+    const emitted: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => emitted.push(msg));
+
+    seedPendingConfirmation(conversation, "req-allow-1");
+    conversation.handleConfirmationResponse("req-allow-1", "allow");
+
+    const confirmMsgs = emitted.filter(
+      (m) => m.type === "confirmation_state_changed",
+    );
+    // Filter to our explicitly requested emission (not the pending/timed_out ones from prompter)
+    const confirmMsg = confirmMsgs.find(
+      (m) =>
+        "requestId" in m &&
+        (m as { requestId: string }).requestId === "req-allow-1" &&
+        "state" in m &&
+        (m as { state: string }).state === "approved",
+    );
+    expect(confirmMsg).toBeDefined();
+    expect(confirmMsg).toMatchObject({
+      type: "confirmation_state_changed",
+      conversationId: "conv-signals-test",
+      requestId: "req-allow-1",
+      state: "approved",
+      source: "button",
+    });
+  });
+
+  test("handleConfirmationResponse emits confirmation_state_changed with denied state for deny decision", () => {
+    const emitted: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => emitted.push(msg));
+
+    seedPendingConfirmation(conversation, "req-deny-1");
+    conversation.handleConfirmationResponse("req-deny-1", "deny");
+
+    const confirmMsg = emitted.find(
+      (m) =>
+        m.type === "confirmation_state_changed" &&
+        "requestId" in m &&
+        (m as { requestId: string }).requestId === "req-deny-1" &&
+        "state" in m &&
+        (m as { state: string }).state === "denied",
+    );
+    expect(confirmMsg).toBeDefined();
+    expect(confirmMsg).toMatchObject({
+      type: "confirmation_state_changed",
+      requestId: "req-deny-1",
+      state: "denied",
+      source: "button",
+    });
+  });
+
+  test("handleConfirmationResponse emits assistant_activity_state with thinking phase", () => {
+    const emitted: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => emitted.push(msg));
+
+    seedPendingConfirmation(conversation, "req-activity-1");
+    conversation.handleConfirmationResponse("req-activity-1", "allow");
+
+    const activityMsg = emitted.find(
+      (m) =>
+        m.type === "assistant_activity_state" &&
+        "reason" in m &&
+        (m as { reason: string }).reason === "confirmation_resolved",
+    );
+    expect(activityMsg).toBeDefined();
+    expect(activityMsg).toMatchObject({
+      type: "assistant_activity_state",
+      conversationId: "conv-signals-test",
+      phase: "thinking",
+      reason: "confirmation_resolved",
+      anchor: "assistant_turn",
+    });
+  });
+
+  test("handleConfirmationResponse passes emissionContext source", () => {
+    const emitted: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => emitted.push(msg));
+
+    seedPendingConfirmation(conversation, "req-ctx-1");
+    conversation.handleConfirmationResponse("req-ctx-1", "allow", {
+      emissionContext: {
+        source: "inline_nl",
+        decisionText: "yes please",
+      },
+    });
+
+    const confirmMsg = emitted.find(
+      (m) =>
+        m.type === "confirmation_state_changed" &&
+        "requestId" in m &&
+        (m as { requestId: string }).requestId === "req-ctx-1",
+    );
+    expect(confirmMsg).toBeDefined();
+    expect(confirmMsg).toMatchObject({
+      source: "inline_nl",
+      decisionText: "yes please",
+    });
+  });
+});
+
+describe("activity version ordering", () => {
+  test("emitActivityState produces monotonically increasing activityVersion", () => {
+    const emitted: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => emitted.push(msg));
+
+    conversation.emitActivityState("thinking", "message_dequeued");
+    conversation.emitActivityState("streaming", "first_text_delta");
+    conversation.emitActivityState("tool_running", "tool_use_start");
+    conversation.emitActivityState("idle", "message_complete", {
+      anchor: "global",
+    });
+
+    const activityMsgs = emitted.filter(
+      (m) => m.type === "assistant_activity_state",
+    ) as Array<ServerMessage & { activityVersion: number }>;
+
+    expect(activityMsgs).toHaveLength(4);
+
+    // Versions must be strictly increasing
+    for (let i = 1; i < activityMsgs.length; i++) {
+      expect(activityMsgs[i].activityVersion).toBeGreaterThan(
+        activityMsgs[i - 1].activityVersion,
+      );
+    }
+
+    // First version must be >= 1
+    expect(activityMsgs[0].activityVersion).toBeGreaterThanOrEqual(1);
+  });
+
+  test("handleConfirmationResponse increments activityVersion for its activity emission", () => {
+    const emitted: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => emitted.push(msg));
+
+    // Emit a baseline activity state
+    conversation.emitActivityState("thinking", "message_dequeued");
+
+    const baselineMsg = emitted.find(
+      (m) => m.type === "assistant_activity_state",
+    ) as ServerMessage & { activityVersion: number };
+    const baselineVersion = baselineMsg.activityVersion;
+
+    // Now handle a confirmation
+    seedPendingConfirmation(conversation, "req-version-1");
+    conversation.handleConfirmationResponse("req-version-1", "allow");
+
+    const activityMsgs = emitted.filter(
+      (m) => m.type === "assistant_activity_state",
+    ) as Array<ServerMessage & { activityVersion: number; reason: string }>;
+
+    // The confirmation_resolved activity message should have a higher version
+    const resolvedMsg = activityMsgs.find(
+      (m) => m.reason === "confirmation_resolved",
+    );
+    expect(resolvedMsg).toBeDefined();
+    expect(resolvedMsg!.activityVersion).toBeGreaterThan(baselineVersion);
+  });
+});
+
+describe("sendToClient receives state signals", () => {
+  test("emitActivityState delivers to sendToClient", () => {
+    const clientMsgs: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => clientMsgs.push(msg));
+
+    conversation.emitActivityState("thinking", "message_dequeued");
+
+    expect(
+      clientMsgs.filter((m) => m.type === "assistant_activity_state"),
+    ).toHaveLength(1);
+  });
+
+  test("emitConfirmationStateChanged delivers to sendToClient", () => {
+    const clientMsgs: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => clientMsgs.push(msg));
+
+    conversation.emitConfirmationStateChanged({
+      conversationId: "conv-signals-test",
+      requestId: "req-signal-1",
+      state: "approved",
+      source: "button",
+    });
+
+    expect(
+      clientMsgs.filter((m) => m.type === "confirmation_state_changed"),
+    ).toHaveLength(1);
+  });
+
+  test("handleConfirmationResponse delivers state signals to sendToClient", () => {
+    const clientMsgs: ServerMessage[] = [];
+    const conversation = makeConversation((msg) => clientMsgs.push(msg));
+
+    seedPendingConfirmation(conversation, "req-signal-confirm");
+    conversation.handleConfirmationResponse("req-signal-confirm", "allow");
+
+    const confirmSignal = clientMsgs.find(
+      (m) =>
+        m.type === "confirmation_state_changed" &&
+        "requestId" in m &&
+        (m as { requestId: string }).requestId === "req-signal-confirm",
+    );
+    const activitySignal = clientMsgs.find(
+      (m) =>
+        m.type === "assistant_activity_state" &&
+        "reason" in m &&
+        (m as { reason: string }).reason === "confirmation_resolved",
+    );
+
+    expect(confirmSignal).toBeDefined();
+    expect(confirmSignal).toMatchObject({
+      state: "approved",
+      requestId: "req-signal-confirm",
+    });
+
+    expect(activitySignal).toBeDefined();
+    expect(activitySignal).toMatchObject({
+      phase: "thinking",
+      reason: "confirmation_resolved",
+    });
+  });
+});

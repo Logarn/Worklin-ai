@@ -1,0 +1,600 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+import { getLogger } from "../util/logger.js";
+import { getWorkspaceSkillsDir } from "../util/platform.js";
+import {
+  computeSkillHash,
+  readInstallMeta,
+  writeInstallMeta,
+} from "./install-meta.js";
+
+const log = getLogger("clawhub");
+
+// Managed skills directory — where installed skill folders live
+function getManagedSkillsDir(): string {
+  return getWorkspaceSkillsDir();
+}
+
+// ClaWHub project root — clawhub creates a `skills/` subdir inside its cwd,
+// so we use the parent of the managed skills dir as the project root.
+function getClawhubProjectRoot(): string {
+  return dirname(getWorkspaceSkillsDir());
+}
+
+// Validate slug format (alphanumeric, hyphens, dots, underscores; optional namespace with single slash)
+export function validateSlug(slug: string): boolean {
+  return /^[a-zA-Z0-9]([a-zA-Z0-9._-]*(\/[a-zA-Z0-9][a-zA-Z0-9._-]*)?)?$/.test(
+    slug,
+  );
+}
+
+// ─── Content hash verification (trust-on-first-use) ──────────────────────────
+
+interface IntegrityRecord {
+  sha256: string;
+  installedAt: string;
+}
+
+type IntegrityManifest = Record<string, IntegrityRecord>;
+
+function getIntegrityPath(): string {
+  return join(getManagedSkillsDir(), ".integrity.json");
+}
+
+function loadIntegrityManifest(): IntegrityManifest {
+  const path = getIntegrityPath();
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as IntegrityManifest;
+  } catch {
+    log.warn("Failed to parse integrity manifest, starting fresh");
+    return {};
+  }
+}
+
+/**
+ * Record or verify the content hash of an installed skill.
+ * On first install: stores the hash (trust-on-first-use).
+ * On subsequent installs: compares with stored hash and warns on mismatch.
+ *
+ * Always writes to `install-meta.json`. For skills that don't have one yet,
+ * creates a new `install-meta.json` with minimal metadata. Reads from the
+ * legacy `.integrity.json` manifest as a read-only fallback for stored hashes
+ * from skills that haven't been migrated yet.
+ */
+export function verifyAndRecordSkillHash(slug: string): void {
+  const skillDir = join(getManagedSkillsDir(), slug);
+  const hash = computeSkillHash(skillDir);
+  if (!hash) {
+    log.warn({ slug }, "Could not compute content hash for installed skill");
+    return;
+  }
+
+  // Try install-meta.json first for stored hash
+  const installMeta = readInstallMeta(skillDir);
+  let storedHash: string | undefined;
+
+  if (installMeta?.contentHash) {
+    storedHash = installMeta.contentHash;
+  } else {
+    // Fall back to legacy .integrity.json manifest
+    const manifest = loadIntegrityManifest();
+    const existing = manifest[slug];
+    if (existing) {
+      storedHash =
+        typeof existing.sha256 === "string" ? existing.sha256 : undefined;
+    }
+  }
+
+  if (storedHash) {
+    // Guard against corrupted entries where hash is not a string
+    if (typeof storedHash !== "string") {
+      log.warn(
+        { slug },
+        "Stored hash has non-string value — re-recording hash",
+      );
+    } else if (!storedHash.startsWith("v2:")) {
+      // Unknown format (not v2: prefix) — warn about integrity mismatch
+      log.warn(
+        { slug, stored: storedHash, actual: hash },
+        "Stored hash has unrecognized format — possible integrity mismatch. Re-recording.",
+      );
+    } else if (storedHash !== hash) {
+      log.warn(
+        { slug, expected: storedHash, actual: hash },
+        "Skill content hash changed — content differs from previous install. " +
+          "This is expected for updates but could indicate CDN tampering.",
+      );
+    } else {
+      log.info(
+        { slug },
+        "Skill content hash verified — matches previous install",
+      );
+    }
+  } else {
+    log.info(
+      { slug, sha256: hash },
+      "Recorded initial content hash for skill (trust-on-first-use)",
+    );
+  }
+
+  // Write to install-meta.json (preferred). If no install-meta exists yet,
+  // create one with minimal metadata.
+  if (installMeta) {
+    writeInstallMeta(skillDir, { ...installMeta, contentHash: hash });
+  } else {
+    writeInstallMeta(skillDir, {
+      origin: "clawhub",
+      installedAt: new Date().toISOString(),
+      slug,
+      contentHash: hash,
+    });
+  }
+}
+
+type ClawhubInstallResult =
+  | {
+      success: true;
+      skillId: string;
+      skillDir: string;
+      version?: string;
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
+interface ClawhubSearchResultItem {
+  name: string;
+  slug: string;
+  description: string;
+  author: string;
+  stars: number;
+  installs: number;
+  version: string;
+  createdAt: number;
+  /** Where this skill comes from: "vellum" (first-party) or "clawhub" (community). */
+  source: "vellum" | "clawhub";
+}
+
+interface ClawhubSearchResult {
+  skills: ClawhubSearchResultItem[];
+}
+
+interface ClawhubUpdateResult {
+  success: boolean;
+  updatedVersion?: string;
+  error?: string;
+}
+
+interface ClawhubUpdateCheckItem {
+  name: string;
+  installedVersion: string;
+  latestVersion: string;
+}
+
+// Helper to run clawhub commands
+async function runClawhub(
+  args: string[],
+  opts?: { cwd?: string; timeout?: number },
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const cwd = opts?.cwd ?? getClawhubProjectRoot();
+  const timeout = opts?.timeout ?? 60000;
+
+  // Ensure managed skills dir exists
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(cwd, { recursive: true });
+
+  log.debug({ args, cwd }, "Running clawhub command");
+
+  const proc = Bun.spawn(["npx", "clawhub", ...args], {
+    cwd,
+    env: { ...process.env, CLAWHUB_DISABLE_TELEMETRY: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<[string, string]>((_, reject) => {
+    timer = setTimeout(() => {
+      proc.kill();
+      reject(new Error(`clawhub command timed out after ${timeout}ms`));
+    }, timeout);
+  });
+
+  const [stdout, stderr] = await Promise.race([
+    Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]),
+    timeoutPromise,
+  ]).finally(() => clearTimeout(timer!));
+
+  // Suppress unhandled rejection from the losing timeout promise
+  timeoutPromise.catch(() => {});
+
+  const exitCode = await proc.exited;
+
+  log.debug(
+    { exitCode, stdoutLen: stdout.length, stderrLen: stderr.length },
+    "clawhub command completed",
+  );
+
+  return { stdout, stderr, exitCode };
+}
+
+function getSkillNameFromSlug(slug: string): string {
+  return slug.includes("/") ? slug.split("/").pop()! : slug;
+}
+
+function getClawhubSkillsDir(projectRoot?: string): string {
+  return projectRoot ? join(projectRoot, "skills") : getManagedSkillsDir();
+}
+
+function hasRootSkillFile(skillDir: string): boolean {
+  return existsSync(join(skillDir, "SKILL.md"));
+}
+
+function findInstalledClawhubSkillDir(
+  slug: string,
+  projectRoot?: string,
+): { skillId: string; skillDir: string } | null {
+  const skillsDir = getClawhubSkillsDir(projectRoot);
+  const expectedSkillName = getSkillNameFromSlug(slug);
+  const candidates = [
+    join(skillsDir, slug),
+    join(skillsDir, expectedSkillName),
+  ];
+
+  for (const candidate of candidates) {
+    if (hasRootSkillFile(candidate)) {
+      return { skillId: expectedSkillName, skillDir: candidate };
+    }
+  }
+
+  if (!projectRoot || !existsSync(skillsDir)) return null;
+
+  const stagedSkills = readdirSync(skillsDir, { withFileTypes: true }).filter(
+    (entry) =>
+      entry.isDirectory() && hasRootSkillFile(join(skillsDir, entry.name)),
+  );
+  if (stagedSkills.length !== 1) return null;
+
+  const skillId = stagedSkills[0]!.name;
+  return { skillId, skillDir: join(skillsDir, skillId) };
+}
+
+export async function clawhubInstall(
+  slug: string,
+  opts?: { version?: string; contactId?: string; projectRoot?: string },
+): Promise<ClawhubInstallResult> {
+  if (!validateSlug(slug)) {
+    return { success: false, error: `Invalid skill slug: ${slug}` };
+  }
+
+  const installSlug = opts?.version ? `${slug}@${opts.version}` : slug;
+  const args = ["install", installSlug, "--force"]; // non-interactive
+
+  try {
+    const result = await runClawhub(args, { cwd: opts?.projectRoot });
+    if (result.exitCode !== 0) {
+      const error =
+        result.stderr.trim() || result.stdout.trim() || "Unknown error";
+      return { success: false, error };
+    }
+
+    const installed = findInstalledClawhubSkillDir(slug, opts?.projectRoot);
+    if (!installed) {
+      return {
+        success: false,
+        error: `Installed skill "${slug}" is missing SKILL.md at the skill root`,
+      };
+    }
+
+    // Write install-meta.json for the installed skill.
+    // contentHash is included here, so there's no need to call
+    // verifyAndRecordSkillHash() — it would just rewrite the same data.
+    writeInstallMeta(installed.skillDir, {
+      origin: "clawhub",
+      slug,
+      installedAt: new Date().toISOString(),
+      ...(opts?.contactId ? { installedBy: opts.contactId } : {}),
+      contentHash: computeSkillHash(installed.skillDir) ?? undefined,
+    });
+
+    return {
+      success: true,
+      skillId: installed.skillId,
+      skillDir: installed.skillDir,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
+export async function clawhubUpdate(
+  name: string,
+): Promise<ClawhubUpdateResult> {
+  try {
+    const result = await runClawhub(["update", name, "--force"]);
+    if (result.exitCode !== 0) {
+      const error =
+        result.stderr.trim() || result.stdout.trim() || "Unknown error";
+      return { success: false, error };
+    }
+    verifyAndRecordSkillHash(name);
+    return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
+export async function clawhubSearch(
+  query: string,
+  opts?: { limit?: number },
+): Promise<ClawhubSearchResult> {
+  const limit = opts?.limit ?? 25;
+
+  // Empty query: use explore (browse trending) instead of search
+  if (!query.trim()) {
+    return clawhubExplore({ limit });
+  }
+
+  const result = await runClawhub(["search", query, "--limit", String(limit)]);
+  if (result.exitCode !== 0) {
+    const error =
+      result.stderr.trim() || result.stdout.trim() || "Unknown error";
+    throw new Error(`clawhub search failed: ${error}`);
+  }
+  // Try JSON first
+  try {
+    const parsed = JSON.parse(result.stdout);
+    if (Array.isArray(parsed)) {
+      return {
+        skills: parsed.map((s: ClawhubSearchResultItem) => ({
+          ...s,
+          source: s.source ?? ("clawhub" as const),
+        })),
+      };
+    }
+    if (parsed.skills && Array.isArray(parsed.skills)) {
+      return {
+        skills: parsed.skills.map((s: ClawhubSearchResultItem) => ({
+          ...s,
+          source: s.source ?? ("clawhub" as const),
+        })),
+      };
+    }
+  } catch {
+    // CLI outputs text — fall through to line parser below.
+  }
+
+  // Parse text output lines. The CLI format varies by version:
+  //   With version: "slug v1.0.0  Display Name  (3.459)"
+  //   Without version: "slug  Display Name  (3.459)"
+  const skills: ClawhubSearchResultItem[] = [];
+  for (const line of result.stdout.split("\n")) {
+    // Try format with version first
+    const withVersion = line.match(/^(\S+)\s+v(\S+)\s+(.+?)\s+\([\d.]+\)\s*$/);
+    if (withVersion) {
+      skills.push({
+        slug: withVersion[1],
+        version: withVersion[2],
+        name: withVersion[3].trim(),
+        description: "",
+        author: "",
+        stars: 0,
+        installs: 0,
+        createdAt: 0,
+        source: "clawhub",
+      });
+      continue;
+    }
+    // Try format without version
+    const withoutVersion = line.match(/^(\S+)\s+(.+?)\s+\([\d.]+\)\s*$/);
+    if (withoutVersion) {
+      skills.push({
+        slug: withoutVersion[1],
+        version: "",
+        name: withoutVersion[2].trim(),
+        description: "",
+        author: "",
+        stars: 0,
+        installs: 0,
+        createdAt: 0,
+        source: "clawhub",
+      });
+    }
+  }
+  return { skills };
+}
+
+async function clawhubExplore(opts?: {
+  limit?: number;
+  sort?: string;
+}): Promise<ClawhubSearchResult> {
+  const limit = String(opts?.limit ?? 25);
+  const sort = opts?.sort ?? "installsAllTime";
+
+  const result = await runClawhub([
+    "explore",
+    "--json",
+    "--limit",
+    limit,
+    "--sort",
+    sort,
+  ]);
+  if (result.exitCode !== 0) {
+    const error =
+      result.stderr.trim() || result.stdout.trim() || "Unknown error";
+    throw new Error(`clawhub explore failed: ${error}`);
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    const items = parsed.items ?? parsed;
+    if (!Array.isArray(items)) return { skills: [] };
+
+    // Normalize explore response to ClawhubSearchResultItem shape
+    const skills: ClawhubSearchResultItem[] = items.map(
+      (item: Record<string, unknown>) => ({
+        name: (item.displayName as string) ?? (item.slug as string) ?? "",
+        slug: (item.slug as string) ?? "",
+        description: (item.summary as string) ?? "",
+        author: (item.author as string) ?? "",
+        stars: (item.stats as Record<string, number>)?.stars ?? 0,
+        installs: (item.stats as Record<string, number>)?.installsAllTime ?? 0,
+        version: (item.tags as Record<string, string>)?.latest ?? "",
+        createdAt: (item.createdAt as number) ?? 0,
+        source: "clawhub",
+      }),
+    );
+    return { skills };
+  } catch {
+    throw new Error("Failed to parse clawhub explore output");
+  }
+}
+
+export interface ClawhubInspectResult {
+  skill: { slug: string; displayName: string; summary: string };
+  owner: { handle: string; displayName: string; image?: string } | null;
+  stats: {
+    stars: number;
+    installs: number;
+    downloads: number;
+    versions: number;
+  } | null;
+  createdAt: number | null;
+  updatedAt: number | null;
+  latestVersion: { version: string; changelog?: string } | null;
+  files: Array<{ path: string; size: number; contentType?: string }> | null;
+  skillMdContent: string | null;
+}
+
+export async function clawhubInspect(
+  slug: string,
+): Promise<{ data?: ClawhubInspectResult; error?: string }> {
+  if (!validateSlug(slug)) {
+    return { error: `Invalid skill slug: ${slug}` };
+  }
+
+  try {
+    const result = await runClawhub([
+      "inspect",
+      slug,
+      "--json",
+      "--files",
+      "--file",
+      "SKILL.md",
+    ]);
+    if (result.exitCode !== 0) {
+      const error =
+        result.stderr.trim() || result.stdout.trim() || "Unknown error";
+      return { error };
+    }
+    try {
+      const parsed = JSON.parse(result.stdout);
+      // Normalize the raw inspect response to our interface.
+      // The CLI nests skill metadata under `parsed.skill` and files
+      // under `parsed.version.files`. Fall back to top-level fields
+      // for older CLI versions that used a flat structure.
+      const ps = parsed.skill ?? parsed;
+      const rawStats = ps.stats ?? parsed.stats;
+      const rawFiles = parsed.version?.files ?? parsed.files ?? null;
+      const data: ClawhubInspectResult = {
+        skill: {
+          slug: ps.slug ?? slug,
+          displayName: ps.displayName ?? ps.name ?? slug,
+          summary: ps.summary ?? ps.description ?? "",
+        },
+        owner: parsed.owner
+          ? {
+              handle: parsed.owner.handle ?? parsed.owner.username ?? "",
+              displayName: parsed.owner.displayName ?? parsed.owner.name ?? "",
+              image: parsed.owner.image ?? parsed.owner.avatar ?? undefined,
+            }
+          : null,
+        stats: rawStats
+          ? {
+              stars: rawStats.stars ?? 0,
+              installs: rawStats.installsAllTime ?? rawStats.installs ?? 0,
+              downloads: rawStats.downloadsAllTime ?? rawStats.downloads ?? 0,
+              versions: rawStats.versions ?? 0,
+            }
+          : null,
+        createdAt: ps.createdAt ?? parsed.createdAt ?? null,
+        updatedAt: ps.updatedAt ?? parsed.updatedAt ?? null,
+        latestVersion: parsed.latestVersion
+          ? {
+              version: parsed.latestVersion.version ?? "",
+              changelog: parsed.latestVersion.changelog ?? undefined,
+            }
+          : null,
+        files: Array.isArray(rawFiles)
+          ? rawFiles.map((f: Record<string, unknown>) => ({
+              path: (f.path as string) ?? "",
+              size: (f.size as number) ?? 0,
+              contentType: (f.contentType as string) ?? undefined,
+            }))
+          : null,
+        skillMdContent:
+          parsed.skillMdContent ??
+          parsed.fileContents?.["SKILL.md"] ??
+          parsed.file?.content ??
+          null,
+      };
+      return { data };
+    } catch {
+      return { error: "Failed to parse inspect output" };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: message };
+  }
+}
+
+/**
+ * Fetch a single file's content from a published clawhub skill.
+ * Calls `npx clawhub inspect <slug> --json --file <filePath>` and returns
+ * the file content string, or `null` on failure.
+ */
+export async function clawhubInspectFile(
+  slug: string,
+  filePath: string,
+): Promise<string | null> {
+  if (!validateSlug(slug)) return null;
+
+  try {
+    const result = await runClawhub([
+      "inspect",
+      slug,
+      "--json",
+      "--file",
+      filePath,
+    ]);
+    if (result.exitCode !== 0) return null;
+
+    try {
+      const parsed = JSON.parse(result.stdout);
+      // The CLI returns the file content in one of these fields
+      const content =
+        parsed.skillMdContent ??
+        parsed.fileContents?.[filePath] ??
+        parsed.file?.content ??
+        null;
+      return typeof content === "string" ? content : null;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+export async function clawhubCheckUpdates(): Promise<ClawhubUpdateCheckItem[]> {
+  // This is a placeholder -- clawhub doesn't have a dedicated check-updates command
+  // For now return empty; will be implemented when the CLI supports it
+  return [];
+}

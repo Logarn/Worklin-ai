@@ -1,0 +1,29 @@
+{
+  "entry": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**/*.ts",
+    "scripts/**/*.ts",
+    "src/daemon/main.ts!",
+    "src/plugin-api/index.ts!",
+    "src/api/index.ts!"
+  ],
+  "project": ["src/**/*.ts!", "src/**/*.tsx!", "scripts/**/*.ts"],
+  "ignore": ["src/config/preloaded-apps/**"],
+  "ignoreDependencies": [
+    "@microsoft/api-extractor",
+    "@vellumai/ces-client",
+    "@vellumai/credential-storage",
+    "@vellumai/egress-proxy",
+    "@vellumai/environments",
+    "@vellumai/gateway-client",
+    "@vellumai/ipc-server-utils",
+    "@vellumai/service-contracts",
+    "@vellumai/slack-text",
+    "@vellumai/twilio-client",
+    "@resvg/resvg-js-darwin-arm64",
+    "@resvg/resvg-js-darwin-x64",
+    "@vellumai/skill-host-contracts",
+    "ajv",
+    "madge"
+  ]
+}

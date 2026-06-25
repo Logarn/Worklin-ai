@@ -1,0 +1,89 @@
+/**
+ * Gateway proxy endpoints for Twilio integration control-plane routes.
+ *
+ * These routes are registered as explicit gateway routes for dedicated
+ * auth handling rather than falling through to the catch-all proxy.
+ */
+
+import { proxyForward } from "@vellumai/assistant-client";
+
+import { mintServiceToken } from "../../auth/token-exchange.js";
+import type { GatewayConfig } from "../../config.js";
+import { fetchImpl } from "../../fetch.js";
+import { getLogger } from "../../logger.js";
+
+const log = getLogger("twilio-control-plane-proxy");
+
+export function createTwilioControlPlaneProxyHandler(config: GatewayConfig) {
+  async function forward(
+    req: Request,
+    upstreamPath: string,
+    upstreamSearch?: string,
+  ): Promise<Response> {
+    const start = performance.now();
+    const result = await proxyForward(req, {
+      baseUrl: config.assistantRuntimeBaseUrl,
+      path: upstreamPath,
+      search: upstreamSearch,
+      serviceToken: mintServiceToken(),
+      timeoutMs: config.runtimeTimeoutMs,
+      fetchImpl,
+    });
+
+    const duration = Math.round(performance.now() - start);
+
+    if (result.gatewayError) {
+      log.error(
+        { path: upstreamPath, duration },
+        result.status === 504
+          ? "Twilio control-plane proxy upstream timed out"
+          : "Twilio control-plane proxy upstream connection failed",
+      );
+    } else if (result.status >= 400) {
+      log.warn(
+        { path: upstreamPath, status: result.status, duration },
+        "Twilio control-plane proxy upstream error",
+      );
+    } else {
+      log.info(
+        { path: upstreamPath, status: result.status, duration },
+        "Twilio control-plane proxy completed",
+      );
+    }
+
+    return new Response(result.body, {
+      status: result.status,
+      headers: result.headers,
+    });
+  }
+
+  return {
+    async handleGetTwilioConfig(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/config");
+    },
+
+    async handleSetTwilioCredentials(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/credentials");
+    },
+
+    async handleClearTwilioCredentials(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/credentials");
+    },
+
+    async handleListTwilioNumbers(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/numbers");
+    },
+
+    async handleProvisionTwilioNumber(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/numbers/provision");
+    },
+
+    async handleAssignTwilioNumber(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/numbers/assign");
+    },
+
+    async handleReleaseTwilioNumber(req: Request): Promise<Response> {
+      return forward(req, "/v1/integrations/twilio/numbers/release");
+    },
+  };
+}

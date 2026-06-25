@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "messaging_auth_test",
+      "description": "Verify that a messaging platform is connected and show account info.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform to test (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          }
+        },
+        "additionalProperties": false
+      },
+      "executor": "tools/messaging-auth-test.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_list_conversations",
+      "description": "List channels, inboxes, DMs, or groups with unread counts.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["channel", "dm", "group", "inbox"]
+            },
+            "description": "Filter by conversation type"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of conversations to return (default 200)"
+          }
+        },
+        "additionalProperties": false
+      },
+      "executor": "tools/messaging-list-conversations.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_read",
+      "description": "Read message history from a conversation. Optionally read a specific thread.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "Conversation/channel/label ID to read from"
+          },
+          "thread_id": {
+            "type": "string",
+            "description": "Thread ID to read replies from (optional)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of messages to return (default 50)"
+          }
+        },
+        "additionalProperties": false,
+        "required": ["conversation_id"]
+      },
+      "executor": "tools/messaging-read.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_search",
+      "description": "Search messages across a platform using its native query syntax.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query using the platform's native syntax"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum number of results to return (default 20)"
+          }
+        },
+        "additionalProperties": false,
+        "required": ["query"]
+      },
+      "executor": "tools/messaging-search.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_send",
+      "description": "Send a message, reply to a thread, or create a draft. On Gmail, always creates a draft for review. Supports replies (via thread_id), attachments (via attachment_paths, Gmail only), and all messaging platforms.",
+      "category": "messaging",
+      "risk": "high",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "Conversation/channel ID. For Gmail new messages, use the recipient email address."
+          },
+          "text": {
+            "type": "string",
+            "description": "Message text to send"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Email subject line (Gmail only)"
+          },
+          "in_reply_to": {
+            "type": "string",
+            "description": "Message-ID header for replies (Gmail only)"
+          },
+          "attachment_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Absolute file paths of attachments to include (Gmail only)"
+          },
+          "thread_id": {
+            "type": "string",
+            "description": "Thread ID for replies. When provided, the message is sent as a reply within the thread. On Gmail, auto-extracts reply-all recipients and threading headers."
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Confidence score (0-1) for this action"
+          }
+        },
+        "additionalProperties": false,
+        "required": ["conversation_id", "text", "confidence"]
+      },
+      "executor": "tools/messaging-send.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_mark_read",
+      "description": "Mark a conversation or message as read.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "Conversation/channel ID"
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Specific message ID to mark as read (optional)"
+          }
+        },
+        "additionalProperties": false,
+        "required": ["conversation_id"]
+      },
+      "executor": "tools/messaging-mark-read.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_analyze_style",
+      "description": "Analyze sent messages to extract personal writing style patterns. Saves style characteristics to memory for personalized drafting. Run once to enable style-aware message composition.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected. Slack is not supported — use the Slack Web API directly."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "max_messages": {
+            "type": "number",
+            "description": "Max sent messages to analyze (default 50, max 100)"
+          },
+          "query_filter": {
+            "type": "string",
+            "description": "Optional search filter (e.g. 'to:alice@example.com' for Gmail)"
+          }
+        },
+        "additionalProperties": false
+      },
+      "executor": "tools/messaging-analyze-style.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_draft",
+      "description": "Create, list, or delete local drafts for any platform.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["create", "list", "delete"],
+            "description": "Draft operation"
+          },
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Required for create/list. Slack is not supported — use the Slack Web API directly."
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "Target conversation/channel ID (for create)"
+          },
+          "text": {
+            "type": "string",
+            "description": "Draft text (for create)"
+          },
+          "thread_id": {
+            "type": "string",
+            "description": "Thread ID (for create, optional)"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Email subject (for create, Gmail only)"
+          },
+          "draft_id": {
+            "type": "string",
+            "description": "Draft ID (for delete)"
+          }
+        },
+        "additionalProperties": false,
+        "required": ["action"]
+      },
+      "executor": "tools/messaging-draft.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_sender_digest",
+      "description": "Scan connected email platform and group messages by sender to identify high-volume senders (e.g. newsletters). Works with any email provider that supports sender digest. Returns top senders sorted by message count with metadata for bulk cleanup.",
+      "category": "messaging",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (default 'category:promotions newer_than:90d')"
+          },
+          "max_messages": {
+            "type": "number",
+            "description": "Maximum messages to scan (default 5000, cap 5000)"
+          },
+          "max_senders": {
+            "type": "number",
+            "description": "Maximum senders to return (default 30)"
+          },
+          "page_token": {
+            "type": "string",
+            "description": "Resume token from a previous scan (rarely needed - scans now cover up to 5,000 messages in a single call)"
+          }
+        },
+        "additionalProperties": false
+      },
+      "executor": "tools/messaging-sender-digest.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "messaging_archive_by_sender",
+      "description": "Archive all messages matching a search query on the connected email platform. Paginates through all results and archives in bulk. Works with any email provider that supports archive by query. Include a confidence score (0-1).",
+      "category": "messaging",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform (e.g. \"gmail\"). Auto-detected if only one is connected."
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the account to use. Required when multiple accounts are connected for the same platform. If omitted, uses the most recently connected account."
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (e.g. \"from:marketing@example.com category:promotions newer_than:90d\")"
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Confidence score (0-1) for this action"
+          },
+          "user_approved": {
+            "type": "boolean",
+            "description": "Set to true ONLY when the user's most recent message contains explicit approval language for this specific action (e.g. 'archive these', 'yes do it', 'go ahead'). Do NOT set this when the user merely described what they want without confirming, or when acting on prior instructions without fresh confirmation in this turn."
+          }
+        },
+        "additionalProperties": false,
+        "required": ["query", "confidence"]
+      },
+      "executor": "tools/messaging-archive-by-sender.ts",
+      "execution_target": "host"
+    }
+  ]
+}

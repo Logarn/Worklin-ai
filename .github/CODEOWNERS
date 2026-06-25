@@ -1,0 +1,88 @@
+# =============================================================================
+# CODEOWNERS — ordered for last-match-wins semantics
+#
+# GitHub uses the LAST matching pattern, so broad directory rules go first
+# and specific overrides go after them.
+# =============================================================================
+
+# --- Broad directory catch-alls (DRI defaults) ---
+
+# Memory system (Sidd)
+assistant/src/memory/ @siddseethepalli
+
+# Tool definitions and infrastructure (Sidd)
+assistant/src/tools/ @siddseethepalli
+
+# Skill system (Aaron)
+assistant/src/skills/ @awlevin
+assistant/src/config/skills.ts @awlevin
+assistant/src/config/skill-state.ts @awlevin
+assistant/src/config/bundled-skills/ @awlevin
+assistant/src/daemon/handlers/skills.ts @awlevin
+assistant/src/daemon/message-types/skills.ts @awlevin
+assistant/src/daemon/conversation-skill-tools.ts @awlevin
+
+# --- Specific overrides (must come AFTER broad rules) ---
+
+# System prompt ownership
+assistant/src/prompts/system-prompt.ts @awlevin @siddseethepalli @alex-nork
+assistant/src/prompts/templates/ @awlevin @siddseethepalli @alex-nork
+
+# Default identity/personality files
+assistant/src/prompts/templates/IDENTITY.md @awlevin @AnitaKirkovska
+assistant/src/prompts/templates/SOUL.md @awlevin @AnitaKirkovska
+assistant/src/prompts/templates/BOOTSTRAP.md @awlevin @AnitaKirkovska
+
+# Voice / calls (Alex) — overrides tools/, bundled-skills/, routes/
+assistant/src/calls/ @alex-nork
+assistant/src/tools/calls/ @alex-nork
+assistant/src/tools/system/voice-config.ts @alex-nork
+assistant/src/config/schemas/calls.ts @alex-nork
+assistant/src/config/bundled-skills/phone-calls/ @alex-nork
+assistant/src/config/bundled-skills/voice-setup/ @alex-nork
+assistant/src/config/bundled-skills/twilio-setup/ @alex-nork
+assistant/src/runtime/routes/call-routes.ts @alex-nork
+assistant/src/runtime/middleware/twilio-validation.ts @alex-nork
+assistant/src/runtime/channel-invite-transports/voice.ts @alex-nork
+assistant/src/util/voice-code.ts @alex-nork
+gateway/src/twilio/ @alex-nork
+
+# MCP (Vincent) — overrides tools/
+assistant/src/mcp/ @vincent0426
+assistant/src/tools/mcp/ @vincent0426
+assistant/src/cli/mcp.ts @vincent0426
+
+# Skill tools (Aaron) — overrides tools/
+assistant/src/tools/skills/ @awlevin
+
+# Guardian approvals (Noa) — overrides tools/, routes/, memory/, notifications/, bundled-skills/
+assistant/src/approvals/ @noanflaherty
+assistant/src/runtime/channel-approvals.ts @noanflaherty
+assistant/src/runtime/channel-approval-types.ts @noanflaherty
+assistant/src/runtime/channel-verification-service.ts @noanflaherty
+assistant/src/runtime/guardian-*.ts @noanflaherty
+assistant/src/runtime/confirmation-request-guardian-bridge.ts @noanflaherty
+assistant/src/runtime/actor-trust-resolver.ts @noanflaherty
+assistant/src/runtime/approval-*.ts @noanflaherty
+assistant/src/runtime/verification-rate-limiter.ts @noanflaherty
+assistant/src/runtime/conversation-approval-overrides.ts @noanflaherty
+assistant/src/runtime/routes/approval-routes.ts @noanflaherty
+assistant/src/runtime/routes/channel-guardian-routes.ts @noanflaherty
+assistant/src/runtime/routes/guardian-*.ts @noanflaherty
+assistant/src/runtime/routes/trust-rules-routes.ts @noanflaherty
+assistant/src/daemon/approval-generators.ts @noanflaherty
+assistant/src/daemon/guardian-*.ts @noanflaherty
+assistant/src/daemon/message-types/guardian-actions.ts @noanflaherty
+assistant/src/daemon/message-types/trust.ts @noanflaherty
+assistant/src/tools/verification-control-plane-policy.ts @noanflaherty
+assistant/src/tools/tool-approval-handler.ts @noanflaherty
+assistant/src/security/tool-approval-digest.ts @noanflaherty
+assistant/src/permissions/ @noanflaherty
+assistant/src/memory/guardian-* @noanflaherty
+assistant/src/memory/scoped-approval-grants.ts @noanflaherty
+assistant/src/memory/canonical-guardian-store.ts @noanflaherty
+assistant/src/calls/guardian-*.ts @noanflaherty
+assistant/src/config/bundled-skills/guardian-verify-setup/ @noanflaherty
+assistant/src/config/bundled-skills/contacts/ @noanflaherty
+assistant/src/notifications/guardian-question-mode.ts @noanflaherty
+gateway/src/http/routes/channel-verification-session-proxy.ts @noanflaherty

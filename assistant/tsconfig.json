@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "jsx": "react-jsx",
+    "types": ["bun-types"],
+    "paths": {
+      "@vellumai/plugin-api": ["./src/plugin-api/index.ts"],
+      "@vellumai/retention-domain": [
+        "../packages/retention-domain/src/index.ts"
+      ]
+    }
+  },
+  "include": ["src/**/*", "src/**/*.tsx", "examples/**/*.ts"],
+  "exclude": ["node_modules", "dist", "drizzle", "src/config/preloaded-apps"]
+}

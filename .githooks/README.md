@@ -1,0 +1,115 @@
+# Git Hooks
+
+This directory contains shared git hooks for the vellum-assistant repository.
+
+## Installation
+
+Hooks are installed automatically when you run `bun install` in any package
+(via a `postinstall` script that sets `core.hooksPath`).
+
+To install manually:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+This works in both regular checkouts and git worktrees.
+
+## Available Hooks
+
+### pre-commit
+
+Automatically checks for plain text keys and secrets before allowing a commit.
+
+**What it checks:**
+
+1. **Secret scanning** — Detects plain text keys, tokens, passwords, and other sensitive information
+2. **Generic-examples rule** — Runs `scripts/check-generic-examples.ts` against staged changes. Enforces the AGENTS.md "Generic Examples" rule: test fixtures and illustrative content must use generic placeholders, not real personal data. See `scripts/generic-examples/README.md` for patterns and optional per-developer private config.
+3. **Prettier formatting** — Runs `prettier --check` on staged files in `assistant/`, `cli/`, and `gateway/`
+4. **ESLint** — Runs `eslint` on staged source files in `assistant/`, `cli/`, `gateway/`, and `apps/web/`
+5. **TypeScript type-check** — Runs `tsc --noEmit` on `assistant/` and `apps/web/` when `.ts`/`.tsx` files are staged (skipped in worktrees for performance)
+6. **Message contract verification** — When message contract files are staged, verifies generated Swift models, inventory snapshot, and decoder sync are up to date
+7. **Tool registration guard** — Blocks new tool registrations in `assistant/src/tools/` (requires Team Jarvis approval, see `assistant/src/tools/AGENTS.md`)
+
+**Behavior:**
+- Blocks commits containing potential secrets
+- Blocks new tool files containing `implements Tool` or `registerTool()` patterns
+- Provides detailed feedback on what was detected and where
+- Allows clean commits to proceed without interruption
+- Avoids known false positives for architecture/db identifier strings like `assistant_auth_tokens` and migration checkpoint keys
+- Ignores checksum/hash fixture fields (for example `nonceSha256`) while still scanning adjacent lines
+- Runs prettier and eslint on staged files in assistant, cli, and gateway directories; runs eslint (without prettier) on apps/web
+- **Merge-aware:** During merge commits, Prettier and ESLint only run on files the author changed on their branch — not files brought in from the other side of the merge. This prevents pre-existing formatting drift on main from blocking merge commits. Secret scanning still checks all staged files regardless.
+- When message contract files are staged, verifies the generated Swift models and inventory snapshot are up to date
+- Catches unstaged generated output files (e.g., regenerated but not `git add`-ed)
+
+**Verification:**
+- Run `.githooks/pre-commit --self-test` to verify safe architecture/db/checksum fixture strings are allowed while seeded real secrets are still detected.
+
+**Bypass (not recommended):**
+If you need to bypass this check in exceptional cases:
+```bash
+git commit --no-verify
+```
+
+### commit-msg
+
+Runs the same generic-examples patterns as `pre-commit`, but against the commit message text itself rather than the staged diff.
+
+**What it checks:**
+
+- **Generic-examples rule on commit messages** — Runs `scripts/check-generic-examples.ts --commit-msg <path>` against the message git is about to record. The same shape patterns and any private patterns (`VELLUM_CONTENT_CHECK_PATTERNS`) apply.
+
+**Behavior:**
+
+- Comment lines (lines starting with `#`) are stripped before scanning when `commit.cleanup` is `default`, `strip`, or `scissors` (the modes that drop them from the recorded commit). Under `verbatim` or `whitespace`, comment lines are scanned because git keeps them.
+- Content below the `# ------------------------ >8 ------------------------` scissors line (used by `git commit -v`) is always ignored. Git strips that region — which holds the verbose diff — from the recorded commit message regardless of cleanup mode, so scanning it would produce false positives on staged code rather than commit text.
+<!-- generic-examples:ignore-next-line — illustrative example of what the rule flags -->
+- Patterns are quote-anchored — they catch quoted/back-ticked emails and phone numbers (e.g., `Updated "alice@gmail.com" to be hashed`), not bare prose. Angle-bracketed trailers like `Co-Authored-By: Claude <noreply@anthropic.com>` are not flagged.
+- Suppression: `generic-examples:ignore-line` on the flagged line itself works (note that the marker survives into the recorded message). `generic-examples:ignore-next-line` is intentionally not supported here, since the marker line would also survive into the recorded message — use the same-line form instead.
+
+**Bypass (not recommended):**
+```bash
+git commit --no-verify
+```
+
+### pre-push
+
+Runs fast static checks before pushing. **Tests are not run here — CI is the source of truth.**
+
+**What it checks:**
+
+1. **Swift build** (`clients/`) — `swift build --product vellum-assistant` when `.swift` files changed. Skip with `SKIP_SWIFT_BUILD=1`.
+2. **Design token guard** (`clients/`) — strict-mode `check-design-tokens.sh` when `.swift` files changed.
+3. **TypeScript type check** — `tsc --noEmit` on `assistant/` and `clients/chrome-extension/` when their `.ts`/`.tsx` files changed. Backstops the pre-commit type check which is skipped in worktrees for performance.
+4. **Lint** — `eslint` on changed `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs` files in `assistant/`, `cli/`, `gateway/`, and `clients/chrome-extension/`.
+
+Tests used to run here via a dependency-graph + filename-heuristic discovery pass, but were removed: small changes routinely pulled 900+ tests into the push path, blocking agents and pushing humans to `--no-verify` by default. CI runs the suite; that's enough.
+
+**Merge-aware:** When the push range contains merge commits, diffs against the `origin/main` merge-base instead of the remote branch tip, so after merging main into a feature branch only the feature branch's own changes are checked — not every file that came in from main.
+
+**Bypass:**
+```bash
+git push --no-verify
+```
+
+### post-merge & post-checkout
+
+Re-runs `bun install` in each sub-package whose `package.json` or `bun.lock`
+changed in the commits pulled in by `git pull` / `git checkout` / `git switch`.
+Prevents stale `node_modules` after a branch switch or pull that adds a new
+dependency — the failure mode looks like a silent `Cannot find package 'X'`
+at runtime.
+
+This repo has no root manifest: packages live in sub-dirs (`assistant/`,
+`cli/`, `gateway/`, `credential-executor/`, `packages/*`, etc.) each with
+their own `package.json` and `bun.lock`.
+
+**Behavior:**
+
+- Diffs the pre- and post-HEAD using git (no filesystem scan); silent no-op when no manifest file changed.
+- Runs `bun install` in each sub-package whose manifest changed (serialized to avoid `~/.bun` cache contention).
+- Warns and exits 0 if `bun` is not available (checks `$PATH` and `~/.bun/bin/bun`) — never fails `git pull` / `git checkout`.
+- Shared helper: `.githooks/bun-install-if-deps-changed.sh`.
+
+**Bypass:** these hooks are best-effort and cannot fail the pull/checkout. If you need to suppress the install, unset `core.hooksPath` or delete the hook file locally.

@@ -1,0 +1,1245 @@
+import { spawnSync } from "child_process";
+
+import cliPkg from "../../package.json";
+
+import {
+  findAssistantByName,
+  getActiveAssistant,
+  loadAllAssistants,
+  resolveCloud,
+  saveAssistantEntry,
+  type AssistantEntry,
+} from "../lib/assistant-config";
+import {
+  captureImageRefs,
+  GATEWAY_INTERNAL_PORT,
+  dockerResourceNames,
+  startContainers,
+  stopContainers,
+} from "../lib/docker";
+import {
+  fetchLatestStableVersion,
+  fetchReleases,
+  resolveImageRefsDetailed,
+} from "../lib/platform-releases";
+import {
+  authHeaders,
+  fetchAssistantDetail,
+  fetchUpgradeInProgress,
+  getPlatformUrl,
+  readPlatformToken,
+} from "../lib/platform-client";
+import { checkManagedHealth } from "../lib/health-check.js";
+import {
+  evaluateUpgradePoll,
+  resolveUpgradeTarget,
+} from "../lib/upgrade-preflight.js";
+import {
+  createBackup,
+  pruneOldBackups,
+  restoreBackup,
+} from "../lib/backup-ops.js";
+import { emitCliError, categorizeUpgradeError } from "../lib/cli-error.js";
+import { exec } from "../lib/step-runner.js";
+import {
+  broadcastUpgradeEvent,
+  buildCompleteEvent,
+  buildProgressEvent,
+  buildStartingEvent,
+  buildUpgradeCommitMessage,
+  captureReplayState,
+  captureUpgradeFailureLogs,
+  commitWorkspaceViaGateway,
+  rollbackMigrations,
+  UPGRADE_PROGRESS,
+  waitForReady,
+} from "../lib/upgrade-lifecycle.js";
+import {
+  compareVersions,
+  stripVersionPrefix,
+  versionsEqual,
+} from "../lib/version-compat.js";
+import { loopbackSafeFetch } from "../lib/loopback-fetch.js";
+
+interface UpgradeArgs {
+  name: string | null;
+  version: string | null;
+  latest: boolean;
+  prepare: boolean;
+  finalize: boolean;
+  noWait: boolean;
+  force: boolean;
+}
+
+function parseArgs(): UpgradeArgs {
+  const args = process.argv.slice(3);
+  let name: string | null = null;
+  let version: string | null = null;
+  let latest = false;
+  let prepare = false;
+  let finalize = false;
+  let noWait = false;
+  let force = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") {
+      console.log("Usage: vellum upgrade [<name>] [options]");
+      console.log("");
+      console.log("Upgrade an assistant to a newer version.");
+      console.log("To roll back to a previous version, use `vellum rollback`.");
+      console.log("");
+      console.log("Arguments:");
+      console.log(
+        "  <name>               Name of the assistant to upgrade (default: active or only assistant)",
+      );
+      console.log("");
+      console.log("Options:");
+      console.log(
+        "  --version <version>  Target version to upgrade to (default: CLI version)",
+      );
+      console.log(
+        "  --latest             Upgrade to the latest stable release, updating the CLI first if needed",
+      );
+      console.log(
+        "  --prepare            Run pre-upgrade steps only (backup, notify) without swapping versions",
+      );
+      console.log(
+        "  --finalize           Run post-upgrade steps only (broadcast complete, workspace commit)",
+      );
+      console.log(
+        "  --no-wait            Platform assistants only: return after the upgrade request is accepted instead of waiting for completion",
+      );
+      console.log(
+        "  --force              Docker assistants only: reinstall even when already on the target version",
+      );
+      console.log("");
+      console.log("Examples:");
+      console.log(
+        "  vellum upgrade                              # Upgrade the active assistant to the CLI's version",
+      );
+      console.log(
+        "  vellum upgrade --latest                     # Upgrade CLI + assistant to the latest stable release",
+      );
+      console.log(
+        "  vellum upgrade my-assistant                  # Upgrade a specific assistant by name",
+      );
+      console.log(
+        "  vellum upgrade my-assistant --version v1.2.3 # Upgrade to a specific version",
+      );
+      process.exit(0);
+    } else if (arg === "--version") {
+      const next = args[i + 1];
+      if (!next || next.startsWith("-")) {
+        console.error("Error: --version requires a value");
+        emitCliError("UNKNOWN", "--version requires a value");
+        process.exit(1);
+      }
+      version = next;
+      i++;
+    } else if (arg === "--latest") {
+      latest = true;
+    } else if (arg === "--prepare") {
+      prepare = true;
+    } else if (arg === "--finalize") {
+      finalize = true;
+    } else if (arg === "--no-wait") {
+      noWait = true;
+    } else if (arg === "--force") {
+      force = true;
+    } else if (!arg.startsWith("-")) {
+      name = arg;
+    } else {
+      console.error(`Error: Unknown option '${arg}'.`);
+      emitCliError("UNKNOWN", `Unknown option '${arg}'`);
+      process.exit(1);
+    }
+  }
+
+  if (prepare && finalize) {
+    console.error("Error: --prepare and --finalize are mutually exclusive.");
+    emitCliError("UNKNOWN", "--prepare and --finalize are mutually exclusive");
+    process.exit(1);
+  }
+
+  if (latest && version) {
+    console.error("Error: --latest and --version are mutually exclusive.");
+    emitCliError("UNKNOWN", "--latest and --version are mutually exclusive");
+    process.exit(1);
+  }
+
+  if (noWait && (prepare || finalize)) {
+    console.error(
+      "Error: --no-wait cannot be combined with --prepare or --finalize.",
+    );
+    emitCliError(
+      "UNKNOWN",
+      "--no-wait cannot be combined with --prepare or --finalize",
+    );
+    process.exit(1);
+  }
+
+  return { name, version, latest, prepare, finalize, noWait, force };
+}
+
+/**
+ * Resolve which assistant to target for the upgrade command. Priority:
+ * 1. Explicit name argument
+ * 2. Active assistant set via `vellum use`
+ * 3. Sole assistant (when exactly one exists)
+ */
+function resolveTargetAssistant(nameArg: string | null): AssistantEntry {
+  if (nameArg) {
+    const entry = findAssistantByName(nameArg);
+    if (!entry) {
+      console.error(`No assistant found with name '${nameArg}'.`);
+      emitCliError(
+        "ASSISTANT_NOT_FOUND",
+        `No assistant found with name '${nameArg}'.`,
+      );
+      process.exit(1);
+    }
+    return entry;
+  }
+
+  const active = getActiveAssistant();
+  if (active) {
+    const entry = findAssistantByName(active);
+    if (entry) return entry;
+  }
+
+  const all = loadAllAssistants();
+  if (all.length === 1) return all[0];
+
+  if (all.length === 0) {
+    const msg = "No assistants found. Run 'vellum hatch' first.";
+    console.error(msg);
+    emitCliError("ASSISTANT_NOT_FOUND", msg);
+  } else {
+    const msg =
+      "Multiple assistants found. Specify a name or set an active assistant with 'vellum use <name>'.";
+    console.error(msg);
+    emitCliError("ASSISTANT_NOT_FOUND", msg);
+  }
+  process.exit(1);
+}
+
+async function upgradeDocker(
+  entry: AssistantEntry,
+  version: string | null,
+  force: boolean,
+): Promise<void> {
+  const instanceName = entry.assistantId;
+  const res = dockerResourceNames(instanceName);
+
+  const versionTag =
+    version ?? (cliPkg.version ? `v${cliPkg.version}` : "latest");
+
+  // Capture current migration state and running version for rollback targeting
+  // and version guards. Must happen while the daemon is still running (before
+  // containers are stopped).
+  let currentVersion: string | undefined;
+  let preMigrationState: {
+    dbVersion?: number;
+    lastWorkspaceMigrationId?: string;
+  } = {};
+  try {
+    const healthResp = await loopbackSafeFetch(
+      `${entry.runtimeUrl}/healthz?include=migrations`,
+      {
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    if (healthResp.ok) {
+      const health = (await healthResp.json()) as {
+        version?: string;
+        migrations?: { dbVersion?: number; lastWorkspaceMigrationId?: string };
+      };
+      preMigrationState = health.migrations ?? {};
+      currentVersion = health.version;
+    }
+  } catch {
+    // Best-effort — if we can't get migration state, rollback will skip migration reversal
+  }
+
+  // Reject downgrades — `vellum upgrade` only handles forward version changes.
+  // Users should use `vellum rollback --version <version>` for downgrades.
+  if (!currentVersion && versionTag) {
+    console.warn(
+      "⚠️  Could not determine current version from health endpoint — skipping version-direction check.\n",
+    );
+  }
+  if (currentVersion && versionTag) {
+    const cmp = compareVersions(versionTag, currentVersion);
+    if (cmp !== null && cmp < 0) {
+      const msg = `Cannot upgrade to an older version (${versionTag} < ${currentVersion}). Use \`vellum rollback --version ${versionTag}\` instead.`;
+      console.error(msg);
+      emitCliError("VERSION_DIRECTION", msg);
+      process.exit(1);
+    }
+  }
+
+  // No-op guard: skip the full stop/start cycle (real downtime) when already
+  // on the target version. --force allows an intentional reinstall/repair.
+  if (currentVersion && versionsEqual(versionTag, currentVersion)) {
+    if (!force) {
+      console.log(
+        `✅ Already on ${versionTag}. Nothing to do. Pass --force to reinstall.`,
+      );
+      return;
+    }
+    console.log(`🔁 Reinstalling ${versionTag} (--force)...\n`);
+  }
+
+  console.log("🔍 Resolving image references...");
+  const resolution = await resolveImageRefsDetailed(versionTag);
+  if (resolution.status === "version-not-found") {
+    const msg = `Version ${versionTag} not found in platform releases.`;
+    console.error(msg);
+    emitCliError("MISSING_VERSION", msg);
+    process.exit(1);
+  }
+  if (resolution.status === "dockerhub-fallback") {
+    console.warn(
+      `⚠️  Platform unreachable — falling back to DockerHub tags for ${versionTag}.`,
+    );
+  }
+  const { imageTags } = resolution;
+
+  console.log(
+    `🔄 Upgrading Docker assistant '${instanceName}' to ${versionTag}...\n`,
+  );
+
+  // Capture rollback state from existing containers BEFORE pulling new
+  // images or stopping anything.  captureImageRefs uses the immutable
+  // image digest ({{.Image}}), but capturing first keeps the intent
+  // explicit and avoids relying on container-inspect ordering subtleties.
+  console.log("📸 Capturing current image references for rollback...");
+  const previousImageRefs = await captureImageRefs(res);
+  if (previousImageRefs) {
+    console.log(
+      `   Captured refs for ${Object.keys(previousImageRefs).length} service(s)\n`,
+    );
+  } else {
+    console.log(
+      "   Could not capture all container refs (fresh install or partial deployment)\n",
+    );
+  }
+
+  // Persist rollback state to lockfile BEFORE any destructive changes.
+  // This enables the `vellum rollback` command to restore the previous version.
+  if (entry.containerInfo) {
+    const rollbackEntry: AssistantEntry = {
+      ...entry,
+      previousContainerInfo: { ...entry.containerInfo },
+      previousVersion: currentVersion,
+      previousDbMigrationVersion: preMigrationState.dbVersion,
+      previousWorkspaceMigrationId: preMigrationState.lastWorkspaceMigrationId,
+    };
+    saveAssistantEntry(rollbackEntry);
+    if (currentVersion) {
+      console.log(`   Saved rollback state: ${currentVersion}\n`);
+    }
+  }
+
+  // Record version transition start in workspace git history
+  await commitWorkspaceViaGateway(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildUpgradeCommitMessage({
+      action: "upgrade",
+      phase: "starting",
+      from: currentVersion ?? "unknown",
+      to: versionTag,
+      topology: "docker",
+      assistantId: entry.assistantId,
+    }),
+  );
+
+  const {
+    bootstrapSecret,
+    cesServiceToken,
+    signingKey,
+    extraAssistantEnv,
+    extraGatewayEnv,
+  } = await captureReplayState(res);
+
+  // Notify connected clients that an upgrade is about to begin.
+  // This must fire BEFORE any progress broadcasts so the UI sets
+  // isUpdateInProgress = true and starts displaying status messages.
+  console.log("📢 Notifying connected clients...");
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildStartingEvent(versionTag),
+  );
+  // Brief pause to allow SSE delivery before progress events.
+  await new Promise((r) => setTimeout(r, 500));
+
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildProgressEvent(UPGRADE_PROGRESS.DOWNLOADING),
+  );
+  console.log("📦 Pulling new Docker images...");
+  const pullImages: Array<[string, string]> = [
+    ["assistant", imageTags.assistant],
+    ["gateway", imageTags.gateway],
+    ["credential-executor", imageTags["credential-executor"]],
+  ];
+  try {
+    for (const [service, image] of pullImages) {
+      console.log(`   Pulling ${service}: ${image}`);
+      await exec("docker", ["pull", image]);
+    }
+  } catch (pullErr) {
+    const detail = pullErr instanceof Error ? pullErr.message : String(pullErr);
+    console.error(`\n❌ Failed to pull Docker images: ${detail}`);
+    await broadcastUpgradeEvent(
+      entry.runtimeUrl,
+      entry.assistantId,
+      buildCompleteEvent(currentVersion ?? "unknown", false),
+    );
+    emitCliError("IMAGE_PULL_FAILED", "Failed to pull Docker images", detail);
+    process.exit(1);
+  }
+  console.log("✅ Docker images pulled\n");
+
+  // Parse gateway port from entry's runtimeUrl, fall back to default
+  let gatewayPort = GATEWAY_INTERNAL_PORT;
+  try {
+    const parsed = new URL(entry.runtimeUrl);
+    const port = parseInt(parsed.port, 10);
+    if (!isNaN(port)) {
+      gatewayPort = port;
+    }
+  } catch {
+    // use default
+  }
+
+  // Create pre-upgrade backup (best-effort, daemon must be running)
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildProgressEvent(UPGRADE_PROGRESS.BACKING_UP),
+  );
+  console.log("📦 Creating pre-upgrade backup...");
+  const backupPath = await createBackup(entry.runtimeUrl, entry.assistantId, {
+    prefix: `${entry.assistantId}-pre-upgrade`,
+    description: `Pre-upgrade snapshot before ${currentVersion ?? "unknown"} → ${versionTag}`,
+  });
+  if (backupPath) {
+    console.log(`   Backup saved: ${backupPath}\n`);
+    // Clean up old pre-upgrade backups, keep last 3
+    pruneOldBackups(entry.assistantId, 3);
+  } else {
+    console.warn("⚠️  Pre-upgrade backup failed (continuing with upgrade)\n");
+  }
+
+  // Persist the backup path so `vellum rollback` can restore the exact backup
+  // created for this upgrade attempt — never a stale backup from a prior cycle.
+  // Re-read the entry to pick up the rollback state saved earlier.
+  {
+    const current = findAssistantByName(entry.assistantId);
+    if (current) {
+      saveAssistantEntry({
+        ...current,
+        preUpgradeBackupPath: backupPath ?? undefined,
+      });
+    }
+  }
+
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildProgressEvent(UPGRADE_PROGRESS.INSTALLING),
+  );
+
+  console.log("🛑 Stopping existing containers...");
+  await stopContainers(res);
+  console.log("✅ Containers stopped\n");
+
+  console.log("🚀 Starting upgraded containers...");
+  await startContainers(
+    {
+      signingKey,
+      bootstrapSecret,
+      cesServiceToken,
+      extraAssistantEnv,
+      extraGatewayEnv,
+      gatewayPort,
+      imageTags,
+      instanceName,
+      res,
+    },
+    (msg) => console.log(msg),
+  );
+  console.log("✅ Containers started\n");
+
+  console.log("Waiting for assistant to become ready...");
+  const ready = await waitForReady(entry.runtimeUrl);
+  if (ready) {
+    // Update lockfile with new service group topology
+    const newDigests = await captureImageRefs(res);
+    const updatedEntry: AssistantEntry = {
+      ...entry,
+      containerInfo: {
+        assistantImage: imageTags.assistant,
+        gatewayImage: imageTags.gateway,
+        cesImage: imageTags["credential-executor"],
+        assistantDigest: newDigests?.assistant,
+        gatewayDigest: newDigests?.gateway,
+        cesDigest: newDigests?.["credential-executor"],
+        networkName: res.network,
+      },
+      previousContainerInfo: entry.containerInfo,
+      previousDbMigrationVersion: preMigrationState.dbVersion,
+      previousWorkspaceMigrationId: preMigrationState.lastWorkspaceMigrationId,
+      // Preserve the backup path so `vellum rollback` can restore it later
+      preUpgradeBackupPath: backupPath ?? undefined,
+    };
+    saveAssistantEntry(updatedEntry);
+
+    // Notify clients on the new service group that the upgrade succeeded.
+    await broadcastUpgradeEvent(
+      entry.runtimeUrl,
+      entry.assistantId,
+      buildCompleteEvent(versionTag, true),
+    );
+
+    // Record successful upgrade in workspace git history
+    await commitWorkspaceViaGateway(
+      entry.runtimeUrl,
+      entry.assistantId,
+      buildUpgradeCommitMessage({
+        action: "upgrade",
+        phase: "complete",
+        from: currentVersion ?? "unknown",
+        to: versionTag,
+        topology: "docker",
+        assistantId: entry.assistantId,
+        result: "success",
+      }),
+    );
+
+    console.log(
+      `\n✅ Docker assistant '${instanceName}' upgraded to ${versionTag}.`,
+    );
+  } else {
+    console.error(`\n❌ Containers failed to become ready within the timeout.`);
+
+    const logDir = await captureUpgradeFailureLogs(
+      res,
+      `${instanceName}-upgrade-failure`,
+    );
+    if (logDir) {
+      console.log(`📋 Container logs saved to: ${logDir}`);
+    }
+
+    if (previousImageRefs) {
+      await broadcastUpgradeEvent(
+        entry.runtimeUrl,
+        entry.assistantId,
+        buildProgressEvent(UPGRADE_PROGRESS.REVERTING),
+      );
+      console.log(`\n🔄 Rolling back to previous images...`);
+      try {
+        // Attempt to roll back migrations before swapping containers.
+        // The new daemon may be partially up — try best-effort.
+        if (
+          preMigrationState.dbVersion !== undefined ||
+          preMigrationState.lastWorkspaceMigrationId !== undefined
+        ) {
+          console.log("🔄 Reverting database changes...");
+          await broadcastUpgradeEvent(
+            entry.runtimeUrl,
+            entry.assistantId,
+            buildProgressEvent(UPGRADE_PROGRESS.REVERTING_MIGRATIONS),
+          );
+          await rollbackMigrations(
+            entry.runtimeUrl,
+            entry.assistantId,
+            preMigrationState.dbVersion,
+            preMigrationState.lastWorkspaceMigrationId,
+          );
+        }
+
+        await stopContainers(res);
+
+        await startContainers(
+          {
+            signingKey,
+            bootstrapSecret,
+            cesServiceToken,
+            extraAssistantEnv,
+            extraGatewayEnv,
+            gatewayPort,
+            imageTags: previousImageRefs,
+            instanceName,
+            res,
+          },
+          (msg) => console.log(msg),
+        );
+
+        const rollbackReady = await waitForReady(entry.runtimeUrl);
+        if (rollbackReady) {
+          // Restore data from the backup created for THIS upgrade attempt.
+          // Only use the specific backupPath — never scan for the latest
+          // backup on disk, which could be from a previous upgrade cycle
+          // and contain stale data.
+          if (backupPath) {
+            await broadcastUpgradeEvent(
+              entry.runtimeUrl,
+              entry.assistantId,
+              buildProgressEvent(UPGRADE_PROGRESS.RESTORING),
+            );
+            console.log(`📦 Restoring data from pre-upgrade backup...`);
+            console.log(`   Source: ${backupPath}`);
+            const restored = await restoreBackup(
+              entry.runtimeUrl,
+              entry.assistantId,
+              backupPath,
+            );
+            if (restored) {
+              console.log("   ✅ Data restored successfully\n");
+            } else {
+              console.warn(
+                "   ⚠️  Data restore failed (rollback continues without data restoration)\n",
+              );
+            }
+          } else {
+            console.log(
+              "ℹ️  No pre-upgrade backup was created for this attempt, skipping data restoration\n",
+            );
+          }
+
+          // Capture fresh digests from the now-running rolled-back containers.
+          const rollbackDigests = await captureImageRefs(res);
+
+          // Restore previous container info in lockfile after rollback.
+          // The *Image fields hold human-readable image:tag names from the
+          // pre-upgrade containerInfo; *Digest fields get fresh values from
+          // the running containers (or fall back to previousImageRefs).
+          const rolledBackEntry: AssistantEntry = {
+            ...entry,
+            containerInfo: {
+              assistantImage:
+                entry.containerInfo?.assistantImage ??
+                previousImageRefs.assistant,
+              gatewayImage:
+                entry.containerInfo?.gatewayImage ?? previousImageRefs.gateway,
+              cesImage:
+                entry.containerInfo?.cesImage ??
+                previousImageRefs["credential-executor"],
+              assistantDigest:
+                rollbackDigests?.assistant ?? previousImageRefs.assistant,
+              gatewayDigest:
+                rollbackDigests?.gateway ?? previousImageRefs.gateway,
+              cesDigest:
+                rollbackDigests?.["credential-executor"] ??
+                previousImageRefs["credential-executor"],
+              networkName: res.network,
+            },
+            previousContainerInfo: undefined,
+            previousDbMigrationVersion: undefined,
+            previousWorkspaceMigrationId: undefined,
+            // Clear the backup path — the upgrade that created it just failed
+            preUpgradeBackupPath: undefined,
+          };
+          saveAssistantEntry(rolledBackEntry);
+
+          // Notify clients that the upgrade failed and rolled back.
+          await broadcastUpgradeEvent(
+            entry.runtimeUrl,
+            entry.assistantId,
+            buildCompleteEvent(
+              currentVersion ?? "unknown",
+              false,
+              currentVersion,
+            ),
+          );
+
+          console.log(
+            `\n⚠️  Rolled back to previous version. Upgrade to ${versionTag} failed.`,
+          );
+          emitCliError(
+            "READINESS_TIMEOUT",
+            `Upgrade to ${versionTag} failed: containers did not become ready. Rolled back to previous version.`,
+          );
+        } else {
+          console.error(
+            `\n❌ Rollback also failed. Manual intervention required.`,
+          );
+          console.log(
+            `   Check logs with: docker logs -f ${res.assistantContainer}`,
+          );
+          await broadcastUpgradeEvent(
+            entry.runtimeUrl,
+            entry.assistantId,
+            buildCompleteEvent(currentVersion ?? "unknown", false),
+          );
+          emitCliError(
+            "ROLLBACK_FAILED",
+            "Rollback also failed after readiness timeout. Manual intervention required.",
+          );
+        }
+      } catch (rollbackErr) {
+        const rollbackDetail =
+          rollbackErr instanceof Error
+            ? rollbackErr.message
+            : String(rollbackErr);
+        console.error(`\n❌ Rollback failed: ${rollbackDetail}`);
+        console.error(`   Manual intervention required.`);
+        console.log(
+          `   Check logs with: docker logs -f ${res.assistantContainer}`,
+        );
+        await broadcastUpgradeEvent(
+          entry.runtimeUrl,
+          entry.assistantId,
+          buildCompleteEvent(currentVersion ?? "unknown", false),
+        );
+        emitCliError(
+          "ROLLBACK_FAILED",
+          "Auto-rollback failed after readiness timeout. Manual intervention required.",
+          rollbackDetail,
+        );
+      }
+    } else {
+      console.log(`   No previous images available for rollback.`);
+      console.log(
+        `   Check logs with: docker logs -f ${res.assistantContainer}`,
+      );
+      await broadcastUpgradeEvent(
+        entry.runtimeUrl,
+        entry.assistantId,
+        buildCompleteEvent(currentVersion ?? "unknown", false),
+      );
+      emitCliError(
+        "ROLLBACK_NO_STATE",
+        "Containers failed to become ready and no previous images available for rollback.",
+      );
+    }
+
+    process.exit(1);
+  }
+}
+
+interface UpgradeApiResponse {
+  detail: string;
+  version: string | null;
+}
+
+const PLATFORM_POLL_INTERVAL_MS = 3_000;
+const PLATFORM_POLL_HEARTBEAT_MS = 30_000;
+const PLATFORM_HEALTH_CONFIRM_TIMEOUT_MS = 120_000;
+const PLATFORM_HEALTH_CONFIRM_INTERVAL_MS = 5_000;
+
+const UPGRADE_IN_PROGRESS_MSG =
+  "An upgrade is already in progress for this assistant. Check `vellum ps`.";
+
+function platformUpgradeTimeoutMs(): number {
+  const override = process.env.VELLUM_PLATFORM_UPGRADE_TIMEOUT_MS;
+  if (override) {
+    const parsed = parseInt(override, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 600_000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Poll the platform until the upgrade completes, then confirm health.
+ * Mirrors the web UI's Software Updates flow (poll the DB-backed
+ * `current_release_version` rather than the gateway, which bounces while
+ * the service group restarts).
+ */
+async function waitForPlatformUpgrade(
+  entry: AssistantEntry,
+  token: string,
+  pollTarget: string | null,
+  initialVersion: string | null,
+): Promise<void> {
+  const timeoutMs = platformUpgradeTimeoutMs();
+  const start = Date.now();
+  let sawInProgress = false;
+  let lastHeartbeat = start;
+  let observedVersion: string | null = initialVersion;
+
+  console.log(
+    pollTarget
+      ? `⏳ Waiting for the upgrade to ${pollTarget} to complete...`
+      : "⏳ Waiting for the upgrade to complete...",
+  );
+
+  while (Date.now() - start < timeoutMs) {
+    await sleep(PLATFORM_POLL_INTERVAL_MS);
+
+    // The in-progress lock is only needed when we don't know the target
+    // version (server resolved "latest" without reporting it).
+    const [detail, inProgress] = await Promise.all([
+      fetchAssistantDetail(token, entry.assistantId, entry.runtimeUrl),
+      pollTarget
+        ? Promise.resolve(null)
+        : fetchUpgradeInProgress(token, entry.assistantId, entry.runtimeUrl),
+    ]);
+    if (detail) observedVersion = detail.currentReleaseVersion;
+    if (inProgress === true) sawInProgress = true;
+
+    const verdict = evaluateUpgradePoll({
+      targetVersion: pollTarget,
+      initialVersion,
+      observedVersion,
+      inProgress,
+      sawInProgress,
+    });
+
+    if (verdict === "complete") {
+      const finalVersion = observedVersion ?? pollTarget ?? "unknown";
+      const healthDeadline = Date.now() + PLATFORM_HEALTH_CONFIRM_TIMEOUT_MS;
+      while (Date.now() < healthDeadline) {
+        const health = await checkManagedHealth(
+          entry.runtimeUrl || getPlatformUrl(),
+          entry.assistantId,
+        );
+        if (health.status === "healthy") {
+          console.log(
+            `✅ Upgraded to ${finalVersion} — assistant is healthy.`,
+          );
+          return;
+        }
+        await sleep(PLATFORM_HEALTH_CONFIRM_INTERVAL_MS);
+      }
+      console.warn(
+        `⚠️  Upgraded to ${finalVersion}, but the health check did not confirm. Check \`vellum ps\`.`,
+      );
+      return;
+    }
+
+    if (Date.now() - lastHeartbeat >= PLATFORM_POLL_HEARTBEAT_MS) {
+      const elapsedSec = Math.round((Date.now() - start) / 1000);
+      console.log(`   Still upgrading... (${elapsedSec}s elapsed)`);
+      lastHeartbeat = Date.now();
+    }
+  }
+
+  const timeoutMin = Math.round(timeoutMs / 60_000);
+  console.warn(
+    `⚠️  Upgrade request was accepted but completion was not confirmed within ${timeoutMin} minutes. The platform may still be working — check \`vellum ps\` or the web settings page.`,
+  );
+}
+
+async function upgradePlatform(
+  entry: AssistantEntry,
+  version: string | null,
+  wait: boolean,
+): Promise<void> {
+  console.log(
+    `🔄 Upgrading platform-hosted assistant '${entry.assistantId}'...\n`,
+  );
+
+  const token = readPlatformToken();
+  if (!token) {
+    const msg =
+      "Error: Not logged in. Run `vellum login --token <token>` first.";
+    console.error(msg);
+    emitCliError("AUTH_FAILED", msg);
+    process.exit(1);
+  }
+
+  // Pre-flight (all best-effort except an explicit version that the
+  // platform doesn't know about): resolve the target, detect no-ops and
+  // downgrades before POSTing, and bail if an upgrade is already running.
+  const [assistantDetail, health] = await Promise.all([
+    fetchAssistantDetail(token, entry.assistantId, entry.runtimeUrl),
+    checkManagedHealth(
+      entry.runtimeUrl || getPlatformUrl(),
+      entry.assistantId,
+    ),
+  ]);
+  // Health probe first, DB-backed field as the sleeping-assistant fallback.
+  const currentVersion =
+    health.version ?? assistantDetail?.currentReleaseVersion ?? undefined;
+
+  const releaseChannel = assistantDetail?.releaseChannel ?? "stable";
+  // Target the same platform as the detail/health/POST calls — the entry's
+  // platform may differ from the active lockfile default.
+  const releases = await fetchReleases({
+    channel: releaseChannel,
+    platformUrl: entry.runtimeUrl,
+  });
+
+  const resolution = resolveUpgradeTarget({
+    explicitVersion: version,
+    releases,
+    currentVersion,
+  });
+
+  if (resolution.kind === "version-not-found") {
+    const msg = `Version ${version} not found in platform releases (channel: ${releaseChannel}).`;
+    console.error(msg);
+    emitCliError("MISSING_VERSION", msg);
+    process.exit(1);
+  }
+
+  if (resolution.isNoOp && resolution.target) {
+    console.log(`✅ Already on ${resolution.target}. Nothing to do.`);
+    return;
+  }
+
+  if (resolution.isDowngrade && resolution.target && currentVersion) {
+    const msg = `Cannot upgrade to an older version (${resolution.target} < ${currentVersion}). Use \`vellum rollback --version ${resolution.target}\` instead.`;
+    console.error(msg);
+    emitCliError("VERSION_DIRECTION", msg);
+    process.exit(1);
+  }
+
+  if (resolution.kind === "no-releases") {
+    console.warn(
+      "⚠️  Platform releases unavailable — requesting latest from server.",
+    );
+  }
+
+  const inProgress = await fetchUpgradeInProgress(
+    token,
+    entry.assistantId,
+    entry.runtimeUrl,
+  );
+  if (inProgress === true) {
+    console.error(UPGRADE_IN_PROGRESS_MSG);
+    emitCliError("PLATFORM_API_ERROR", UPGRADE_IN_PROGRESS_MSG);
+    process.exit(1);
+  }
+
+  if (currentVersion && resolution.target) {
+    console.log(`   ${currentVersion} → ${resolution.target}\n`);
+  }
+
+  const headers = await authHeaders(token, entry.runtimeUrl);
+
+  const url = `${entry.runtimeUrl || getPlatformUrl()}/v1/assistants/${encodeURIComponent(entry.assistantId)}/upgrade/`;
+  const body: { version?: string } = {};
+  if (version) {
+    body.version = version;
+  }
+
+  const response = await loopbackSafeFetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    const text = await response.text();
+    console.error(
+      `Authentication failed (${response.status}). Run 'vellum login' to refresh.`,
+    );
+    emitCliError("AUTH_FAILED", "Authentication failed", text);
+    try {
+      await broadcastUpgradeEvent(
+        entry.runtimeUrl,
+        entry.assistantId,
+        buildCompleteEvent("unknown", false),
+      );
+    } catch {
+      // Best-effort — broadcast may fail if the assistant is unreachable
+    }
+    process.exit(1);
+  }
+
+  if (response.status === 409) {
+    const text = await response.text();
+    console.error(UPGRADE_IN_PROGRESS_MSG);
+    emitCliError("PLATFORM_API_ERROR", UPGRADE_IN_PROGRESS_MSG, text);
+    process.exit(1);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    console.error(
+      `Error: Platform upgrade failed (${response.status}): ${text}`,
+    );
+    emitCliError(
+      "PLATFORM_API_ERROR",
+      `Platform upgrade failed (${response.status})`,
+      text,
+    );
+    try {
+      await broadcastUpgradeEvent(
+        entry.runtimeUrl,
+        entry.assistantId,
+        buildCompleteEvent("unknown", false),
+      );
+    } catch {
+      // Best-effort — broadcast may fail if the assistant is unreachable
+    }
+    process.exit(1);
+  }
+
+  const result = (await response.json()) as UpgradeApiResponse;
+
+  // The server resolves "latest" itself; a no-op response means nothing was
+  // actually kicked off, so don't poll for a completion that will never come.
+  if (result.detail?.includes("Already on the latest")) {
+    console.warn(`⚠️  ${result.detail}`);
+    return;
+  }
+
+  // NOTE: We intentionally do NOT broadcast a "complete" event here.
+  // The platform API returning 200 only means "upgrade request accepted" —
+  // the service group has not yet restarted with the new version.  The
+  // completion signal will come from the client's health-check
+  // version-change detection (DaemonConnection.swift) once the new
+  // version actually appears after the platform restarts the service group.
+
+  console.log(`✅ ${result.detail}`);
+  if (result.version) {
+    console.log(`   Version: ${result.version}`);
+  }
+
+  if (!wait) {
+    return;
+  }
+
+  await waitForPlatformUpgrade(
+    entry,
+    token,
+    result.version ?? resolution.target,
+    currentVersion ?? null,
+  );
+}
+
+/**
+ * Pre-upgrade steps for Sparkle (macOS app) lifecycle.
+ * Runs the pre-update orchestration without actually swapping containers:
+ * broadcasts SSE events, creates a workspace commit, creates a backup,
+ * prunes old backups, and outputs the backup path.
+ */
+async function upgradePrepare(
+  entry: AssistantEntry,
+  version: string | null,
+): Promise<void> {
+  const targetVersion = version ?? "unknown";
+  const currentVersion = "unknown";
+
+  // 1. Broadcast "starting" so the UI shows the progress spinner
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildStartingEvent(targetVersion, 30),
+  );
+
+  // 2. Workspace commit: record pre-update state
+  await commitWorkspaceViaGateway(
+    entry.runtimeUrl,
+    entry.assistantId,
+    `[sparkle-update] Starting: ${currentVersion} → ${targetVersion}`,
+  );
+
+  // 3. Progress: saving backup
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildProgressEvent("Saving a backup of your data…"),
+  );
+
+  // 4. Create backup
+  const backupPath = await createBackup(entry.runtimeUrl, entry.assistantId, {
+    prefix: `${entry.assistantId}-pre-upgrade`,
+    description: `Pre-upgrade snapshot before ${currentVersion} → ${targetVersion}`,
+  });
+
+  // 5. Prune old backups (keep 3)
+  if (backupPath) {
+    pruneOldBackups(entry.assistantId, 3);
+  }
+
+  // 6. Progress: installing update
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildProgressEvent(UPGRADE_PROGRESS.INSTALLING),
+  );
+
+  // 7. Output backup path to stdout for the macOS app to parse
+  if (backupPath) {
+    console.log(`BACKUP_PATH:${backupPath}`);
+  }
+}
+
+/**
+ * Post-upgrade steps for Sparkle (macOS app) lifecycle.
+ * Called after the app has been replaced and the daemon is back up.
+ * Broadcasts a "complete" SSE event and creates a workspace commit.
+ */
+async function upgradeFinalize(
+  entry: AssistantEntry,
+  version: string | null,
+): Promise<void> {
+  if (!version) {
+    console.error(
+      "Error: --finalize requires --version <from-version> to record the transition.",
+    );
+    emitCliError(
+      "UNKNOWN",
+      "--finalize requires --version <from-version> to record the transition",
+    );
+    process.exit(1);
+  }
+
+  const fromVersion = version;
+  const currentVersion = cliPkg.version ? `v${cliPkg.version}` : "unknown";
+
+  // 1. Broadcast "complete" so the UI clears the progress spinner
+  await broadcastUpgradeEvent(
+    entry.runtimeUrl,
+    entry.assistantId,
+    buildCompleteEvent(currentVersion, true),
+  );
+
+  // 2. Workspace commit: record successful update
+  await commitWorkspaceViaGateway(
+    entry.runtimeUrl,
+    entry.assistantId,
+    `[sparkle-update] Complete: ${fromVersion} → ${currentVersion}\n\nresult: success`,
+  );
+}
+
+/**
+ * When `--latest` is passed, resolve the latest stable version from the
+ * platform API.  If the running CLI is older than that version, self-update
+ * the CLI via `bun install -g` and re-exec so the new CLI's upgrade logic
+ * (and its cliPkg.version) drives the rest of the upgrade.
+ *
+ * Returns the resolved latest version string (e.g. "v0.7.0") for callers
+ * that need it.  If the CLI was updated and re-exec'd, this function never
+ * returns — the process is replaced.
+ */
+async function resolveLatestAndMaybeSelfUpdate(
+  name: string | null,
+  flags: { noWait: boolean; force: boolean },
+): Promise<string> {
+  console.log("🔍 Fetching latest stable release...");
+  const latestVersion = await fetchLatestStableVersion();
+  if (!latestVersion) {
+    console.error(
+      "Error: Could not determine the latest stable release from the platform API.",
+    );
+    emitCliError(
+      "UNKNOWN",
+      "Could not determine the latest stable release from the platform API",
+    );
+    process.exit(1);
+  }
+
+  const latestTag = latestVersion.startsWith("v")
+    ? latestVersion
+    : `v${latestVersion}`;
+  const currentTag = cliPkg.version ? `v${cliPkg.version}` : null;
+
+  console.log(`   Latest stable: ${latestTag}`);
+  console.log(`   CLI version:   ${currentTag ?? "unknown"}\n`);
+
+  // Check if the CLI needs updating
+  const cmp = currentTag ? compareVersions(latestTag, currentTag) : null;
+  if (cmp !== null && cmp > 0) {
+    console.log(`🔄 Updating CLI to ${latestTag}...`);
+    const installResult = spawnSync(
+      "bun",
+      ["install", "-g", `vellum@${stripVersionPrefix(latestVersion)}`],
+      { stdio: "inherit" },
+    );
+    if (installResult.error || installResult.status !== 0) {
+      const detail =
+        installResult.error?.message ??
+        `exited with code ${installResult.status}`;
+      console.error(`\n❌ CLI self-update failed: ${detail}`);
+      emitCliError("CLI_UPDATE_FAILED", "CLI self-update failed", detail);
+      process.exit(1);
+    }
+    console.log(`✅ CLI updated to ${latestTag}\n`);
+
+    // Re-exec with the updated CLI. Pass --version instead of --latest
+    // to avoid re-fetching and to prevent infinite re-exec loops; forward
+    // the other flags so the re-exec keeps the requested semantics.
+    const reexecArgs = ["upgrade"];
+    if (name) reexecArgs.push(name);
+    reexecArgs.push("--version", latestTag);
+    if (flags.noWait) reexecArgs.push("--no-wait");
+    if (flags.force) reexecArgs.push("--force");
+
+    console.log(`🚀 Re-running upgrade with updated CLI...\n`);
+    const reexecResult = spawnSync("vellum", reexecArgs, {
+      stdio: "inherit",
+    });
+    process.exit(reexecResult.status ?? 1);
+  }
+
+  if (cmp !== null && cmp === 0) {
+    console.log(`✅ CLI is already on the latest version (${latestTag})\n`);
+  }
+
+  return latestTag;
+}
+
+export async function upgrade(): Promise<void> {
+  const { name, version, latest, prepare, finalize, noWait, force } =
+    parseArgs();
+  const entry = resolveTargetAssistant(name);
+
+  if (prepare) {
+    await upgradePrepare(entry, version);
+    return;
+  }
+
+  if (finalize) {
+    await upgradeFinalize(entry, version);
+    return;
+  }
+
+  // When --latest is passed, resolve the target from the platform API and
+  // self-update the CLI if it's behind.  The resolved version is then used
+  // as the explicit target for the rest of the upgrade flow.
+  let effectiveVersion = version;
+  if (latest) {
+    const latestTag = await resolveLatestAndMaybeSelfUpdate(name, {
+      noWait,
+      force,
+    });
+    effectiveVersion = latestTag;
+  }
+
+  const cloud = resolveCloud(entry);
+
+  try {
+    if (cloud === "docker") {
+      await upgradeDocker(entry, effectiveVersion, force);
+      return;
+    }
+
+    if (cloud === "vellum") {
+      await upgradePlatform(entry, effectiveVersion, !noWait);
+      return;
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`\n❌ Upgrade failed: ${detail}`);
+    // Best-effort: notify connected clients that the upgrade failed.
+    // A `starting` event may have been sent inside upgradeDocker/upgradePlatform
+    // before the error was thrown, so we must close with `complete`.
+    await broadcastUpgradeEvent(
+      entry.runtimeUrl,
+      entry.assistantId,
+      buildCompleteEvent("unknown", false),
+    );
+    emitCliError(categorizeUpgradeError(err), "Upgrade failed", detail);
+    process.exit(1);
+  }
+
+  const msg = `Error: Upgrade is not supported for '${cloud}' assistants. Only 'docker' and 'vellum' assistants can be upgraded via the CLI.`;
+  console.error(msg);
+  emitCliError("UNSUPPORTED_TOPOLOGY", msg);
+  process.exit(1);
+}

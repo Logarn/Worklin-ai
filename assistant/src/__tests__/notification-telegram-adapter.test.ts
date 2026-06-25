@@ -1,0 +1,305 @@
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+const sendCalls: Array<{
+  chatId: string;
+  text: string;
+  approval?: {
+    requestId: string;
+    actions: Array<{ id: string; label: string }>;
+    plainTextFallback: string;
+  };
+}> = [];
+
+/** When true, sendTelegramReply throws if an approval argument is present. */
+let rejectRichDelivery = false;
+
+mock.module("../messaging/providers/telegram-bot/send.js", () => ({
+  sendTelegramReply: async (
+    chatId: string,
+    text: string,
+    approval?: unknown,
+  ) => {
+    if (rejectRichDelivery && approval) {
+      throw new Error("Telegram API error: buttons not supported");
+    }
+    sendCalls.push({
+      chatId,
+      text,
+      approval: approval as (typeof sendCalls)[0]["approval"],
+    });
+  },
+  sendTelegramAttachments: async () => ({
+    allFailed: false,
+    failureCount: 0,
+    totalCount: 0,
+  }),
+  sendTelegramTypingIndicator: async () => true,
+}));
+
+mock.module("../util/logger.js", () => ({
+  getLogger: () =>
+    new Proxy({} as Record<string, unknown>, {
+      get: () => () => {},
+    }),
+}));
+
+import { TelegramAdapter } from "../notifications/adapters/telegram.js";
+import type {
+  ChannelDeliveryPayload,
+  ChannelDestination,
+} from "../notifications/types.js";
+
+function makePayload(
+  overrides?: Partial<ChannelDeliveryPayload>,
+): ChannelDeliveryPayload {
+  return {
+    sourceEventName: "schedule.notify",
+    copy: {
+      title: "Reminder",
+      body: "Check the oven now!",
+    },
+    urgency: "medium",
+    ...overrides,
+  };
+}
+
+function makeDestination(
+  overrides?: Partial<ChannelDestination>,
+): ChannelDestination {
+  return {
+    channel: "telegram",
+    endpoint: "chat-123",
+    ...overrides,
+  };
+}
+
+describe("TelegramAdapter", () => {
+  beforeEach(() => {
+    sendCalls.length = 0;
+    rejectRichDelivery = false;
+  });
+
+  test("prefers deliveryText and does not append deterministic label", async () => {
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      copy: {
+        title: "Check the oven",
+        body: "Reminder: Check the oven now!",
+        deliveryText: "Check the oven now!",
+        conversationTitle: "Oven Reminder",
+      },
+    });
+
+    const result = await adapter.send(payload, makeDestination());
+
+    expect(result.success).toBe(true);
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]?.chatId).toBe("chat-123");
+    expect(sendCalls[0]?.text).toBe("Check the oven now!");
+    expect(sendCalls[0]?.text).not.toContain("Thread:");
+  });
+
+  test("falls back to conversationSeedMessage when deliveryText is absent", async () => {
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      copy: {
+        title: "Reminder",
+        body: "Check the oven now!",
+        conversationSeedMessage: "Please check the oven now.",
+      },
+    });
+
+    await adapter.send(payload, makeDestination());
+
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]?.text).toBe("Please check the oven now.");
+  });
+
+  test("uses recipient-facing fallback text without channel or meta-send phrasing", async () => {
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      copy: {
+        title: "Reminder",
+        body: "Check the oven now!",
+      },
+    });
+
+    await adapter.send(payload, makeDestination());
+
+    const text = sendCalls[0]?.text as string;
+    expect(text).toBe("Check the oven now!");
+    expect(text).not.toMatch(/via telegram/i);
+    expect(text).not.toMatch(/may i go ahead/i);
+    expect(text).not.toMatch(/i'd like to send/i);
+  });
+
+  test("falls back to body/title/sourceEventName when richer text is unavailable", async () => {
+    const adapter = new TelegramAdapter();
+
+    await adapter.send(
+      makePayload({
+        copy: {
+          title: "Reminder",
+          body: "Check the oven now!",
+          conversationSeedMessage: '{"raw":"json"}',
+        },
+      }),
+      makeDestination(),
+    );
+    expect(sendCalls[0]?.text).toBe("Check the oven now!");
+
+    await adapter.send(
+      makePayload({
+        copy: {
+          title: "Reminder",
+          body: "   ",
+        },
+      }),
+      makeDestination(),
+    );
+    expect(sendCalls[1]?.text).toBe("Reminder");
+
+    await adapter.send(
+      makePayload({
+        sourceEventName: "watcher.escalation",
+        copy: {
+          title: " ",
+          body: "",
+        },
+      }),
+      makeDestination(),
+    );
+    expect(sendCalls[2]?.text).toBe("watcher escalation");
+  });
+
+  // ── Access request inline keyboard tests ──────────────────────────────
+
+  test("includes approval payload with inline buttons for access requests", async () => {
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      sourceEventName: "ingress.access_request",
+      copy: {
+        title: "Access Request",
+        body: "Someone is requesting access.",
+        deliveryText: "Someone is requesting access to the assistant.",
+      },
+      contextPayload: {
+        requestId: "req-abc-123",
+        requestCode: "XYZW",
+        senderIdentifier: "TestUser",
+        sourceChannel: "telegram",
+      },
+      approvalContext: {
+        requestId: "req-abc-123",
+        actions: [
+          { id: "approve_once", label: "Approve once" },
+          { id: "reject", label: "Reject" },
+        ],
+        plainTextFallback:
+          'TestUser is requesting access to the assistant.\nReply "XYZW approve" to grant access or "XYZW reject" to deny.\nReply "open invite flow" to start Trusted Contacts invite flow.',
+      },
+    });
+
+    const result = await adapter.send(payload, makeDestination());
+
+    expect(result.success).toBe(true);
+    expect(sendCalls).toHaveLength(1);
+
+    const call = sendCalls[0]!;
+    expect(call.text).toBe("Someone is requesting access to the assistant.");
+
+    const approval = call.approval;
+    expect(approval).toBeDefined();
+    expect(approval!.requestId).toBe("req-abc-123");
+    expect(approval!.actions).toHaveLength(2);
+    expect(approval!.actions[0]).toEqual({
+      id: "approve_once",
+      label: "Approve once",
+    });
+    expect(approval!.actions[1]).toEqual({ id: "reject", label: "Reject" });
+    expect(approval!.plainTextFallback).toContain("XYZW");
+  });
+
+  test("sends plain text without approval when contextPayload is missing", async () => {
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      sourceEventName: "ingress.access_request",
+      copy: {
+        title: "Access Request",
+        body: "Someone is requesting access.",
+      },
+    });
+
+    const result = await adapter.send(payload, makeDestination());
+
+    expect(result.success).toBe(true);
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]?.approval).toBeUndefined();
+  });
+
+  test("sends plain text without approval when requestId is missing from contextPayload", async () => {
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      sourceEventName: "ingress.access_request",
+      copy: {
+        title: "Access Request",
+        body: "Someone is requesting access.",
+      },
+      contextPayload: {
+        senderIdentifier: "TestUser",
+        sourceChannel: "telegram",
+        // no requestId
+      },
+    });
+
+    const result = await adapter.send(payload, makeDestination());
+
+    expect(result.success).toBe(true);
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]?.approval).toBeUndefined();
+  });
+
+  test("falls back to plain text with instructions when rich delivery fails", async () => {
+    rejectRichDelivery = true;
+
+    const adapter = new TelegramAdapter();
+    const payload = makePayload({
+      sourceEventName: "ingress.access_request",
+      copy: {
+        title: "Access Request",
+        body: "Someone is requesting access.",
+        deliveryText: "Someone is requesting access to the assistant.",
+      },
+      contextPayload: {
+        requestId: "req-abc-123",
+        requestCode: "XYZW",
+        senderIdentifier: "TestUser",
+        sourceChannel: "telegram",
+      },
+      approvalContext: {
+        requestId: "req-abc-123",
+        actions: [
+          { id: "approve_once", label: "Approve once" },
+          { id: "reject", label: "Reject" },
+        ],
+        plainTextFallback:
+          'TestUser is requesting access to the assistant.\nReply "XYZW approve" to grant access or "XYZW reject" to deny.\nReply "open invite flow" to start Trusted Contacts invite flow.',
+      },
+    });
+
+    const result = await adapter.send(payload, makeDestination());
+
+    expect(result.success).toBe(true);
+    // Rich delivery threw, so only the plain-text fallback should be recorded.
+    expect(sendCalls).toHaveLength(1);
+    const call = sendCalls[0]!;
+    // No approval payload in the fallback delivery.
+    expect(call.approval).toBeUndefined();
+    // The fallback text should include the original message AND the
+    // typed-command instructions from plainTextFallback.
+    expect(call.text).toContain(
+      "Someone is requesting access to the assistant.",
+    );
+    expect(call.text).toContain("XYZW");
+  });
+});

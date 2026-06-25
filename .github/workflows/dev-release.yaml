@@ -1,0 +1,2531 @@
+name: Dev Release
+
+on:
+  schedule:
+    # Every hour on the hour
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+env:
+  ASSISTANT_IMAGE_NAME: sandbox-images/assistant-server
+  GATEWAY_IMAGE_NAME: sandbox-images/assistant-gateway
+  CREDENTIAL_EXECUTOR_IMAGE_NAME: sandbox-images/credential-executor
+
+jobs:
+  # ── Skip-if-idle gate ───────────────────────────────────────────────────
+  # The schedule fires hourly regardless of repo activity. Rebuilding an
+  # unchanged HEAD wastes CI minutes and republishes byte-identical images, so
+  # cancel the run when nothing has landed since the last *successful* dev
+  # release. "Successful" is keyed off the register-release job conclusion —
+  # the same anchor notify-dev-release uses for its changelog — so a run that
+  # registered a real release but failed in a later job (e.g. build-macos)
+  # still counts as the last release. Manual workflow_dispatch runs always
+  # proceed: the operator explicitly asked for a build.
+  #
+  # All root jobs (compute-version + the three ci-* jobs) gate on this job's
+  # has_new_commits output so they never spin up runners on an idle run. The
+  # job also calls `gh run cancel` so the run shows as cancelled rather than a
+  # misleadingly-green wall of skipped jobs (and the notify jobs, which guard
+  # on !cancelled(), stay quiet for a no-op run).
+  check-for-new-commits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      has_new_commits: ${{ steps.check.outputs.has_new_commits }}
+    steps:
+      - name: Check for new commits since last successful dev release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Manual dispatches always run, regardless of commit activity.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — proceeding regardless of commit activity."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Walk recent completed runs newest-first and pick the first whose
+          # register-release job succeeded; that run's head SHA is the last
+          # released commit. (See notify-dev-release for why we key off the job
+          # conclusion rather than the overall run conclusion.)
+          PREV_SHA=""
+          while read -r rid rsha; do
+            [ -z "$rid" ] && continue
+            CONCL=$(gh api "repos/${REPO}/actions/runs/${rid}/jobs" \
+              --jq '[.jobs[] | select(.name == "register-release") | .conclusion] | .[0] // empty')
+            if [ "$CONCL" = "success" ]; then
+              PREV_SHA="$rsha"
+              break
+            fi
+          done < <(gh api \
+            "repos/${REPO}/actions/workflows/dev-release.yaml/runs?branch=main&status=completed&per_page=30&exclude_pull_requests=true" \
+            --jq ".workflow_runs[] | select(.id != ${RUN_ID}) | \"\(.id) \(.head_sha)\"")
+
+          echo "Last successful dev release SHA: ${PREV_SHA:-<none>}"
+          echo "Current SHA: ${HEAD_SHA}"
+
+          # No prior successful release found (e.g. first tracked run) — proceed.
+          if [ -z "$PREV_SHA" ]; then
+            echo "No previous successful dev release found — proceeding."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$PREV_SHA" = "$HEAD_SHA" ]; then
+            echo "No new commits since the last successful dev release (${PREV_SHA}) — cancelling run."
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
+            # Best-effort: a transient cancel-API failure must not fail this
+            # gate job (that would turn an idle no-op into a workflow failure).
+            # The has_new_commits=false output is the durable backstop — every
+            # root job is gated on it and will be skipped regardless.
+            gh run cancel "$RUN_ID" --repo "$REPO" \
+              || echo "::warning::Failed to cancel run ${RUN_ID}; root jobs are gated on has_new_commits=false and will be skipped anyway."
+            # Give a successful cancellation time to propagate so the gated root
+            # jobs never start.
+            sleep 15
+            exit 0
+          fi
+
+          echo "New commits detected since the last successful dev release — proceeding."
+          echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+
+  compute-version:
+    needs: [check-for-new-commits]
+    if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: meta/package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Compute dev version
+        id: version
+        run: |
+          BASE_VERSION=$(node -e "console.log(require('./meta/package.json').version)")
+          SHORT_SHA="${GITHUB_SHA::7}"
+          VERSION="${BASE_VERSION}-dev.$(date -u +%Y%m%d%H%M).${SHORT_SHA}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Dev release version: ${VERSION}"
+
+  # ── CI Checks (gate image builds) ───────────────────────────────────────
+
+  ci-assistant:
+    needs: [check-for-new-commits]
+    if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
+    runs-on: ubuntu-latest-8-cores
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        working-directory: assistant
+
+      - name: Install nested package dependencies
+        run: |
+          for dir in packages/*/ skills/*/; do
+            [ -f "${dir}/package.json" ] || continue
+            (cd "${dir}" && bun install --frozen-lockfile 2>/dev/null || bun install)
+          done
+
+      - name: Sync feature flag registry
+        run: bun run meta/feature-flags/sync-bundled-copies.ts
+
+      - name: Lint
+        run: bun run lint
+        working-directory: assistant
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+        working-directory: assistant
+
+      - name: Test
+        run: bun run test
+        working-directory: assistant
+        env:
+          EXCLUDE_EXPERIMENTAL: 'true'
+          TEST_WORKERS: '4'
+
+  ci-gateway:
+    needs: [check-for-new-commits]
+    if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install shared packages
+        uses: ./.github/actions/install-shared-packages
+        with:
+          packages: packages/service-contracts packages/ces-client packages/assistant-client packages/gateway-client
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        working-directory: gateway
+
+      - name: Sync feature flag registry
+        run: bun run meta/feature-flags/sync-bundled-copies.ts
+
+      - name: Lint
+        run: bun run lint
+        working-directory: gateway
+
+      - name: Typecheck
+        run: bun run typecheck
+        working-directory: gateway
+
+      - name: Test
+        run: bun run test
+        working-directory: gateway
+
+  ci-credential-executor:
+    needs: [check-for-new-commits]
+    if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        working-directory: credential-executor
+
+      - name: Install linked package dependencies
+        run: |
+          for pkg in $(jq -r '.bundledDependencies[]' credential-executor/package.json | sed 's|@vellumai/||'); do
+            cd packages/$pkg && bun install --frozen-lockfile && cd ../..;
+          done
+
+      - name: Typecheck
+        run: bun run typecheck
+        working-directory: credential-executor
+
+      - name: Test
+        run: bun run test
+        working-directory: credential-executor
+
+  ci-cli:
+    needs: [check-for-new-commits]
+    if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install shared packages
+        uses: ./.github/actions/install-shared-packages
+        with:
+          packages: packages/environments packages/local-mode
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        working-directory: cli
+
+      - name: Lint
+        run: bun run lint
+        working-directory: cli
+
+      - name: Typecheck
+        run: bun run typecheck
+        working-directory: cli
+
+  # ── Docker Images ──────────────────────────────────────────────────────
+
+  push-assistant-image:
+    needs: [compute-version, ci-assistant]
+    runs-on: ubuntu-latest-8-cores
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    environment: dev
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.VELLUM_AUTOMATION_GITHUB_APP_ID }}
+          private-key: ${{ secrets.VELLUM_AUTOMATION_GITHUB_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Compute image name
+        id: image
+        run: |
+          echo "gcp=${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp dev version into package.json
+        run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' assistant/package.json > assistant/package.json.tmp && mv assistant/package.json.tmp assistant/package.json
+
+      - name: Sync feature flag registry for Docker context
+        run: cp meta/feature-flags/feature-flag-registry.json assistant/src/config/feature-flag-registry.json
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: assistant/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,"name=${{ steps.image.outputs.gcp }}",push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=assistant-dev-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=assistant-dev-${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Prepare platform suffix
+        id: platform
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "suffix=${platform//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: assistant-digests-dev-${{ steps.platform.outputs.suffix }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  push-assistant-manifest:
+    needs: [compute-version, push-assistant-image]
+    if: ${{ always() && !cancelled() && needs.push-assistant-image.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    environment: dev
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.VELLUM_AUTOMATION_GITHUB_APP_ID }}
+          private-key: ${{ secrets.VELLUM_AUTOMATION_GITHUB_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: latest
+
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: assistant-digests-dev-*
+          merge-multiple: true
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          SHORT_SHA="${{ needs.compute-version.outputs.short_sha }}"
+          GCP_IMAGE="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GCP_TAGS="${GCP_IMAGE}:${GITHUB_SHA}"
+          GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:${VERSION}")
+          GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:dev")
+          echo "gcp_tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$GCP_TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "gcp_image=${GCP_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          IMAGE="${{ steps.tags.outputs.gcp_image }}"
+          TAG_ARGS=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS="$TAG_ARGS -t $tag"
+          done <<< "${{ steps.tags.outputs.gcp_tags }}"
+          SOURCES=$(printf "${IMAGE}@sha256:%s " *)
+          docker buildx imagetools create $TAG_ARGS $SOURCES
+
+      - name: Export manifest digest
+        id: manifest-digest
+        run: |
+          IMAGE="${{ steps.tags.outputs.gcp_image }}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/manifest-digest
+          echo "${DIGEST}" > /tmp/manifest-digest/digest
+          echo "${IMAGE}" > /tmp/manifest-digest/repository
+
+      - name: Upload manifest digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: assistant-manifest-digest-dev
+          path: /tmp/manifest-digest/*
+          retention-days: 1
+
+  push-gateway-image:
+    needs: [compute-version, ci-gateway]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    environment: dev
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.VELLUM_AUTOMATION_GITHUB_APP_ID }}
+          private-key: ${{ secrets.VELLUM_AUTOMATION_GITHUB_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Compute image name
+        id: image
+        run: |
+          echo "gcp=${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp dev version into package.json
+        run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' gateway/package.json > gateway/package.json.tmp && mv gateway/package.json.tmp gateway/package.json
+
+      - name: Sync feature flag registry for Docker context
+        run: cp meta/feature-flags/feature-flag-registry.json gateway/src/feature-flag-registry.json
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: gateway/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,"name=${{ steps.image.outputs.gcp }}",push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=gateway-dev-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=gateway-dev-${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Prepare platform suffix
+        id: platform
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "suffix=${platform//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gateway-digests-dev-${{ steps.platform.outputs.suffix }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  push-gateway-manifest:
+    needs: [compute-version, push-gateway-image]
+    if: ${{ always() && !cancelled() && needs.push-gateway-image.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    environment: dev
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.VELLUM_AUTOMATION_GITHUB_APP_ID }}
+          private-key: ${{ secrets.VELLUM_AUTOMATION_GITHUB_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: latest
+
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: gateway-digests-dev-*
+          merge-multiple: true
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          GCP_IMAGE="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          GCP_TAGS="${GCP_IMAGE}:${GITHUB_SHA}"
+          GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:${VERSION}")
+          GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:dev")
+          echo "gcp_tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$GCP_TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "gcp_image=${GCP_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          IMAGE="${{ steps.tags.outputs.gcp_image }}"
+          TAG_ARGS=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS="$TAG_ARGS -t $tag"
+          done <<< "${{ steps.tags.outputs.gcp_tags }}"
+          SOURCES=$(printf "${IMAGE}@sha256:%s " *)
+          docker buildx imagetools create $TAG_ARGS $SOURCES
+
+      - name: Export manifest digest
+        id: manifest-digest
+        run: |
+          IMAGE="${{ steps.tags.outputs.gcp_image }}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/manifest-digest
+          echo "${DIGEST}" > /tmp/manifest-digest/digest
+          echo "${IMAGE}" > /tmp/manifest-digest/repository
+
+      - name: Upload manifest digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gateway-manifest-digest-dev
+          path: /tmp/manifest-digest/*
+          retention-days: 1
+
+  push-credential-executor-image:
+    needs: [compute-version, ci-credential-executor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    environment: dev
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.VELLUM_AUTOMATION_GITHUB_APP_ID }}
+          private-key: ${{ secrets.VELLUM_AUTOMATION_GITHUB_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Compute image name
+        id: image
+        run: |
+          echo "gcp=${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp dev version into package.json
+        run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' credential-executor/package.json > credential-executor/package.json.tmp && mv credential-executor/package.json.tmp credential-executor/package.json
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: credential-executor/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,"name=${{ steps.image.outputs.gcp }}",push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=credential-executor-dev-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=credential-executor-dev-${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Prepare platform suffix
+        id: platform
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "suffix=${platform//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: credential-executor-digests-dev-${{ steps.platform.outputs.suffix }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  push-credential-executor-manifest:
+    needs: [compute-version, push-credential-executor-image]
+    if: ${{ always() && !cancelled() && needs.push-credential-executor-image.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    environment: dev
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.VELLUM_AUTOMATION_GITHUB_APP_ID }}
+          private-key: ${{ secrets.VELLUM_AUTOMATION_GITHUB_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: latest
+
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: credential-executor-digests-dev-*
+          merge-multiple: true
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          GCP_IMAGE="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+          GCP_TAGS="${GCP_IMAGE}:${GITHUB_SHA}"
+          GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:${VERSION}")
+          GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:dev")
+          echo "gcp_tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$GCP_TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "gcp_image=${GCP_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          IMAGE="${{ steps.tags.outputs.gcp_image }}"
+          TAG_ARGS=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS="$TAG_ARGS -t $tag"
+          done <<< "${{ steps.tags.outputs.gcp_tags }}"
+          SOURCES=$(printf "${IMAGE}@sha256:%s " *)
+          docker buildx imagetools create $TAG_ARGS $SOURCES
+
+      - name: Export manifest digest
+        id: manifest-digest
+        run: |
+          IMAGE="${{ steps.tags.outputs.gcp_image }}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/manifest-digest
+          echo "${DIGEST}" > /tmp/manifest-digest/digest
+          echo "${IMAGE}" > /tmp/manifest-digest/repository
+
+      - name: Upload manifest digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: credential-executor-manifest-digest-dev
+          path: /tmp/manifest-digest/*
+          retention-days: 1
+
+  publish-production-preview-image-tags:
+    needs: [compute-version, push-assistant-manifest, push-gateway-manifest, push-credential-executor-manifest]
+    if: ${{ always() && !cancelled() && github.ref_name == 'main' && needs.push-assistant-manifest.result == 'success' && needs.push-gateway-manifest.result == 'success' && needs.push-credential-executor-manifest.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    # Registry credentials are currently scoped by GitHub environment. The
+    # production identity must also be able to read dev manifests so imagetools
+    # can retag them into production preview repositories.
+    environment: production
+    steps:
+      - name: Authenticate to production GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: latest
+
+      - name: Download assistant dev manifest digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: assistant-manifest-digest-dev
+          path: /tmp/assistant-digest
+
+      - name: Download gateway dev manifest digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: gateway-manifest-digest-dev
+          path: /tmp/gateway-digest
+
+      - name: Download credential-executor dev manifest digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: credential-executor-manifest-digest-dev
+          path: /tmp/credential-executor-digest
+
+      - name: Resolve image references
+        id: refs
+        run: |
+          ASSISTANT_SOURCE_REPO=$(cat /tmp/assistant-digest/repository)
+          ASSISTANT_SOURCE_DIGEST=$(cat /tmp/assistant-digest/digest)
+          GATEWAY_SOURCE_REPO=$(cat /tmp/gateway-digest/repository)
+          GATEWAY_SOURCE_DIGEST=$(cat /tmp/gateway-digest/digest)
+          CREDENTIAL_EXECUTOR_SOURCE_REPO=$(cat /tmp/credential-executor-digest/repository)
+          CREDENTIAL_EXECUTOR_SOURCE_DIGEST=$(cat /tmp/credential-executor-digest/digest)
+
+          ASSISTANT_DEST_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GATEWAY_DEST_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          CREDENTIAL_EXECUTOR_DEST_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+
+          echo "assistant_source_repo=${ASSISTANT_SOURCE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "assistant_source_digest=${ASSISTANT_SOURCE_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "assistant_dest_repo=${ASSISTANT_DEST_REPO}" >> "$GITHUB_OUTPUT"
+          echo "gateway_source_repo=${GATEWAY_SOURCE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "gateway_source_digest=${GATEWAY_SOURCE_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "gateway_dest_repo=${GATEWAY_DEST_REPO}" >> "$GITHUB_OUTPUT"
+          echo "credential_executor_source_repo=${CREDENTIAL_EXECUTOR_SOURCE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "credential_executor_source_digest=${CREDENTIAL_EXECUTOR_SOURCE_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "credential_executor_dest_repo=${CREDENTIAL_EXECUTOR_DEST_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          CONFIGURED_HOSTS=""
+          for repo in \
+            "${{ steps.refs.outputs.assistant_source_repo }}" \
+            "${{ steps.refs.outputs.gateway_source_repo }}" \
+            "${{ steps.refs.outputs.credential_executor_source_repo }}" \
+            "${{ steps.refs.outputs.assistant_dest_repo }}" \
+            "${{ steps.refs.outputs.gateway_dest_repo }}" \
+            "${{ steps.refs.outputs.credential_executor_dest_repo }}"
+          do
+            host="${repo%%/*}"
+            if [ -z "$host" ]; then
+              continue
+            fi
+            case " $CONFIGURED_HOSTS " in
+              *" $host "*) continue ;;
+            esac
+            gcloud auth configure-docker "$host"
+            CONFIGURED_HOSTS="$CONFIGURED_HOSTS $host"
+          done
+
+      - name: Validate dev source manifest access
+        run: |
+          validate_source_manifest() {
+            local service="$1"
+            local source_repo="$2"
+            local source_digest="$3"
+
+            if docker buildx imagetools inspect "${source_repo}@${source_digest}" >/dev/null; then
+              return 0
+            fi
+
+            echo "::error::Production preview publishing requires the production GCP service account to read the dev Artifact Registry manifest for ${service}. Grant dev Artifact Registry reader access or provide a narrower preview credential set with dev read and production write permissions."
+            return 1
+          }
+
+          validate_source_manifest \
+            "assistant" \
+            "${{ steps.refs.outputs.assistant_source_repo }}" \
+            "${{ steps.refs.outputs.assistant_source_digest }}"
+
+          validate_source_manifest \
+            "gateway" \
+            "${{ steps.refs.outputs.gateway_source_repo }}" \
+            "${{ steps.refs.outputs.gateway_source_digest }}"
+
+          validate_source_manifest \
+            "credential-executor" \
+            "${{ steps.refs.outputs.credential_executor_source_repo }}" \
+            "${{ steps.refs.outputs.credential_executor_source_digest }}"
+
+      - name: Publish production preview tags
+        id: preview
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+
+          publish_preview_tags() {
+            local output_prefix="$1"
+            local source_repo="$2"
+            local source_digest="$3"
+            local dest_repo="$4"
+            local digest_dir="$5"
+
+            local immutable_tag="${dest_repo}:preview-v${VERSION}"
+            local floating_tag="${dest_repo}:preview"
+
+            docker buildx imagetools create \
+              -t "$immutable_tag" \
+              -t "$floating_tag" \
+              "${source_repo}@${source_digest}"
+
+            local digest
+            digest=$(docker buildx imagetools inspect "$immutable_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            mkdir -p "$digest_dir"
+            echo "$digest" > "$digest_dir/digest"
+
+            echo "${output_prefix}_digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${output_prefix}_immutable_tag=${immutable_tag}" >> "$GITHUB_OUTPUT"
+            echo "${output_prefix}_floating_tag=${floating_tag}" >> "$GITHUB_OUTPUT"
+          }
+
+          publish_preview_tags \
+            "assistant" \
+            "${{ steps.refs.outputs.assistant_source_repo }}" \
+            "${{ steps.refs.outputs.assistant_source_digest }}" \
+            "${{ steps.refs.outputs.assistant_dest_repo }}" \
+            "/tmp/preview-digests/assistant"
+
+          publish_preview_tags \
+            "gateway" \
+            "${{ steps.refs.outputs.gateway_source_repo }}" \
+            "${{ steps.refs.outputs.gateway_source_digest }}" \
+            "${{ steps.refs.outputs.gateway_dest_repo }}" \
+            "/tmp/preview-digests/gateway"
+
+          publish_preview_tags \
+            "credential_executor" \
+            "${{ steps.refs.outputs.credential_executor_source_repo }}" \
+            "${{ steps.refs.outputs.credential_executor_source_digest }}" \
+            "${{ steps.refs.outputs.credential_executor_dest_repo }}" \
+            "/tmp/preview-digests/credential-executor"
+
+      - name: Upload assistant production preview manifest digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: assistant-preview-manifest-digest-production
+          path: /tmp/preview-digests/assistant/digest
+          retention-days: 1
+
+      - name: Upload gateway production preview manifest digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gateway-preview-manifest-digest-production
+          path: /tmp/preview-digests/gateway/digest
+          retention-days: 1
+
+      - name: Upload credential-executor production preview manifest digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: credential-executor-preview-manifest-digest-production
+          path: /tmp/preview-digests/credential-executor/digest
+          retention-days: 1
+
+      - name: Summary
+        run: |
+          echo "## Production Preview Images Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Source dev version:** \`${{ needs.compute-version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Destination preview tags | Manifest digest |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | --- | --- |" >> $GITHUB_STEP_SUMMARY
+          echo "| assistant | \`${{ steps.preview.outputs.assistant_immutable_tag }}\`<br>\`${{ steps.preview.outputs.assistant_floating_tag }}\` | \`${{ steps.preview.outputs.assistant_digest }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| gateway | \`${{ steps.preview.outputs.gateway_immutable_tag }}\`<br>\`${{ steps.preview.outputs.gateway_floating_tag }}\` | \`${{ steps.preview.outputs.gateway_digest }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| credential-executor | \`${{ steps.preview.outputs.credential_executor_immutable_tag }}\`<br>\`${{ steps.preview.outputs.credential_executor_floating_tag }}\` | \`${{ steps.preview.outputs.credential_executor_digest }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  register-preview-release:
+    needs: [compute-version, publish-production-preview-image-tags]
+    if: ${{ always() && !cancelled() && github.ref_name == 'main' && needs.publish-production-preview-image-tags.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Download assistant production preview manifest digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: assistant-preview-manifest-digest-production
+          path: /tmp/assistant-preview-digest
+
+      - name: Download gateway production preview manifest digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: gateway-preview-manifest-digest-production
+          path: /tmp/gateway-preview-digest
+
+      - name: Download credential-executor production preview manifest digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: credential-executor-preview-manifest-digest-production
+          path: /tmp/credential-executor-preview-digest
+
+      - name: Extract production preview manifest digests
+        id: digests
+        run: |
+          ASSISTANT_DIGEST=$(cat /tmp/assistant-preview-digest/digest)
+          GATEWAY_DIGEST=$(cat /tmp/gateway-preview-digest/digest)
+          CREDENTIAL_EXECUTOR_DIGEST=$(cat /tmp/credential-executor-preview-digest/digest)
+          echo "assistant_digest=${ASSISTANT_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "credential_executor_digest=${CREDENTIAL_EXECUTOR_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "gateway_digest=${GATEWAY_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve production platform credentials
+        id: platform-creds
+        run: |
+          echo "api_url=${{ secrets.PLATFORM_API_URL }}" >> "$GITHUB_OUTPUT"
+          echo "api_key=${{ secrets.PLATFORM_INTERNAL_SERVICE_API_KEY }}" >> "$GITHUB_OUTPUT"
+
+      - name: Register preview release with production platform
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          SHA="${GITHUB_SHA}"
+          ASSISTANT_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GATEWAY_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          CREDENTIAL_EXECUTOR_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+          IS_STABLE="false"
+
+          PAYLOAD=$(jq -n \
+            --arg version "$VERSION" \
+            --arg released_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg release_channel "preview" \
+            --argjson is_stable "$IS_STABLE" \
+            --arg assistant_repo "$ASSISTANT_REPO" \
+            --arg assistant_tag "preview-v${VERSION}" \
+            --arg assistant_sha "$SHA" \
+            --arg assistant_digest "${{ steps.digests.outputs.assistant_digest }}" \
+            --arg gateway_repo "$GATEWAY_REPO" \
+            --arg gateway_tag "preview-v${VERSION}" \
+            --arg gateway_sha "$SHA" \
+            --arg gateway_digest "${{ steps.digests.outputs.gateway_digest }}" \
+            --arg credential_executor_repo "$CREDENTIAL_EXECUTOR_REPO" \
+            --arg credential_executor_tag "preview-v${VERSION}" \
+            --arg credential_executor_sha "$SHA" \
+            --arg credential_executor_digest "${{ steps.digests.outputs.credential_executor_digest }}" \
+            '{
+              version: $version,
+              released_at: $released_at,
+              release_channel: $release_channel,
+              is_stable: $is_stable,
+              assistant_image: {
+                repository: $assistant_repo,
+                tag: $assistant_tag,
+                sha: $assistant_sha,
+                digest: $assistant_digest
+              },
+              gateway_image: {
+                repository: $gateway_repo,
+                tag: $gateway_tag,
+                sha: $gateway_sha,
+                digest: $gateway_digest
+              },
+              credential_executor_image: {
+                repository: $credential_executor_repo,
+                tag: $credential_executor_tag,
+                sha: $credential_executor_sha,
+                digest: $credential_executor_digest
+              }
+            }')
+
+          DELAYS=(5 15 30)
+          MAX_ATTEMPTS=3
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            CURL_EXIT=0
+            echo "Registering preview release ${VERSION} with production platform [attempt ${attempt}/${MAX_ATTEMPTS}]..."
+            HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+              -X POST "${{ steps.platform-creds.outputs.api_url }}/v1/internal/assistant-image-releases/" \
+              -H "Content-Type: application/json" \
+              -H "X-Internal-Service-Api-Key: ${{ steps.platform-creds.outputs.api_key }}" \
+              -d "$PAYLOAD") || CURL_EXIT=$?
+
+            if [ "${CURL_EXIT:-0}" -ne 0 ]; then
+              echo "::warning::curl transport error (exit code $CURL_EXIT)"
+              HTTP_STATUS="000"
+            else
+              echo "HTTP Status: $HTTP_STATUS"
+              cat /tmp/response.json
+            fi
+
+            if [ "$HTTP_STATUS" -ge 200 ] 2>/dev/null && [ "$HTTP_STATUS" -lt 300 ] 2>/dev/null; then
+              echo "Preview registration succeeded"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              DELAY=${DELAYS[$((attempt - 1))]}
+              echo "::warning::Attempt ${attempt} failed (HTTP $HTTP_STATUS). Retrying in ${DELAY}s..."
+              sleep "$DELAY"
+            else
+              echo "::error::Preview release registration failed after ${MAX_ATTEMPTS} attempts (last HTTP $HTTP_STATUS)"
+              exit 1
+            fi
+          done
+
+      - name: Summary
+        run: |
+          echo "## Production Preview Release Registered" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ needs.compute-version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Release channel:** \`preview\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform environment:** \`production\`" >> $GITHUB_STEP_SUMMARY
+
+  # ── Register Release with Dev Platform ─────────────────────────────────
+
+  register-release:
+    needs: [compute-version, push-assistant-manifest, push-gateway-manifest, push-credential-executor-manifest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+
+      - name: Download manifest digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: '*-manifest-digest-dev'
+          path: /tmp/digests
+
+      - name: Extract manifest digests
+        id: digests
+        run: |
+          echo "assistant_digest=$(cat /tmp/digests/assistant-manifest-digest-dev/digest)" >> "$GITHUB_OUTPUT"
+          echo "gateway_digest=$(cat /tmp/digests/gateway-manifest-digest-dev/digest)" >> "$GITHUB_OUTPUT"
+          echo "credential_executor_digest=$(cat /tmp/digests/credential-executor-manifest-digest-dev/digest)" >> "$GITHUB_OUTPUT"
+
+      - name: Register release with platform
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          SHA="${GITHUB_SHA}"
+          ASSISTANT_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GATEWAY_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          CREDENTIAL_EXECUTOR_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+
+          PAYLOAD=$(jq -n \
+            --arg version "$VERSION" \
+            --arg released_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson is_stable true \
+            --arg assistant_repo "$ASSISTANT_REPO" \
+            --arg assistant_tag "${VERSION}" \
+            --arg assistant_sha "$SHA" \
+            --arg assistant_digest "${{ steps.digests.outputs.assistant_digest }}" \
+            --arg gateway_repo "$GATEWAY_REPO" \
+            --arg gateway_tag "${VERSION}" \
+            --arg gateway_sha "$SHA" \
+            --arg gateway_digest "${{ steps.digests.outputs.gateway_digest }}" \
+            --arg credential_executor_repo "$CREDENTIAL_EXECUTOR_REPO" \
+            --arg credential_executor_tag "${VERSION}" \
+            --arg credential_executor_sha "$SHA" \
+            --arg credential_executor_digest "${{ steps.digests.outputs.credential_executor_digest }}" \
+            '{
+              version: $version,
+              released_at: $released_at,
+              is_stable: $is_stable,
+              assistant_image: {
+                repository: $assistant_repo,
+                tag: $assistant_tag,
+                sha: $assistant_sha,
+                digest: $assistant_digest
+              },
+              gateway_image: {
+                repository: $gateway_repo,
+                tag: $gateway_tag,
+                sha: $gateway_sha,
+                digest: $gateway_digest
+              },
+              credential_executor_image: {
+                repository: $credential_executor_repo,
+                tag: $credential_executor_tag,
+                sha: $credential_executor_sha,
+                digest: $credential_executor_digest
+              }
+            }')
+
+          DELAYS=(5 15 30)
+          MAX_ATTEMPTS=3
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            CURL_EXIT=0
+            echo "Registering dev release ${VERSION} [attempt ${attempt}/${MAX_ATTEMPTS}]..."
+            HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+              -X POST "${{ secrets.PLATFORM_API_URL }}/v1/internal/assistant-image-releases/" \
+              -H "Content-Type: application/json" \
+              -H "X-Internal-Service-Api-Key: ${{ secrets.PLATFORM_INTERNAL_SERVICE_API_KEY }}" \
+              -d "$PAYLOAD") || CURL_EXIT=$?
+
+            if [ "${CURL_EXIT:-0}" -ne 0 ]; then
+              echo "::warning::curl transport error (exit code $CURL_EXIT)"
+              HTTP_STATUS="000"
+            else
+              echo "HTTP Status: $HTTP_STATUS"
+              cat /tmp/response.json
+            fi
+
+            if [ "$HTTP_STATUS" -ge 200 ] 2>/dev/null && [ "$HTTP_STATUS" -lt 300 ] 2>/dev/null; then
+              echo "Registration succeeded"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              DELAY=${DELAYS[$((attempt - 1))]}
+              echo "::warning::Attempt ${attempt} failed (HTTP $HTTP_STATUS). Retrying in ${DELAY}s..."
+              sleep "$DELAY"
+            else
+              echo "::error::Release registration failed after ${MAX_ATTEMPTS} attempts (last HTTP $HTTP_STATUS)"
+              exit 1
+            fi
+          done
+
+  # ── Notify #dev-releases (changelog on success, alert on failure) ──────
+  # Runs on every completed (non-cancelled) run. The dev release is considered
+  # successful when the register-release job succeeded — the same signal the
+  # changelog uses to anchor its diff — so a failure in a downstream job (e.g.
+  # build-macos) still posts the success changelog.
+  #
+  # On success: posts a single summary message. The top-level blocks carry the
+  # header, the "*N commits* since the last dev release" line, and the action
+  # buttons; the ordered commit list (message + author) lives in a Slack
+  # *attachment* below it. Per Slack's docs, attachment content may be
+  # "wrapped, truncated, or hidden behind a 'show more' style option" by
+  # clients — which is exactly the toggle behaviour we want here. The channel
+  # stays tidy even when a release spans many commits. The diff is taken
+  # since the last *successful* dev release (skipping any intervening failed
+  # runs), so no commits are dropped.
+  #
+  # On failure: posts a short alert without a changelog.
+  #
+  # Posts via a #dev-releases incoming webhook stored in the repo secret
+  # SLACK_DEV_RELEASES_WEBHOOK_URL. The channel is baked into the webhook URL
+  # (incoming webhooks ignore a payload `channel` field), so each channel needs
+  # its own webhook — mirroring SLACK_WEBHOOK_URL (#build-alerts) and
+  # SLACK_RELEASES_WEBHOOK_URL (releases). The job no-ops if the secret is unset.
+
+  notify-dev-release:
+    needs: [compute-version, register-release, register-preview-release, build-electron, upload-electron-updates]
+    # Run on success and failure alike, but not when the run was cancelled
+    # (e.g. superseded by a newer hourly run via cancel-in-progress) — a
+    # cancelled run is not a real failure and should not alert the channel.
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    # A Slack outage must not fail the release run: that would both mar the run
+    # conclusion (poisoning notify-releases' first-failure detection) and is
+    # purely a notification concern. Mirrors notify-releases below.
+    continue-on-error: true
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Build Slack payload
+        id: build
+        # A payload-building bug must not prevent the notification from going
+        # out — the fallback step below sends a minimal message instead.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBHOOK: ${{ secrets.SLACK_DEV_RELEASES_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Treat the dev release as successful iff register-release succeeded.
+          # This is the same anchor the changelog walk-back uses below, so a
+          # failure downstream of register-release still posts the changelog.
+          RELEASE_RESULT: ${{ needs.register-release.result }}
+          ELECTRON_RESULT: ${{ needs.build-electron.result }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${WEBHOOK:-}" ]; then
+            echo "::warning::SLACK_DEV_RELEASES_WEBHOOK_URL is not set — skipping #dev-releases notification."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          # ── Failure path ──────────────────────────────────────────────────
+          # The release did not register (job failed, was skipped because an
+          # upstream image build failed, etc.). Post a short alert without a
+          # changelog and skip the commit diffing entirely.
+          if [ "${RELEASE_RESULT}" != "success" ]; then
+            echo "register-release result: ${RELEASE_RESULT} — building failure notification."
+            jq -n \
+              --arg run_url "$RUN_URL" \
+              --arg body "The dev release run failed — no new dev build was published. See the workflow run for details." \
+              '{
+                unfurl_links: false,
+                unfurl_media: false,
+                text: "Dev Release failed",
+                blocks: [
+                  { type: "header", text: { type: "plain_text", text: "🚨 Dev Release failed", emoji: true } },
+                  { type: "section", text: { type: "mrkdwn", text: $body } },
+                  { type: "actions", elements: [
+                    { type: "button", text: { type: "plain_text", text: "View workflow run" }, url: $run_url }
+                  ] }
+                ]
+              }' > "${RUNNER_TEMP}/dev-release-slack-payload.json"
+            echo "Built Slack failure payload."
+            exit 0
+          fi
+
+          # Find the SHA of the last actually-released dev build to diff against.
+          # We key off the register-release JOB conclusion, not the overall run
+          # conclusion: register-release runs before downstream jobs (build-macos,
+          # upload-sparkle, …), so a later failure leaves a real release on a run
+          # whose conclusion is "failure". Keying off the run would then diff from
+          # an older SHA and re-announce already-released commits. Walk recent
+          # completed runs newest-first and pick the first whose register-release
+          # job succeeded.
+          PREV_SHA=""
+          while read -r rid rsha; do
+            [ -z "$rid" ] && continue
+            CONCL=$(gh api "repos/${REPO}/actions/runs/${rid}/jobs" \
+              --jq '[.jobs[] | select(.name == "register-release") | .conclusion] | .[0] // empty')
+            if [ "$CONCL" = "success" ]; then
+              PREV_SHA="$rsha"
+              break
+            fi
+          done < <(gh api \
+            "repos/${REPO}/actions/workflows/dev-release.yaml/runs?branch=main&status=completed&per_page=30&exclude_pull_requests=true" \
+            --jq ".workflow_runs[] | select(.id != ${RUN_ID}) | \"\(.id) \(.head_sha)\"")
+
+          echo "Previous dev release SHA: ${PREV_SHA:-<none>}"
+          echo "Current SHA: ${HEAD_SHA}"
+
+          # Each line: "<first line of commit message> — @<author>", oldest first.
+          # Escape Slack mrkdwn metacharacters in the message text.
+          # When the commit author is a bot (e.g. devin-ai-integration[bot]),
+          # use the first human Co-authored-by email instead.
+          ESCAPE='gsub("&";"&amp;") | gsub("<";"&lt;") | gsub(">";"&gt;")'
+          LINKIFY='gsub("\\(#(?<n>[0-9]+)\\)"; "(<https://github.com/'"${REPO}"'/pull/\(.n)|#\(.n)>)")'
+          RESOLVE_AUTHOR='if ((.author.login // "") | test("\\[bot\\]$")) then (([.commit.message | scan("(?i)co-authored-by:\\s*[^<]*<([^>]+)>")] | map(.[0]) | map(select(test("\\[bot\\]") | not)) | .[0]) // .author.login) else (.author.login // .commit.author.name) end'
+          # Prefix "@" only for GitHub logins. Email-style authors (resolved from
+          # a Co-authored-by trailer, e.g. "user@example.com") are left bare so
+          # Slack doesn't render a leading "@" + email as a noisy keyword mention.
+          MENTION='if test("@") then . else "@" + . end'
+
+          if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" != "$HEAD_SHA" ]; then
+            COMPARE_URL="https://github.com/${REPO}/compare/${PREV_SHA}...${HEAD_SHA}"
+            TOTAL=$(gh api "repos/${REPO}/compare/${PREV_SHA}...${HEAD_SHA}" --jq '.total_commits')
+            mapfile -t LINES < <(gh api "repos/${REPO}/compare/${PREV_SHA}...${HEAD_SHA}" --paginate \
+              --jq ".commits[] | (${RESOLVE_AUTHOR}) as \$a | \"\((.commit.message | split(\"\n\")[0]) | ${ESCAPE} | ${LINKIFY}) — \(\$a | ${MENTION})\"")
+          else
+            # First tracked release (or no new commits): fall back to HEAD itself.
+            COMPARE_URL="https://github.com/${REPO}/commit/${HEAD_SHA}"
+            if [ "$PREV_SHA" = "$HEAD_SHA" ]; then
+              TOTAL=0
+              LINES=()
+            else
+              TOTAL=1
+              mapfile -t LINES < <(gh api "repos/${REPO}/commits/${HEAD_SHA}" \
+                --jq "(${RESOLVE_AUTHOR}) as \$a | \"\((.commit.message | split(\"\n\")[0]) | ${ESCAPE} | ${LINKIFY}) — \(\$a | ${MENTION})\"")
+            fi
+          fi
+
+          COUNT=${#LINES[@]}
+          echo "Commits listed: ${COUNT} (total_commits=${TOTAL})"
+
+          COMMIT_WORD="commits"
+          [ "$TOTAL" = "1" ] && COMMIT_WORD="commit"
+          if [ "$COUNT" -eq 0 ]; then
+            HEADER_TEXT="No new commits since the last dev release."
+          else
+            HEADER_TEXT="*${TOTAL} ${COMMIT_WORD}* since the last dev release"
+          fi
+
+          # ── Build the message blocks ──────────────────────────────────────
+          # Top-level blocks: header, "N commits since last dev release", buttons.
+          # Commit list lives in an attachment so Slack auto-collapses it behind
+          # a "show more" toggle (see Slack docs on attachments truncation).
+          # When the release registered but the Electron build failed,
+          # swap the header emoji and append a warning so the notification
+          # surfaces the failure instead of looking fully green.
+          if [ "${ELECTRON_RESULT}" != "success" ]; then
+            HEADER_EMOJI="⚠️"
+            # Build with jq so the value is real JSON — --argjson rejects
+            # jq-program syntax like unquoted object keys.
+            ELECTRON_WARNING=$(jq -n '{ type: "section", text: { type: "mrkdwn", text: "⚠️ *Electron build failed* — the release was published but the desktop app was not built. See the workflow run for details." } }')
+          else
+            HEADER_EMOJI="🚀"
+            ELECTRON_WARNING=""
+          fi
+
+          BLOCKS=$(jq -n \
+            --arg version "$VERSION" \
+            --arg header "$HEADER_TEXT" \
+            --arg run_url "$RUN_URL" \
+            --arg compare_url "$COMPARE_URL" \
+            --arg emoji "$HEADER_EMOJI" \
+            '[
+              { type: "header", text: { type: "plain_text", text: ($emoji + " Dev Release " + $version), emoji: true } },
+              { type: "section", text: { type: "mrkdwn", text: $header } },
+              { type: "actions", elements: [
+                { type: "button", text: { type: "plain_text", text: "View workflow run" }, url: $run_url },
+                { type: "button", text: { type: "plain_text", text: "View commit diff" }, url: $compare_url }
+              ] }
+            ]')
+
+          if [ -n "$ELECTRON_WARNING" ]; then
+            BLOCKS=$(echo "$BLOCKS" | jq --argjson warn "$ELECTRON_WARNING" '. += [$warn]')
+          fi
+
+          # Attachment blocks: the actual commit list, chunked into sections to
+          # respect Slack's 3000-char-per-section limit.
+          ATTACHMENT_BLOCKS='[]'
+          append_attachment_section() {
+            ATTACHMENT_BLOCKS=$(echo "$ATTACHMENT_BLOCKS" | jq --arg t "$1" \
+              '. + [{ type: "section", text: { type: "mrkdwn", text: $t } }]')
+          }
+
+          if [ "$COUNT" -gt 0 ]; then
+            CHUNK=""
+            IDX=0
+            for line in "${LINES[@]}"; do
+              IDX=$((IDX + 1))
+              ENTRY="${IDX}. ${line}"
+              if [ -n "$CHUNK" ] && [ $(( ${#CHUNK} + ${#ENTRY} + 1 )) -gt 2800 ]; then
+                append_attachment_section "$CHUNK"
+                CHUNK="$ENTRY"
+              elif [ -z "$CHUNK" ]; then
+                CHUNK="$ENTRY"
+              else
+                CHUNK="${CHUNK}"$'\n'"${ENTRY}"
+              fi
+            done
+            [ -n "$CHUNK" ] && append_attachment_section "$CHUNK"
+
+            if [ "$TOTAL" -gt "$COUNT" ]; then
+              ATTACHMENT_BLOCKS=$(echo "$ATTACHMENT_BLOCKS" | jq \
+                --arg t "_…and $((TOTAL - COUNT)) more commits not shown (GitHub compares are capped at 250 commits). See *View commit diff* above for the full list._" \
+                '. + [{ type: "context", elements: [{ type: "mrkdwn", text: $t }] }]')
+            fi
+          fi
+
+          # No `channel` field: incoming webhooks ignore it and post to the
+          # channel baked into SLACK_DEV_RELEASES_WEBHOOK_URL (#dev-releases).
+          # Attach the commit list only when there's something to show — Slack
+          # renders empty attachments as a bare colored bar otherwise.
+          jq -n \
+            --arg version "$VERSION" \
+            --argjson blocks "$BLOCKS" \
+            --argjson attachment_blocks "$ATTACHMENT_BLOCKS" \
+            '{
+              unfurl_links: false,
+              unfurl_media: false,
+              text: ("Dev Release " + $version),
+              blocks: $blocks
+            }
+            + (if ($attachment_blocks | length) > 0
+               then { attachments: [{ color: "#1f6feb", blocks: $attachment_blocks }] }
+               else {} end)' > "${RUNNER_TEMP}/dev-release-slack-payload.json"
+
+          echo "Built Slack payload (${COUNT} commits listed)."
+
+      - name: Fall back to a minimal payload if the build step failed
+        if: steps.build.outputs.skip != 'true'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -s "${RUNNER_TEMP}/dev-release-slack-payload.json" ]; then
+            exit 0
+          fi
+          echo "::warning::Slack payload build failed — sending a minimal fallback notification."
+          jq -n \
+            --arg version "$VERSION" \
+            --arg run_url "$RUN_URL" \
+            '{
+              unfurl_links: false,
+              unfurl_media: false,
+              text: ("Dev Release " + $version),
+              blocks: [
+                { type: "header", text: { type: "plain_text", text: ("⚠️ Dev Release " + $version), emoji: true } },
+                { type: "section", text: { type: "mrkdwn", text: "A new dev release was published, but building the full changelog notification failed. See the workflow run for details." } },
+                { type: "actions", elements: [
+                  { type: "button", text: { type: "plain_text", text: "View workflow run" }, url: $run_url }
+                ] }
+              ]
+            }' > "${RUNNER_TEMP}/dev-release-slack-payload.json"
+
+      - name: Notify Slack
+        id: slack
+        if: steps.build.outputs.skip != 'true'
+        continue-on-error: true
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_DEV_RELEASES_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload-file-path: ${{ runner.temp }}/dev-release-slack-payload.json
+          errors: true
+
+      - name: Log Slack notification result
+        if: always() && steps.build.outputs.skip != 'true'
+        run: |
+          echo "Slack step outcome: ${{ steps.slack.outcome }}"
+          if [ "${{ steps.slack.outcome }}" != "success" ]; then
+            echo "::warning::#dev-releases notification failed to send."
+          fi
+
+  # ── Chrome Extension ────────────────────────────────────────────────────
+
+  build-chrome-extension:
+    needs: [compute-version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install dependencies
+        working-directory: clients/chrome-extension
+        run: bun install --frozen-lockfile
+
+      - name: Build extension
+        working-directory: clients/chrome-extension
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          VELLUM_ENVIRONMENT: dev
+        run: bash build.sh
+
+      - name: Upload extension zip
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dev-chrome-extension
+          path: clients/chrome-extension/vellum-browser-relay.zip
+          retention-days: 30
+
+  # ── macOS DMG ──────────────────────────────────────────────────────────
+
+  build-macos:
+    needs: [compute-version, ci-assistant, ci-gateway, ci-credential-executor]
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: clients/macos
+    env:
+      KEYCHAIN_NAME: build.keychain
+      KEYCHAIN_PASSWORD: temporary-ci-password
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Select Xcode 26.2
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+
+      - name: Import code-signing certificate
+        env:
+          CERT_P12: ${{ secrets.DEVID_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.DEVID_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$CERT_P12" | base64 -D > /tmp/certificate.p12
+          security import /tmp/certificate.p12 \
+            -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm /tmp/certificate.p12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Verify signing identity
+        run: |
+          security find-identity -v -p codesigning | grep -q "Developer ID Application" \
+            || { echo "::error::Developer ID Application identity not found"; exit 1; }
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install nested package dependencies
+        working-directory: .
+        run: |
+          for dir in packages/*/ skills/*/; do
+            [ -f "${dir}/package.json" ] || continue
+            (cd "${dir}" && bun install --frozen-lockfile 2>/dev/null || bun install)
+          done
+
+      - name: Build binaries
+        run: |
+          DISPLAY_VERSION="${{ needs.compute-version.outputs.version }}" \
+          COMMIT_SHA="${{ github.sha }}" \
+          ./build.sh binaries
+
+      - name: Compute build version
+        id: version
+        run: |
+          BUILD_VERSION=$(date -u +%Y%m%d%H%M)
+          echo "build_version=$BUILD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Build version: $BUILD_VERSION"
+
+      - name: Build macOS app
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          SKIP_BUN_REBUILD=1 \
+          BUNDLE_DISPLAY_NAME="Vellum Dev" \
+          DISPLAY_VERSION="${{ needs.compute-version.outputs.version }}" \
+          BUILD_VERSION="${{ steps.version.outputs.build_version }}" \
+          COMMIT_SHA="${{ github.sha }}" \
+          VELLUM_ENVIRONMENT=dev \
+          SU_PUBLIC_ED_KEY="${{ secrets.SPARKLE_ED_PUBLIC_KEY }}" \
+          SU_FEED_URL="https://storage.googleapis.com/vellum-nonprod-sparkle/dev/appcast.xml" \
+          SIGN_IDENTITY="Developer ID Application" \
+          RELEASE_ARCH_FLAGS="--arch arm64" \
+          ./build.sh release 2>&1 | while IFS= read -r line; do
+            echo "[$(date -u '+%H:%M:%S')] $line"
+          done
+
+      - name: Free disk space
+        run: |
+          rm -rf .build daemon-bin assistant-bin cli-bin gateway-bin ces-bin
+          rm -rf ../../assistant/node_modules ../../cli/node_modules ../../gateway/node_modules ../../credential-executor/node_modules
+          rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          df -h .
+
+      - name: Cache Homebrew create-dmg
+        id: cache-create-dmg
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            /usr/local/Cellar/create-dmg
+            /opt/homebrew/Cellar/create-dmg
+          key: create-dmg-v1-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install create-dmg
+        if: steps.cache-create-dmg.outputs.cache-hit != 'true'
+        run: brew install create-dmg
+
+      - name: Link create-dmg
+        if: steps.cache-create-dmg.outputs.cache-hit == 'true'
+        run: brew link create-dmg 2>/dev/null || true
+
+      - name: Create DMG
+        run: |
+          DMG_STAGING="build/dmg-staging"
+          mkdir -p "$DMG_STAGING" build
+          cp -R "dist/Vellum Dev.app" "$DMG_STAGING/"
+          ln -s /Applications "$DMG_STAGING/Applications"
+
+          create-dmg \
+            --volname "Vellum Dev" \
+            --background "dmg/dmg-background@2x.png" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 128 \
+            --text-size 10 \
+            --icon "Vellum Dev.app" 175 190 \
+            --icon "Applications" 530 190 \
+            --hide-extension "Vellum Dev.app" \
+            --no-internet-enable \
+            "build/vellum-assistant-dev.dmg" \
+            "$DMG_STAGING/" \
+          || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 2 ] && [ -f "build/vellum-assistant-dev.dmg" ]; then
+              echo "create-dmg exited with warning (code 2), but DMG was created"
+            else
+              exit $EXIT_CODE
+            fi
+          }
+          ls -lh "build/vellum-assistant-dev.dmg"
+
+      - name: Sign DMG
+        run: |
+          codesign --sign "Developer ID Application" --timestamp "build/vellum-assistant-dev.dmg"
+          codesign --verify --verbose "build/vellum-assistant-dev.dmg"
+
+      - name: Notarize DMG
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          mkdir -p ~/.private_keys
+          echo "$ASC_KEY_P8" > ~/.private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+          echo "Submitting DMG for notarization..."
+          NOTARIZE_OUTPUT=$(xcrun notarytool submit "build/vellum-assistant-dev.dmg" \
+            --key ~/.private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --wait \
+            --timeout 30m \
+            2>&1) || NOTARIZE_FAILED=true
+
+          echo "$NOTARIZE_OUTPUT"
+
+          SUBMISSION_ID=$(echo "$NOTARIZE_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+
+          if [ "$NOTARIZE_FAILED" = "true" ] || echo "$NOTARIZE_OUTPUT" | grep -q "status: Invalid"; then
+            echo "::error::Notarization failed"
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --key ~/.private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+                --key-id "$ASC_KEY_ID" \
+                --issuer "$ASC_ISSUER_ID" \
+                || echo "::warning::Could not fetch notarization log"
+            fi
+            exit 1
+          fi
+
+      - name: Staple notarization ticket
+        run: |
+          MAX_ATTEMPTS=10
+          WAIT_SECS=30
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            STAPLE_OUTPUT=$(xcrun stapler staple "build/vellum-assistant-dev.dmg" 2>&1)
+            STAPLE_EXIT=$?
+            if [ $STAPLE_EXIT -eq 0 ]; then
+              echo "Stapling succeeded on attempt $i"
+              break
+            fi
+            echo "::warning::Stapling attempt $i/$MAX_ATTEMPTS failed"
+            if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
+              echo "::error::Stapling failed after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+            sleep $WAIT_SECS
+            WAIT_SECS=$((WAIT_SECS + 15))
+          done
+          xcrun stapler validate "build/vellum-assistant-dev.dmg"
+
+      - name: Build ZIP for Sparkle auto-update
+        run: |
+          cd dist
+          ditto -c -k --keepParent "Vellum Dev.app" vellum-assistant-dev.zip
+          echo "Sparkle ZIP created:"
+          ls -lh vellum-assistant-dev.zip
+
+      - name: Cache Homebrew Sparkle
+        id: cache-sparkle
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            /usr/local/Caskroom/sparkle
+            /opt/homebrew/Caskroom/sparkle
+          key: sparkle-v1-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install Sparkle sign_update tool
+        run: |
+          if [ "${{ steps.cache-sparkle.outputs.cache-hit }}" != "true" ]; then
+            brew install sparkle
+          fi
+          SPARKLE_BIN=$(find /opt/homebrew/Caskroom/sparkle -name sign_update -type f 2>/dev/null | head -1)
+          if [ -z "$SPARKLE_BIN" ]; then
+            SPARKLE_BIN=$(find /usr/local/Caskroom/sparkle -name sign_update -type f 2>/dev/null | head -1)
+          fi
+          echo "Found sign_update at: $SPARKLE_BIN"
+          echo "$(dirname "$SPARKLE_BIN")" >> "$GITHUB_PATH"
+
+      - name: Generate appcast.xml
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          BUILD_VERSION="${{ steps.version.outputs.build_version }}"
+
+          ED_KEY_FILE=$(mktemp)
+          echo "$SPARKLE_ED_PRIVATE_KEY" > "$ED_KEY_FILE"
+          SIGN_OUTPUT=$(sign_update dist/vellum-assistant-dev.zip --ed-key-file "$ED_KEY_FILE") || {
+            echo "sign_update failed with exit code $?"
+            rm -f "$ED_KEY_FILE"
+            exit 1
+          }
+          rm -f "$ED_KEY_FILE"
+          echo "sign_update output: ${SIGN_OUTPUT:0:40}..."
+          SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
+          SIZE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
+          if [ -z "$SIGNATURE" ]; then
+            echo "ERROR: Failed to parse edSignature from sign_update output"
+            exit 1
+          fi
+          if [ -z "$SIZE" ]; then
+            SIZE=$(stat -f%z dist/vellum-assistant-dev.zip)
+          fi
+
+          REPO="${{ github.repository }}"
+          cat > dist/appcast.xml << EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Vellum Dev</title>
+              <item>
+                <title>${VERSION}</title>
+                <sparkle:version>${BUILD_VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <enclosure
+                  url="https://storage.googleapis.com/vellum-nonprod-sparkle/dev/vellum-assistant-dev.zip"
+                  sparkle:edSignature="${SIGNATURE}"
+                  length="${SIZE}"
+                  type="application/octet-stream" />
+              </item>
+            </channel>
+          </rss>
+          EOF
+          echo "Dev appcast generated (version=$VERSION, build=$BUILD_VERSION)"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dev-dmg
+          path: clients/macos/build/vellum-assistant-dev.dmg
+          retention-days: 30
+
+      - name: Upload Sparkle artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dev-sparkle
+          path: |
+            clients/macos/dist/vellum-assistant-dev.zip
+            clients/macos/dist/appcast.xml
+          retention-days: 30
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME-db"
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  # ── Electron DMG ──────────────────────────────────────────────────────
+
+  build-electron:
+    needs: [compute-version, publish-meta-dev]
+    runs-on: macos-26
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            dmg_name: vellum-assistant-electron-dev.dmg
+            artifact_name: dev-electron-dmg
+            update_artifact_name: dev-electron-update-arm64
+            experimental: false
+          - arch: x64
+            dmg_name: vellum-assistant-electron-dev-x64.dmg
+            artifact_name: dev-electron-dmg-x64
+            update_artifact_name: dev-electron-update-x64
+            experimental: true
+    defaults:
+      run:
+        working-directory: apps/macos
+    env:
+      KEYCHAIN_NAME: build-electron.keychain
+      KEYCHAIN_PASSWORD: temporary-ci-password
+      ELECTRON_TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Select Xcode 26.2
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+
+      - name: Import code-signing certificate
+        env:
+          CERT_P12: ${{ secrets.DEVID_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.DEVID_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME-db"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$CERT_P12" | base64 -D > /tmp/certificate.p12
+          security import /tmp/certificate.p12 \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm /tmp/certificate.p12
+
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Verify signing identity
+        run: |
+          security find-identity -v -p codesigning | grep -q "Developer ID Application" \
+            || { echo "::error::Developer ID Application identity not found"; exit 1; }
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install shared packages
+        uses: ./.github/actions/install-shared-packages
+        with:
+          packages: packages/environments packages/local-mode
+
+      - name: Install design-library dependencies
+        working-directory: packages/design-library
+        run: bun install --frozen-lockfile
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: |
+          if ! bun install --frozen-lockfile; then
+            rm -f bun.lock && rm -rf node_modules && bun install
+          fi
+
+      - name: Generate API clients
+        working-directory: apps/web
+        run: bun run openapi-ts
+
+      - name: Build web SPA
+        working-directory: apps/web
+        env:
+          VITE_PLATFORM_MODE: "false"
+        run: bun run build
+
+      - name: Bundle web dist into Electron resources
+        run: mkdir -p resources && cp -R ../../apps/web/dist resources/web-dist
+
+      - name: Stamp dev version into package.json
+        run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
+
+      - name: Stamp PINNED_CLI_VERSION for dev
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          sed -i '' "s/export const PINNED_CLI_VERSION = \".*\"/export const PINNED_CLI_VERSION = \"$VERSION\"/" src/main/cli-installer.ts
+
+      - name: Build and package Electron app
+        env:
+          CSC_NAME: Developer ID Application
+        run: bun run pack --environment dev
+
+      - name: Rename DMG for release
+        id: dmg
+        run: |
+          ELECTRON_DMG=$(find dist -name "*.dmg" -type f | grep -m1 .)
+          if [ -z "$ELECTRON_DMG" ]; then
+            echo "::error::No DMG found in dist/"
+            ls -la dist/
+            exit 1
+          fi
+          echo "Found DMG: $ELECTRON_DMG"
+          FINAL_DMG="dist/${{ matrix.dmg_name }}"
+          mv "$ELECTRON_DMG" "$FINAL_DMG"
+          echo "dmg_path=$FINAL_DMG" >> "$GITHUB_OUTPUT"
+
+      - name: Sign DMG
+        run: |
+          codesign --sign "Developer ID Application" \
+            --timestamp \
+            "${{ steps.dmg.outputs.dmg_path }}"
+          codesign --verify --verbose "${{ steps.dmg.outputs.dmg_path }}"
+
+      - name: Notarize DMG
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          mkdir -p ~/.private_keys
+          echo "$ASC_KEY_P8" > ~/.private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+          echo "Submitting Electron DMG for notarization..."
+          NOTARIZE_OUTPUT=$(xcrun notarytool submit "${{ steps.dmg.outputs.dmg_path }}" \
+            --key ~/.private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --wait \
+            --timeout 30m \
+            2>&1) || NOTARIZE_FAILED=true
+
+          echo "$NOTARIZE_OUTPUT"
+
+          SUBMISSION_ID=$(echo "$NOTARIZE_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | grep -m1 .)
+
+          if [ "$NOTARIZE_FAILED" = "true" ] || echo "$NOTARIZE_OUTPUT" | grep -q "status: Invalid"; then
+            echo "::error::Electron notarization failed"
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --key ~/.private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+                --key-id "$ASC_KEY_ID" \
+                --issuer "$ASC_ISSUER_ID" \
+                || echo "::warning::Could not fetch notarization log"
+            fi
+            exit 1
+          fi
+
+      - name: Staple notarization ticket
+        run: |
+          MAX_ATTEMPTS=15
+          WAIT_SECS=60
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            STAPLE_OUTPUT=$(xcrun stapler staple "${{ steps.dmg.outputs.dmg_path }}" 2>&1)
+            STAPLE_EXIT=$?
+            if [ $STAPLE_EXIT -eq 0 ]; then
+              echo "Stapling succeeded on attempt $i"
+              echo "$STAPLE_OUTPUT"
+              break
+            fi
+            echo "::warning::Stapling attempt $i/$MAX_ATTEMPTS failed (exit code $STAPLE_EXIT):"
+            echo "$STAPLE_OUTPUT"
+            if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
+              echo "::error::Stapling failed after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+            echo "Waiting ${WAIT_SECS}s for CDN propagation..."
+            sleep $WAIT_SECS
+            WAIT_SECS=$((WAIT_SECS + 15))
+          done
+
+          xcrun stapler validate "${{ steps.dmg.outputs.dmg_path }}"
+
+      - name: Upload Electron DMG artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: apps/macos/dist/${{ matrix.dmg_name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Electron update artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.update_artifact_name }}
+          path: |
+            apps/macos/dist/*-mac.yml
+            apps/macos/dist/*.zip
+            apps/macos/dist/*.zip.blockmap
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Cleanup keychain and keys
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME-db"
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -rf ~/.private_keys 2>/dev/null || true
+
+  # ── Upload Electron update artifacts to GCS ────────────────────────────
+  # Push per-arch update feeds (manifest + ZIP + blockmap) to the public
+  # GCS bucket so electron-updater can pull delta updates. Each arch gets
+  # its own path: mac-electron/dev/{arch}/.
+
+  upload-electron-updates:
+    needs: [compute-version, build-electron]
+    if: ${{ needs.build-electron.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download arm64 update artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dev-electron-update-arm64
+          path: electron-artifacts/arm64
+
+      - name: Download x64 update artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dev-electron-update-x64
+          path: electron-artifacts/x64
+
+      - name: Validate update artifacts
+        run: |
+          DIR="electron-artifacts/arm64"
+          if [ ! -f "$(find "$DIR" -name '*-mac.yml' -type f 2>/dev/null | grep -m1 .)" ]; then
+            echo "::error::Missing update manifest (*-mac.yml) for arm64"
+            exit 1
+          fi
+          if [ -z "$(find "$DIR" -name '*.zip' -type f ! -name '*.blockmap' 2>/dev/null | grep -m1 .)" ]; then
+            echo "::error::Missing ZIP for arm64"
+            exit 1
+          fi
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Upload Electron update artifacts to GCS
+        run: |
+          ENVIRONMENT="dev"
+          BUCKET="vellum-ai-dev-releases"
+          MANIFEST_NAME="${ENVIRONMENT}-mac.yml"
+
+          for ARCH in arm64 x64; do
+            ARCH_DIR="electron-artifacts/${ARCH}"
+            [ -d "$ARCH_DIR" ] || continue
+            PREFIX="mac-electron/${ARCH}"
+
+            find "$ARCH_DIR" -name "*.zip" -type f ! -name "*.blockmap" | while read -r ZIP; do
+              gcloud storage cp "$ZIP" "gs://${BUCKET}/${PREFIX}/$(basename "$ZIP")"
+            done
+
+            find "$ARCH_DIR" -name "*.zip.blockmap" -type f | while read -r BM; do
+              gcloud storage cp "$BM" "gs://${BUCKET}/${PREFIX}/$(basename "$BM")"
+            done
+
+            YML=$(find "$ARCH_DIR" -name "*-mac.yml" -type f | grep -m1 .)
+            [ -n "$YML" ] && gcloud storage cp "$YML" "gs://${BUCKET}/${PREFIX}/${MANIFEST_NAME}"
+          done
+
+  # ── Dev npm publishing ─────────────────────────────────────────────────
+
+  build-npm-dev:
+    needs: [compute-version, ci-assistant, ci-cli, ci-gateway, ci-credential-executor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        package: [assistant, cli, credential-executor, gateway]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Sync feature flag registry
+        run: bun run meta/feature-flags/sync-bundled-copies.ts
+      - name: Stamp dev version
+        run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' ${{ matrix.package }}/package.json > ${{ matrix.package }}/package.json.tmp && mv ${{ matrix.package }}/package.json.tmp ${{ matrix.package }}/package.json
+      - name: Install package dependencies
+        run: |
+          cd "${{ matrix.package }}"
+          if ! bun install --frozen-lockfile; then
+            rm -f bun.lock && rm -rf node_modules && bun install
+          fi
+      - name: Pack tarball
+        run: |
+          cd "${{ matrix.package }}"
+          mkdir -p /tmp/npm-dist
+          npm pack --pack-destination /tmp/npm-dist
+          mv /tmp/npm-dist/*.tgz /tmp/npm-dist/package.tgz
+          node -p "require('./package.json').name" > /tmp/npm-dist/name
+          node -p "require('./package.json').version" > /tmp/npm-dist/version
+      - name: Upload tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarball-dev-${{ matrix.package }}
+          path: /tmp/npm-dist/
+          retention-days: 1
+
+  publish-npm-dev:
+    needs: [compute-version, build-npm-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        package: [assistant, cli, credential-executor, gateway]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: .nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+      - name: Download tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarball-dev-${{ matrix.package }}
+          path: /tmp/npm-dist
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PKG_NAME=$(cat /tmp/npm-dist/name)
+          PKG_VERSION=$(cat /tmp/npm-dist/version)
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$PKG_NAME@$PKG_VERSION already published; skipping."
+            exit 0
+          fi
+          npm publish /tmp/npm-dist/package.tgz --tag dev --access public --no-provenance
+
+  # `@vellumai/plugin-api` is generated by scripts/build-plugin-api.ts (a single
+  # self-contained `index.d.ts` rollup, zod-only external), not a package dir
+  # `npm pack` consumes directly, so it gets its own build/publish pair instead
+  # of a slot in the npm matrix. Mirrors build/publish-plugin-api-* in release.yml.
+  build-plugin-api-dev:
+    needs: [compute-version, ci-assistant, ci-cli, ci-gateway, ci-credential-executor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install assistant dependencies
+        run: |
+          cd assistant
+          if ! bun install --frozen-lockfile; then
+            rm -f bun.lock && rm -rf node_modules && bun install
+          fi
+      # The rollup compiles the `packages/*` contract sources the authoring
+      # surface reaches, so each must have its own node_modules (the repo uses
+      # per-package file: deps with no Bun workspaces — see the root AGENTS.md).
+      - name: Install shared package dependencies
+        run: |
+          for dir in packages/*/; do
+            [ -f "${dir}/package.json" ] || continue
+            (cd "${dir}" && bun install --frozen-lockfile 2>/dev/null || bun install)
+          done
+      - name: Build plugin-api package
+        run: cd assistant && bun run scripts/build-plugin-api.ts --version "${{ needs.compute-version.outputs.version }}"
+      - name: Pack tarball
+        run: |
+          cd assistant/.plugin-api-build/package
+          mkdir -p /tmp/npm-dist
+          npm pack --pack-destination /tmp/npm-dist
+          mv /tmp/npm-dist/*.tgz /tmp/npm-dist/package.tgz
+          node -p "require('./package.json').name" > /tmp/npm-dist/name
+          node -p "require('./package.json').version" > /tmp/npm-dist/version
+      - name: Upload tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarball-dev-plugin-api
+          path: /tmp/npm-dist/
+          retention-days: 1
+
+  publish-plugin-api-dev:
+    needs: [compute-version, build-plugin-api-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: .nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+      - name: Download tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarball-dev-plugin-api
+          path: /tmp/npm-dist
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PKG_NAME=$(cat /tmp/npm-dist/name)
+          PKG_VERSION=$(cat /tmp/npm-dist/version)
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$PKG_NAME@$PKG_VERSION already published; skipping."
+            exit 0
+          fi
+          npm publish /tmp/npm-dist/package.tgz --tag dev --access public --no-provenance
+
+  build-web-dev:
+    needs: [compute-version, ci-assistant, ci-cli, ci-gateway, ci-credential-executor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install design-library dependencies
+        working-directory: packages/design-library
+        run: bun install --frozen-lockfile
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: |
+          if ! bun install --frozen-lockfile; then
+            rm -f bun.lock && rm -rf node_modules && bun install
+          fi
+      - name: Generate API clients
+        working-directory: apps/web
+        run: bun run openapi-ts
+      - name: Install shared packages
+        uses: ./.github/actions/install-shared-packages
+        with:
+          packages: packages/environments packages/local-mode
+      - name: Build
+        working-directory: apps/web
+        env:
+          VITE_PLATFORM_MODE: "false"
+        run: bun run build
+      - name: Rewrite package.json for publish
+        working-directory: apps/web
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          jq --arg v "$VERSION" '{name, version: $v, license, type, description, files}' package.json > tmp && mv tmp package.json
+      - name: Pack tarball
+        working-directory: apps/web
+        run: |
+          mkdir -p /tmp/npm-dist
+          npm pack --pack-destination /tmp/npm-dist
+          mv /tmp/npm-dist/*.tgz /tmp/npm-dist/package.tgz
+          node -p "require('./package.json').name" > /tmp/npm-dist/name
+          node -p "require('./package.json').version" > /tmp/npm-dist/version
+      - name: Upload tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarball-dev-web
+          path: /tmp/npm-dist/
+          retention-days: 1
+
+  publish-web-dev:
+    name: publish-npm-dev (web)
+    needs: [compute-version, build-web-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: .nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+      - name: Download tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarball-dev-web
+          path: /tmp/npm-dist
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PKG_NAME=$(cat /tmp/npm-dist/name)
+          PKG_VERSION=$(cat /tmp/npm-dist/version)
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$PKG_NAME@$PKG_VERSION already published; skipping."
+            exit 0
+          fi
+          npm publish /tmp/npm-dist/package.tgz --tag dev --access public --no-provenance
+
+  publish-meta-dev:
+    name: publish-npm-dev (meta)
+    needs: [compute-version, publish-npm-dev, publish-web-dev]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+      - name: Stamp dev version into meta package.json
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          cd meta
+          jq --arg v "$VERSION" '
+            .version = $v |
+            .dependencies["@vellumai/assistant"] = $v |
+            .dependencies["@vellumai/cli"] = $v |
+            .dependencies["@vellumai/credential-executor"] = $v |
+            .dependencies["@vellumai/vellum-gateway"] = $v |
+            .dependencies["@vellumai/web"] = $v
+          ' package.json > tmp && mv tmp package.json
+      # npm only honors "overrides" in the root package.json, so they are
+      # ignored when end users run `npm install -g vellum`. Shipping an
+      # npm-shrinkwrap.json generated with the overrides applied makes npm
+      # follow the same resolution for installed copies of the package.
+      - name: Generate npm-shrinkwrap.json
+        working-directory: meta
+        run: |
+          npm install --package-lock-only
+          npm shrinkwrap
+      - name: Publish
+        working-directory: meta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$PKG_NAME@$PKG_VERSION already published; skipping."
+            exit 0
+          fi
+          npm publish --tag dev --access public --no-provenance
+
+  # ── Sparkle Rolling Release ────────────────────────────────────────────
+  # ── Upload Sparkle artifacts to GCS ───────────────────────────────────
+  # Push appcast.xml + ZIP to the public vellum-nonprod-sparkle GCS bucket.
+  # Dev macOS builds have SUFeedURL pointing here, so Sparkle auto-updates
+  # work without creating GitHub releases.
+
+  upload-sparkle:
+    needs: [compute-version, build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download Sparkle artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dev-sparkle
+          path: sparkle-artifacts
+
+      - name: Download DMG
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dev-dmg
+          path: dmg-artifacts
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Upload Sparkle artifacts to GCS
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          BUCKET="vellum-nonprod-sparkle"
+
+          ZIP=$(find sparkle-artifacts -name "*.zip" -type f | head -1)
+          APPCAST=$(find sparkle-artifacts -name "appcast.xml" -type f | head -1)
+          DMG=$(find dmg-artifacts -name "*.dmg" -type f | head -1)
+
+          if [ -z "$ZIP" ] || [ -z "$APPCAST" ]; then
+            echo "::warning::Sparkle artifacts not found, skipping GCS upload"
+            exit 0
+          fi
+
+          gcloud storage cp "$ZIP" "gs://${BUCKET}/dev/vellum-assistant-dev.zip"
+          gcloud storage cp "$APPCAST" "gs://${BUCKET}/dev/appcast.xml"
+          [ -n "$DMG" ] && gcloud storage cp "$DMG" "gs://${BUCKET}/dev/vellum-assistant-dev.dmg"
+
+          echo "Uploaded Sparkle artifacts to gs://${BUCKET}/dev/ (version=${VERSION})"
+
+  # ── iOS release (same-repo reusable workflow) ────────────────────────
+
+  release-ios:
+    needs: [compute-version, register-release, upload-sparkle, build-chrome-extension]
+    uses: ./.github/workflows/release-ios.yaml
+    with:
+      environment: dev
+      version: ${{ needs.compute-version.outputs.version }}
+    secrets: inherit
+
+  # ── Slack notification (first failure only) ──────────────────────────
+
+  notify-releases:
+    name: Notify #releases on first failure
+    needs: [ci-assistant, ci-gateway, ci-credential-executor]
+    if: always()
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine if any CI job failed
+        id: check
+        run: |
+          if [[ "${{ needs.ci-assistant.result }}" == "failure" || \
+                "${{ needs.ci-gateway.result }}" == "failure" || \
+                "${{ needs.ci-credential-executor.result }}" == "failure" ]]; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if previous run succeeded (first-failure detection)
+        id: previous
+        if: steps.check.outputs.failed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fetch the most recent completed run before this one
+          PREV=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/dev-release.yaml/runs?per_page=5&status=completed&exclude_pull_requests=true" \
+            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | .[0].conclusion" \
+          )
+          echo "Previous run conclusion: $PREV"
+          if [ "$PREV" = "success" ]; then
+            echo "first_failure=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "first_failure=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: steps.previous.outputs.first_failure == 'true'
+        with:
+          sparse-checkout: .github/actions/send-build-alert
+          sparse-checkout-cone-mode: false
+
+      - uses: ./.github/actions/send-build-alert
+        if: steps.previous.outputs.first_failure == 'true'
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          status: failure
+          slack-user-id: ""
+          should-tag: "false"
+          channel: "#releases"

@@ -1,0 +1,270 @@
+/**
+ * CES executable discovery and transport bootstrap.
+ *
+ * Provides two discovery strategies:
+ *
+ * 1. **Local mode** — Locates the bundled `credential-executor` binary and
+ *    returns the path for `process-manager.ts` to spawn as a child process
+ *    with stdio transport.
+ *
+ * 2. **Managed mode** — Locates the bootstrap Unix socket exposed by the CES
+ *    sidecar container through a shared emptyDir volume, and returns a
+ *    connected Unix socket transport.
+ *
+ * Both strategies fail closed: if the executable or socket cannot be found,
+ * the discovery returns a structured error rather than falling back to
+ * in-process credential handling.
+ */
+
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+
+import { getIsContainerized } from "../config/env-registry.js";
+import { getLogger } from "../util/logger.js";
+import { getBinDir } from "../util/platform.js";
+
+const log = getLogger("ces-discovery");
+
+// ---------------------------------------------------------------------------
+// Well-known paths
+// ---------------------------------------------------------------------------
+
+/** Default directory for the bootstrap socket shared volume. */
+const DEFAULT_BOOTSTRAP_SOCKET_DIR = "/run/ces-bootstrap";
+
+/** Bootstrap socket filename. */
+const BOOTSTRAP_SOCKET_NAME = "ces.sock";
+
+/**
+ * Resolve the CES bootstrap socket path.
+ *
+ * Priority:
+ * 1. `CES_BOOTSTRAP_SOCKET_DIR` env var (directory) — appends `ces.sock`
+ * 2. `CES_BOOTSTRAP_SOCKET` env var (full file path override)
+ * 3. Hardcoded default: `/run/ces-bootstrap/ces.sock`
+ *
+ * The pod template exports `CES_BOOTSTRAP_SOCKET_DIR`; the full-path
+ * override is kept for local testing convenience.
+ */
+function getManagedBootstrapSocketPath(): string {
+  const dir = process.env["CES_BOOTSTRAP_SOCKET_DIR"];
+  if (dir) {
+    return join(dir, BOOTSTRAP_SOCKET_NAME);
+  }
+  return (
+    process.env["CES_BOOTSTRAP_SOCKET"] ??
+    join(DEFAULT_BOOTSTRAP_SOCKET_DIR, BOOTSTRAP_SOCKET_NAME)
+  );
+}
+
+/**
+ * Candidate locations for the local credential-executor binary, checked
+ * in order. The first existing path wins.
+ *
+ * Only paths outside the sandbox working directory are eligible.
+ * `getDataDir()` (under `$VELLUM_WORKSPACE_DIR/data`) was previously included
+ * but is inside the sandbox write boundary, so a sandboxed tool could plant
+ * a malicious binary there. Removed to close the sandbox-escape vector.
+ *
+ * Search order:
+ * 1. Alongside the running executable, but ONLY when running from a
+ *    packaged macOS app bundle (`<App>.app/Contents/MacOS/credential-executor`).
+ *    In dev mode, `process.execPath` points at the bun/node install dir
+ *    (e.g. `~/.bun/bin`), where an unrelated file named `credential-executor`
+ *    could be picked up by accident.
+ * 2. `<binDir>/credential-executor` — user-installed override (dev flow).
+ */
+function getLocalBinarySearchPaths(): string[] {
+  const paths: string[] = [];
+
+  // Only check the sibling of process.execPath when running from a packaged
+  // app bundle — the .app/Contents/MacOS directory is a controlled location.
+  // In dev mode, process.execPath is the bun/node binary (e.g. ~/.bun/bin/bun)
+  // and a sibling lookup there could discover an unrelated or untrusted
+  // executable.
+  const execDir = dirname(process.execPath);
+  if (execDir.includes(".app/Contents/MacOS")) {
+    paths.push(join(execDir, "credential-executor"));
+  }
+
+  paths.push(join(getBinDir(), "credential-executor"));
+  return paths;
+}
+
+// ---------------------------------------------------------------------------
+// Discovery result types
+// ---------------------------------------------------------------------------
+
+export interface LocalDiscoverySuccess {
+  mode: "local";
+  executablePath: string;
+}
+
+export interface LocalSourceDiscoverySuccess {
+  mode: "local-source";
+  sourcePath: string;
+}
+
+export interface ManagedDiscoverySuccess {
+  mode: "managed";
+  socketPath: string;
+}
+
+export interface DiscoveryFailure {
+  mode: "unavailable";
+  reason: string;
+}
+
+export type DiscoveryResult =
+  | LocalDiscoverySuccess
+  | LocalSourceDiscoverySuccess
+  | ManagedDiscoverySuccess
+  | DiscoveryFailure;
+
+// ---------------------------------------------------------------------------
+// Local discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Discover the local CES executable.
+ *
+ * Searches well-known paths for the `credential-executor` binary. If the
+ * compiled binary is not found, falls back to the TypeScript source entry
+ * point in the monorepo. Returns a structured result — never throws. If
+ * neither the binary nor the source entry point is found, returns
+ * `{ mode: "unavailable" }` so the caller can fail closed.
+ */
+export function discoverLocalCes():
+  | LocalDiscoverySuccess
+  | LocalSourceDiscoverySuccess
+  | DiscoveryFailure {
+  const searchPaths = getLocalBinarySearchPaths();
+
+  for (const candidate of searchPaths) {
+    if (existsSync(candidate)) {
+      log.info({ path: candidate }, "Found local CES executable");
+      return { mode: "local", executablePath: candidate };
+    }
+  }
+
+  // Fallback: check for source entry point in the monorepo
+  const monorepoRoot = join(import.meta.dir, "..", "..", "..");
+  const sourceEntry = join(
+    monorepoRoot,
+    "credential-executor",
+    "src",
+    "main.ts",
+  );
+  if (existsSync(sourceEntry)) {
+    log.info({ path: sourceEntry }, "Found local CES source entry point");
+    return { mode: "local-source", sourcePath: sourceEntry };
+  }
+
+  // npm-layout fallback: resolve via node_modules when installed as a package
+  try {
+    const _require = createRequire(import.meta.url);
+    const pkgPath = _require.resolve(
+      "@vellumai/credential-executor/package.json",
+    );
+    const npmSourceEntry = join(dirname(pkgPath), "src", "main.ts");
+    if (existsSync(npmSourceEntry)) {
+      log.info({ path: npmSourceEntry }, "Found CES source via npm package");
+      return { mode: "local-source", sourcePath: npmSourceEntry };
+    }
+  } catch {
+    // Package not installed — fall through to unavailable
+  }
+
+  const reason = `CES executable not found. Searched: ${searchPaths.join(", ")}; also checked source at ${sourceEntry}`;
+  log.warn(reason);
+  return { mode: "unavailable", reason };
+}
+
+// ---------------------------------------------------------------------------
+// Managed discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Discover the managed CES sidecar via its bootstrap Unix socket.
+ *
+ * Checks that the well-known socket file exists on disk. Does NOT open a
+ * connection — the CES sidecar accepts exactly one connection and then
+ * unlinks the socket, so a probe would consume the only slot. The actual
+ * connection is made later by `CesProcessManager.start()`.
+ *
+ * The socket path is derived from `CES_BOOTSTRAP_SOCKET_DIR` (matching the
+ * pod template), with `CES_BOOTSTRAP_SOCKET` as a full-path fallback.
+ */
+export function discoverManagedCes():
+  | ManagedDiscoverySuccess
+  | DiscoveryFailure {
+  const socketPath = getManagedBootstrapSocketPath();
+
+  if (!existsSync(socketPath)) {
+    const reason = `CES bootstrap socket not found at ${socketPath}`;
+    log.warn(reason);
+    return { mode: "unavailable", reason };
+  }
+
+  log.info({ socketPath }, "Managed CES bootstrap socket found");
+  return { mode: "managed", socketPath };
+}
+
+// ---------------------------------------------------------------------------
+// Auto-discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Automatically discover CES using the appropriate strategy for the
+ * current deployment topology.
+ *
+ * - Containerized environments → managed sidecar discovery
+ * - Non-containerized environments → local executable discovery
+ */
+export function discoverCes(): DiscoveryResult {
+  if (getIsContainerized()) {
+    return discoverManagedCes();
+  }
+  return discoverLocalCes();
+}
+
+/** How long to poll for the managed bootstrap socket before giving up. */
+const MANAGED_DISCOVERY_TIMEOUT_MS = 3_000;
+
+/** Delay between managed bootstrap-socket discovery attempts. */
+const MANAGED_DISCOVERY_INTERVAL_MS = 100;
+
+/**
+ * Discover CES, polling for the managed bootstrap socket with a short
+ * backoff before failing.
+ *
+ * The managed CES sidecar re-binds its bootstrap socket after each assistant
+ * session ends — it outlives any single assistant and accepts the next
+ * connection (see `credential-executor/src/managed-main.ts`). A reconnecting
+ * assistant (e.g. after a container restart) can therefore probe during the
+ * brief window before the socket is re-bound. A single existence check would
+ * race that window and incorrectly report the sidecar as unavailable; polling
+ * absorbs the gap.
+ *
+ * Local discovery is returned immediately — a missing binary will not appear
+ * by waiting, so there is nothing to poll for.
+ */
+export async function discoverCesWithRetry({
+  timeoutMs = MANAGED_DISCOVERY_TIMEOUT_MS,
+  intervalMs = MANAGED_DISCOVERY_INTERVAL_MS,
+}: { timeoutMs?: number; intervalMs?: number } = {}): Promise<DiscoveryResult> {
+  // Only the managed bootstrap socket is worth polling for; a missing local
+  // binary will not appear by waiting.
+  if (!getIsContainerized()) {
+    return discoverCes();
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  let result = discoverCes();
+  while (result.mode === "unavailable" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    result = discoverCes();
+  }
+  return result;
+}

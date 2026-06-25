@@ -1,0 +1,32 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "cd apps/web && bun install --frozen-lockfile",
+  "buildCommand": "cd apps/web && VITE_PLATFORM_MODE=true VERCEL=1 bun run build",
+  "outputDirectory": "apps/web/dist",
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/assistant",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/assistant/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/account/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/docs/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/logout",
+      "destination": "/index.html"
+    }
+  ]
+}

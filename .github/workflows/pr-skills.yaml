@@ -1,0 +1,201 @@
+name: PR Skills Checks
+
+on:
+  pull_request:
+    types: [synchronize, opened, reopened]
+    paths:
+      - 'skills/**'
+      - 'scripts/skills/**'
+      - '.github/workflows/pr-skills.yaml'
+
+concurrency:
+  group: pr-skills-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    name: Discover changed skills
+    runs-on: ubuntu-latest
+    outputs:
+      changed_skills: ${{ steps.changed.outputs.changed_skills }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed skill directories
+        id: changed
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          SKILLS_DIR="skills"
+
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- "$SKILLS_DIR")
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo 'changed_skills=[]' >> "$GITHUB_OUTPUT"
+          else
+            # Filter to only files inside subdirectories (exclude top-level files like catalog.json)
+            # Also filter out deleted skills (directories that no longer exist on HEAD)
+            SKILLS=$(echo "$CHANGED_FILES" \
+              | sed "s|^$SKILLS_DIR/||" \
+              | { grep '/' || true; } \
+              | cut -d'/' -f1 \
+              | sort -u \
+              | while read -r skill; do
+                  [ -d "$SKILLS_DIR/$skill" ] && echo "$skill"
+                done \
+              | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "changed_skills=${SKILLS:-[]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  prettier:
+    name: 'Prettier: ${{ matrix.skill }}'
+    needs: discover
+    if: needs.discover.outputs.changed_skills != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJson(needs.discover.outputs.changed_skills) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.22.2'
+
+      - name: Prettier check
+        run: npx prettier --check --ignore-unknown "skills/${{ matrix.skill }}/**"
+
+  lint-imports:
+    name: Lint cross-skill imports
+    needs: discover
+    if: needs.discover.outputs.changed_skills != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.22.2'
+
+      - name: Check for cross-skill imports
+        run: node scripts/skills/lint-skill-imports.mjs
+
+  lint-spec:
+    name: Lint SKILL.md spec compliance
+    needs: discover
+    if: needs.discover.outputs.changed_skills != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.22.2'
+
+      - name: Validate SKILL.md files
+        run: node scripts/skills/lint-skill-spec.mjs
+
+  test:
+    name: 'Test: ${{ matrix.skill }}'
+    needs: discover
+    if: needs.discover.outputs.changed_skills != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJson(needs.discover.outputs.changed_skills) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Run tests
+        run: |
+          SKILL_DIR="skills/${{ matrix.skill }}"
+          SKILL_NAME="${{ matrix.skill }}"
+
+          # meet-join: daemon tests use `mock.module()` which is process-global
+          # in Bun. A flat `bun test` causes cross-file pollution and
+          # SyntaxError failures. Run each test file in its own Bun process
+          # (same isolation strategy as assistant's test.sh). The bot/
+          # subpackage has its own package.json and runs separately below.
+          if [ "$SKILL_NAME" = "meet-join" ]; then
+            (cd "$SKILL_DIR" && bun install)
+            # Run subpackage tests (each has its own package.json and deps)
+            for sub in bot meet-controller-ext; do
+              if [ -f "$SKILL_DIR/$sub/package.json" ]; then
+                echo "Running tests for skills/$SKILL_NAME/$sub ..."
+                (cd "$SKILL_DIR/$sub" && bun install && bun test)
+              fi
+            done
+            # Run remaining meet-join tests with per-file process isolation.
+            # Tests must run from assistant/ (not repo root) because the repo-root
+            # test-preload.ts guard blocks `bun test` invocations there.
+            REPO_ROOT="$(pwd)"
+            (cd assistant && bun install --frozen-lockfile)
+            (cd packages/service-contracts && bun install --frozen-lockfile)
+            (cd assistant && bun run -b ../meta/feature-flags/sync-bundled-copies.ts || true)
+            TEST_FILES=$(find "$SKILL_DIR" \
+              -path "$SKILL_DIR/bot" -prune -o \
+              -path "$SKILL_DIR/meet-controller-ext" -prune -o \
+              -path "$SKILL_DIR/contracts" -prune -o \
+              -path "$SKILL_DIR/node_modules" -prune -o \
+              -type f -name '*.test.ts' -print | sort)
+            if [ -n "$TEST_FILES" ]; then
+              echo "Running meet-join tests with per-file isolation..."
+              FAIL=0
+              for tf in $TEST_FILES; do
+                REL_PATH="../$tf"
+                echo "  Testing $tf ..."
+                if ! (cd "$REPO_ROOT/assistant" && bun test "$REL_PATH"); then
+                  FAIL=1
+                fi
+              done
+              if [ "$FAIL" -ne 0 ]; then
+                echo "Some meet-join tests failed"
+                exit 1
+              fi
+            fi
+            exit 0
+          fi
+
+          # Only run tests if the skill has test files
+          if find "$SKILL_DIR" -name '*.test.ts' -o -name '*.test.js' | grep -q .; then
+            cd "$SKILL_DIR"
+            # Install deps if package.json exists
+            if [ -f package.json ]; then
+              bun install
+            fi
+            bun test
+          else
+            echo "No test files found for ${{ matrix.skill }}, skipping"
+          fi
+
+  check-catalog:
+    name: Check catalog.json is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.22.2'
+
+      - name: Validate catalog.json
+        run: node scripts/skills/check-catalog.mjs

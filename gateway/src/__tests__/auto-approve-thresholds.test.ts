@@ -1,0 +1,255 @@
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { initGatewayDb, resetGatewayDb } from "../db/connection.js";
+import "./test-preload.js";
+
+import {
+  createGlobalThresholdGetHandler,
+  createGlobalThresholdPutHandler,
+} from "../http/routes/auto-approve-thresholds.js";
+
+// ---------------------------------------------------------------------------
+// Setup / teardown
+// ---------------------------------------------------------------------------
+
+beforeEach(async () => {
+  resetGatewayDb();
+  await initGatewayDb();
+});
+
+afterEach(() => {
+  resetGatewayDb();
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeRequest(body?: unknown, method = "PUT"): Request {
+  if (body !== undefined) {
+    return new Request("http://localhost/v1/permissions/thresholds", {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+  return new Request("http://localhost/v1/permissions/thresholds", {
+    method,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("auto-approve thresholds", () => {
+  describe("GET handler", () => {
+    test("returns defaults when no row exists", async () => {
+      const handler = createGlobalThresholdGetHandler();
+      const res = await handler(makeRequest(undefined, "GET"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "medium",
+        autonomous: "low",
+        headless: "none",
+      });
+    });
+
+    test("returns updated values after PUT", async () => {
+      const putHandler = createGlobalThresholdPutHandler();
+      const getHandler = createGlobalThresholdGetHandler();
+
+      await putHandler(makeRequest({ interactive: "none" }));
+
+      const res = await getHandler(makeRequest(undefined, "GET"));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "none",
+        autonomous: "low",
+        headless: "none",
+      });
+    });
+  });
+
+  describe("PUT handler", () => {
+    test("partial update only changes provided fields", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ interactive: "none" }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "none",
+        autonomous: "low",
+        headless: "none",
+      });
+    });
+
+    test("returns 400 for invalid threshold value", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ interactive: "extreme" }));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("interactive");
+      expect(data.error).toContain("none, low, medium, high");
+    });
+
+    test("accepts high as a valid threshold value", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ interactive: "high" }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "high",
+        autonomous: "low",
+        headless: "none",
+      });
+    });
+
+    test("returns 400 for invalid body (non-JSON)", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const req = new Request("http://localhost/v1/permissions/thresholds", {
+        method: "PUT",
+        body: "not json",
+      });
+      const res = await handler(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("valid JSON");
+    });
+
+    test("returns 400 for non-object body", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest("just a string"));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("JSON object");
+    });
+
+    test("returns 400 for array body", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest([1, 2, 3]));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("JSON object");
+    });
+
+    test("returns 400 for invalid autonomous value", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ autonomous: "invalid" }));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("autonomous");
+    });
+
+    test("returns 400 for non-string autonomous value", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ autonomous: 42 }));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("autonomous");
+    });
+
+    test("upserts correctly — first write creates, second write updates", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res1 = await handler(
+        makeRequest({ interactive: "none", autonomous: "low" }),
+      );
+      expect(res1.status).toBe(200);
+      const data1 = await res1.json();
+      expect(data1).toEqual({
+        interactive: "none",
+        autonomous: "low",
+        headless: "none",
+      });
+
+      const res2 = await handler(makeRequest({ autonomous: "medium" }));
+      expect(res2.status).toBe(200);
+      const data2 = await res2.json();
+      expect(data2).toEqual({
+        interactive: "none",
+        autonomous: "medium",
+        headless: "none",
+      });
+    });
+
+    test("updates all fields at once", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(
+        makeRequest({ interactive: "medium", autonomous: "low" }),
+      );
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "medium",
+        autonomous: "low",
+        headless: "none",
+      });
+    });
+
+    test("empty object preserves existing values when row exists", async () => {
+      const putHandler = createGlobalThresholdPutHandler();
+
+      await putHandler(makeRequest({ interactive: "medium", autonomous: "low" }));
+
+      const res = await putHandler(makeRequest({}));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "medium",
+        autonomous: "low",
+        headless: "none",
+      });
+    });
+
+    // ── headless field ────────────────────────────────────────────────────────
+
+    test("can set headless threshold", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ headless: "low" }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({
+        interactive: "medium",
+        autonomous: "low",
+        headless: "low",
+      });
+    });
+
+    test("returns 400 for invalid headless value", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      const res = await handler(makeRequest({ headless: "extreme" }));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("headless");
+      expect(data.error).toContain("none, low, medium, high");
+    });
+
+    test("headless is preserved when other fields are updated", async () => {
+      const handler = createGlobalThresholdPutHandler();
+
+      // Explicitly set headless to a non-default value
+      await handler(makeRequest({ headless: "low" }));
+
+      // Update only interactive — headless should remain "low"
+      const res = await handler(makeRequest({ interactive: "high" }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.headless).toBe("low");
+      expect(data.interactive).toBe("high");
+    });
+  });
+});

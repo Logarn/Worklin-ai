@@ -1,0 +1,98 @@
+services:
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: control-plane/Dockerfile
+    env_file:
+      - ./backend.env
+    environment:
+      WORKLIN_CONTROL_PLANE_HOST: 0.0.0.0
+      WORKLIN_CONTROL_PLANE_PORT: "8080"
+      WORKLIN_GATEWAY_URL: http://gateway:7830
+      WORKLIN_CONTROL_DB: /data/control-plane.sqlite
+    volumes:
+      - control-plane-data:/data
+    ports:
+      - "${WORKLIN_API_PORT:-8080}:8080"
+    depends_on:
+      gateway:
+        condition: service_started
+    restart: unless-stopped
+
+  assistant:
+    build:
+      context: ../..
+      dockerfile: assistant/Dockerfile
+    env_file:
+      - ./backend.env
+    environment:
+      IS_CONTAINERIZED: "true"
+      RUNTIME_HTTP_HOST: 0.0.0.0
+      RUNTIME_HTTP_PORT: "3001"
+      VELLUM_WORKSPACE_DIR: /data/workspace
+      GATEWAY_INTERNAL_URL: http://gateway:7830
+      CES_CREDENTIAL_URL: http://credential-executor:8090
+    volumes:
+      - assistant-data:/data
+      - ces-bootstrap:/run/ces-bootstrap
+    expose:
+      - "3001"
+    depends_on:
+      credential-executor:
+        condition: service_started
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: gateway/Dockerfile
+    env_file:
+      - ./backend.env
+    environment:
+      GATEWAY_PORT: "7830"
+      ASSISTANT_HOST: assistant
+      RUNTIME_HTTP_PORT: "3001"
+      GATEWAY_TRUST_PROXY: "true"
+      VELLUM_WORKSPACE_DIR: /data/workspace
+      CES_CREDENTIAL_URL: http://credential-executor:8090
+      UNMAPPED_POLICY: default
+    volumes:
+      - assistant-data:/data
+      - gateway-security:/gateway-security
+    expose:
+      - "7830"
+    depends_on:
+      assistant:
+        condition: service_started
+      credential-executor:
+        condition: service_started
+    restart: unless-stopped
+
+  credential-executor:
+    build:
+      context: ../..
+      dockerfile: credential-executor/Dockerfile
+    env_file:
+      - ./backend.env
+    environment:
+      CES_MODE: managed
+      CES_HEALTH_PORT: "8090"
+      CES_DATA_DIR: /ces-data
+      CREDENTIAL_SECURITY_DIR: /ces-security
+      CES_ASSISTANT_DATA_MOUNT: /assistant-data-ro
+    volumes:
+      - assistant-data:/assistant-data-ro:ro
+      - ces-data:/ces-data
+      - ces-security:/ces-security
+      - ces-bootstrap:/run/ces-bootstrap
+    expose:
+      - "8090"
+    restart: unless-stopped
+
+volumes:
+  control-plane-data:
+  assistant-data:
+  gateway-security:
+  ces-data:
+  ces-security:
+  ces-bootstrap:

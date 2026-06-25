@@ -1,0 +1,790 @@
+/**
+ * Unit tests for the `/v1/home/feed` HTTP route handlers.
+ *
+ * These tests drive the handler functions directly (bypassing the
+ * router) so they exercise the handler logic — validation, filtering,
+ * 404 vs 500 distinction, and context-banner computation — without
+ * needing a live HTTP server.
+ */
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+
+// ─── Module mocks ──────────────────────────────────────────────────────────
+// Stub the assistantEventHub so the feed writer's SSE publish does not
+// reach into the real hub (which can pull in platform services we
+// don't want to boot in a unit test).
+const publishSpy = mock<(event: unknown) => Promise<void>>(async () => {});
+mock.module("../../../runtime/assistant-event-hub.js", () => ({
+  assistantEventHub: {
+    publish: publishSpy,
+    subscribe: () => () => {},
+  },
+  broadcastMessage: async () => {},
+}));
+
+// Stub conversation CRUD so we don't spin up a real sqlite DB.
+const createdConversations: Array<{ id: string; title?: string | null }> = [];
+const addedMessages: Array<{
+  conversationId: string;
+  role: string;
+  content: string;
+}> = [];
+let createConversationShouldThrow = false;
+
+const realConversationCrud =
+  await import("../../../memory/conversation-crud.js");
+mock.module("../../../memory/conversation-crud.js", () => ({
+  ...realConversationCrud,
+  createConversation: (opts: unknown) => {
+    if (createConversationShouldThrow) {
+      throw new Error("synthetic createConversation failure");
+    }
+    const title =
+      typeof opts === "string"
+        ? opts
+        : ((opts as { title?: string } | undefined)?.title ?? null);
+    const id = `conv-${createdConversations.length + 1}`;
+    const conv = { id, title };
+    createdConversations.push(conv);
+    return conv;
+  },
+  addMessage: async (conversationId: string, role: string, content: string) => {
+    addedMessages.push({ conversationId, role, content });
+    return { id: `msg-${addedMessages.length}` };
+  },
+  // Stub the message reader surface transitively required by other
+  // modules that route through conversation-crud. The home-feed route
+  // paths don't consult it directly, but Bun's ESM mock needs the named
+  // export to exist so transitive `import { getMessages }` resolves.
+  getMessages: () => [],
+  getMessagesPaginated: () => ({ messages: [], hasMore: false }),
+  getMessageById: () => null,
+  reserveMessage: mock(async () => ({ id: "msg-reserve" })),
+}));
+
+// Stub the home-content revalidation coordinator: the GET handler fires
+// it fire-and-forget, and the real module would reach into the LLM
+// provider layer and checkpoint store.
+const revalidateSpy = mock<() => void>(() => {});
+mock.module("../../../home/home-content-refresh.js", () => ({
+  revalidateHomeContentInBackground: revalidateSpy,
+}));
+
+// Dynamic imports so module mocks are wired before evaluation.
+const {
+  computeGreeting,
+  formatRelativeTime,
+  handleGetHomeFeed: _handleGetHomeFeed,
+  handleListHomeFeed,
+  handlePatchFeedItem: _handlePatchFeedItem,
+  handlePostFeedAction: _handlePostFeedAction,
+  ROUTES,
+} = await import("../home-feed-routes.js");
+const { RouteError } = await import("../errors.js");
+const { appendFeedItem, getHomeFeedPath } =
+  await import("../../../home/feed-writer.js");
+
+/**
+ * Compatibility wrappers: translate old handler call signatures
+ * (Request, ...args) into the new RouteHandlerArgs pattern and wrap
+ * the result in a Response-like object so existing test assertions
+ * (res.status / res.json()) keep working.
+ */
+function fakeResponse(body: unknown, status = 200) {
+  return { status, json: async () => body };
+}
+
+async function handleGetHomeFeed(req: Request) {
+  const url = new URL(req.url);
+  const queryParams: Record<string, string> = {};
+  for (const [key, value] of url.searchParams.entries()) {
+    queryParams[key] = value;
+  }
+  try {
+    const result = await _handleGetHomeFeed({ queryParams });
+    return fakeResponse(result);
+  } catch (err) {
+    if (err instanceof RouteError)
+      return fakeResponse({ error: err.message }, err.statusCode);
+    throw err;
+  }
+}
+
+async function handlePatchFeedItem(req: Request, itemId: string) {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return fakeResponse({ error: "Invalid JSON body" }, 400);
+  }
+  try {
+    const result = await _handlePatchFeedItem({
+      pathParams: { id: itemId },
+      body: body as Record<string, unknown>,
+    });
+    return fakeResponse(result);
+  } catch (err) {
+    if (err instanceof RouteError)
+      return fakeResponse({ error: err.message }, err.statusCode);
+    throw err;
+  }
+}
+
+async function handlePostFeedAction(
+  _req: Request,
+  itemId: string,
+  actionId: string,
+) {
+  try {
+    const result = await _handlePostFeedAction({
+      pathParams: { id: itemId, actionId },
+    });
+    return fakeResponse(result);
+  } catch (err) {
+    if (err instanceof RouteError)
+      return fakeResponse({ error: err.message }, err.statusCode);
+    throw err;
+  }
+}
+
+function homeFeedRouteDefinitions() {
+  return ROUTES;
+}
+
+// ─── Fixtures ──────────────────────────────────────────────────────────────
+
+type FeedItemFixture = {
+  id: string;
+  type: "notification";
+  priority: number;
+  title: string;
+  summary: string;
+  timestamp: string;
+  status: "new" | "seen" | "acted_on" | "dismissed";
+  expiresAt?: string;
+  actions?: Array<{ id: string; label: string; prompt: string }>;
+  urgency?: "low" | "medium" | "high" | "critical";
+  category?: "security" | "scheduling" | "background" | "email" | "system";
+  conversationId?: string;
+  fromAssistant?: boolean;
+  noteworthy?: boolean;
+  createdAt: string;
+};
+
+function makeItem(
+  overrides: Partial<FeedItemFixture> & { id: string },
+): FeedItemFixture {
+  return {
+    type: "notification",
+    priority: 50,
+    title: "Test",
+    summary: "Test summary",
+    timestamp: "2026-04-14T12:00:00.000Z",
+    status: "new",
+    createdAt: "2026-04-14T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function writeFeedFile(items: FeedItemFixture[]): void {
+  const path = getHomeFeedPath();
+  mkdirSync(join(workspaceDir, "data"), { recursive: true });
+  writeFileSync(
+    path,
+    JSON.stringify(
+      {
+        version: 2,
+        updatedAt: "2026-04-14T12:00:00.000Z",
+        items,
+      },
+      null,
+      2,
+    ),
+    "utf-8",
+  );
+}
+
+let workspaceDir: string;
+let origWorkspaceDir: string | undefined;
+
+beforeEach(() => {
+  workspaceDir = mkdtempSync(join(tmpdir(), "vellum-hfr-"));
+  origWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
+  process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
+  publishSpy.mockClear();
+  createdConversations.length = 0;
+  addedMessages.length = 0;
+  createConversationShouldThrow = false;
+});
+
+afterEach(() => {
+  if (origWorkspaceDir === undefined) {
+    delete process.env.VELLUM_WORKSPACE_DIR;
+  } else {
+    process.env.VELLUM_WORKSPACE_DIR = origWorkspaceDir;
+  }
+  try {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
+});
+
+// ─── Pure helpers ──────────────────────────────────────────────────────────
+
+describe("computeGreeting", () => {
+  test("morning (5-11)", () => {
+    expect(computeGreeting(new Date(2026, 3, 14, 5, 0, 0))).toBe(
+      "Good morning",
+    );
+    expect(computeGreeting(new Date(2026, 3, 14, 11, 59, 59))).toBe(
+      "Good morning",
+    );
+  });
+
+  test("afternoon (12-16)", () => {
+    expect(computeGreeting(new Date(2026, 3, 14, 12, 0, 0))).toBe(
+      "Good afternoon",
+    );
+    expect(computeGreeting(new Date(2026, 3, 14, 16, 59, 59))).toBe(
+      "Good afternoon",
+    );
+  });
+
+  test("evening (17-21)", () => {
+    expect(computeGreeting(new Date(2026, 3, 14, 17, 0, 0))).toBe(
+      "Good evening",
+    );
+    expect(computeGreeting(new Date(2026, 3, 14, 21, 59, 59))).toBe(
+      "Good evening",
+    );
+  });
+
+  test("late-night / early-morning fallback (Welcome back)", () => {
+    expect(computeGreeting(new Date(2026, 3, 14, 22, 0, 0))).toBe(
+      "Welcome back",
+    );
+    expect(computeGreeting(new Date(2026, 3, 14, 2, 0, 0))).toBe(
+      "Welcome back",
+    );
+    expect(computeGreeting(new Date(2026, 3, 14, 4, 59, 59))).toBe(
+      "Welcome back",
+    );
+  });
+});
+
+describe("formatRelativeTime", () => {
+  test("under a minute", () => {
+    expect(formatRelativeTime(0)).toBe("just now");
+    expect(formatRelativeTime(30)).toBe("just now");
+    expect(formatRelativeTime(59)).toBe("just now");
+  });
+
+  test("minutes", () => {
+    expect(formatRelativeTime(60)).toBe("1 minute ago");
+    expect(formatRelativeTime(120)).toBe("2 minutes ago");
+    expect(formatRelativeTime(3599)).toBe("59 minutes ago");
+  });
+
+  test("hours", () => {
+    expect(formatRelativeTime(3600)).toBe("1 hour ago");
+    expect(formatRelativeTime(7200)).toBe("2 hours ago");
+  });
+
+  test("yesterday", () => {
+    expect(formatRelativeTime(86400)).toBe("yesterday");
+    expect(formatRelativeTime(100000)).toBe("yesterday");
+  });
+
+  test("multiple days", () => {
+    expect(formatRelativeTime(172800)).toBe("2 days ago");
+    expect(formatRelativeTime(345600)).toBe("4 days ago");
+  });
+});
+
+// ─── Route registration ────────────────────────────────────────────────────
+
+describe("homeFeedRouteDefinitions", () => {
+  test("registers GET /v1/home/feed, PATCH /v1/home/feed/:id, and POST /v1/home/feed/:id/actions/:actionId", () => {
+    const routes = homeFeedRouteDefinitions();
+    const endpoints = routes.map((r) => `${r.method} ${r.endpoint}`);
+    expect(endpoints).toContain("GET home/feed");
+    expect(endpoints).toContain("PATCH home/feed/:id");
+    expect(endpoints).toContain("POST home/feed/:id/actions/:actionId");
+  });
+});
+
+// ─── handleGetHomeFeed ─────────────────────────────────────────────────────
+
+describe("handleGetHomeFeed", () => {
+  test("400 when timeAwaySeconds is missing", async () => {
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed"),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("400 when timeAwaySeconds is negative", async () => {
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=-5"),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("400 when timeAwaySeconds is non-integer", async () => {
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=3.14"),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("triggers fire-and-forget home content revalidation", async () => {
+    revalidateSpy.mockClear();
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=0"),
+    );
+    expect(res.status).toBe(200);
+    expect(revalidateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("empty feed returns empty items and zero newCount", async () => {
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=0"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: unknown[];
+      updatedAt: string;
+      contextBanner: {
+        greeting: string;
+        timeAwayLabel: string;
+        newCount: number;
+      };
+    };
+    expect(body.items).toEqual([]);
+    expect(typeof body.updatedAt).toBe("string");
+    expect(body.contextBanner.newCount).toBe(0);
+    expect(body.contextBanner.timeAwayLabel).toBe("just now");
+    expect(typeof body.contextBanner.greeting).toBe("string");
+  });
+
+  test("returns every item regardless of timeAwaySeconds (v2 dropped minTimeAway gating)", async () => {
+    // The v2 schema no longer carries `minTimeAway`, and the route
+    // handler no longer gates on it — every item flows through. The
+    // `timeAwaySeconds` query parameter survives only because the
+    // context banner's relative-time label is derived from it.
+    writeFeedFile([makeItem({ id: "a" }), makeItem({ id: "b" })]);
+
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=60"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: Array<{ id: string }>;
+      contextBanner: { newCount: number };
+    };
+    const ids = body.items.map((i) => i.id).sort();
+    expect(ids).toEqual(["a", "b"]);
+    expect(body.contextBanner.newCount).toBe(2);
+  });
+
+  test("contextBanner.timeAwayLabel reflects the supplied timeAwaySeconds", async () => {
+    writeFeedFile([makeItem({ id: "any" })]);
+
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=7200"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: Array<{ id: string }>;
+      contextBanner: { newCount: number; timeAwayLabel: string };
+    };
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]!.id).toBe("any");
+    expect(body.contextBanner.newCount).toBe(1);
+    expect(body.contextBanner.timeAwayLabel).toBe("2 hours ago");
+  });
+
+  test("newCount counts only status=new after filtering", async () => {
+    writeFeedFile([
+      makeItem({ id: "a", status: "new" }),
+      makeItem({ id: "b", status: "seen" }),
+      makeItem({ id: "c", status: "acted_on" }),
+      makeItem({ id: "d", status: "new" }),
+    ]);
+
+    const res = await handleGetHomeFeed(
+      new Request("http://localhost/v1/home/feed?timeAwaySeconds=0"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      contextBanner: { newCount: number };
+    };
+    expect(body.contextBanner.newCount).toBe(2);
+  });
+});
+
+// ─── handlePatchFeedItem ───────────────────────────────────────────────────
+
+describe("handlePatchFeedItem", () => {
+  test("200 with updated item when id exists", async () => {
+    await appendFeedItem(makeItem({ id: "p1", status: "new" }) as never);
+
+    const res = await handlePatchFeedItem(
+      new Request("http://localhost/v1/home/feed/p1", {
+        method: "PATCH",
+        body: JSON.stringify({ status: "seen" }),
+      }),
+      "p1",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; status: string };
+    expect(body.id).toBe("p1");
+    expect(body.status).toBe("seen");
+  });
+
+  test("404 when id does not exist", async () => {
+    const res = await handlePatchFeedItem(
+      new Request("http://localhost/v1/home/feed/missing", {
+        method: "PATCH",
+        body: JSON.stringify({ status: "seen" }),
+      }),
+      "missing",
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("400 on invalid status value", async () => {
+    await appendFeedItem(makeItem({ id: "p2", status: "new" }) as never);
+
+    const res = await handlePatchFeedItem(
+      new Request("http://localhost/v1/home/feed/p2", {
+        method: "PATCH",
+        body: JSON.stringify({ status: "bogus" }),
+      }),
+      "p2",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("400 on missing status field", async () => {
+    await appendFeedItem(makeItem({ id: "p3", status: "new" }) as never);
+
+    const res = await handlePatchFeedItem(
+      new Request("http://localhost/v1/home/feed/p3", {
+        method: "PATCH",
+        body: JSON.stringify({}),
+      }),
+      "p3",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("400 on invalid JSON body", async () => {
+    await appendFeedItem(makeItem({ id: "p4", status: "new" }) as never);
+
+    const res = await handlePatchFeedItem(
+      new Request("http://localhost/v1/home/feed/p4", {
+        method: "PATCH",
+        body: "not json",
+      }),
+      "p4",
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── handlePostFeedAction ──────────────────────────────────────────────────
+
+describe("handlePostFeedAction", () => {
+  test("creates a conversation pre-seeded with the action prompt", async () => {
+    writeFeedFile([
+      makeItem({
+        id: "item-1",
+        actions: [
+          {
+            id: "reply",
+            label: "Reply",
+            prompt: "Draft a reply to this email",
+          },
+        ],
+      }),
+    ]);
+
+    const res = await handlePostFeedAction(
+      new Request("http://localhost/v1/home/feed/item-1/actions/reply", {
+        method: "POST",
+      }),
+      "item-1",
+      "reply",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { conversationId: string };
+    expect(body.conversationId).toBe("conv-1");
+
+    expect(createdConversations).toHaveLength(1);
+    expect(createdConversations[0]!.title).toBe("Reply");
+
+    expect(addedMessages).toHaveLength(1);
+    expect(addedMessages[0]!.role).toBe("user");
+    expect(addedMessages[0]!.conversationId).toBe("conv-1");
+    const content = JSON.parse(addedMessages[0]!.content) as Array<{
+      type: string;
+      text: string;
+    }>;
+    expect(content[0]!.text).toBe("Draft a reply to this email");
+  });
+
+  test("404 when the item does not exist", async () => {
+    const res = await handlePostFeedAction(
+      new Request("http://localhost/v1/home/feed/nope/actions/reply", {
+        method: "POST",
+      }),
+      "nope",
+      "reply",
+    );
+    expect(res.status).toBe(404);
+    expect(createdConversations).toHaveLength(0);
+  });
+
+  test("404 when the action id is unknown on a real item", async () => {
+    writeFeedFile([
+      makeItem({
+        id: "item-2",
+        actions: [{ id: "reply", label: "Reply", prompt: "hi" }],
+      }),
+    ]);
+
+    const res = await handlePostFeedAction(
+      new Request("http://localhost/v1/home/feed/item-2/actions/archive", {
+        method: "POST",
+      }),
+      "item-2",
+      "archive",
+    );
+    expect(res.status).toBe(404);
+    expect(createdConversations).toHaveLength(0);
+  });
+
+  test("500 when createConversation throws", async () => {
+    writeFeedFile([
+      makeItem({
+        id: "item-3",
+        actions: [{ id: "reply", label: "Reply", prompt: "hi" }],
+      }),
+    ]);
+    createConversationShouldThrow = true;
+
+    const res = await handlePostFeedAction(
+      new Request("http://localhost/v1/home/feed/item-3/actions/reply", {
+        method: "POST",
+      }),
+      "item-3",
+      "reply",
+    );
+    expect(res.status).toBe(500);
+  });
+});
+
+// ─── handleListHomeFeed ────────────────────────────────────────────────────
+
+describe("handleListHomeFeed", () => {
+  type ListResult = {
+    items: Array<{ id: string; status: string }>;
+    total: number;
+    returned: number;
+    hasMore: boolean;
+  };
+
+  test("excludes dismissed items by default", () => {
+    writeFeedFile([
+      makeItem({ id: "a", status: "new" }),
+      makeItem({ id: "b", status: "seen" }),
+      makeItem({ id: "c", status: "acted_on" }),
+      makeItem({ id: "d", status: "dismissed" }),
+    ]);
+
+    const result = handleListHomeFeed({ body: {} }) as ListResult;
+    expect(result.items.map((i) => i.id).sort()).toEqual(["a", "b", "c"]);
+    expect(result.total).toBe(3);
+    expect(result.hasMore).toBe(false);
+  });
+
+  test("includeDismissed: true returns dismissed items too", () => {
+    writeFeedFile([
+      makeItem({ id: "a", status: "new" }),
+      makeItem({ id: "d", status: "dismissed" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { includeDismissed: true },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id).sort()).toEqual(["a", "d"]);
+  });
+
+  test("statuses filter overrides the dismissed-default exclusion", () => {
+    writeFeedFile([
+      makeItem({ id: "a", status: "new" }),
+      makeItem({ id: "b", status: "seen" }),
+      makeItem({ id: "d", status: "dismissed" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { statuses: ["dismissed"] },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["d"]);
+  });
+
+  test("urgencies filter narrows by urgency and excludes items missing urgency", () => {
+    writeFeedFile([
+      makeItem({ id: "a", urgency: "high" }),
+      makeItem({ id: "b", urgency: "low" }),
+      makeItem({ id: "c" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { urgencies: ["high"] },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  test("categories filter narrows by category", () => {
+    writeFeedFile([
+      makeItem({ id: "a", category: "email" }),
+      makeItem({ id: "b", category: "background" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { categories: ["email"] },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  test("conversationId filter narrows by conversation", () => {
+    writeFeedFile([
+      makeItem({ id: "a", conversationId: "conv-1" }),
+      makeItem({ id: "b", conversationId: "conv-2" }),
+      makeItem({ id: "c" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { conversationId: "conv-1" },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  test("fromAssistant: true returns only assistant-emitted items", () => {
+    writeFeedFile([
+      makeItem({ id: "a", fromAssistant: true }),
+      makeItem({ id: "b", fromAssistant: false }),
+      makeItem({ id: "c" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { fromAssistant: true },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  test("noteworthy: true returns only noteworthy items", () => {
+    writeFeedFile([
+      makeItem({ id: "a", noteworthy: true }),
+      makeItem({ id: "b" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { noteworthy: true },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  test("before filter is strict (createdAt < before)", () => {
+    writeFeedFile([
+      makeItem({ id: "old", createdAt: "2026-05-01T00:00:00.000Z" }),
+      makeItem({ id: "edge", createdAt: "2026-05-15T00:00:00.000Z" }),
+      makeItem({ id: "new", createdAt: "2026-05-20T00:00:00.000Z" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { before: "2026-05-15T00:00:00.000Z" },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["old"]);
+  });
+
+  test("after filter is strict (createdAt > after)", () => {
+    writeFeedFile([
+      makeItem({ id: "old", createdAt: "2026-05-01T00:00:00.000Z" }),
+      makeItem({ id: "edge", createdAt: "2026-05-15T00:00:00.000Z" }),
+      makeItem({ id: "new", createdAt: "2026-05-20T00:00:00.000Z" }),
+    ]);
+
+    const result = handleListHomeFeed({
+      body: { after: "2026-05-15T00:00:00.000Z" },
+    }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["new"]);
+  });
+
+  test("limit and offset paginate; hasMore reflects remaining items", () => {
+    writeFeedFile(
+      Array.from({ length: 25 }, (_, i) =>
+        makeItem({
+          id: `i${String(i).padStart(2, "0")}`,
+          // distinct priorities so the file's sort is stable + deterministic
+          priority: 100 - i,
+        }),
+      ),
+    );
+
+    const page1 = handleListHomeFeed({
+      body: { limit: 10, offset: 0 },
+    }) as ListResult;
+    expect(page1.items).toHaveLength(10);
+    expect(page1.total).toBe(25);
+    expect(page1.returned).toBe(10);
+    expect(page1.hasMore).toBe(true);
+
+    const page3 = handleListHomeFeed({
+      body: { limit: 10, offset: 20 },
+    }) as ListResult;
+    expect(page3.items).toHaveLength(5);
+    expect(page3.hasMore).toBe(false);
+  });
+
+  test("invalid before timestamp throws 400", () => {
+    writeFeedFile([]);
+    let caught: unknown;
+    try {
+      handleListHomeFeed({ body: { before: "not-a-date" } });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RouteError);
+    expect((caught as { statusCode: number }).statusCode).toBe(400);
+  });
+
+  test("invalid filter shape throws 400", () => {
+    writeFeedFile([]);
+    let caught: unknown;
+    try {
+      handleListHomeFeed({ body: { urgencies: ["extreme"] } });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RouteError);
+    expect((caught as { statusCode: number }).statusCode).toBe(400);
+  });
+
+  test("expired items are excluded (matches readHomeFeed TTL behavior)", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    writeFeedFile([
+      makeItem({ id: "alive" }),
+      makeItem({ id: "dead", expiresAt: past }),
+    ]);
+
+    const result = handleListHomeFeed({ body: {} }) as ListResult;
+    expect(result.items.map((i) => i.id)).toEqual(["alive"]);
+  });
+});

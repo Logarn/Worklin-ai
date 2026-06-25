@@ -1,0 +1,2602 @@
+import { basename } from "path";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
+import { Box, render as inkRender, Text, useInput, useStdout } from "ink";
+
+import { SPECIES_CONFIG, type Species } from "../lib/constants";
+import { lookupAssistantByIdentifier } from "../lib/assistant-config";
+import { checkHealth } from "../lib/health-check";
+import {
+  guardianTokenDueForRenewal,
+  loadGuardianToken,
+  refreshGuardianToken,
+} from "../lib/guardian-token";
+import { trustedRefreshUrl } from "../lib/runtime-url";
+import { appendHistory, loadHistory } from "../lib/input-history";
+import { tuiLog } from "../lib/tui-log";
+import { segmentsToPlainText } from "../lib/segments-to-plain-text";
+import { statusEmoji, withStatusEmoji } from "../lib/status-emoji";
+import {
+  getTerminalCapabilities,
+  unicodeOrFallback,
+} from "../lib/terminal-capabilities";
+import TextInput from "./TextInput";
+import { Tooltip } from "./Tooltip";
+
+export const ANSI = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  red: "\x1b[31m",
+  magenta: "\x1b[35m",
+  gray: "\x1b[90m",
+} as const;
+
+export const SLASH_COMMANDS = [
+  "/btw",
+  "/clear",
+  "/exit",
+  "/help",
+  "/q",
+  "/quit",
+];
+
+const HELP_COMMANDS = [
+  {
+    command: "/btw <question>",
+    description: "Ask a side question while the assistant is working",
+  },
+  {
+    command: "/quit, /exit, /q",
+    description: "Disconnect and exit",
+  },
+  {
+    command: "/clear",
+    description: "Clear the screen",
+  },
+  {
+    command: "/help, ?",
+    description: "Show this help",
+  },
+] as const;
+
+const SEND_TIMEOUT_MS = 5000;
+/** Fresh deadline for a request retried after a mid-session token refresh —
+ *  the original caller signal may have already timed out during the refresh. */
+const RETRY_TIMEOUT_MS = 30_000;
+
+// ── Layout constants ──────────────────────────────────────
+const MAX_TOTAL_WIDTH = 72;
+const DEFAULT_TERMINAL_COLUMNS = 80;
+const DEFAULT_TERMINAL_ROWS = 24;
+const LEFT_PANEL_WIDTH = 36;
+
+const COMPACT_THRESHOLD = 60;
+const HEADER_PREFIX_UNICODE = "── Vellum ";
+const HEADER_PREFIX_ASCII = "-- Vellum ";
+
+// Left panel structure: HEADER lines + art + FOOTER lines
+const LEFT_HEADER_LINES = 4; // spacer + eyebrow + title + spacer
+const LEFT_FOOTER_LINES = 3; // spacer + runtimeUrl + dirName
+
+// Right panel structure
+const TIPS = [
+  "Send a message to start chatting",
+  "Use /help to see available commands",
+];
+const RIGHT_PANEL_INFO_SECTIONS = 3; // Assistant ID, Species, Status — each with heading + value
+const RIGHT_PANEL_SPACERS = 2; // top spacer + spacer between tips and info
+const RIGHT_PANEL_TIPS_HEADING = 1;
+const RIGHT_PANEL_LINE_COUNT =
+  RIGHT_PANEL_SPACERS +
+  RIGHT_PANEL_TIPS_HEADING +
+  TIPS.length +
+  RIGHT_PANEL_INFO_SECTIONS * 2;
+
+// Header chrome (borders around panel content)
+const HEADER_TOP_BORDER_LINES = 1; // "── Vellum ───..." line
+const HEADER_BOTTOM_BORDER_LINES = 2; // bottom rule + blank line
+const HEADER_CHROME_LINES =
+  HEADER_TOP_BORDER_LINES + HEADER_BOTTOM_BORDER_LINES;
+
+// Selection / Secret windows
+const DIALOG_WINDOW_WIDTH = 60;
+const DIALOG_TITLE_CHROME = 5; // "┌─ " (3) + " " (1) + "┐" (1)
+const DIALOG_BORDER_CORNERS = 2; // └ and ┘
+const SELECTION_OPTION_CHROME = 6; // "│ " (2) + marker (1) + " " (1) + padding‐adjust + "│" (1)
+const SECRET_CONTENT_CHROME = 4; // "│ " (2) + padding + "│" (1) + adjustment
+
+// Chat area heights
+const TOOLTIP_HEIGHT = 3;
+const INPUT_AREA_HEIGHT = 4; // separator + input row + separator + hint
+const SELECTION_CHROME_LINES = 3; // title bar + bottom border + spacing
+const SECRET_INPUT_HEIGHT = 5; // title bar + content row + bottom border + tooltip chrome
+const SPINNER_HEIGHT = 1;
+const MIN_FEED_ROWS = 3;
+
+// Feed item height estimation
+const TOOL_CALL_CHROME_LINES = 2; // header (┌) + footer (└)
+const MESSAGE_SPACING = 1;
+const HELP_DISPLAY_HEIGHT = HELP_COMMANDS.length + 1;
+
+interface ListMessagesResponse {
+  messages: RuntimeMessage[];
+  nextCursor?: string;
+}
+
+interface SendMessageResponse {
+  accepted: boolean;
+  messageId: string;
+}
+
+interface AllowlistOption {
+  label: string;
+  pattern: string;
+}
+
+interface ScopeOption {
+  label: string;
+  scope: string;
+}
+
+interface PendingConfirmation {
+  toolName: string;
+  toolUseId: string;
+  input: Record<string, unknown>;
+  riskLevel: string;
+  executionTarget?: "sandbox" | "host";
+  allowlistOptions?: AllowlistOption[];
+  scopeOptions?: ScopeOption[];
+  persistentDecisionsAllowed?: boolean;
+}
+
+interface SubmitDecisionResponse {
+  accepted: boolean;
+}
+
+interface AddTrustRuleResponse {
+  accepted: boolean;
+}
+
+type TrustDecision = "always_allow" | "always_deny";
+
+interface HealthResponse {
+  status: string;
+  message?: string;
+}
+
+/** Extract human-readable message from a daemon JSON error response. */
+function friendlyErrorMessage(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string } };
+    if (parsed?.error?.message) {
+      return parsed.error.message;
+    }
+  } catch {
+    // Not JSON — fall through
+  }
+  return `HTTP ${status}: ${body || "Unknown error"}`;
+}
+
+/**
+ * On a 401, refresh a stale PAIRED-assistant guardian token and update the
+ * shared `auth` headers IN PLACE, returning true if the caller should retry.
+ *
+ * Scoped to paired assistants only (a remote assistant on another machine,
+ * `cloud: "paired"`) — the local/docker TUI flow and platform sessions are left
+ * untouched. Also self-gating: skips platform session auth (no `Authorization`
+ * header), ephemeral `--token` overrides (whose bearer won't match the store),
+ * and access-only tokens. Because the TUI threads one shared `auth` object by
+ * reference, mutating it here propagates to every later request and the SSE
+ * reconnect — no callback threading needed.
+ *
+ * SECURITY: the refresh is bound to the paired entry's persisted runtime URL.
+ * `vellum client` lets `--url`/`-u` override the runtime URL while still using
+ * the selected paired entry's stored guardian token, so a victim pointed at an
+ * attacker-controlled (or poisoned/redirected) URL that returns 401 must NOT
+ * cause us to POST the long-lived refreshToken + deviceId to that origin. We
+ * therefore (a) refuse to refresh unless `baseUrl` normalizes to one of the
+ * entry's persisted URLs, and (b) send the refresh to the persisted URL rather
+ * than the caller-supplied `baseUrl` — defense in depth if the gate is ever
+ * bypassed.
+ */
+export async function maybeRefreshAuthHeaders(
+  baseUrl: string,
+  assistantId: string,
+  auth?: Record<string, string>,
+): Promise<boolean> {
+  if (!auth) return false;
+  const bearer = auth["Authorization"]?.replace(/^Bearer /, "");
+  if (!bearer) return false;
+
+  // Only paired (remote-on-another-machine) assistants use refreshable pair
+  // tokens; don't perturb the local/docker session flow.
+  const lookup = lookupAssistantByIdentifier(assistantId);
+  if (lookup.status !== "found" || lookup.entry.cloud !== "paired") {
+    return false;
+  }
+
+  // Bind the refresh origin to the persisted paired entry: refuse (and never
+  // leak credentials) if `baseUrl` was overridden via --url or poisoned to an
+  // origin that isn't one of the entry's persisted URLs. `refreshUrl` is the
+  // trusted persisted URL we actually send to.
+  const refreshUrl = trustedRefreshUrl(lookup.entry, baseUrl);
+  if (!refreshUrl) return false;
+
+  const stored = loadGuardianToken(assistantId);
+  if (!stored || stored.accessToken !== bearer || !stored.refreshToken) {
+    return false;
+  }
+  // Only refresh once the token is actually due for renewal, so a forged 401
+  // on a still-valid token can't coax out the long-lived refresh credential.
+  if (!guardianTokenDueForRenewal(stored)) return false;
+  const refreshed = await refreshGuardianToken(refreshUrl, assistantId);
+  if (!refreshed?.accessToken) return false;
+  auth["Authorization"] = `Bearer ${refreshed.accessToken}`;
+  return true;
+}
+
+async function runtimeRequest<T>(
+  baseUrl: string,
+  assistantId: string,
+  path: string,
+  init?: RequestInit,
+  auth?: Record<string, string>,
+): Promise<T> {
+  const url = `${baseUrl}/v1/assistants/${assistantId}${path}`;
+  const doFetch = (signalOverride?: AbortSignal) =>
+    fetch(url, {
+      ...init,
+      // The retry overrides the caller's signal (see below); otherwise use it.
+      signal: signalOverride ?? init?.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...auth,
+        ...(init?.headers as Record<string, string> | undefined),
+      },
+    });
+
+  let response = await doFetch();
+  // Mid-session token expiry → 401: refresh once and retry (auth headers are
+  // mutated in place by the helper, so the retry carries the new token). The
+  // refresh can take longer than the caller's timeout (lock wait + refresh
+  // fetch), which would already have aborted the original signal — so give the
+  // retry a fresh deadline instead of reusing the (likely-expired) one.
+  if (
+    response.status === 401 &&
+    (await maybeRefreshAuthHeaders(baseUrl, assistantId, auth))
+  ) {
+    response = await doFetch(AbortSignal.timeout(RETRY_TIMEOUT_MS));
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(friendlyErrorMessage(response.status, body));
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function checkHealthRuntime(baseUrl: string): Promise<HealthResponse> {
+  const url = `${baseUrl}/healthz`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+  const response = await fetch(url, {
+    signal: controller.signal,
+    headers: { "Content-Type": "application/json" },
+  });
+
+  clearTimeout(timeoutId);
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json() as Promise<HealthResponse>;
+}
+
+async function pollMessages(
+  baseUrl: string,
+  assistantId: string,
+  auth?: Record<string, string>,
+): Promise<ListMessagesResponse> {
+  const params = new URLSearchParams({ conversationKey: assistantId });
+  const response = await runtimeRequest<ListMessagesResponse>(
+    baseUrl,
+    assistantId,
+    `/messages?${params.toString()}`,
+    undefined,
+    auth,
+  );
+  return {
+    ...response,
+    messages: response.messages.map((msg) => ({
+      ...msg,
+      content: segmentsToPlainText(msg.textSegments),
+    })),
+  };
+}
+
+async function sendMessage(
+  baseUrl: string,
+  assistantId: string,
+  content: string,
+  signal?: AbortSignal,
+  auth?: Record<string, string>,
+): Promise<SendMessageResponse> {
+  return runtimeRequest<SendMessageResponse>(
+    baseUrl,
+    assistantId,
+    "/messages",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        conversationKey: assistantId,
+        content,
+        sourceChannel: "vellum",
+        interface: "cli",
+      }),
+      signal,
+    },
+    auth,
+  );
+}
+
+async function submitDecision(
+  baseUrl: string,
+  assistantId: string,
+  requestId: string,
+  decision: "allow" | "deny",
+  auth?: Record<string, string>,
+): Promise<SubmitDecisionResponse> {
+  return runtimeRequest<SubmitDecisionResponse>(
+    baseUrl,
+    assistantId,
+    "/confirm",
+    {
+      method: "POST",
+      body: JSON.stringify({ requestId, decision }),
+    },
+    auth,
+  );
+}
+
+async function addTrustRule(
+  baseUrl: string,
+  assistantId: string,
+  requestId: string,
+  pattern: string,
+  scope: string,
+  decision: "allow" | "deny",
+  auth?: Record<string, string>,
+): Promise<AddTrustRuleResponse> {
+  return runtimeRequest<AddTrustRuleResponse>(
+    baseUrl,
+    assistantId,
+    "/trust-rules",
+    {
+      method: "POST",
+      body: JSON.stringify({ requestId, pattern, scope, decision }),
+    },
+    auth,
+  );
+}
+
+// ── SSE event types ─────────────────────────────────────────────
+interface SseEvent {
+  type: string;
+  text?: string;
+  thinking?: string;
+  toolName?: string;
+  toolUseId?: string;
+  input?: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+  content?: string;
+  chunk?: string;
+  message?: string;
+  conversationId?: string;
+  messageId?: string;
+  requestId?: string;
+  // confirmation_request fields
+  riskLevel?: string;
+  riskReason?: string;
+  executionTarget?: "sandbox" | "host";
+  allowlistOptions?: Array<{
+    label: string;
+    description: string;
+    pattern: string;
+  }>;
+  scopeOptions?: Array<{ label: string; scope: string }>;
+  persistentDecisionsAllowed?: boolean;
+  isContainerized?: boolean;
+  // secret_request fields
+  service?: string;
+  field?: string;
+  label?: string;
+  description?: string;
+  placeholder?: string;
+  purpose?: string;
+  allowOneTimeSend?: boolean;
+  allowedTools?: string[];
+  allowedDomains?: string[];
+  // message_complete fields
+  source?: "main" | "aux";
+  // sync_changed fields
+  tags?: string[];
+  [key: string]: unknown;
+}
+
+/**
+ * Open an SSE stream to the assistant's /events endpoint.
+ * Yields unwrapped message payloads from `data:` lines, skipping
+ * heartbeat comments. The /events endpoint emits AssistantEvent
+ * envelopes (`{ id, assistantId, message: { type, ... } }`); this
+ * generator unwraps the envelope so callers switch on `.type` directly.
+ */
+async function* streamEvents(
+  baseUrl: string,
+  assistantId: string,
+  conversationKey: string,
+  signal: AbortSignal,
+  auth?: Record<string, string>,
+): AsyncGenerator<SseEvent> {
+  const params = new URLSearchParams({ conversationKey });
+  const url = `${baseUrl}/v1/assistants/${assistantId}/events?${params.toString()}`;
+  tuiLog.info("sse connect", { url, authHeaders: Object.keys(auth ?? {}) });
+  // NOTE: the SSE connect deliberately does NOT refresh-on-401 — keeping the
+  // stream path simple. After a mid-session token expiry, the REST path
+  // (runtimeRequest) refreshes the shared `auth` on the next request, and the
+  // existing reconnect (ensureConnected on the next message) re-opens the
+  // stream with the refreshed token.
+  const response = await fetch(url, {
+    headers: {
+      Accept: "text/event-stream",
+      ...auth,
+    },
+    signal,
+  });
+
+  tuiLog.info("sse response", {
+    status: response.status,
+    statusText: response.statusText,
+    contentType: response.headers.get("content-type"),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    tuiLog.error("sse connection failed", {
+      status: response.status,
+      body: body.slice(0, 500),
+    });
+    throw new Error(
+      `SSE connection failed (${response.status}): ${body || response.statusText}`,
+    );
+  }
+  if (!response.body) {
+    tuiLog.error("sse response has no body");
+    throw new Error("No response body from SSE endpoint");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+    let boundary: number;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      if (!frame.trim() || frame.startsWith(":")) continue;
+      let data: string | undefined;
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("data: ")) {
+          data = line.slice(6);
+        }
+      }
+      if (!data) continue;
+      try {
+        const envelope = JSON.parse(data) as {
+          message?: SseEvent;
+          [key: string]: unknown;
+        };
+        // Unwrap the AssistantEvent envelope
+        if (envelope.message && typeof envelope.message.type === "string") {
+          yield envelope.message;
+        }
+      } catch {
+        // skip malformed JSON
+      }
+    }
+  }
+}
+
+function formatConfirmationPreview(
+  toolName: string,
+  input: Record<string, unknown>,
+): string {
+  switch (toolName) {
+    case "bash":
+      return String(input.command ?? "");
+    case "file_read":
+      return `read ${input.path ?? ""}`;
+    case "file_write":
+      return `write ${input.path ?? ""}`;
+    case "file_edit":
+      return `edit ${input.path ?? ""}`;
+    case "web_fetch":
+      return String(input.url ?? "").slice(0, 80);
+    case "browser_navigate":
+      return `navigate ${String(input.url ?? "").slice(0, 80)}`;
+    case "browser_close":
+      return input.close_all_pages
+        ? "close all browser pages"
+        : "close browser page";
+    case "browser_click":
+      return `click ${input.element_id ?? input.selector ?? ""}`;
+    case "browser_type":
+      return `type into ${input.element_id ?? input.selector ?? ""}`;
+    case "browser_press_key":
+      return `press "${input.key ?? ""}"`;
+    default:
+      return `${toolName}: ${JSON.stringify(input).slice(0, 80)}`;
+  }
+}
+
+async function handleConfirmationPrompt(
+  baseUrl: string,
+  assistantId: string,
+  requestId: string,
+  confirmation: PendingConfirmation,
+  chatApp: ChatAppHandle,
+  auth?: Record<string, string>,
+): Promise<void> {
+  const preview = formatConfirmationPreview(
+    confirmation.toolName,
+    confirmation.input,
+  );
+  const allowlistOptions = confirmation.allowlistOptions ?? [];
+
+  chatApp.addStatus(`\u250C ${confirmation.toolName}: ${preview}`);
+  chatApp.addStatus(`\u2502 Risk: ${confirmation.riskLevel}`);
+  if (confirmation.executionTarget) {
+    chatApp.addStatus(`\u2502 Target: ${confirmation.executionTarget}`);
+  }
+  chatApp.addStatus("\u2514");
+
+  const options = ["Allow once", "Deny once"];
+  if (
+    allowlistOptions.length > 0 &&
+    confirmation.persistentDecisionsAllowed !== false
+  ) {
+    options.push("Allowlist...", "Denylist...");
+  }
+
+  const index = await chatApp.showSelection("Tool Approval", options);
+
+  if (index === 0) {
+    await submitDecision(baseUrl, assistantId, requestId, "allow", auth);
+    chatApp.addStatus("\u2714 Allowed", "green");
+    return;
+  }
+  if (index === 2) {
+    await handlePatternSelection(
+      baseUrl,
+      assistantId,
+      requestId,
+      confirmation,
+      chatApp,
+      "always_allow",
+      auth,
+    );
+    return;
+  }
+  if (index === 3) {
+    await handlePatternSelection(
+      baseUrl,
+      assistantId,
+      requestId,
+      confirmation,
+      chatApp,
+      "always_deny",
+      auth,
+    );
+    return;
+  }
+
+  await submitDecision(baseUrl, assistantId, requestId, "deny", auth);
+  chatApp.addStatus("\u2718 Denied", "yellow");
+}
+
+async function handlePatternSelection(
+  baseUrl: string,
+  assistantId: string,
+  requestId: string,
+  confirmation: PendingConfirmation,
+  chatApp: ChatAppHandle,
+  trustDecision: TrustDecision,
+  auth?: Record<string, string>,
+): Promise<void> {
+  const allowlistOptions = confirmation.allowlistOptions ?? [];
+  const label = trustDecision === "always_deny" ? "Denylist" : "Allowlist";
+  const options = allowlistOptions.map((o) => o.label);
+
+  const index = await chatApp.showSelection(
+    `${label}: choose command pattern`,
+    options,
+  );
+
+  if (index >= 0 && index < allowlistOptions.length) {
+    const selectedPattern = allowlistOptions[index].pattern;
+    await handleScopeSelection(
+      baseUrl,
+      assistantId,
+      requestId,
+      confirmation,
+      chatApp,
+      selectedPattern,
+      trustDecision,
+      auth,
+    );
+    return;
+  }
+
+  await submitDecision(baseUrl, assistantId, requestId, "deny", auth);
+  chatApp.addStatus("\u2718 Denied", "yellow");
+}
+
+async function handleScopeSelection(
+  baseUrl: string,
+  assistantId: string,
+  requestId: string,
+  confirmation: PendingConfirmation,
+  chatApp: ChatAppHandle,
+  selectedPattern: string,
+  trustDecision: TrustDecision,
+  auth?: Record<string, string>,
+): Promise<void> {
+  const scopeOptions = confirmation.scopeOptions ?? [];
+  const label = trustDecision === "always_deny" ? "Denylist" : "Allowlist";
+  const options = scopeOptions.map((o) => o.label);
+
+  const index = await chatApp.showSelection(`${label}: choose scope`, options);
+
+  if (index >= 0 && index < scopeOptions.length) {
+    const ruleDecision = trustDecision === "always_deny" ? "deny" : "allow";
+    await addTrustRule(
+      baseUrl,
+      assistantId,
+      requestId,
+      selectedPattern,
+      scopeOptions[index].scope,
+      ruleDecision,
+      auth,
+    );
+    await submitDecision(
+      baseUrl,
+      assistantId,
+      requestId,
+      ruleDecision === "deny" ? "deny" : "allow",
+      auth,
+    );
+    const ruleLabel =
+      trustDecision === "always_deny" ? "Denylisted" : "Allowlisted";
+    const ruleColor = trustDecision === "always_deny" ? "yellow" : "green";
+    chatApp.addStatus(
+      `${trustDecision === "always_deny" ? "\u2718" : "\u2714"} ${ruleLabel}`,
+      ruleColor,
+    );
+    return;
+  }
+
+  await submitDecision(baseUrl, assistantId, requestId, "deny", auth);
+  chatApp.addStatus("\u2718 Denied", "yellow");
+}
+
+export const TYPING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/** ASCII-safe spinner frames for the connection screen. */
+const CONNECTION_SPINNER_FRAMES = ["|", "/", "-", "\\"];
+
+export interface ToolCallInfo {
+  name: string;
+  input: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+  toolUseId?: string;
+}
+
+export interface RuntimeMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  /**
+   * Ordered text segments from the daemon's history payload, split at
+   * tool_use/surface boundaries. The flat `content` body is derived from
+   * these (see `segmentsToPlainText`); the daemon no longer sends a
+   * redundant flattened `content` field on the wire.
+   */
+  textSegments?: string[];
+  timestamp: string;
+  toolCalls?: ToolCallInfo[];
+  label?: string;
+}
+
+export function formatTimestamp(ts: string): string {
+  try {
+    const date = new Date(ts);
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+function formatToolCallPreview(tc: ToolCallInfo): string {
+  switch (tc.name) {
+    case "bash":
+      return String(tc.input.command ?? "").slice(0, 80);
+    case "file_read":
+      return `read ${tc.input.path ?? ""}`;
+    case "file_write":
+      return `write ${tc.input.path ?? ""}`;
+    case "file_edit":
+      return `edit ${tc.input.path ?? ""}`;
+    case "web_search":
+      return String(tc.input.query ?? "").slice(0, 80);
+    case "web_fetch":
+      return String(tc.input.url ?? "").slice(0, 80);
+    case "browser_navigate":
+      return `navigate ${String(tc.input.url ?? "").slice(0, 80)}`;
+    case "browser_click":
+      return `click ${String(tc.input.element_id ?? tc.input.selector ?? "").slice(0, 60)}`;
+    case "browser_type":
+      return `type into ${String(tc.input.element_id ?? tc.input.selector ?? "").slice(0, 60)}`;
+    default:
+      return JSON.stringify(tc.input).slice(0, 80);
+  }
+}
+
+function truncateValue(value: unknown, maxLen: number): string {
+  if (typeof value === "string") {
+    if (value.length > maxLen) {
+      return value.slice(0, maxLen - 3) + "...";
+    }
+    return value;
+  }
+  const serialized = JSON.stringify(value);
+  if (serialized.length > maxLen) {
+    return serialized.slice(0, maxLen - 3) + "...";
+  }
+  return serialized;
+}
+
+function formatHeaderTitle(assistantName?: string): string {
+  const rawTitle = assistantName?.trim() || "Meet your Assistant!";
+  const title = rawTitle.replace(/\s+/g, " ");
+  const maxTitleLength = LEFT_PANEL_WIDTH - 2;
+  const displayTitle =
+    title.length > maxTitleLength
+      ? title.slice(0, maxTitleLength - 3) + "..."
+      : title;
+  return `  ${displayTitle}`;
+}
+
+function formatHeaderEyebrow(): string {
+  return "  Assistant";
+}
+
+interface ToolCallDisplayProps {
+  tc: ToolCallInfo;
+}
+
+function ToolCallDisplay({ tc }: ToolCallDisplayProps): ReactElement {
+  const preview = formatToolCallPreview(tc);
+  const statusIcon = tc.isError ? "\u2718" : "\u2714";
+  const statusColor = tc.isError ? "red" : "green";
+
+  return (
+    <Box flexDirection="column" paddingLeft={2}>
+      <Text dimColor>
+        {"\u250C"} {tc.name}: {preview}
+      </Text>
+      {typeof tc.input === "object" && tc.input
+        ? Object.entries(tc.input).map(([key, value]) => (
+            <Text key={key} dimColor>
+              {"\u2502"} {key}: {truncateValue(value, 70)}
+            </Text>
+          ))
+        : null}
+      {tc.result !== undefined ? (
+        <Text dimColor>
+          {"\u2502"} <Text color={statusColor}>{statusIcon}</Text>{" "}
+          {truncateValue(tc.result, 70)}
+        </Text>
+      ) : null}
+      <Text dimColor>{"\u2514"}</Text>
+    </Box>
+  );
+}
+
+interface MessageDisplayProps {
+  msg: RuntimeMessage;
+}
+
+function MessageDisplay({ msg }: MessageDisplayProps): ReactElement {
+  const time = formatTimestamp(msg.timestamp);
+  const defaultLabel = msg.role === "user" ? "You:" : "Assistant:";
+  const label = msg.label ?? defaultLabel;
+  const labelColor = msg.role === "user" ? "green" : "cyan";
+
+  return (
+    <Box flexDirection="column">
+      <Text>
+        {time ? <Text dimColor>{time} </Text> : null}
+        <Text color={labelColor} bold>
+          {label}{" "}
+        </Text>
+        <Text>{msg.content}</Text>
+      </Text>
+      {msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0
+        ? msg.toolCalls.map((tc, i) => <ToolCallDisplay key={i} tc={tc} />)
+        : null}
+    </Box>
+  );
+}
+
+function HelpDisplay(): ReactElement {
+  return (
+    <Box flexDirection="column">
+      <Text bold>Commands:</Text>
+      {HELP_COMMANDS.map((entry) => (
+        <Text key={entry.command}>
+          {`  ${entry.command.padEnd(17)} `}
+          <Text dimColor>{entry.description}</Text>
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+function SpinnerDisplay({ text }: { text: string }): ReactElement {
+  const [frameIndex, setFrameIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFrameIndex((prev) => (prev + 1) % TYPING_FRAMES.length);
+    }, 80);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <Text dimColor>
+      {TYPING_FRAMES[frameIndex]} {text}
+    </Text>
+  );
+}
+
+type ConnectionState = "connecting" | "connected" | "error";
+
+function ConnectionScreen({
+  state,
+  errorMessage,
+  species,
+  terminalRows,
+  terminalColumns,
+  onRetry,
+  onExit,
+}: {
+  state: ConnectionState;
+  errorMessage?: string;
+  species: Species;
+  terminalRows: number;
+  terminalColumns: number;
+  onRetry: () => void;
+  onExit: () => void;
+}): ReactElement {
+  const [frameIndex, setFrameIndex] = useState(0);
+
+  useEffect(() => {
+    if (state !== "connecting") return;
+    const timer = setInterval(() => {
+      setFrameIndex((prev) => (prev + 1) % CONNECTION_SPINNER_FRAMES.length);
+    }, 150);
+    return () => clearInterval(timer);
+  }, [state]);
+
+  useInput((input, key) => {
+    if (key.ctrl && input === "c") {
+      onExit();
+    }
+    if (state === "error" && input === "r") {
+      onRetry();
+    }
+  });
+
+  const config = SPECIES_CONFIG[species];
+  const title = `Vellum ${config.hatchedEmoji} ${species}`;
+  const width = Math.min(terminalColumns, MAX_TOTAL_WIDTH);
+
+  return (
+    <Box
+      flexDirection="column"
+      height={terminalRows}
+      width={width}
+      justifyContent="center"
+      alignItems="center"
+    >
+      <Text dimColor bold>
+        {title}
+      </Text>
+      <Text> </Text>
+      {state === "connecting" ? (
+        <Text dimColor>
+          {CONNECTION_SPINNER_FRAMES[frameIndex]} Connecting to assistant...
+        </Text>
+      ) : (
+        <>
+          <Text color="red">Failed to connect: {errorMessage}</Text>
+          <Text> </Text>
+          <Text dimColor>Press r to retry or Ctrl+C to quit</Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
+export function renderErrorMainScreen(error: unknown): number {
+  const msg = error instanceof Error ? error.message : String(error);
+  console.log(
+    `${ANSI.red}${ANSI.bold}Failed to render MainWindow${ANSI.reset}`,
+  );
+  console.log(`${ANSI.dim}${msg}${ANSI.reset}`);
+  console.log(`${ANSI.dim}Run /clear to retry${ANSI.reset}`);
+  return 3;
+}
+
+function stripAnsi(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+interface DefaultMainScreenProps {
+  runtimeUrl: string;
+  assistantId: string;
+  assistantName?: string;
+  species: Species;
+  healthStatus?: string;
+}
+
+interface StyledLine {
+  text: string;
+  style: "heading" | "dim" | "normal" | "eyebrow" | "title" | "art";
+}
+
+function CompactHeader({
+  assistantName,
+  species,
+  healthStatus,
+  totalWidth,
+}: {
+  assistantName?: string;
+  species: Species;
+  healthStatus?: string;
+  totalWidth: number;
+}): ReactElement {
+  const accentColor = species === "openclaw" ? "red" : "magenta";
+  const status = healthStatus ?? "checking...";
+  const identity = assistantName?.trim() || species;
+  const compactIdentity =
+    identity.length > 18 ? `${identity.slice(0, 15)}...` : identity;
+  const label = ` ${compactIdentity} ${statusEmoji(status)} `;
+  const prefix = "── Vellum";
+  const suffix = "──";
+  const fillLen = Math.max(
+    0,
+    totalWidth - prefix.length - label.length - suffix.length,
+  );
+  return (
+    <Box flexDirection="column" width={totalWidth}>
+      <Text dimColor>
+        {prefix}
+        <Text color={accentColor}>{label}</Text>
+        {"─".repeat(fillLen)}
+        {suffix}
+      </Text>
+    </Box>
+  );
+}
+
+function DefaultMainScreen({
+  runtimeUrl,
+  assistantId,
+  assistantName,
+  species,
+  healthStatus,
+}: DefaultMainScreenProps): ReactElement {
+  const cwd = process.cwd();
+  const dirName = basename(cwd);
+  const config = SPECIES_CONFIG[species];
+  const accentColor = species === "openclaw" ? "red" : "magenta";
+  const caps = getTerminalCapabilities();
+  const headerPrefix = caps.unicodeSupported
+    ? HEADER_PREFIX_UNICODE
+    : HEADER_PREFIX_ASCII;
+  const headerSep = caps.unicodeSupported ? "─" : "-";
+
+  const { stdout } = useStdout();
+  const terminalColumns = stdout.columns || DEFAULT_TERMINAL_COLUMNS;
+  const totalWidth = Math.min(MAX_TOTAL_WIDTH, terminalColumns);
+  const isCompact = terminalColumns < COMPACT_THRESHOLD;
+
+  if (isCompact) {
+    return (
+      <CompactHeader
+        assistantName={assistantName}
+        species={species}
+        healthStatus={healthStatus}
+        totalWidth={totalWidth}
+      />
+    );
+  }
+
+  const art = config.art;
+  const rightPanelWidth = Math.max(1, totalWidth - LEFT_PANEL_WIDTH);
+
+  const leftLines: StyledLine[] = [
+    { text: " ", style: "normal" },
+    { text: formatHeaderEyebrow(), style: "eyebrow" },
+    { text: formatHeaderTitle(assistantName), style: "title" },
+    { text: " ", style: "normal" },
+    ...art.map((line) => ({
+      text: `  ${stripAnsi(line)}`,
+      style: "art" as const,
+    })),
+    { text: " ", style: "normal" },
+    { text: `  ${runtimeUrl}`, style: "dim" },
+    { text: `  ~/${dirName}`, style: "dim" },
+  ];
+
+  const rightLines: StyledLine[] = [
+    { text: " ", style: "normal" },
+    { text: "Tips for getting started", style: "heading" },
+    ...TIPS.map((t) => ({ text: t, style: "normal" as const })),
+    { text: " ", style: "normal" },
+    { text: "Assistant ID", style: "heading" },
+    { text: assistantId, style: "dim" },
+    { text: "Species", style: "heading" },
+    {
+      text: `${unicodeOrFallback(config.hatchedEmoji, `[${species}]`)} ${species}`,
+      style: "dim",
+    },
+    { text: "Status", style: "heading" },
+    { text: withStatusEmoji(healthStatus ?? "checking..."), style: "dim" },
+  ];
+
+  const maxLines = Math.max(leftLines.length, rightLines.length);
+
+  return (
+    <Box flexDirection="column" width={totalWidth}>
+      <Text dimColor>
+        {headerPrefix +
+          headerSep.repeat(Math.max(0, totalWidth - headerPrefix.length))}
+      </Text>
+      <Box flexDirection="row">
+        <Box flexDirection="column" width={LEFT_PANEL_WIDTH}>
+          {Array.from({ length: maxLines }, (_, i) => {
+            const item = leftLines[i];
+            if (!item) return <Text key={i}> </Text>;
+            if (item.style === "eyebrow") {
+              return (
+                <Text key={i} color={caps.isDumb ? undefined : accentColor}>
+                  {item.text}
+                </Text>
+              );
+            }
+            if (item.style === "title") {
+              return (
+                <Text key={i} bold>
+                  {item.text}
+                </Text>
+              );
+            }
+            if (item.style === "art") {
+              return (
+                <Text key={i} color={caps.isDumb ? undefined : accentColor}>
+                  {item.text}
+                </Text>
+              );
+            }
+            if (item.style === "dim") {
+              return (
+                <Text key={i} dimColor>
+                  {item.text}
+                </Text>
+              );
+            }
+            return <Text key={i}>{item.text}</Text>;
+          })}
+        </Box>
+        <Box flexDirection="column" width={rightPanelWidth}>
+          {Array.from({ length: maxLines }, (_, i) => {
+            const item = rightLines[i];
+            if (!item) return <Text key={i}> </Text>;
+            if (item.style === "heading") {
+              return (
+                <Text key={i} color={accentColor}>
+                  {item.text}
+                </Text>
+              );
+            }
+            if (item.style === "dim") {
+              return (
+                <Text key={i} dimColor>
+                  {item.text}
+                </Text>
+              );
+            }
+            return <Text key={i}>{item.text}</Text>;
+          })}
+        </Box>
+      </Box>
+      <Text dimColor>{headerSep.repeat(totalWidth)}</Text>
+      <Text> </Text>
+    </Box>
+  );
+}
+
+export interface SelectionRequest {
+  title: string;
+  options: string[];
+  resolve: (index: number) => void;
+}
+
+interface StatusLine {
+  type: "status";
+  text: string;
+  color?: string;
+}
+
+interface SpinnerLine {
+  type: "spinner";
+  text: string;
+}
+
+interface HelpLine {
+  type: "help";
+}
+
+interface ErrorLine {
+  type: "error";
+  text: string;
+}
+
+type FeedItem =
+  | RuntimeMessage
+  | StatusLine
+  | SpinnerLine
+  | HelpLine
+  | ErrorLine;
+
+function isRuntimeMessage(item: FeedItem): item is RuntimeMessage {
+  return "role" in item;
+}
+
+function estimateItemHeight(item: FeedItem, terminalColumns: number): number {
+  if (isRuntimeMessage(item)) {
+    const cols = Math.max(1, terminalColumns);
+    // Account for "HH:MM AM Label: " prefix on the first line
+    const defaultLabel = item.role === "user" ? "You:" : "Assistant:";
+    const label = item.label ?? defaultLabel;
+    const prefixLen = 10 + label.length + 1; // timestamp + space + label + space
+    let lines = 0;
+    const contentLines = item.content.split("\n");
+    for (let idx = 0; idx < contentLines.length; idx++) {
+      const lineLen =
+        idx === 0
+          ? contentLines[idx].length + prefixLen
+          : contentLines[idx].length;
+      lines += Math.max(1, Math.ceil(lineLen / cols));
+    }
+    if (item.role === "assistant" && item.toolCalls) {
+      for (const tc of item.toolCalls) {
+        const paramCount =
+          typeof tc.input === "object" && tc.input
+            ? Object.keys(tc.input).length
+            : 0;
+        lines +=
+          TOOL_CALL_CHROME_LINES +
+          paramCount +
+          (tc.result !== undefined ? 1 : 0);
+      }
+    }
+    return lines + MESSAGE_SPACING;
+  }
+  if (item.type === "help") {
+    return HELP_DISPLAY_HEIGHT;
+  }
+  if (item.type === "status" || item.type === "error") {
+    const cols = Math.max(1, terminalColumns);
+    let lines = 0;
+    for (const line of item.text.split("\n")) {
+      lines += Math.max(1, Math.ceil(line.length / cols));
+    }
+    return lines;
+  }
+  return 1;
+}
+
+const COMPACT_HEADER_HEIGHT = 1;
+
+function calculateHeaderHeight(
+  species: Species,
+  terminalColumns?: number,
+): number {
+  if ((terminalColumns ?? DEFAULT_TERMINAL_COLUMNS) < COMPACT_THRESHOLD) {
+    return COMPACT_HEADER_HEIGHT;
+  }
+  const artLength = SPECIES_CONFIG[species].art.length;
+  const leftLineCount = LEFT_HEADER_LINES + artLength + LEFT_FOOTER_LINES;
+  const maxLines = Math.max(leftLineCount, RIGHT_PANEL_LINE_COUNT);
+  return maxLines + HEADER_CHROME_LINES;
+}
+
+const SCROLL_STEP = 5;
+
+export function render(
+  runtimeUrl: string,
+  assistantId: string,
+  species: Species,
+  assistantName?: string,
+): number {
+  const terminalColumns = process.stdout.columns || DEFAULT_TERMINAL_COLUMNS;
+  const isCompact = terminalColumns < COMPACT_THRESHOLD;
+  const art = SPECIES_CONFIG[species].art;
+
+  const leftLineCount = LEFT_HEADER_LINES + art.length + LEFT_FOOTER_LINES;
+  const maxLines = Math.max(leftLineCount, RIGHT_PANEL_LINE_COUNT);
+
+  const { unmount } = inkRender(
+    <DefaultMainScreen
+      runtimeUrl={runtimeUrl}
+      assistantId={assistantId}
+      assistantName={assistantName}
+      species={species}
+    />,
+    { exitOnCtrlC: false },
+  );
+  unmount();
+
+  if (isCompact) {
+    return COMPACT_HEADER_HEIGHT;
+  }
+
+  const statusCanvasLine = RIGHT_PANEL_LINE_COUNT + HEADER_TOP_BORDER_LINES;
+  const statusCol = LEFT_PANEL_WIDTH + 1;
+  checkHealth(runtimeUrl)
+    .then((health) => {
+      const statusText = health.detail
+        ? `${withStatusEmoji(health.status)} (${health.detail})`
+        : withStatusEmoji(health.status);
+      process.stdout.write(
+        `\x1b7\x1b[${statusCanvasLine};${statusCol}H\x1b[K${statusText}\x1b8`,
+      );
+    })
+    .catch(() => {});
+
+  return maxLines + HEADER_CHROME_LINES;
+}
+
+interface SelectionWindowProps {
+  title: string;
+  options: string[];
+  onSelect: (index: number) => void;
+  onCancel: () => void;
+}
+
+function SelectionWindow({
+  title,
+  options,
+  onSelect,
+  onCancel,
+}: SelectionWindowProps): ReactElement {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  useInput(
+    (
+      input: string,
+      key: {
+        upArrow: boolean;
+        downArrow: boolean;
+        return: boolean;
+        escape: boolean;
+        ctrl: boolean;
+      },
+    ) => {
+      if (key.upArrow) {
+        setSelectedIndex(
+          (prev: number) => (prev - 1 + options.length) % options.length,
+        );
+      } else if (key.downArrow) {
+        setSelectedIndex((prev: number) => (prev + 1) % options.length);
+      } else if (key.return) {
+        onSelect(selectedIndex);
+      } else if (key.escape || (key.ctrl && input === "c")) {
+        onCancel();
+      }
+    },
+  );
+
+  const borderH = "\u2500".repeat(
+    Math.max(0, DIALOG_WINDOW_WIDTH - title.length - DIALOG_TITLE_CHROME),
+  );
+
+  return (
+    <Box flexDirection="column" width={DIALOG_WINDOW_WIDTH}>
+      <Text>{"\u250C\u2500 " + title + " " + borderH + "\u2510"}</Text>
+      {options.map((option, i) => {
+        const marker = i === selectedIndex ? "\u276F" : " ";
+        const padding = " ".repeat(
+          Math.max(
+            0,
+            DIALOG_WINDOW_WIDTH - option.length - SELECTION_OPTION_CHROME,
+          ),
+        );
+        return (
+          <Text key={i}>
+            {"\u2502 "}
+            <Text color={i === selectedIndex ? "cyan" : undefined}>
+              {marker}
+            </Text>{" "}
+            <Text bold={i === selectedIndex}>{option}</Text>
+            {padding}
+            {"\u2502"}
+          </Text>
+        );
+      })}
+      <Text>
+        {"\u2514" +
+          "\u2500".repeat(DIALOG_WINDOW_WIDTH - DIALOG_BORDER_CORNERS) +
+          "\u2518"}
+      </Text>
+      <Tooltip
+        text="\u2191/\u2193 navigate  Enter select  Esc cancel"
+        delay={1000}
+      />
+    </Box>
+  );
+}
+
+interface SecretInputWindowProps {
+  label: string;
+  placeholder?: string;
+  onSubmit: (value: string) => void;
+  onCancel: () => void;
+}
+
+function SecretInputWindow({
+  label,
+  placeholder,
+  onSubmit,
+  onCancel,
+}: SecretInputWindowProps): ReactElement {
+  const [value, setValue] = useState("");
+
+  useInput(
+    (
+      input: string,
+      key: {
+        return: boolean;
+        escape: boolean;
+        ctrl: boolean;
+        backspace: boolean;
+        delete: boolean;
+      },
+    ) => {
+      if (key.return) {
+        onSubmit(value);
+      } else if (key.escape || (key.ctrl && input === "c")) {
+        onCancel();
+      } else if (key.backspace || key.delete) {
+        setValue((prev) => prev.slice(0, -1));
+      } else if (input && !key.ctrl) {
+        setValue((prev) => prev + input);
+      }
+    },
+  );
+
+  const borderH = "\u2500".repeat(
+    Math.max(0, DIALOG_WINDOW_WIDTH - label.length - DIALOG_TITLE_CHROME),
+  );
+  const masked = "\u2022".repeat(value.length);
+  const displayText =
+    value.length > 0 ? masked : (placeholder ?? "Enter secret...");
+  const displayColor = value.length > 0 ? undefined : "gray";
+  const contentPad = " ".repeat(
+    Math.max(
+      0,
+      DIALOG_WINDOW_WIDTH - displayText.length - SECRET_CONTENT_CHROME,
+    ),
+  );
+
+  return (
+    <Box flexDirection="column" width={DIALOG_WINDOW_WIDTH}>
+      <Text>{"\u250C\u2500 " + label + " " + borderH + "\u2510"}</Text>
+      <Text>
+        {"\u2502 "}
+        <Text color={displayColor}>{displayText}</Text>
+        {contentPad}
+        {"\u2502"}
+      </Text>
+      <Text>
+        {"\u2514" +
+          "\u2500".repeat(DIALOG_WINDOW_WIDTH - DIALOG_BORDER_CORNERS) +
+          "\u2518"}
+      </Text>
+      <Tooltip text="Enter submit  Esc cancel" delay={1000} />
+    </Box>
+  );
+}
+
+export interface SecretInputRequest {
+  label: string;
+  placeholder?: string;
+  resolve: (value: string) => void;
+}
+
+export interface PendingSecret {
+  requestId: string;
+  service: string;
+  field: string;
+  label: string;
+  description?: string;
+  placeholder?: string;
+  purpose?: string;
+  allowOneTimeSend?: boolean;
+}
+
+export interface ChatAppHandle {
+  addMessage: (msg: RuntimeMessage) => void;
+  addStatus: (text: string, color?: string) => void;
+  showSpinner: (text: string) => void;
+  hideSpinner: () => void;
+  showHelp: () => void;
+  showError: (text: string) => void;
+  showSelection: (title: string, options: string[]) => Promise<number>;
+  showSecretInput: (label: string, placeholder?: string) => Promise<string>;
+  handleSecretPrompt: (
+    secret: PendingSecret,
+    onSubmit: (
+      value: string,
+      delivery?: "store" | "transient_send",
+    ) => Promise<void>,
+  ) => Promise<void>;
+  clearFeed: () => void;
+  setBusy: (busy: boolean) => void;
+  updateHealthStatus: (status: string) => void;
+}
+
+interface ChatAppProps {
+  runtimeUrl: string;
+  assistantId: string;
+  assistantName?: string;
+  species: Species;
+  /** Pre-built auth headers (e.g. { Authorization: "Bearer ..." } for local,
+   *  { "X-Session-Token": "...", "Vellum-Organization-Id": "..." } for platform). */
+  auth?: Record<string, string>;
+  onExit: () => void;
+  handleRef: (handle: ChatAppHandle) => void;
+}
+
+function ChatApp({
+  runtimeUrl,
+  assistantId,
+  assistantName,
+  species,
+  auth,
+  onExit,
+  handleRef,
+}: ChatAppProps): ReactElement {
+  const [inputValue, setInputValue] = useState("");
+  const historyRef = useRef<string[]>(loadHistory());
+  const historyIndexRef = useRef(-1);
+  const savedInputRef = useRef("");
+  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [spinnerText, setSpinnerText] = useState<string | null>(null);
+  const [selection, setSelection] = useState<SelectionRequest | null>(null);
+  const [secretInput, setSecretInput] = useState<SecretInputRequest | null>(
+    null,
+  );
+  const [inputFocused, setInputFocused] = useState(true);
+  const [scrollIndex, setScrollIndex] = useState<number | null>(null);
+  const [healthStatus, setHealthStatus] = useState<string | undefined>(
+    undefined,
+  );
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>("connecting");
+  const [connectionError, setConnectionError] = useState<string | undefined>(
+    undefined,
+  );
+  const prevFeedLengthRef = useRef(0);
+  const busyRef = useRef(false);
+  const connectedRef = useRef(false);
+  const connectingRef = useRef(false);
+  const seenMessageIdsRef = useRef(new Set<string>());
+  const sseAbortRef = useRef<AbortController | null>(null);
+  const streamingTextRef = useRef("");
+  const streamingToolCallsRef = useRef<ToolCallInfo[]>([]);
+  const handleRef_ = useRef<ChatAppHandle | null>(null);
+
+  const { stdout } = useStdout();
+  const terminalRows = stdout.rows || DEFAULT_TERMINAL_ROWS;
+  const terminalColumns = stdout.columns || DEFAULT_TERMINAL_COLUMNS;
+  const headerHeight = calculateHeaderHeight(species, terminalColumns);
+
+  const isCompact = terminalColumns < COMPACT_THRESHOLD;
+  const compactInputAreaHeight = 1; // input row only, no separators
+  const inputAreaHeight = isCompact
+    ? compactInputAreaHeight
+    : INPUT_AREA_HEIGHT;
+  const bottomHeight = selection
+    ? selection.options.length + SELECTION_CHROME_LINES + TOOLTIP_HEIGHT
+    : secretInput
+      ? SECRET_INPUT_HEIGHT + TOOLTIP_HEIGHT
+      : spinnerText
+        ? SPINNER_HEIGHT + inputAreaHeight
+        : inputAreaHeight;
+  const availableRows = Math.max(
+    MIN_FEED_ROWS,
+    terminalRows - headerHeight - bottomHeight,
+  );
+
+  const addMessage = useCallback((msg: RuntimeMessage) => {
+    setFeed((prev) => [...prev, msg]);
+    if (msg.role === "assistant" && !busyRef.current) {
+      setSpinnerText(null);
+      setInputFocused(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (feed.length > prevFeedLengthRef.current && scrollIndex === null) {
+      prevFeedLengthRef.current = feed.length;
+    } else if (feed.length > prevFeedLengthRef.current) {
+      prevFeedLengthRef.current = feed.length;
+    } else if (feed.length === 0) {
+      prevFeedLengthRef.current = 0;
+      setScrollIndex(null);
+    }
+  }, [feed.length, scrollIndex]);
+
+  const visibleWindow = useMemo(() => {
+    if (feed.length === 0) {
+      return {
+        items: [] as FeedItem[],
+        startIndex: 0,
+        endIndex: 0,
+        hiddenAbove: 0,
+        hiddenBelow: 0,
+      };
+    }
+
+    if (scrollIndex === null) {
+      // Reserve 1 line for "N more above" indicator when there are hidden messages
+      let totalHeight = 0;
+      let start = feed.length;
+      for (let i = feed.length - 1; i >= 0; i--) {
+        const h = estimateItemHeight(feed[i], terminalColumns);
+        // Reserve space for the "more above" indicator if we'd hide messages
+        const indicatorLine = i > 0 ? 1 : 0;
+        if (totalHeight + h + indicatorLine > availableRows) {
+          break;
+        }
+        totalHeight += h;
+        start = i;
+      }
+      if (start === feed.length && feed.length > 0) {
+        start = feed.length - 1;
+      }
+      return {
+        items: feed.slice(start, feed.length),
+        startIndex: start,
+        endIndex: feed.length,
+        hiddenAbove: start,
+        hiddenBelow: 0,
+      };
+    }
+
+    const start = Math.max(0, Math.min(scrollIndex, feed.length - 1));
+    // Reserve lines for "more above/below" indicators
+    const aboveIndicator = start > 0 ? 1 : 0;
+    const budget = availableRows - aboveIndicator;
+    let totalHeight = 0;
+    let end = start;
+    for (let i = start; i < feed.length; i++) {
+      const h = estimateItemHeight(feed[i], terminalColumns);
+      // Reserve space for "more below" indicator if we'd hide messages
+      const belowIndicator = i + 1 < feed.length ? 1 : 0;
+      if (totalHeight + h + belowIndicator > budget) {
+        break;
+      }
+      totalHeight += h;
+      end = i + 1;
+    }
+    return {
+      items: feed.slice(start, end),
+      startIndex: start,
+      endIndex: end,
+      hiddenAbove: start,
+      hiddenBelow: feed.length - end,
+    };
+  }, [feed, scrollIndex, availableRows, terminalColumns]);
+
+  const addStatus = useCallback((text: string, color?: string) => {
+    const item: StatusLine = { type: "status", text, color };
+    setFeed((prev) => [...prev, item]);
+  }, []);
+
+  const showSpinner = useCallback((text: string) => {
+    setSpinnerText(text);
+  }, []);
+
+  const hideSpinner = useCallback(() => {
+    setSpinnerText(null);
+    setInputFocused(true);
+  }, []);
+
+  const showHelpFn = useCallback(() => {
+    const item: HelpLine = { type: "help" };
+    setFeed((prev) => [...prev, item]);
+  }, []);
+
+  const showError = useCallback((text: string) => {
+    const item: ErrorLine = { type: "error", text };
+    setFeed((prev) => [...prev, item]);
+  }, []);
+
+  const showSelection = useCallback(
+    (title: string, options: string[]): Promise<number> => {
+      setInputFocused(false);
+      return new Promise<number>((resolve) => {
+        setSelection({ title, options, resolve });
+      });
+    },
+    [],
+  );
+
+  const showSecretInput = useCallback(
+    (label: string, placeholder?: string): Promise<string> => {
+      setInputFocused(false);
+      return new Promise<string>((resolve) => {
+        setSecretInput({ label, placeholder, resolve });
+      });
+    },
+    [],
+  );
+
+  const handleSecretPromptFn = useCallback(
+    async (
+      secret: PendingSecret,
+      onSubmit: (
+        value: string,
+        delivery?: "store" | "transient_send",
+      ) => Promise<void>,
+    ): Promise<void> => {
+      addStatus(`\u250C Secret needed: ${secret.label}`);
+      addStatus(`\u2502 Service: ${secret.service} / ${secret.field}`);
+      if (secret.description) {
+        addStatus(`\u2502 ${secret.description}`);
+      }
+      if (secret.purpose) {
+        addStatus(`\u2502 Purpose: ${secret.purpose}`);
+      }
+      addStatus("\u2514");
+
+      let delivery: "store" | "transient_send" | undefined;
+      if (secret.allowOneTimeSend) {
+        const deliveryIndex = await showSelection("Secret delivery", [
+          "Store securely",
+          "Send once (transient)",
+        ]);
+        if (deliveryIndex === 1) {
+          delivery = "transient_send";
+        } else {
+          delivery = "store";
+        }
+      }
+
+      const value = await showSecretInput(secret.label, secret.placeholder);
+
+      if (!value) {
+        try {
+          await onSubmit("", delivery);
+        } catch {
+          // Best-effort
+        }
+        addStatus("\u2718 Cancelled", "yellow");
+        return;
+      }
+
+      try {
+        await onSubmit(value, delivery);
+        addStatus("\u2714 Secret submitted", "green");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        showError(`Failed to submit secret: ${msg}`);
+      }
+    },
+    [addStatus, showSelection, showSecretInput, showError],
+  );
+
+  const setBusy = useCallback((busy: boolean) => {
+    busyRef.current = busy;
+    if (!busy) {
+      setSpinnerText(null);
+      setInputFocused(true);
+    }
+  }, []);
+
+  const clearFeed = useCallback(() => {
+    setFeed([]);
+    setSpinnerText(null);
+    setSelection(null);
+    setSecretInput(null);
+    setInputFocused(true);
+    setScrollIndex(null);
+    busyRef.current = false;
+  }, []);
+
+  const updateHealthStatus = useCallback((status: string) => {
+    setHealthStatus(status);
+  }, []);
+
+  const cleanup = useCallback(() => {
+    if (sseAbortRef.current) {
+      sseAbortRef.current.abort();
+      sseAbortRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return cleanup;
+  }, [cleanup]);
+
+  const ensureConnected = useCallback(async (): Promise<boolean> => {
+    if (connectedRef.current) {
+      return true;
+    }
+    if (connectingRef.current || !handleRef_.current) {
+      return false;
+    }
+    connectingRef.current = true;
+    setConnectionState("connecting");
+    setConnectionError(undefined);
+    const h = handleRef_.current;
+
+    h.showSpinner("Connecting...");
+
+    try {
+      const health = await checkHealthRuntime(runtimeUrl);
+      tuiLog.info("health check", {
+        status: health.status,
+        message: health.message,
+      });
+      h.hideSpinner();
+      h.updateHealthStatus(health.status);
+      if (health.status === "healthy" || health.status === "ok") {
+        h.addStatus(
+          `${statusEmoji(health.status)} Connected to assistant`,
+          "green",
+        );
+      } else {
+        const statusMsg = health.message ? ` - ${health.message}` : "";
+        h.addStatus(
+          `${statusEmoji(health.status)} Assistant status: ${health.status}${statusMsg}`,
+          "yellow",
+        );
+      }
+
+      h.showSpinner("Loading conversation history...");
+
+      try {
+        const historyResponse = await pollMessages(
+          runtimeUrl,
+          assistantId,
+          auth,
+        );
+        h.hideSpinner();
+        if (historyResponse.messages.length > 0) {
+          for (const msg of historyResponse.messages) {
+            h.addMessage(msg);
+            seenMessageIdsRef.current.add(msg.id);
+          }
+        }
+      } catch {
+        h.hideSpinner();
+      }
+
+      // Open SSE stream for real-time events
+      const sseAc = new AbortController();
+      sseAbortRef.current = sseAc;
+
+      // Process SSE events in the background
+      (async () => {
+        try {
+          for await (const event of streamEvents(
+            runtimeUrl,
+            assistantId,
+            assistantId,
+            sseAc.signal,
+            auth,
+          )) {
+            const hRef = handleRef_.current;
+            if (!hRef) continue;
+
+            switch (event.type) {
+              case "assistant_text_delta":
+                streamingTextRef.current += event.text ?? "";
+                break;
+
+              case "assistant_thinking_delta":
+                // Thinking deltas are suppressed in the TUI for now
+                break;
+
+              case "tool_use_start":
+                if (event.toolName) {
+                  streamingToolCallsRef.current.push({
+                    name: event.toolName,
+                    input: event.input ?? {},
+                    toolUseId: event.toolUseId,
+                  });
+                }
+                break;
+
+              case "tool_result": {
+                // Match by toolUseId first (robust for parallel/same-name calls),
+                // fall back to name + missing result for backwards compat.
+                const tc = event.toolUseId
+                  ? streamingToolCallsRef.current.find(
+                      (t) => t.toolUseId === event.toolUseId,
+                    )
+                  : streamingToolCallsRef.current.find(
+                      (t) =>
+                        t.name === event.toolName && t.result === undefined,
+                    );
+                if (tc) {
+                  tc.result = event.result;
+                  tc.isError = event.isError;
+                } else if (event.toolName) {
+                  streamingToolCallsRef.current.push({
+                    name: event.toolName,
+                    input: event.input ?? {},
+                    result: event.result,
+                    isError: event.isError,
+                    toolUseId: event.toolUseId,
+                  });
+                }
+                break;
+              }
+
+              case "confirmation_request":
+                hRef.hideSpinner();
+                await handleConfirmationPrompt(
+                  runtimeUrl,
+                  assistantId,
+                  event.requestId ?? "",
+                  {
+                    toolName: event.toolName ?? "",
+                    toolUseId: event.toolUseId ?? "",
+                    input: event.input ?? {},
+                    riskLevel: event.riskLevel ?? "unknown",
+                    executionTarget: event.executionTarget,
+                    allowlistOptions: event.allowlistOptions?.map((o) => ({
+                      label: o.label,
+                      pattern: o.pattern,
+                    })),
+                    scopeOptions: event.scopeOptions,
+                    persistentDecisionsAllowed:
+                      event.persistentDecisionsAllowed,
+                  },
+                  hRef,
+                  auth,
+                );
+                hRef.showSpinner("Working...");
+                break;
+
+              case "secret_request":
+                hRef.hideSpinner();
+                await hRef.handleSecretPrompt(
+                  {
+                    requestId: event.requestId ?? "",
+                    service: event.service ?? "",
+                    field: event.field ?? "",
+                    label: event.label ?? "",
+                    description: event.description,
+                    placeholder: event.placeholder,
+                    purpose: event.purpose,
+                    allowOneTimeSend: event.allowOneTimeSend,
+                  },
+                  async (value, delivery) => {
+                    await runtimeRequest(
+                      runtimeUrl,
+                      assistantId,
+                      "/secret",
+                      {
+                        method: "POST",
+                        body: JSON.stringify({
+                          requestId: event.requestId,
+                          value,
+                          delivery,
+                        }),
+                      },
+                      auth,
+                    );
+                  },
+                );
+                hRef.showSpinner("Working...");
+                break;
+
+              case "message_complete": {
+                // Only finalize main turns (ignore aux events like call transcripts)
+                if (event.source === "aux") break;
+
+                const text = streamingTextRef.current;
+                const toolCalls = [...streamingToolCallsRef.current];
+                streamingTextRef.current = "";
+                streamingToolCallsRef.current = [];
+
+                if (text || toolCalls.length > 0) {
+                  const msg: RuntimeMessage = {
+                    id: event.messageId ?? `sse-${Date.now()}`,
+                    role: "assistant",
+                    content: text,
+                    timestamp: new Date().toISOString(),
+                    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+                  };
+                  seenMessageIdsRef.current.add(msg.id);
+                  hRef.addMessage(msg);
+                  process.stdout.write("\x07");
+                }
+
+                hRef.setBusy(false);
+                hRef.hideSpinner();
+                break;
+              }
+
+              case "error":
+                hRef.hideSpinner();
+                hRef.showError(event.message ?? "Unknown error");
+                hRef.setBusy(false);
+                break;
+
+              case "sync_changed":
+                // The interactive CLI does not currently keep any sync-tagged
+                // caches, so generic invalidations are intentionally ignored.
+                break;
+
+              default:
+                // Ignore events we don't handle (activity state, traces, etc.)
+                break;
+            }
+          }
+        } catch (sseErr) {
+          // Stream ended — only report if not intentionally aborted
+          if (!sseAc.signal.aborted) {
+            tuiLog.warn("sse stream disconnected", {
+              error: String(sseErr),
+            });
+            handleRef_.current?.addStatus(
+              "SSE stream disconnected — will reconnect on next message",
+              "yellow",
+            );
+            handleRef_.current?.setBusy(false);
+            handleRef_.current?.hideSpinner();
+            connectedRef.current = false;
+          }
+        }
+      })();
+
+      connectedRef.current = true;
+      connectingRef.current = false;
+      setConnectionState("connected");
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      tuiLog.error("connection failed", { error: msg });
+      h.hideSpinner();
+      connectingRef.current = false;
+      h.updateHealthStatus("unreachable");
+      setConnectionState("error");
+      setConnectionError(msg);
+      h.addStatus(
+        `${statusEmoji("unreachable")} Failed to connect: ${msg}`,
+        "red",
+      );
+      return false;
+    }
+  }, [runtimeUrl, assistantId, auth]);
+
+  const handleInput = useCallback(
+    async (input: string): Promise<void> => {
+      const h = handleRef_.current;
+      if (!h) {
+        return;
+      }
+
+      const trimmed = input.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      if (trimmed === "/quit" || trimmed === "/exit" || trimmed === "/q") {
+        cleanup();
+        process.exit(0);
+      }
+
+      if (trimmed === "/clear") {
+        h.clearFeed();
+        return;
+      }
+
+      if (trimmed === "/help" || trimmed === "?") {
+        h.showHelp();
+        return;
+      }
+
+      // If a connection attempt is already in progress, don't silently drop input
+      if (connectingRef.current) {
+        h.addStatus(
+          "Still connecting — please wait a moment and try again.",
+          "yellow",
+        );
+        return;
+      }
+
+      if (trimmed.startsWith("/btw ")) {
+        const question = trimmed.slice(5).trim();
+        if (!question) return;
+
+        h.addStatus(`/btw ${question}`, "gray");
+
+        const isConnected = await ensureConnected();
+        if (!isConnected) return;
+
+        try {
+          const btwFetch = () =>
+            fetch(`${runtimeUrl}/v1/assistants/${assistantId}/btw`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...auth,
+              },
+              body: JSON.stringify({
+                conversationKey: assistantId,
+                content: question,
+              }),
+              signal: AbortSignal.timeout(30_000),
+            });
+
+          let res = await btwFetch();
+          // Mid-session token expiry → 401: refresh once and retry.
+          if (
+            res.status === 401 &&
+            (await maybeRefreshAuthHeaders(runtimeUrl, assistantId, auth))
+          ) {
+            res = await btwFetch();
+          }
+
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+          let fullText = "";
+          let sseError = "";
+          const reader = res.body?.getReader();
+          const decoder = new TextDecoder();
+          if (reader) {
+            let buffer = "";
+            let currentEvent = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() ?? "";
+              for (const line of lines) {
+                if (line.startsWith("event: ")) {
+                  currentEvent = line.slice(7).trim();
+                } else if (line.startsWith("data: ")) {
+                  try {
+                    const data = JSON.parse(line.slice(6));
+                    if (currentEvent === "btw_error" || data.error) {
+                      sseError = data.error ?? data.text ?? "Unknown error";
+                    } else if (data.text) {
+                      fullText += data.text;
+                    }
+                  } catch {
+                    /* skip malformed */
+                  }
+                } else if (line.trim() === "") {
+                  // Empty line marks end of SSE event; reset event type
+                  currentEvent = "";
+                }
+              }
+            }
+          }
+          if (sseError) {
+            h.showError(`/btw: ${sseError}`);
+          } else {
+            h.addStatus(fullText || "No response");
+          }
+        } catch (err) {
+          h.showError(
+            `/btw failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+        return;
+      }
+
+      if (busyRef.current) {
+        // /btw is already handled above this block
+        if (!trimmed.startsWith("/")) {
+          const userMsg: RuntimeMessage = {
+            id: "local-user-" + Date.now(),
+            role: "user",
+            content: trimmed,
+            timestamp: new Date().toISOString(),
+          };
+          h.addMessage(userMsg);
+        }
+        const isConnected = await ensureConnected();
+        if (!isConnected) {
+          h.showError("Cannot send — not connected to the assistant.");
+          setInputFocused(true);
+          return;
+        }
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(
+            () => controller.abort(),
+            SEND_TIMEOUT_MS,
+          );
+          const sendResult = await sendMessage(
+            runtimeUrl,
+            assistantId,
+            trimmed,
+            controller.signal,
+            auth,
+          );
+          clearTimeout(timeoutId);
+          if (sendResult.accepted) {
+            h.addStatus(
+              "Message queued — will be processed after current response",
+              "gray",
+            );
+          } else {
+            h.showError("Message was not accepted by the assistant");
+          }
+        } catch (err) {
+          h.showError(
+            `Failed to queue message: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        setInputFocused(true);
+        return;
+      }
+
+      if (!trimmed.startsWith("/")) {
+        const userMsg: RuntimeMessage = {
+          id: "local-user-" + Date.now(),
+          role: "user",
+          content: trimmed,
+          timestamp: new Date().toISOString(),
+        };
+        h.addMessage(userMsg);
+      }
+
+      const isConnected = await ensureConnected();
+      if (!isConnected) {
+        return;
+      }
+
+      seenMessageIdsRef.current.add("pending-user-" + Date.now());
+
+      h.showSpinner("Sending...");
+      h.setBusy(true);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+
+      try {
+        const sendResult = await sendMessage(
+          runtimeUrl,
+          assistantId,
+          trimmed,
+          controller.signal,
+          auth,
+        );
+        clearTimeout(timeoutId);
+        if (!sendResult.accepted) {
+          h.setBusy(false);
+          h.hideSpinner();
+          h.showError("Message was not accepted by the assistant");
+          return;
+        }
+      } catch (sendErr) {
+        clearTimeout(timeoutId);
+        h.setBusy(false);
+        h.hideSpinner();
+        const errorMsg =
+          sendErr instanceof Error ? sendErr.message : String(sendErr);
+        h.showError(errorMsg);
+        return;
+      }
+
+      // Accumulators are reset by message_complete; no reset here to avoid
+      // racing with SSE events that may arrive during the sendMessage await.
+      h.showSpinner("Working...");
+    },
+    [runtimeUrl, assistantId, auth, cleanup, ensureConnected],
+  );
+
+  const handleSubmit = useCallback(
+    (value: string) => {
+      const trimmed = value.trim();
+      if (trimmed) {
+        appendHistory(trimmed);
+        historyRef.current = loadHistory();
+      }
+      historyIndexRef.current = -1;
+      savedInputRef.current = "";
+      setInputValue("");
+      handleInput(value);
+    },
+    [handleInput],
+  );
+
+  const handleHistoryUp = useCallback(() => {
+    const history = historyRef.current;
+    if (history.length === 0) return;
+    if (historyIndexRef.current === -1) {
+      savedInputRef.current = inputValue;
+    }
+    const nextIndex = Math.min(historyIndexRef.current + 1, history.length - 1);
+    historyIndexRef.current = nextIndex;
+    const entry = history[history.length - 1 - nextIndex];
+    setInputValue(entry);
+  }, [inputValue]);
+
+  const handleHistoryDown = useCallback(() => {
+    if (historyIndexRef.current === -1) return;
+    if (historyIndexRef.current <= 0) {
+      historyIndexRef.current = -1;
+      setInputValue(savedInputRef.current);
+      return;
+    }
+    historyIndexRef.current -= 1;
+    const history = historyRef.current;
+    const entry = history[history.length - 1 - historyIndexRef.current];
+    setInputValue(entry);
+  }, []);
+
+  useEffect(() => {
+    const handle: ChatAppHandle = {
+      addMessage,
+      addStatus,
+      showSpinner,
+      hideSpinner,
+      showHelp: showHelpFn,
+      showError,
+      showSelection,
+      showSecretInput,
+      handleSecretPrompt: handleSecretPromptFn,
+      clearFeed,
+      setBusy,
+      updateHealthStatus,
+    };
+    handleRef_.current = handle;
+    handleRef(handle);
+  }, [
+    handleRef,
+    addMessage,
+    addStatus,
+    showSpinner,
+    hideSpinner,
+    showHelpFn,
+    showError,
+    showSelection,
+    showSecretInput,
+    handleSecretPromptFn,
+    clearFeed,
+    setBusy,
+    updateHealthStatus,
+  ]);
+
+  const retryConnection = useCallback(() => {
+    if (connectingRef.current) return; // already retrying
+    connectedRef.current = false;
+    setConnectionState("connecting");
+    ensureConnected();
+  }, [ensureConnected]);
+
+  useEffect(() => {
+    ensureConnected();
+  }, [ensureConnected]);
+
+  useInput(
+    (input, key) => {
+      if (key.ctrl && input === "c") {
+        onExit();
+      }
+    },
+    { isActive: inputFocused },
+  );
+
+  useInput(
+    (_input, key) => {
+      if (key.shift && key.upArrow) {
+        setScrollIndex((prev) => {
+          if (prev === null) {
+            return Math.max(0, visibleWindow.startIndex - SCROLL_STEP);
+          }
+          return Math.max(0, prev - SCROLL_STEP);
+        });
+      } else if (key.shift && key.downArrow) {
+        setScrollIndex((prev) => {
+          if (prev === null) {
+            return null;
+          }
+          const nextIndex = prev + SCROLL_STEP;
+          let totalHeight = 0;
+          for (let i = nextIndex; i < feed.length; i++) {
+            totalHeight += estimateItemHeight(feed[i], terminalColumns);
+            if (totalHeight > availableRows) {
+              return nextIndex;
+            }
+          }
+          return null;
+        });
+      } else if (key.meta && key.upArrow) {
+        setScrollIndex(0);
+      } else if (key.meta && key.downArrow) {
+        setScrollIndex(null);
+      }
+    },
+    { isActive: !selection && !secretInput },
+  );
+
+  const handleSecretSubmit = useCallback(
+    (value: string) => {
+      if (secretInput) {
+        const { resolve } = secretInput;
+        setSecretInput(null);
+        setInputFocused(true);
+        resolve(value);
+      }
+    },
+    [secretInput],
+  );
+
+  const handleSecretCancel = useCallback(() => {
+    if (secretInput) {
+      const { resolve } = secretInput;
+      setSecretInput(null);
+      setInputFocused(true);
+      resolve("");
+    }
+  }, [secretInput]);
+
+  const handleSelectionSelect = useCallback(
+    (index: number) => {
+      if (selection) {
+        const { resolve } = selection;
+        setSelection(null);
+        setInputFocused(true);
+        resolve(index);
+      }
+    },
+    [selection],
+  );
+
+  const handleSelectionCancel = useCallback(() => {
+    if (selection) {
+      const { resolve } = selection;
+      setSelection(null);
+      setInputFocused(true);
+      resolve(-1);
+    }
+  }, [selection]);
+
+  if (connectionState !== "connected") {
+    return (
+      <ConnectionScreen
+        state={connectionState}
+        errorMessage={connectionError}
+        species={species}
+        terminalRows={terminalRows}
+        terminalColumns={terminalColumns}
+        onRetry={retryConnection}
+        onExit={onExit}
+      />
+    );
+  }
+
+  return (
+    <Box flexDirection="column" height={terminalRows}>
+      <DefaultMainScreen
+        runtimeUrl={runtimeUrl}
+        assistantId={assistantId}
+        assistantName={assistantName}
+        species={species}
+        healthStatus={healthStatus}
+      />
+
+      <Box flexDirection="column" flexGrow={1} overflow="hidden">
+        {visibleWindow.hiddenAbove > 0 ? (
+          <Text dimColor>
+            {isCompact
+              ? `\u2191 ${visibleWindow.hiddenAbove} more above`
+              : `\u2191 ${visibleWindow.hiddenAbove} more above (Shift+\u2191/Cmd+\u2191)`}
+          </Text>
+        ) : null}
+
+        {visibleWindow.items.map((item, i) => {
+          const feedIndex = visibleWindow.startIndex + i;
+          if (isRuntimeMessage(item)) {
+            return (
+              <Box key={feedIndex} flexDirection="column" marginBottom={1}>
+                <MessageDisplay msg={item} />
+              </Box>
+            );
+          }
+          if (item.type === "status") {
+            return (
+              <Text
+                key={feedIndex}
+                color={item.color as "green" | "yellow" | "red" | undefined}
+              >
+                {item.text}
+              </Text>
+            );
+          }
+          if (item.type === "help") {
+            return <HelpDisplay key={feedIndex} />;
+          }
+          if (item.type === "error") {
+            return (
+              <Text key={feedIndex} color="red">
+                {item.text}
+              </Text>
+            );
+          }
+          return null;
+        })}
+
+        {visibleWindow.hiddenBelow > 0 ? (
+          <Text dimColor>
+            {"\u2193"} {visibleWindow.hiddenBelow} more below
+            (Shift+\u2193/Cmd+\u2193)
+          </Text>
+        ) : null}
+      </Box>
+
+      {spinnerText ? <SpinnerDisplay text={spinnerText} /> : null}
+
+      {selection ? (
+        <SelectionWindow
+          title={selection.title}
+          options={selection.options}
+          onSelect={handleSelectionSelect}
+          onCancel={handleSelectionCancel}
+        />
+      ) : null}
+
+      {secretInput ? (
+        <SecretInputWindow
+          label={secretInput.label}
+          placeholder={secretInput.placeholder}
+          onSubmit={handleSecretSubmit}
+          onCancel={handleSecretCancel}
+        />
+      ) : null}
+
+      {!selection && !secretInput ? (
+        <Box flexDirection="column" flexShrink={0}>
+          {isCompact ? null : (
+            <Text dimColor>
+              {unicodeOrFallback("\u2500", "-").repeat(terminalColumns)}
+            </Text>
+          )}
+          <Box paddingLeft={isCompact ? 0 : 1} height={1} flexShrink={0}>
+            <Text color="green" bold>
+              {isCompact ? ">" : "you>"}
+              {" "}
+            </Text>
+            <TextInput
+              value={inputValue}
+              onChange={setInputValue}
+              onSubmit={handleSubmit}
+              onHistoryUp={handleHistoryUp}
+              onHistoryDown={handleHistoryDown}
+              completionCommands={SLASH_COMMANDS}
+              focus={inputFocused}
+            />
+          </Box>
+          {terminalColumns >= COMPACT_THRESHOLD ? (
+            <>
+              <Text dimColor>
+                {unicodeOrFallback("\u2500", "-").repeat(terminalColumns)}
+              </Text>
+              <Text dimColor> ? for shortcuts</Text>
+            </>
+          ) : null}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+export interface ChatAppInstance {
+  handle: ChatAppHandle;
+  unmount: () => void;
+}
+
+export function renderChatApp(
+  runtimeUrl: string,
+  assistantId: string,
+  species: Species,
+  onExit: () => void,
+  options?: {
+    auth?: Record<string, string>;
+    assistantName?: string;
+  },
+): ChatAppInstance {
+  let chatHandle: ChatAppHandle | null = null;
+
+  const instance = inkRender(
+    <ChatApp
+      runtimeUrl={runtimeUrl}
+      assistantId={assistantId}
+      assistantName={options?.assistantName}
+      species={species}
+      auth={options?.auth}
+      onExit={onExit}
+      handleRef={(h) => {
+        chatHandle = h;
+      }}
+    />,
+    { exitOnCtrlC: false },
+  );
+
+  const handle: ChatAppHandle = {
+    addMessage: (msg) => chatHandle?.addMessage(msg),
+    addStatus: (text, color) => chatHandle?.addStatus(text, color),
+    showSpinner: (text) => chatHandle?.showSpinner(text),
+    hideSpinner: () => chatHandle?.hideSpinner(),
+    showHelp: () => chatHandle?.showHelp(),
+    showError: (text) => chatHandle?.showError(text),
+    showSelection: (title, options) =>
+      chatHandle?.showSelection(title, options) ?? Promise.resolve(-1),
+    showSecretInput: (label, placeholder) =>
+      chatHandle?.showSecretInput(label, placeholder) ?? Promise.resolve(""),
+    handleSecretPrompt: (secret, onSubmitCb) =>
+      chatHandle?.handleSecretPrompt(secret, onSubmitCb) ?? Promise.resolve(),
+    clearFeed: () => chatHandle?.clearFeed(),
+    setBusy: (busy) => chatHandle?.setBusy(busy),
+    updateHealthStatus: (status) => chatHandle?.updateHealthStatus(status),
+  };
+
+  return {
+    handle,
+    unmount: () => instance.unmount(),
+  };
+}
