@@ -2,7 +2,7 @@ import { resolveNavigation } from "@/lib/navigation/navigation-resolver";
 import { buildNavigationState } from "@/lib/navigation/build-state";
 import { routes } from "@/utils/routes";
 
-export const PROVIDER_ID = "workos";
+export const PROVIDER_ID = "auth0";
 export type AuthCallbackIntent = "login" | "signup";
 
 const AUTH_INTENT_QUERY_PARAM = "authIntent";

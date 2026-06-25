@@ -338,7 +338,7 @@ describe("StatusBanner", () => {
 
       const html = renderToStaticMarkup(<StatusBanner />);
 
-      expect(html).toContain("Trying to reach Vellum");
+      expect(html).toContain("Trying to reach Worklin");
       expect(html).toContain("Retry now");
       expect(html).not.toContain("crash looping");
     });

@@ -10,6 +10,7 @@ import {
   buildProviderCallbackUrl,
   withBrowserBase,
 } from "@/domains/account/login-flow";
+import { AUTH0_PROVIDER_HINTS } from "@/domains/account/social-auth";
 import { startAuthFlow } from "@/runtime/native-auth";
 import { routes } from "@/utils/routes";
 
@@ -46,8 +47,8 @@ interface ProviderButton {
 }
 
 const BUTTONS: ProviderButton[] = [
-  { icon: <GoogleLogo size={18} />, label: "Continue with Google", providerHint: "GoogleOAuth" },
-  { icon: <AppleLogo size={18} />, label: "Continue with Apple", providerHint: "AppleOAuth" },
+  { icon: <GoogleLogo size={18} />, label: "Continue with Google", providerHint: AUTH0_PROVIDER_HINTS.google },
+  { icon: <AppleLogo size={18} />, label: "Continue with Apple", providerHint: AUTH0_PROVIDER_HINTS.apple },
   { icon: EmailIcon, label: "Continue with Email" },
 ];
 
@@ -61,7 +62,7 @@ interface PersonalPageSignupScreenProps {
  * Personal-page activation sign-up screen, matching the cast prototype demo: a
  * brand-left / full-bleed-video-right layout with a rotating headline and
  * Google / Apple / Email buttons. Unlike the prototype's mock buttons, each
- * hands off to the real WorkOS `startAuthFlow` (`intent: "signup"`); the
+ * hands off to the real Auth0 `startAuthFlow` (`intent: "signup"`); the
  * post-OAuth name/occupation step lives in `ProviderSignupPage` (same flag).
  */
 export function PersonalPageSignupScreen({
@@ -75,10 +76,9 @@ export function PersonalPageSignupScreen({
   const start = (providerHint?: string) => {
     // A direct provider hint (Apple/Google) goes straight to the social
     // connection — match the proven /account/login wiring and do NOT also send
-    // the signup `intent` (WorkOS rejects a sign-up screen_hint combined with a
-    // direct provider redirect → error.workos.com/sso). Email (no hint) keeps
-    // `intent: "signup"` so AuthKit shows its hosted sign-up screen. Either way
-    // the post-OAuth routing to the name/occupation step is driven by
+    // the signup `intent`. Email (no hint) keeps `intent: "signup"` so Auth0
+    // shows its hosted sign-up screen. Either way the post-OAuth routing to
+    // the name/occupation step is driven by
     // `authIntent=signup` in `callbackUrl`, and a first-time social login still
     // triggers the provider-signup flow.
     startAuthFlow(PROVIDER_ID, callbackUrl, {

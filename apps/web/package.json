@@ -10,10 +10,10 @@
   ],
   "scripts": {
     "predev": "bun run postinstall && bun run openapi-ts && node scripts/copy-skill-assets.mjs",
-    "dev": "bun run scripts/ensure-fresh-vite.ts && bun --bun vite",
+    "dev": "bun run scripts/ensure-fresh-vite.ts && bun --bun vite --configLoader runner",
     "prebuild": "node scripts/copy-skill-assets.mjs",
-    "build": "bun --bun vite build",
-    "preview": "bun --bun vite preview",
+    "build": "bun --bun vite build --configLoader runner",
+    "preview": "bun --bun vite preview --configLoader runner",
     "lint": "eslint",
     "audit:cross-domain": "node scripts/audit-cross-domain-imports.mjs",
     "audit:cross-domain:check": "node scripts/audit-cross-domain-imports.mjs --check",

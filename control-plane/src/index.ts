@@ -162,6 +162,29 @@ function auth0Configured(): boolean {
   );
 }
 
+function authConfigPayload() {
+  if (!auth0Configured()) {
+    return { data: {}, meta: {}, status: 200 };
+  }
+
+  return {
+    data: {
+      socialaccount: {
+        providers: [
+          {
+            id: "auth0",
+            name: "Auth0",
+            client_id: env.auth0ClientId,
+            flows: ["login", "signup"],
+          },
+        ],
+      },
+    },
+    meta: {},
+    status: 200,
+  };
+}
+
 function allowedOriginValue(origin: string): boolean {
   if (origin === env.webOrigin) return true;
   return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
@@ -773,7 +796,7 @@ app.get(
 );
 app.get("/_allauth/browser/v1/auth/session", asyncHandler(handleSession));
 app.delete("/_allauth/browser/v1/auth/session", asyncHandler(handleSession));
-app.get("/_allauth/browser/v1/config", (req, res) => sendJson(req, res, { data: {}, meta: {}, status: 200 }));
+app.get("/_allauth/browser/v1/config", (req, res) => sendJson(req, res, authConfigPayload()));
 
 app.use(
   asyncHandler(async (req, res) => {

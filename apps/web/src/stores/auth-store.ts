@@ -47,7 +47,6 @@ import {
   isPlatformDisabled,
   getPlatformAssistants,
   getLocalAssistants,
-  primeLocalGatewayConnection,
   primeLocalGatewayConnectionWithRepair,
   syncPlatformAssistantsToLockfile,
 } from "@/lib/local-mode";
