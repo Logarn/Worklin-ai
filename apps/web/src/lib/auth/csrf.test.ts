@@ -36,17 +36,29 @@ function clearCsrfCookie(): void {
 describe("csrf bootstrap", () => {
   beforeEach(() => {
     clearCsrfCookie();
+    sessionStorage.clear();
     getAllauthByClientV1AuthSessionMock.mockClear();
   });
 
   afterEach(() => {
     clearCsrfCookie();
+    sessionStorage.clear();
   });
 
   test("persists an exposed CSRF token for cross-origin web auth", async () => {
     await ensureCsrfCookie();
 
     expect(getAllauthByClientV1AuthSessionMock).toHaveBeenCalledTimes(1);
+    expect(getCsrfToken()).toBe("cross-origin-csrf-token");
+    expect(sessionStorage.getItem("worklin.csrfToken")).toBe(
+      "cross-origin-csrf-token",
+    );
+  });
+
+  test("falls back to session storage when the page cookie is unavailable", async () => {
+    await ensureCsrfCookie();
+    clearCsrfCookie();
+
     expect(getCsrfToken()).toBe("cross-origin-csrf-token");
   });
 

@@ -15,9 +15,11 @@ import { isElectron } from "@/runtime/is-electron";
 const CSRF_COOKIE_NAME = import.meta.env.PROD
   ? "__Secure-csrftoken"
   : "csrftoken";
+const CSRF_STORAGE_KEY = "worklin.csrfToken";
 const LOCAL_CSRF_COOKIE_ATTRIBUTES = import.meta.env.PROD
   ? "path=/; secure; samesite=lax"
   : "path=/; samesite=lax";
+let inMemoryCsrfToken: string | undefined;
 
 /**
  * Read the CSRF token from the browser cookie jar.
@@ -30,10 +32,29 @@ export function getCsrfToken(): string | undefined {
   const match = document.cookie
     .split("; ")
     .findLast((row) => row.startsWith(`${CSRF_COOKIE_NAME}=`));
-  return match?.split("=").slice(1).join("=");
+  if (match) {
+    return match.split("=").slice(1).join("=");
+  }
+
+  if (inMemoryCsrfToken) {
+    return inMemoryCsrfToken;
+  }
+
+  try {
+    return window.sessionStorage.getItem(CSRF_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function persistReadableCsrfToken(token: string): void {
+  inMemoryCsrfToken = token;
+  try {
+    window.sessionStorage.setItem(CSRF_STORAGE_KEY, token);
+  } catch {
+    // Ignore storage failures; the in-memory fallback still covers the
+    // current page session, which is enough to start the auth redirect.
+  }
   document.cookie = `${CSRF_COOKIE_NAME}=${token}; ${LOCAL_CSRF_COOKIE_ATTRIBUTES}`;
 }
 
