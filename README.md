@@ -1,156 +1,271 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Vellum Assistant" width="100%">
-</p>
+# Worklin AI
 
-<p align="center">
-  <a href="https://vellum.ai/docs"><img src="https://img.shields.io/badge/Docs-vellum.ai%2Fdocs-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://vellum.ai/community"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/vellum-ai/vellum-assistant/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://vellum.ai"><img src="https://img.shields.io/badge/Built%20by-Vellum-blueviolet?style=for-the-badge" alt="Built by Vellum"></a>
-</p>
+Worklin is an autonomous retention marketing agent for ecommerce brands.
 
-<p align="center"><b>A personal AI assistant that evolves with you.</b><br>
-8 different types of memory (episodic, semantic, procedural, emotional, prospective, behavioral, narrative, shared) make it truly yours. It learns how you work, remembers what matters, and takes action across your apps.</p>
+The product is being rebuilt around a Worklin-native assistant runtime, chat UI,
+credential boundary, memory system, and retention intelligence layer. The first
+production target is audit and approval autonomy: Worklin can onboard a brand,
+connect read-only commerce and lifecycle data, build a Brand Brain, run deep
+retention audits, generate opportunity backlogs, and prepare draft-only campaign
+workflows for human approval.
 
----
+Worklin is not the old Next.js/Prisma Worklin app. The old app was used as a
+source of domain concepts. The current app is a Bun monorepo with a Vite/React
+web client and separate backend services for auth, agent runtime, gateway, and
+credential execution.
 
-## What it does
+## Product Scope
 
-If you've set up a Personal AI on OpenClaw, Hermes Agent, or Claude Code, you know how long it takes, and how many times you have to hatch a new one to get it right. Vellum gets you the result you're looking for out of the box, one download away.
-| Area                          | Summary |
-| ----------------------------- | --- |
-| **Memory**                    | Eight types (episodic, semantic, procedural, emotional, prospective, behavioral, narrative, shared), each with its own staleness window, hybrid dense + sparse retrieval, and per-user and per-channel isolation. Structured items (identity, preferences, projects, events) extracted from conversations with source attribution and dedup. Embeddings run locally by default. Not a SQLite + markdown file you maintain yourself. |
-| **Identity**                  | Behavior lives in SOUL.md. During onboarding the assistant observes how you communicate and writes its own personality files. It keeps a per-user journal of reflections and uses NOW.md as a scratchpad for current focus and active threads. |
-| **Proactivity**               | Every hour the assistant re-reads its notes, looks for anything unfinished or due soon, and messages you if something needs attention. Notifications go to the right channel and won't interrupt an active conversation. |
-| **Security**                  | Actor identity (guardian, trusted, unknown) is resolved once and enforced everywhere; unknown actors can't read memory, trigger tools, or escalate. Credentials live in a separate process and never reach the model. Every tool call runs in a sandbox. The default is to deny. |
-| **Channels**           | macOS, iOS, Web, Voice, Email, Telegram, Slack, Twilio. One assistant, one memory, every channel. |
-| **OAuth**             | Slack, Notion, Google, HubSpot, Linear, Discord, Twitter, Telegram, Twilio. No hand-rolled token refresh. |
-| **Hosting**      | Managed runtime on Vellum Platform, or self-hosted. Same codebase, same data model. |
+Worklin is focused on DTC retention automation:
 
----
+- Brand onboarding through conversation, not long setup forms
+- Brand Brain for voice, positioning, offers, products, rules, CTAs, and learnings
+- Klaviyo and Shopify source layers, with read-only data ingestion by default
+- Deep retention audits over lifecycle, campaigns, flows, segments, products, and missing opportunities
+- Visual audit artifacts and PDF-ready reports
+- Opportunity backlog and campaign package generation
+- Approval, action logs, and safety metadata for every external action
+- Draft-only Klaviyo creation after explicit approval
 
-## Get started
+V1 intentionally blocks live sends, live scheduling, Shopify writes, Klaviyo
+profile mutation, segment mutation, and flow activation.
 
-**1. [Sign up](https://vellum.ai/signup) or [download the app](https://vellum.ai/download)**
+## Repository Layout
 
-**2. Pick your mode**
+| Path | Purpose |
+| --- | --- |
+| `apps/web` | Worklin web app. React 19, Vite, React Router, Tailwind, Worklin UI shell, onboarding, chat, settings, documents, and artifacts. |
+| `assistant` | Agent runtime, tools, skills, memory, documents, schedules, sandboxed execution, and retention workflows. |
+| `gateway` | Internal gateway for runtime access, feature flags, permissions, webhooks, and service coordination. |
+| `control-plane` | Public API/control-plane service for auth, sessions, frontend API compatibility, and proxying into the runtime stack. |
+| `credential-executor` | Isolated credential execution service for stored integration credentials. |
+| `packages` | Shared contracts, clients, credential storage, design library, IPC helpers, and retention-domain package. |
+| `skills` | Bundled skills and integration setup workflows. |
+| `deploy` | Production deployment notes and environment examples. |
+| `vercel.json` | Vercel frontend deployment config for `apps/web`. |
 
-- **Managed**: sign in via Vellum Cloud, no local runtime required
-- **Local**: everything runs on your machine
+## Tech Stack
 
-**3. Hatch your assistant**
+- Bun `1.3.x`
+- Node `22.x` compatibility where needed
+- React `19.x`
+- Vite
+- React Router
+- Tailwind
+- Radix UI
+- lucide icons
+- Zustand
+- TanStack Query
+- Drizzle
+- SQLite for local/self-hosted state
+- Qdrant-backed memory paths where enabled
+- Dockerized backend services
 
-- It's yours! Have fun with it.
+## Local Development
 
-<sub>Prefer the terminal? See <a href="#cli">CLI install</a> below.</sub>
-
----
-
-## Quick demo
-
-<p align="center">
-  <img src="assets/quick-demo.gif" alt="Vellum Assistant demo" width="100%">
-</p>
-
----
-
-## CLI
-
-<details open>
-<summary>Install and common commands</summary>
-
-<br>
-
-The CLI works but the desktop app is our primary focus. Available for advanced users, contributors, and non-macOS environments.
-
-**Install**
-
-```bash
-bun install -g vellum
-vellum hatch
-```
-
-**Install from source**
+Install Bun first if needed:
 
 ```bash
-git clone https://github.com/vellum-ai/vellum-assistant.git
-cd vellum-assistant
-./setup.sh
-source ~/.bashrc
-vellum hatch
+curl -fsSL https://bun.sh/install | bash
 ```
 
-**Common commands**
+Install and run the web app:
 
 ```bash
-vellum wake        # start services
-vellum sleep       # stop services, keep data
-vellum client      # interact through the terminal
-vellum ps          # view running assistants
-vellum terminal    # open a shell into a managed assistant container
-vellum upgrade     # upgrade to latest version
+cd apps/web
+bun install
+bun run dev
 ```
 
-All commands target the default assistant. If you have multiple, pass the assistant ID as the second argument.
+Run the local control-plane:
 
-</details>
+```bash
+cd control-plane
+bun install
+bun run start
+```
 
----
+The current local web app usually runs at:
 
-## Infra and security
+```text
+http://127.0.0.1:5177/assistant
+```
 
-| Area                       | Summary                                                                                                                                                                                                                                                                                                                  |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Computer use**           | The assistant works in its own sandbox, and with your approval reaches your actual machine: reads and edits files, runs commands, drives the browser. Every action is permission-gated, and you can grant once, for ten minutes, or always. |
-| **Skills**                 | Plugins defined by a SKILL.md and a TOOLS.json that add tools and prompt sections at runtime, sandboxed like everything else. Install them from the catalog, bundle them, or drop them in the workspace.                                                                                      |
-| **Channels**               | One assistant with one memory, reachable from the macOS app, Telegram, or Slack. Start a thought in one channel and pick it up in another.                                                                                                                                                              |
-| **Multi-provider support** | Works with Anthropic, OpenAI, Google Gemini, Fireworks, OpenRouter, MiniMax, and any OpenAI-compatible endpoint. Local models run through Ollama. Embeddings run on local ONNX by default and fall back to cloud providers automatically.                                                                                    |
+The local control-plane usually runs at:
 
----
+```text
+http://127.0.0.1:19283
+```
 
-## Foundational documents
+Local auth depends on Auth0 and the local control-plane env. Use:
 
-The canonical sources for who we are and how we talk about what we're building. The docs site at [vellum.ai/docs](https://vellum.ai/docs) is a rendered view of these files.
+```bash
+deploy/production/create-local-auth0-env.sh
+```
 
-| Doc                             | What it is                                                       |
-| ------------------------------- | ---------------------------------------------------------------- |
-| [Constitution](CONSTITUTION.md) | Who we are, what we believe, and what we refuse to compromise on |
-| [Glossary](GLOSSARY.md)         | The shared vocabulary we use to talk about personal intelligence |
+Do not commit generated `.env`, `*.env.local`, `.vercel`, database files, or
+private credential files.
 
----
+## Useful Checks
 
-## Documentation
+Web typecheck:
 
-| Section                                                                             | What's covered                                                     |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [Architecture](https://vellum.ai/docs/developer-guide/architecture)                 | Platform domains, repo structure, runtime · clients · gateway      |
-| [Security & Permissions](https://vellum.ai/docs/developer-guide/security)           | Sandbox, credentials, trust rules, permission modes                |
-| [Features & Capabilities](https://vellum.ai/docs/developer-guide/features)          | Integrations, dynamic skills, browser, attachments, media embeds   |
-| [API & Communication](https://vellum.ai/docs/developer-guide/api)                   | SSE event stream, event payloads, remote access                    |
-| [Development Workflow](https://vellum.ai/docs/developer-guide/development-workflow) | Claude Code commands, parallel PRs, review loops, release pipeline |
+```bash
+cd apps/web
+bun run typecheck
+```
 
-📖 **[Full documentation →](https://vellum.ai/docs)**
+Web build:
 
----
+```bash
+cd apps/web
+bun run build
+```
 
-## Contributing
+Control-plane typecheck:
 
-We welcome contributions from everyone.
+```bash
+cd control-plane
+bun run typecheck
+```
 
-- **Development**: The [contributing guide](CONTRIBUTING.md) will help you get started.
-- Make sure to check out our [Code of Conduct](CODE_OF_CONDUCT.md).
+Gateway typecheck:
 
-## Community
+```bash
+cd gateway
+bun run typecheck
+```
 
-- 💬 [Discord](https://vellum.ai/community)
-- 🐛 [Issues](https://github.com/vellum-ai/vellum-assistant/issues)
+Assistant typecheck:
+
+```bash
+cd assistant
+bun run typecheck
+```
+
+## Deployment
+
+Worklin is not a single Vercel app.
+
+Use Vercel for the web frontend and Railway or another container host for the
+backend services.
+
+### Frontend: Vercel
+
+The root `vercel.json` builds `apps/web`:
+
+```json
+{
+  "installCommand": "cd apps/web && bun install --frozen-lockfile",
+  "buildCommand": "cd apps/web && VITE_PLATFORM_MODE=true VERCEL=1 bun run build",
+  "outputDirectory": "apps/web/dist"
+}
+```
+
+Production frontend environment variables should point at the backend API:
+
+```bash
+VITE_PLATFORM_MODE=true
+VITE_PLATFORM_API_BASE_URL=https://<backend-domain>
+VITE_AUTH_API_BASE_URL=https://<backend-domain>
+VITE_DAEMON_API_BASE_URL=https://<backend-domain>
+```
+
+### Backend: Railway
+
+Deploy the backend as container services.
+
+Start with the public API service:
+
+```text
+Service name: worklin-api
+Dockerfile path: control-plane/Dockerfile
+Root/build context: /
+Health check: /healthz
+Volume mount: /data
+```
+
+Minimal production variables for `worklin-api`:
+
+```bash
+WORKLIN_WEB_ORIGIN=https://worklin-ai.vercel.app
+WORKLIN_API_ORIGIN=https://<railway-backend-domain>
+AUTH0_ISSUER_BASE_URL=https://<auth0-tenant>
+AUTH0_BASE_URL=https://<railway-backend-domain>
+AUTH0_CLIENT_ID=<auth0-client-id>
+AUTH0_CLIENT_SECRET=<auth0-client-secret>
+AUTH0_SECRET=<generated-secret>
+WORKLIN_SESSION_SECRET=<generated-secret>
+ACTOR_TOKEN_SIGNING_KEY=<64-hex-secret>
+WORKLIN_CONTROL_DB=/data/control-plane.sqlite
+```
+
+Railway can generate a temporary HTTPS domain. A custom domain such as
+`api.worklin.ai` is useful later but is not required for the first deployment.
+
+The full backend stack also needs runtime and credential services:
+
+| Service | Dockerfile | Notes |
+| --- | --- | --- |
+| `worklin-api` | `control-plane/Dockerfile` | Public HTTP service. Auth, sessions, web API, and gateway proxy. |
+| `worklin-runtime` | to be bundled for Railway | Gateway and assistant currently need co-located networking for callbacks. |
+| `worklin-credentials` | `credential-executor/Dockerfile` | Private credential service with a persistent `/ces-data` volume. |
+
+Until `worklin-runtime` and `worklin-credentials` are live, auth may work but
+chat, audits, tools, and credential-backed integrations will not be fully
+usable in production.
+
+## Auth
+
+Worklin uses Auth0 for hosted auth in the current production setup.
+
+Auth0 application settings should include the backend callback:
+
+```text
+Allowed Callback URLs:
+https://<backend-domain>/callback
+```
+
+For local testing:
+
+```text
+http://127.0.0.1:19283/callback
+```
+
+Allowed web origins and CORS origins should include the frontend origin:
+
+```text
+https://worklin-ai.vercel.app
+http://127.0.0.1:5177
+```
+
+Rotate any Auth0 secret that has ever been pasted into chat or logs before
+using it in production.
+
+## Retention Safety Model
+
+Every retention workflow should preserve these guarantees:
+
+- Shopify is read-only in V1.
+- Klaviyo is read, snapshot, and draft-only in V1.
+- No live send or schedule action is registered.
+- No profile mutation, segment mutation, or flow activation is registered.
+- Tool outputs include source freshness, caveats, provenance, blocked capabilities, approval status, `externalActionTaken:false`, and `canGoLiveNow:false`.
+- Draft creation requires explicit user approval and passing QA.
+
+## Current Status
+
+The repo has been replaced with the current Worklin monorepo. The next
+production milestone is:
+
+1. Deploy `worklin-api` on Railway from `control-plane/Dockerfile`.
+2. Confirm `/healthz` works on Railway's generated domain.
+3. Point Auth0 callback URLs at the Railway backend domain.
+4. Point Vercel frontend env vars at the Railway backend domain.
+5. Add a bundled Railway runtime service for gateway + assistant.
+6. Add the credential executor service and persistent storage.
+7. Smoke test signup, login, chat, onboarding, Klaviyo connection, and a read-only retention audit.
 
 ## License
 
-MIT. See [License](https://github.com/vellum-ai/vellum-assistant?tab=MIT-1-ov-file). Integration logos from [Simple Icons](https://github.com/simple-icons/simple-icons), licensed [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
-
-Vellum Assistant is open-source software built by [Vellum AI](https://vellum.ai), a for-profit company. We also offer a managed product, the [Vellum Platform](https://vellum.ai/platform), which sustains the business. Free to use and modify under MIT, and we're committed to keeping it that way.
-
----
-
-<p align="center">Built with 💚 by <a href="https://vellum.ai">Vellum</a></p>
+MIT. See [LICENSE](LICENSE).
