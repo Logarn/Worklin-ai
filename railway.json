@@ -5,6 +5,7 @@
     "dockerfilePath": "control-plane/Dockerfile"
   },
   "deploy": {
+    "startCommand": "bun run src/index.ts",
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
