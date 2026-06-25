@@ -2,6 +2,8 @@
 **
 !assistant/
 !assistant/**
+!control-plane/
+!control-plane/**
 !credential-executor/
 !credential-executor/**
 !gateway/
@@ -35,6 +37,13 @@ assistant/out/
 assistant/build/
 assistant/.env
 assistant/.env.*
+# Public control-plane service for Railway/Vercel auth and API proxying.
+control-plane/node_modules/
+control-plane/dist/
+control-plane/out/
+control-plane/build/
+control-plane/.env
+control-plane/.env.*
 # Authoring-reference example plugins are not shipped with the production image.
 assistant/examples/
 credential-executor/node_modules/
