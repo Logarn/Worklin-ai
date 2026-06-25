@@ -1,0 +1,12 @@
+# SKILL.md files use YAML frontmatter with inline JSON metadata that prettier
+# reformats into multi-line format, breaking the linter's YAML parser.
+**/SKILL.md
+
+# Prompt template files use _ as a comment marker prefix. Prettier escapes
+# these to \_ which breaks the comment-stripping preprocessor.
+src/prompts/templates/**/*.md
+
+# Compaction prompt assets are consumed verbatim as the LLM system prompt.
+# Prettier's markdown formatting (blank lines between headers, trailing
+# newlines) would change the prompt content, so we skip formatting here.
+src/context/prompts/**/*.md

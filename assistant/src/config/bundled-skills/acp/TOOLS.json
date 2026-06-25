@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "acp_spawn",
+      "description": "Spawn an external coding agent (e.g. Claude Code, Codex, Gemini) via ACP to work on a task. Default profiles ship for `claude` (`claude-agent-acp`), `codex` (`codex-acp`), and `gemini` (`gemini --acp`); the assistant resolves the agent id to the right binary. The agent runs as a subprocess and streams results back. Use this when you want to delegate a coding task to an external agent that has its own tools, file editing, and terminal access. If a default agent's binary is missing, the assistant installs it once via a sandboxed bun global install and proceeds in the same call; if that fails (e.g. bun unavailable), an actionable install hint is returned - do NOT alter `agents.<id>.command` to swap binaries.",
+      "category": "orchestration",
+      "risk": "high",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "Which agent to spawn (e.g. 'claude', 'codex', 'gemini'). Natural names like 'claude code' or 'gemini cli' also resolve. Defaults to 'claude'."
+          },
+          "task": {
+            "type": "string",
+            "description": "The task to give the agent - what it should accomplish"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory for the agent. This determines where the agent runs and where its session is stored. Set this to the project/repo root the user wants the agent to work in. Defaults to current conversation's working directory."
+          }
+        },
+        "required": ["task"]
+      },
+      "executor": "tools/acp-spawn.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "acp_status",
+      "description": "Get the status of a specific ACP session or list all ACP sessions. Only use this when the user explicitly asks about ACP session status - do NOT poll automatically, as you will be notified when sessions complete.",
+      "category": "orchestration",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "acp_session_id": {
+            "type": "string",
+            "description": "Optional ACP session ID to query. If omitted, returns all ACP sessions."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/acp-status.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "acp_abort",
+      "description": "Abort a running ACP session by ID. This kills the agent process and removes the session.",
+      "category": "orchestration",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "acp_session_id": {
+            "type": "string",
+            "description": "The ID of the ACP session to abort."
+          }
+        },
+        "required": ["acp_session_id"]
+      },
+      "executor": "tools/acp-abort.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "acp_steer",
+      "description": "Sends `instruction` to an ACP session. On a running session this **interrupts** the in-flight prompt and replaces it - use it to redirect the agent (e.g., 'stop, do X instead'). A completed or assistant-restarted session is transparently resumed from persisted history via ACP session loading when the agent supports it, so follow-up work on an existing session id CAN go through this tool instead of spawning a new session. If resume is not possible (legacy session without a recorded working directory, or the agent lacks the capability), the error explains why; fall back to `acp_spawn`.",
+      "category": "orchestration",
+      "risk": "high",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "acp_session_id": {
+            "type": "string",
+            "description": "The ID of the ACP session to steer."
+          },
+          "instruction": {
+            "type": "string",
+            "description": "The new instruction that replaces the in-flight prompt."
+          }
+        },
+        "required": ["acp_session_id", "instruction"]
+      },
+      "executor": "tools/acp-steer.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "acp_list_agents",
+      "description": "Lists ACP coding agents available to spawn. Each entry includes whether the agent's binary is on PATH (missing binaries are installed automatically on first spawn), and an install command if not. Use this to decide between 'claude', 'codex', and 'gemini' or to surface setup steps to the user.",
+      "category": "orchestration",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "executor": "tools/acp-list-agents.ts",
+      "execution_target": "host"
+    }
+  ]
+}

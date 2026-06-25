@@ -1,0 +1,676 @@
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+import { createAssistantMessage } from "../agent/message-types.js";
+import type { Conversation } from "../daemon/conversation.js";
+import { persistUserMessage } from "../daemon/conversation-messaging.js";
+import {
+  addMessage,
+  getConversation,
+  provenanceFromTrustContext,
+} from "../memory/conversation-crud.js";
+import {
+  getConversationDirPath,
+  syncMessageToDisk,
+} from "../memory/conversation-disk-view.js";
+import {
+  getConversationByKey,
+  getOrCreateConversation as getOrCreateConversationMapping,
+} from "../memory/conversation-key-store.js";
+import { getDb } from "../memory/db-connection.js";
+import { initializeDb } from "../memory/db-init.js";
+import { AssistantEventHub } from "../runtime/assistant-event-hub.js";
+import type { AuthContext } from "../runtime/auth/types.js";
+import * as pendingInteractions from "../runtime/pending-interactions.js";
+import { handleSendMessage } from "../runtime/routes/conversation-routes.js";
+import { callHandler } from "./helpers/call-route-handler.js";
+
+const testDir = process.env.VELLUM_WORKSPACE_DIR!;
+const conversationsDir = join(testDir, "conversations");
+mkdirSync(conversationsDir, { recursive: true });
+
+mock.module("../util/logger.js", () => ({
+  getLogger: () =>
+    new Proxy({} as Record<string, unknown>, {
+      get: () => () => {},
+    }),
+}));
+
+mock.module("../config/loader.js", () => ({
+  getConfig: () => ({
+    ui: {},
+    model: "test",
+    provider: "test",
+    memory: { enabled: false },
+    rateLimit: { maxRequestsPerMinute: 0 },
+    secretDetection: { enabled: false },
+    contextWindow: { maxInputTokens: 200000 },
+    llm: {
+      default: {
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+        maxTokens: 64000,
+        effort: "max" as const,
+        speed: "standard" as const,
+        temperature: null,
+        thinking: { enabled: true, streamThinking: true },
+        contextWindow: {
+          enabled: true,
+          maxInputTokens: 200000,
+          targetBudgetRatio: 0.3,
+          compactThreshold: 0.8,
+          summaryBudgetRatio: 0.05,
+          overflowRecovery: {
+            enabled: true,
+            safetyMarginRatio: 0.05,
+            maxAttempts: 3,
+            interactiveLatestTurnCompression: "summarize",
+            nonInteractiveLatestTurnCompression: "truncate",
+          },
+        },
+      },
+      profiles: {},
+      callSites: {},
+      pricingOverrides: [],
+    },
+    services: {
+      inference: {
+        mode: "your-own",
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+      },
+      "image-generation": {
+        mode: "your-own",
+        provider: "gemini",
+        model: "gemini-3.1-flash-image-preview",
+      },
+      "web-search": { mode: "your-own", provider: "inference-provider-native" },
+    },
+  }),
+}));
+
+initializeDb();
+
+const conversationInstances = new Map<string, Conversation>();
+
+const authContext: AuthContext = {
+  subject: "svc_gateway:self",
+  principalType: "svc_gateway",
+  assistantId: "self",
+  scopeProfile: "gateway_service_v1",
+  scopes: new Set([
+    "chat.read",
+    "chat.write",
+    "approval.read",
+    "approval.write",
+    "settings.read",
+    "settings.write",
+    "attachments.read",
+    "attachments.write",
+    "calls.read",
+    "calls.write",
+    "feature_flags.read",
+    "feature_flags.write",
+  ]),
+  policyEpoch: 1,
+};
+
+function resetTables(): void {
+  const db = getDb();
+  db.run("DELETE FROM messages");
+  db.run("DELETE FROM conversations");
+  db.run("DELETE FROM conversation_keys");
+}
+
+function resetConversationsDir(): void {
+  rmSync(conversationsDir, { recursive: true, force: true });
+  mkdirSync(conversationsDir, { recursive: true });
+}
+
+function createFakeConversation(conversationId: string): Conversation {
+  const conversation = {
+    conversationId,
+    processing: false,
+    currentRequestId: undefined as string | undefined,
+    abortController: null as AbortController | null,
+    trustContext: undefined as unknown,
+    turnChannelContext: null as {
+      userMessageChannel: string;
+      assistantMessageChannel: string;
+    } | null,
+    turnInterfaceContext: null as {
+      userMessageInterface: string;
+      assistantMessageInterface: string;
+    } | null,
+    messages: [] as Array<unknown>,
+    hostCuProxy: undefined as unknown,
+    usageStats: { inputTokens: 0, outputTokens: 0, estimatedCost: 0 },
+    memoryPolicy: {
+      scopeId: "default",
+      includeDefaultFallback: false,
+    },
+    isProcessing(this: { processing: boolean }) {
+      return this.processing;
+    },
+    setProcessing(this: { processing: boolean }, value: boolean) {
+      this.processing = value;
+    },
+    setChannelCapabilities: () => {},
+    setAssistantId: () => {},
+    setTrustContext(this: { trustContext: unknown }, ctx: unknown) {
+      this.trustContext = ctx;
+    },
+    setAuthContext: () => {},
+    setCommandIntent: () => {},
+    setTurnChannelContext(
+      this: {
+        turnChannelContext: {
+          userMessageChannel: string;
+          assistantMessageChannel: string;
+        } | null;
+      },
+      ctx: { userMessageChannel: string; assistantMessageChannel: string },
+    ) {
+      this.turnChannelContext = ctx;
+    },
+    getTurnChannelContext(this: {
+      turnChannelContext: {
+        userMessageChannel: string;
+        assistantMessageChannel: string;
+      } | null;
+    }) {
+      return this.turnChannelContext;
+    },
+    setTurnInterfaceContext(
+      this: {
+        turnInterfaceContext: {
+          userMessageInterface: string;
+          assistantMessageInterface: string;
+        } | null;
+      },
+      ctx: {
+        userMessageInterface: string;
+        assistantMessageInterface: string;
+      },
+    ) {
+      this.turnInterfaceContext = ctx;
+    },
+    getTurnInterfaceContext(this: {
+      turnInterfaceContext: {
+        userMessageInterface: string;
+        assistantMessageInterface: string;
+      } | null;
+    }) {
+      return this.turnInterfaceContext;
+    },
+    ensureActorScopedHistory: async () => {},
+    updateClient: () => {},
+
+    setHostCuProxy(this: { hostCuProxy: unknown }, proxy: unknown) {
+      this.hostCuProxy = proxy;
+    },
+    setHostAppControlProxy(
+      this: { hostAppControlProxy: unknown },
+      proxy: unknown,
+    ) {
+      this.hostAppControlProxy = proxy;
+    },
+    restoreBrowserProxyAvailability: () => {},
+    addPreactivatedSkillId: () => {},
+    hasAnyPendingConfirmation: () => false,
+    hasPendingConfirmation: () => false,
+    denyAllPendingConfirmations: () => {},
+    emitConfirmationStateChanged: () => {},
+    emitActivityState: () => {},
+    enqueueMessage: () => ({ queued: true, requestId: crypto.randomUUID() }),
+    getQueueDepth: () => 0,
+    handleConfirmationResponse: () => {},
+    handleSecretResponse: () => {},
+    getMessages(this: { messages: Array<unknown> }) {
+      return this.messages as never[];
+    },
+    persistUserMessage(
+      this: Conversation,
+      options: Parameters<typeof persistUserMessage>[1],
+    ): Promise<{ id: string; deduplicated: boolean }> {
+      return persistUserMessage(
+        this as Parameters<typeof persistUserMessage>[0],
+        options,
+      );
+    },
+    async runAgentLoop(
+      this: {
+        conversationId: string;
+        turnChannelContext: {
+          userMessageChannel: string;
+          assistantMessageChannel: string;
+        } | null;
+        turnInterfaceContext: {
+          userMessageInterface: string;
+          assistantMessageInterface: string;
+        } | null;
+        trustContext: unknown;
+        messages: Array<unknown>;
+        processing: boolean;
+        abortController: AbortController | null;
+        currentRequestId?: string;
+      },
+      _content: string,
+      _userMessageId: string,
+      options?: { onEvent?: (msg: Record<string, unknown>) => void },
+    ): Promise<void> {
+      const onEvent = options?.onEvent ?? (() => {});
+      const assistantText = "Synthetic assistant reply";
+      const assistantMessage = createAssistantMessage(assistantText);
+      const assistantMetadata = {
+        ...provenanceFromTrustContext(this.trustContext as never),
+        ...(this.turnChannelContext
+          ? {
+              userMessageChannel: this.turnChannelContext.userMessageChannel,
+              assistantMessageChannel:
+                this.turnChannelContext.assistantMessageChannel,
+            }
+          : {}),
+        ...(this.turnInterfaceContext
+          ? {
+              userMessageInterface:
+                this.turnInterfaceContext.userMessageInterface,
+              assistantMessageInterface:
+                this.turnInterfaceContext.assistantMessageInterface,
+            }
+          : {}),
+      };
+
+      const persistedAssistant = await addMessage(
+        this.conversationId,
+        "assistant",
+        JSON.stringify(assistantMessage.content),
+        { metadata: assistantMetadata },
+      );
+      this.messages.push(assistantMessage);
+
+      const conversationRow = getConversation(this.conversationId);
+      if (conversationRow) {
+        syncMessageToDisk(
+          this.conversationId,
+          persistedAssistant.id,
+          conversationRow.createdAt,
+        );
+      }
+
+      onEvent({
+        type: "assistant_text_delta",
+        text: assistantText,
+        conversationId: this.conversationId,
+      });
+      onEvent({
+        type: "message_complete",
+        conversationId: this.conversationId,
+      });
+
+      this.processing = false;
+      this.abortController = null;
+      this.currentRequestId = undefined;
+    },
+  };
+
+  return conversation as unknown as Conversation;
+}
+
+function getOrCreateFakeConversation(conversationId: string): Conversation {
+  const existing = conversationInstances.get(conversationId);
+  if (existing) return existing;
+  const created = createFakeConversation(conversationId);
+  conversationInstances.set(conversationId, created);
+  return created;
+}
+
+async function waitFor<T>(
+  getter: () => T | undefined,
+  timeoutMs = 3000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = getter();
+    if (value !== undefined) return value;
+    await Bun.sleep(20);
+  }
+  throw new Error("Timed out waiting for expected disk-view output");
+}
+
+beforeEach(() => {
+  resetTables();
+  resetConversationsDir();
+  conversationInstances.clear();
+  pendingInteractions.clear();
+});
+
+// ── macOS browser backend fallback regression ─────────────────────────
+//
+// These tests verify the route-level wiring that enables the CDP factory's
+// fallback chain on macOS-originated turns:
+//
+//   1. Extension connected  → extension backend (tested in host-browser-e2e-cloud.test.ts)
+//   2. Extension absent, cdp-inspect unavailable → local Playwright fallback
+//
+// Specifically, we verify that when a macOS message enters through
+// handleSendMessage with `interface: "macos"` and NO extension is connected,
+// the conversation's turnInterfaceContext is set correctly so the CDP factory
+// builds the right candidate list (cdp-inspect → local). If cdp-inspect
+// is also unreachable (the common case when Chrome is not launched with
+// --remote-debugging-port), the factory falls through to local.
+//
+// This is the regression guard for backend preference order step 2:
+//   macOS + no extension + cdp-inspect unavailable → local backend
+//
+// If the interface propagation or factory candidate list construction
+// regresses, these tests will fail.
+
+describe("macOS browser backend fallback (no extension, no cdp-inspect)", () => {
+  test("macOS turn without extension sets turnInterfaceContext to macos, enabling local fallback", async () => {
+    const conversationKey = `macos-fallback-${crypto.randomUUID()}`;
+    const content = "Test macOS fallback path.";
+    let capturedConversation: Conversation | undefined;
+
+    const deps = {
+      sendMessageDeps: {
+        getOrCreateConversation: async (conversationId: string) => {
+          const conv = getOrCreateFakeConversation(conversationId);
+          capturedConversation = conv;
+          return conv;
+        },
+        assistantEventHub: new AssistantEventHub(),
+        resolveAttachments: () => [],
+      },
+    };
+    const response = await callHandler(
+      (args) => handleSendMessage(args, deps),
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-vellum-principal-type": authContext.principalType,
+        },
+        body: JSON.stringify({
+          conversationKey,
+          content,
+          sourceChannel: "vellum",
+          interface: "macos",
+        }),
+      }),
+      undefined,
+      202,
+    );
+
+    expect(response.status).toBe(202);
+
+    // The conversation instance should have its turnInterfaceContext set
+    // to "macos" by handleSendMessage. This is the value the CDP factory
+    // reads (via ToolContext.transportInterface) to decide whether to
+    // include cdp-inspect as a desktop-auto candidate and ultimately fall
+    // back to local Playwright when cdp-inspect is unavailable.
+    expect(capturedConversation).toBeDefined();
+    const interfaceCtx = capturedConversation!.getTurnInterfaceContext();
+    expect(interfaceCtx).not.toBeNull();
+    expect(interfaceCtx!.userMessageInterface).toBe("macos");
+    expect(interfaceCtx!.assistantMessageInterface).toBe("macos");
+  });
+
+  test("macOS turn correctly persists interface metadata through the agent loop", async () => {
+    const conversationKey = `macos-metadata-${crypto.randomUUID()}`;
+    const content = "Verify interface metadata persistence.";
+
+    const response = await callHandler(
+      (args) =>
+        handleSendMessage(args, {
+          sendMessageDeps: {
+            getOrCreateConversation: async (conversationId: string) =>
+              getOrCreateFakeConversation(conversationId),
+            assistantEventHub: new AssistantEventHub(),
+            resolveAttachments: () => [],
+          },
+        }),
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-vellum-principal-type": authContext.principalType,
+        },
+        body: JSON.stringify({
+          conversationKey,
+          content,
+          sourceChannel: "vellum",
+          interface: "macos",
+        }),
+      }),
+      undefined,
+      202,
+    );
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as {
+      accepted: boolean;
+      conversationId: string;
+    };
+
+    // Wait for the agent loop to persist the assistant reply (the fake
+    // runAgentLoop persists interface metadata into message records).
+    const conversationRow = getConversation(body.conversationId);
+    expect(conversationRow).not.toBeNull();
+    const conversationDir = getConversationDirPath(
+      body.conversationId,
+      conversationRow!.createdAt,
+    );
+    const messagesPath = join(conversationDir, "messages.jsonl");
+
+    const lines = await waitFor(() => {
+      if (!existsSync(messagesPath)) return undefined;
+      const raw = readFileSync(messagesPath, "utf-8").trim();
+      if (!raw) return undefined;
+      const parsed = raw.split("\n").map(
+        (line) =>
+          JSON.parse(line) as {
+            role: string;
+            metadata?: Record<string, unknown>;
+          },
+      );
+      return parsed.length >= 2 ? parsed : undefined;
+    });
+
+    // The assistant reply (second line) should carry the interface metadata
+    // set by setTurnInterfaceContext during the macOS turn setup.
+    const assistantLine = lines[1];
+    expect(assistantLine?.role).toBe("assistant");
+    expect(assistantLine?.metadata?.userMessageInterface).toBe("macos");
+    expect(assistantLine?.metadata?.assistantMessageInterface).toBe("macos");
+  });
+});
+
+describe("POST /v1/messages — body.conversationId direct id lookup", () => {
+  // The handler accepts two scope inputs with distinct semantics:
+  //
+  //   - `body.conversationId` is the assistant-minted internal id and is
+  //     looked up directly. A missing row is a 404 — clients must obtain
+  //     the id from a prior daemon response.
+  //   - `body.conversationKey` is an external key (non-vellum channels /
+  //     web idempotency); resolved via the conversation_keys table and
+  //     materialised on first use.
+  //
+  // When both are sent, `conversationId` wins and `conversationKey` is
+  // ignored. (Don't combine — fetch by one and then the other.)
+
+  async function sendMessage(
+    body: Record<string, unknown>,
+    successStatus = 202,
+  ): Promise<Response> {
+    return callHandler(
+      (args) =>
+        handleSendMessage(args, {
+          sendMessageDeps: {
+            getOrCreateConversation: async (conversationId: string) =>
+              getOrCreateFakeConversation(conversationId),
+            assistantEventHub: new AssistantEventHub(),
+            resolveAttachments: () => [],
+          },
+        }),
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-vellum-principal-type": authContext.principalType,
+        },
+        body: JSON.stringify(body),
+      }),
+      undefined,
+      successStatus,
+    );
+  }
+
+  test("body.conversationId=<existing-id> scopes the send to that conversation", async () => {
+    // Pre-materialise a conversation via the key path, then send a message
+    // by its assistant-minted internal id.
+    const externalKey = `pre-materialised-${crypto.randomUUID()}`;
+    const seeded = getOrCreateConversationMapping(externalKey);
+
+    const response = await sendMessage({
+      conversationId: seeded.conversationId,
+      content: "Direct id lookup — should reuse the existing conversation.",
+      sourceChannel: "vellum",
+      interface: "macos",
+    });
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as {
+      accepted: boolean;
+      conversationId: string;
+    };
+    expect(body.accepted).toBe(true);
+    expect(body.conversationId).toBe(seeded.conversationId);
+
+    // No new external-key row should be materialised under the internal id.
+    expect(getConversationByKey(seeded.conversationId)).toBeNull();
+  });
+
+  test("body.conversationId=<non-existent-id> returns 404", async () => {
+    const response = await sendMessage(
+      {
+        conversationId: `does-not-exist-${crypto.randomUUID()}`,
+        content: "Should 404 — unknown internal id.",
+        sourceChannel: "vellum",
+        interface: "macos",
+      },
+      404,
+    );
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as {
+      error?: { code?: string; message?: string };
+    };
+    expect(body.error?.code).toBe("NOT_FOUND");
+    expect(body.error?.message).toMatch(/not found/i);
+  });
+
+  test("body.conversationId is honored and body.conversationKey is ignored when both are sent", async () => {
+    // Seed a conversation for the id we'll send. Also seed a separate
+    // conversation under a key the client will pass alongside — but the
+    // handler must scope to the id, NOT the key.
+    const idSeed = getOrCreateConversationMapping(
+      `id-honored-${crypto.randomUUID()}`,
+    );
+    const keyValue = `key-ignored-${crypto.randomUUID()}`;
+    const keySeed = getOrCreateConversationMapping(keyValue);
+    expect(idSeed.conversationId).not.toBe(keySeed.conversationId);
+
+    const response = await sendMessage({
+      conversationId: idSeed.conversationId,
+      conversationKey: keyValue,
+      content: "Both fields sent — id should win.",
+      sourceChannel: "vellum",
+      interface: "macos",
+    });
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as { conversationId: string };
+    expect(body.conversationId).toBe(idSeed.conversationId);
+    expect(body.conversationId).not.toBe(keySeed.conversationId);
+  });
+});
+
+describe("conversationKey send path disk-view regression", () => {
+  test("first send on a fresh conversationKey creates disk-view dir and writes user+assistant records", async () => {
+    const conversationKey = `fresh-conv-key-${crypto.randomUUID()}`;
+    const content = "Please persist this first turn.";
+
+    const response = await callHandler(
+      (args) =>
+        handleSendMessage(args, {
+          sendMessageDeps: {
+            getOrCreateConversation: async (conversationId: string) =>
+              getOrCreateFakeConversation(conversationId),
+            assistantEventHub: new AssistantEventHub(),
+            resolveAttachments: () => [],
+          },
+        }),
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-vellum-principal-type": authContext.principalType,
+        },
+        body: JSON.stringify({
+          conversationKey,
+          content,
+          sourceChannel: "vellum",
+          interface: "macos",
+        }),
+      }),
+      undefined,
+      202,
+    );
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as {
+      accepted: boolean;
+      conversationId: string;
+      messageId: string;
+    };
+    expect(body.accepted).toBe(true);
+    expect(body.conversationId).toBeDefined();
+    expect(body.messageId).toBeDefined();
+
+    // Verify the real key store mapping is reused after the first send.
+    const mapping = getOrCreateConversationMapping(conversationKey);
+    expect(mapping.created).toBe(false);
+    expect(mapping.conversationId).toBe(body.conversationId);
+    expect(getConversationByKey(conversationKey)?.conversationId).toBe(
+      body.conversationId,
+    );
+
+    const conversationRow = getConversation(body.conversationId);
+    expect(conversationRow).not.toBeNull();
+    const conversationDir = getConversationDirPath(
+      body.conversationId,
+      conversationRow!.createdAt,
+    );
+    const metaPath = join(conversationDir, "meta.json");
+    const messagesPath = join(conversationDir, "messages.jsonl");
+
+    expect(existsSync(conversationDir)).toBe(true);
+    expect(existsSync(metaPath)).toBe(true);
+
+    const lines = await waitFor(() => {
+      if (!existsSync(messagesPath)) return undefined;
+      const raw = readFileSync(messagesPath, "utf-8").trim();
+      if (!raw) return undefined;
+      const parsed = raw
+        .split("\n")
+        .map((line) => JSON.parse(line) as { role: string; content?: string });
+      return parsed.length >= 2 ? parsed : undefined;
+    });
+
+    expect(lines[0]?.role).toBe("user");
+    expect(lines[0]?.content).toBe(content);
+    expect(lines[1]?.role).toBe("assistant");
+    expect(lines[1]?.content).toBe("Synthetic assistant reply");
+  });
+});

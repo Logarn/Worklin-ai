@@ -1,0 +1,140 @@
+import { spawn } from "child_process";
+
+import {
+  extractHostFromUrl,
+  resolveAssistant,
+  resolveCloud,
+} from "../lib/assistant-config";
+import { dockerResourceNames } from "../lib/docker";
+import { getPlatformUrl, readPlatformToken } from "../lib/platform-client";
+import { sshAppleContainer } from "../lib/ssh-apple-container";
+import { interactiveSession } from "../lib/terminal-session";
+
+const SSH_OPTS = [
+  "-o",
+  "StrictHostKeyChecking=no",
+  "-o",
+  "UserKnownHostsFile=/dev/null",
+  "-o",
+  "ConnectTimeout=10",
+  "-o",
+  "LogLevel=ERROR",
+];
+
+export async function ssh(): Promise<void> {
+  const args = process.argv.slice(3);
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log("Usage: vellum ssh [<name>]");
+    console.log("");
+    console.log("SSH into a remote assistant instance.");
+    console.log("");
+    console.log("Arguments:");
+    console.log(
+      "  <name>    Name of the assistant to connect to (defaults to latest)",
+    );
+    process.exit(0);
+  }
+
+  const name = process.argv[3];
+  const entry = resolveAssistant(name);
+
+  if (!entry) {
+    if (name) {
+      console.error(`No assistant instance found with name '${name}'.`);
+    } else {
+      console.error("No assistant instance found. Run `vellum hatch` first.");
+    }
+    process.exit(1);
+  }
+
+  const cloud = resolveCloud(entry);
+
+  if (cloud === "local") {
+    console.error(
+      "Cannot SSH into a local assistant. Local assistants run directly on this machine.\n" +
+        `Use 'vellum ps ${entry.assistantId}' to check its processes instead.`,
+    );
+    process.exit(1);
+  }
+
+  if (cloud === "aws") {
+    console.error("SSH to AWS instances is not yet supported.");
+    process.exit(1);
+  }
+
+  // Apple container: connect to the management socket for an interactive shell.
+  if (cloud === "apple-container") {
+    await sshAppleContainer(entry);
+    return;
+  }
+
+  let child;
+
+  if (cloud === "docker") {
+    const res = dockerResourceNames(entry.assistantId);
+    console.log(`🔗 Connecting to ${entry.assistantId} via docker exec...\n`);
+
+    child = spawn(
+      "docker",
+      ["exec", "-it", res.assistantContainer, "/bin/sh"],
+      { stdio: "inherit" },
+    );
+  } else if (cloud === "gcp") {
+    const project = entry.project;
+    const zone = entry.zone;
+    if (!project || !zone) {
+      console.error(
+        "Error: GCP project and zone not found in assistant config.",
+      );
+      process.exit(1);
+    }
+
+    const sshTarget = entry.sshUser
+      ? `${entry.sshUser}@${entry.assistantId}`
+      : entry.assistantId;
+
+    console.log(`🔗 Connecting to ${entry.assistantId} via gcloud...\n`);
+
+    child = spawn(
+      "gcloud",
+      ["compute", "ssh", sshTarget, `--project=${project}`, `--zone=${zone}`],
+      { stdio: "inherit" },
+    );
+  } else if (cloud === "vellum") {
+    const token = readPlatformToken();
+    if (!token) {
+      console.error(
+        "Not logged in. Run `vellum login` first to authenticate with the platform.",
+      );
+      process.exit(1);
+    }
+    await interactiveSession({
+      assistantId: entry.assistantId,
+      token,
+      platformUrl: getPlatformUrl(),
+    });
+    return;
+  } else if (cloud === "custom") {
+    const host = extractHostFromUrl(entry.runtimeUrl);
+    const sshUser = entry.sshUser ?? "root";
+    const sshTarget = `${sshUser}@${host}`;
+
+    console.log(`🔗 Connecting to ${entry.assistantId} via ssh...\n`);
+
+    child = spawn("ssh", [...SSH_OPTS, sshTarget], { stdio: "inherit" });
+  } else {
+    console.error(`Error: Unknown cloud type '${cloud}'.`);
+    process.exit(1);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`ssh exited with code ${code}`));
+      }
+    });
+    child.on("error", reject);
+  });
+}

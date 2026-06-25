@@ -1,0 +1,549 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "retention_source_status",
+      "description": "Inspect Worklin's Shopify + Klaviyo retention source posture. Returns connector status, freshness caveats, approval posture, and blocked live-action capabilities.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "klaviyo_account": {
+            "type": "string",
+            "description": "Optional saved Klaviyo account label to inspect."
+          },
+          "klaviyo_connection_id": {
+            "type": "string",
+            "description": "Optional saved Klaviyo credential ID to inspect."
+          },
+          "brand_name": {
+            "type": "string",
+            "description": "Optional brand name supplied during conversational onboarding. Accepted as context and ignored for source posture."
+          },
+          "website_url": {
+            "type": "string",
+            "description": "Optional brand website/domain supplied during conversational onboarding. Accepted as context and ignored for source posture."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-source-status.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_connect_klaviyo",
+      "description": "Open Worklin's secure key prompt to validate and store a read-only Klaviyo Private API Key for one account. The key never enters chat and is retained for recurring audits. Uses GET-only Klaviyo API calls and registers no send, schedule, flow activation, profile mutation, or segment mutation capability.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "account_label": {
+            "type": "string",
+            "description": "Optional human label for this Klaviyo account, useful when managing multiple brands."
+          },
+          "revision": {
+            "type": "string",
+            "description": "Optional Klaviyo API revision. Defaults to Worklin's tested revision."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-connect-klaviyo.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_list_klaviyo_accounts",
+      "description": "List saved Worklin Klaviyo account connections without exposing secrets. Use this before selecting a specific account for an audit.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": { "type": "object", "properties": {}, "required": [] },
+      "executor": "tools/retention-list-klaviyo-accounts.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_brand_brain",
+      "description": "Return Worklin's compact Brand Brain context for onboarding, audits, and campaign work: positioning, website/domain, voice, offers, products, rules, CTAs, audience notes, compliance, document/source provenance, readiness, campaign memory, caveats, and safety metadata.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brand_name": {
+            "type": "string",
+            "description": "Optional brand name provided during conversational onboarding."
+          },
+          "website_url": {
+            "type": "string",
+            "description": "Optional brand website/domain provided during conversational onboarding."
+          },
+          "klaviyo_account": {
+            "type": "string",
+            "description": "Optional saved Klaviyo account label to use when building the Brain around a connected account."
+          },
+          "klaviyo_connection_id": {
+            "type": "string",
+            "description": "Optional saved Klaviyo credential ID to use when building the Brain around a connected account."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-brand-brain.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_shopify_snapshot",
+      "description": "Build a read-only Shopify retention snapshot for customers, orders, cohorts, LTV, AOV, product affinity, and replenishment windows. No Shopify writes are available.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          },
+          "klaviyo_account": {
+            "type": "string",
+            "description": "Optional saved Klaviyo account label to use."
+          },
+          "klaviyo_connection_id": {
+            "type": "string",
+            "description": "Optional saved Klaviyo credential ID to use."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-shopify-snapshot.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_klaviyo_snapshot",
+      "description": "Build a read-only Klaviyo retention snapshot for profiles, lists, segments, campaigns, flows, metrics, engagement, and lifecycle coverage. No send/schedule/mutation is available.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          },
+          "klaviyo_account": {
+            "type": "string",
+            "description": "Optional saved Klaviyo account label to use."
+          },
+          "klaviyo_connection_id": {
+            "type": "string",
+            "description": "Optional saved Klaviyo credential ID to use."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-klaviyo-snapshot.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_unified_customer_view",
+      "description": "Resolve Shopify customers and Klaviyo profiles into Worklin unified customer identities with confidence, source coverage, missing data, and caveats.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Maximum identities to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-unified-customer-view.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_compute_customer_features",
+      "description": "Compute Worklin customer retention features from unified Shopify + Klaviyo signals with freshness caveats and safety metadata.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-compute-customer-features.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_score_customers",
+      "description": "Score customers for churn risk, replenishment readiness, winback readiness, VIP likelihood, second-purchase opportunity, suppression risk, fatigue risk, and affinity.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-score-customers.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_build_micro_segments",
+      "description": "Build definition-only micro-segment candidates from Worklin retention scores and labels. Does not create or mutate Klaviyo segments.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-build-micro-segments.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_find_missing_pieces",
+      "description": "Detect missing Shopify/Klaviyo/identity/brand retention pieces such as lifecycle gaps, unmatched profiles, weak source coverage, and safety blockers.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-find-missing-pieces.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_find_campaign_opportunities",
+      "description": "Rank Worklin retention opportunities across replenishment, winback, lifecycle gaps, suppressions, and review items. Returns draft-only safety metadata.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-find-campaign-opportunities.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_generate_campaign_package",
+      "description": "Generate an artifact-only campaign package from a Worklin retention opportunity. Includes audience, angle, brief, subject lines, offer guidance, suppression notes, approval posture, and safety metadata.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "opportunity_key": {
+            "type": "string",
+            "description": "Optional opportunity key to package. Defaults to the top opportunity."
+          },
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 90."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate. Defaults to 200."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-generate-campaign-package.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_generate_micro_campaign_package",
+      "description": "Compatibility alias for retention_generate_campaign_package. Generates an artifact-only campaign package and does not create external drafts.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "opportunity_key": { "type": "string" },
+          "timeframe_days": { "type": "number" },
+          "limit": { "type": "number" }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-generate-micro-campaign-package.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_run_qa",
+      "description": "Run Worklin retention QA over an artifact-only package, checking source freshness, approval requirement, suppression posture, and no-live-action guarantees.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "opportunity_key": {
+            "type": "string",
+            "description": "Optional opportunity key to QA. Defaults to the top opportunity."
+          },
+          "timeframe_days": { "type": "number" },
+          "limit": { "type": "number" }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-run-qa.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_run_retention_qa",
+      "description": "Compatibility alias for retention_run_qa.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "opportunity_key": { "type": "string" },
+          "timeframe_days": { "type": "number" },
+          "limit": { "type": "number" }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-run-retention-qa.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_create_klaviyo_draft",
+      "description": "Create a Klaviyo draft-only artifact after future Worklin approval and credential adapter support. This milestone fails closed and never sends or schedules.",
+      "category": "retention",
+      "risk": "high",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "package_id": {
+            "type": "string",
+            "description": "Future retained package ID to draft from."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-create-klaviyo-draft.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_audit_status",
+      "description": "Check whether Worklin has enough Shopify + Klaviyo source posture to run a deep retention audit. Read-only; does not contact or mutate external systems.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "klaviyo_account": { "type": "string" },
+          "klaviyo_connection_id": { "type": "string" }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-audit-status.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_schedule_audit",
+      "description": "Return Worklin's recommended recurring audit plan: weekly opportunity scan, monthly deep refresh, and quarterly strategy review. Plan-only; does not create external cron jobs.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": { "type": "object", "properties": {}, "required": [] },
+      "executor": "tools/retention-schedule-audit.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_generate_audit_artifact",
+      "description": "Generate the Worklin Deep Retention Audit artifact payload with structured chart specs, visible auditTrace reasoning, markdown narrative, provenance, and no-live-action safety metadata.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 365."
+          },
+          "cadence": {
+            "type": "string",
+            "enum": ["first_run", "weekly", "monthly", "quarterly"],
+            "description": "Audit run mode. Defaults to first_run."
+          },
+          "klaviyo_account": {
+            "type": "string",
+            "description": "Optional saved Klaviyo account label to use."
+          },
+          "klaviyo_connection_id": {
+            "type": "string",
+            "description": "Optional saved Klaviyo credential ID to use."
+          },
+          "brand_name": {
+            "type": "string",
+            "description": "Optional brand name to apply to the audit artifact."
+          },
+          "website_url": {
+            "type": "string",
+            "description": "Optional brand website URL to include in audit context and provenance."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-generate-audit-artifact.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_deep_audit",
+      "description": "Run Worklin's retention audit. With a saved Klaviyo connection, generate a real Klaviyo-only L365 account audit without requiring Shopify. With full Shopify + Klaviyo coverage, generate the commerce/product deep audit. Never invent product, revenue, segment, flow, or opportunity data from fixtures for a real client. Artifact-only and read-only.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": {
+            "type": "number",
+            "description": "Retention lookback window in days. Defaults to 365."
+          },
+          "cadence": {
+            "type": "string",
+            "enum": ["first_run", "weekly", "monthly", "quarterly"],
+            "description": "Audit run mode. Defaults to first_run."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum customers to evaluate for customer-level retention context. Defaults to 200."
+          },
+          "klaviyo_account": {
+            "type": "string",
+            "description": "Optional saved Klaviyo account label to use."
+          },
+          "klaviyo_connection_id": {
+            "type": "string",
+            "description": "Optional saved Klaviyo credential ID to use."
+          },
+          "brand_name": {
+            "type": "string",
+            "description": "Optional brand name to apply to the audit."
+          },
+          "website_url": {
+            "type": "string",
+            "description": "Optional brand website URL to include in audit context and provenance."
+          },
+          "allow_fixture_data": {
+            "type": "boolean",
+            "description": "Internal demo/testing only. Never set this for a real client audit."
+          },
+          "demo_mode": {
+            "type": "boolean",
+            "description": "Alias for allow_fixture_data for explicit sample/demo audits only."
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-deep-audit.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_context_pack",
+      "description": "Build a compact, safe Worklin retention context pack for chat responses and artifact generation.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": { "type": "number" },
+          "limit": { "type": "number" },
+          "klaviyo_account": { "type": "string" },
+          "klaviyo_connection_id": { "type": "string" },
+          "brand_name": { "type": "string" },
+          "website_url": { "type": "string" }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-context-pack.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_audit",
+      "description": "Compatibility alias for retention_deep_audit. A saved Klaviyo connection can produce the real Klaviyo-only L365 account audit; Shopify is optional commerce enrichment. Fixture/sample data is allowed only with explicit allow_fixture_data:true or demo_mode:true.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timeframe_days": { "type": "number" },
+          "limit": { "type": "number" },
+          "klaviyo_account": { "type": "string" },
+          "klaviyo_connection_id": { "type": "string" },
+          "brand_name": { "type": "string" },
+          "website_url": { "type": "string" },
+          "allow_fixture_data": {
+            "type": "boolean",
+            "description": "Internal demo/testing only. Never set this for a real client audit."
+          },
+          "demo_mode": {
+            "type": "boolean",
+            "description": "Alias for allow_fixture_data for explicit sample/demo audits only."
+          },
+          "cadence": {
+            "type": "string",
+            "enum": ["first_run", "weekly", "monthly", "quarterly"]
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/retention-audit.ts",
+      "execution_target": "host"
+    }
+  ]
+}

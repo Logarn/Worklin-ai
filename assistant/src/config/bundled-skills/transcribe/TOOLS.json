@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "transcribe_media",
+      "description": "Transcribe an audio or video file using the configured speech-to-text provider. Provide a file_path to the media file.",
+      "category": "transcribe",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Absolute path to a local audio or video file to transcribe"
+          }
+        },
+        "required": ["file_path"]
+      },
+      "executor": "tools/transcribe-media.ts",
+      "execution_target": "host"
+    }
+  ]
+}

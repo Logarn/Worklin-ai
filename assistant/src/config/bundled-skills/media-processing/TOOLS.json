@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "ingest_media",
+      "description": "Ingest a media file (video, audio, or image) for processing. Validates the file, detects MIME type, extracts duration for video/audio, registers the asset with content-hash dedup, and enqueues an initial processing job.",
+      "category": "media",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Absolute path to a local media file (video, audio, or image)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional human-readable title for the media asset. Defaults to the filename."
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Optional JSON metadata to attach to the asset (e.g., pipeline config, source info)"
+          }
+        },
+        "required": ["file_path"]
+      },
+      "executor": "tools/ingest-media.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "media_status",
+      "description": "Query the processing status of one or more media assets, including per-stage progress details.",
+      "category": "media",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "ID of a specific media asset to query"
+          },
+          "file_path": {
+            "type": "string",
+            "description": "File path to look up a media asset by its original path"
+          },
+          "status_filter": {
+            "type": "string",
+            "enum": ["registered", "processing", "indexed", "failed"],
+            "description": "Filter assets by processing status"
+          }
+        }
+      },
+      "executor": "tools/media-status.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "extract_keyframes",
+      "description": "Preprocess a video asset: detect dead time, segment into windows, extract downscaled keyframes, build a subject registry, and write a pipeline manifest. Replaces the old simple keyframe extraction with a full Phase 0 preprocess pipeline.",
+      "category": "media",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "ID of the media asset (must be a video)"
+          },
+          "interval_seconds": {
+            "type": "number",
+            "description": "Interval between keyframes in seconds. Default: 1. Use 0.5 for sports/action content."
+          },
+          "segment_duration": {
+            "type": "number",
+            "description": "Duration of each segment window in seconds. Default: 15"
+          },
+          "dead_time_threshold": {
+            "type": "number",
+            "description": "Sensitivity threshold for mpdecimate dead-time detection. Default: 0.02"
+          },
+          "section_config": {
+            "type": "string",
+            "description": "Path to a JSON file with manual section boundary definitions"
+          },
+          "detect_dead_time": {
+            "type": "boolean",
+            "description": "Whether to detect and skip dead time (static/idle frames). Default: false. Can be too aggressive for continuous action video like sports."
+          },
+          "short_edge": {
+            "type": "number",
+            "description": "Short edge resolution for downscaled frames in pixels. Default: 480"
+          },
+          "include_audio": {
+            "type": "boolean",
+            "description": "Whether to extract and transcribe audio for each segment using the configured STT service. Default: false."
+          }
+        },
+        "required": ["asset_id"]
+      },
+      "executor": "tools/extract-keyframes.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "analyze_keyframes",
+      "description": "Map video segments through Gemini's structured output API for vision-based analysis. Reads frames from the preprocess manifest, sends each segment to Gemini with assistant-provided extraction instructions and a JSON Schema for guaranteed structured output. Supports concurrency pooling, cost tracking, resumability (skips segments with existing results), and automatic retries with exponential backoff.",
+      "category": "media",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "ID of the media asset whose segments to analyze"
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["keyframes", "direct_video"],
+            "description": "Analysis mode: 'keyframes' extracts frames and sends images (default), 'direct_video' uploads video directly to Gemini. Direct video lets Gemini see motion/temporal context but has a 2GB file size limit."
+          },
+          "system_prompt": {
+            "type": "string",
+            "description": "Assistant-provided extraction instructions for Gemini (e.g., what to look for in the frames)"
+          },
+          "output_schema": {
+            "type": "object",
+            "description": "JSON Schema for structured output - Gemini will enforce this schema on the response"
+          },
+          "context": {
+            "type": "object",
+            "description": "Additional context to include in the prompt (e.g., subject registry, domain-specific info)"
+          },
+          "model": {
+            "type": "string",
+            "description": "Gemini model to use. Default: 'gemini-2.5-flash'"
+          },
+          "concurrency": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Maximum concurrent Gemini API requests. Default: 10"
+          },
+          "max_retries": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Maximum retry attempts per segment on failure. Default: 3"
+          }
+        },
+        "required": ["asset_id", "system_prompt", "output_schema"]
+      },
+      "executor": "tools/analyze-keyframes.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "query_media",
+      "description": "Query video analysis data using natural language. Sends map output (from analyze_keyframes) to Claude for intelligent analysis and Q&A. Supports arbitrary questions about video content - Claude reads the full structured analysis and answers based on the data.",
+      "category": "media",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "ID of the media asset to query"
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural language query about the video data (e.g., 'What happens at the 5 minute mark?', 'Summarize the key events', 'Are there any scoring plays?')"
+          },
+          "system_prompt": {
+            "type": "string",
+            "description": "Optional system prompt for Claude to customize analysis behavior"
+          },
+          "model": {
+            "type": "string",
+            "description": "LLM model to use for analysis. Default: 'claude-sonnet-4-6'"
+          }
+        },
+        "required": ["asset_id", "query"]
+      },
+      "executor": "tools/query-media-events.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "generate_clip",
+      "description": "Extract a video clip from a media asset using ffmpeg. Applies configurable pre/post-roll padding (clamped to file boundaries), outputs the clip as a temporary file, and registers it as an attachment for in-chat delivery.",
+      "category": "media",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "ID of the media asset (must be a video)"
+          },
+          "start_time": {
+            "type": "number",
+            "description": "Start time of the clip in seconds"
+          },
+          "end_time": {
+            "type": "number",
+            "description": "End time of the clip in seconds"
+          },
+          "pre_roll": {
+            "type": "number",
+            "description": "Seconds of padding before start_time. Default: 3"
+          },
+          "post_roll": {
+            "type": "number",
+            "description": "Seconds of padding after end_time. Default: 2"
+          },
+          "output_format": {
+            "type": "string",
+            "enum": ["mp4", "webm", "mov"],
+            "description": "Output video format. Default: 'mp4'"
+          },
+          "title": {
+            "type": "string",
+            "description": "Short descriptive title for the clip (e.g. 'snow-dive-closeup', 'goal-celebration'). Used as the filename. If omitted, falls back to timestamp-based naming."
+          }
+        },
+        "required": ["asset_id", "start_time", "end_time"]
+      },
+      "executor": "tools/generate-clip.ts",
+      "execution_target": "host"
+    }
+  ]
+}

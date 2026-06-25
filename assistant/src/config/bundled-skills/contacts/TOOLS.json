@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "contact_search",
+      "description": "Search for contacts by name, channel address, or other criteria. Returns matching contacts with their channel information.",
+      "category": "contacts",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search by display name (partial match)"
+          },
+          "channel_address": {
+            "type": "string",
+            "description": "Search by channel address (email, phone, handle \u2014 partial match)"
+          },
+          "channel_type": {
+            "type": "string",
+            "description": "Filter by channel type when searching by address (email, slack, whatsapp, phone, etc.)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum results to return (default 20, max 100)"
+          }
+        },
+        "required": []
+      },
+      "executor": "tools/contact-search.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "contact_merge",
+      "description": "Merge two contacts when you discover they are the same person (e.g. same person on email and Slack). Combines channels, merges notes, and deletes the donor contact.",
+      "category": "contacts",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "keep_id": {
+            "type": "string",
+            "description": "ID of the contact to keep (the surviving contact)"
+          },
+          "merge_id": {
+            "type": "string",
+            "description": "ID of the contact to merge into the kept contact (will be deleted)"
+          }
+        },
+        "required": ["keep_id", "merge_id"]
+      },
+      "executor": "tools/contact-merge.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "google_contacts",
+      "description": "List or search Google Contacts. Requires contacts.readonly scope (re-authorization may be needed).",
+      "category": "contacts",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "search"],
+            "description": "Contacts action"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (for search action)"
+          },
+          "page_size": {
+            "type": "number",
+            "description": "Number of contacts to return (default 50, for list)"
+          },
+          "page_token": {
+            "type": "string",
+            "description": "Pagination token (for list)"
+          },
+          "account": {
+            "type": "string",
+            "description": "Email address of the Gmail account to use. Required when multiple Gmail accounts are connected. If omitted, uses the most recently connected account."
+          }
+        },
+        "required": ["action"]
+      },
+      "executor": "tools/google-contacts.ts",
+      "execution_target": "host"
+    }
+  ]
+}

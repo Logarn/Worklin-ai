@@ -1,0 +1,479 @@
+/**
+ * Validates that every SKILL.md file under `skills/` conforms to the
+ * Agent Skills specification (https://agentskills.io/specification).
+ *
+ * Checks performed:
+ *   1. Each skill directory contains a SKILL.md file.
+ *   2. SKILL.md starts with valid YAML frontmatter (delimited by `---`).
+ *   3. Required fields: `name` and `description`.
+ *   4. `name` matches the parent directory name.
+ *   5. `name` constraints: 1-64 chars, lowercase alphanumeric + hyphens,
+ *      no consecutive hyphens, no leading/trailing hyphens.
+ *   6. `description` constraints: 1-1024 chars, non-empty.
+ *   7. Optional `compatibility`: 1-500 chars if present.
+ *   8. Required `metadata.emoji` (Vellum extension).
+ *   9. Frontmatter is followed by Markdown body content.
+ *  10. Non-standard top-level fields emit migration guidance:
+ *      - Vellum-specific fields → move to `metadata.vellum`
+ *      - Environment requirements → move to `compatibility`
+ *
+ * Usage:
+ *   node scripts/skills/lint-skill-spec.mjs [--dir <path>] [--skip-emoji] [--allow-tools-json] [skill-name ...]
+ *
+ * Options:
+ *   --dir <path>           Override the default skills directory (skills/)
+ *   --skip-emoji           Skip the Vellum-specific metadata.emoji check
+ *   --skip-category        Skip the Vellum-specific metadata.vellum.category check
+ *   --allow-tools-json     Skip the TOOLS.json prohibition check
+ *
+ * If no skill names are provided, all skills are checked.
+ */
+
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { parseFrontmatter } from "./parse-skill-yaml.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_SKILLS_DIR = resolve(__dirname, "../../skills");
+
+// --- CLI flag parsing ---
+
+/**
+ * Parse CLI args, extracting --dir, --skip-emoji, and --allow-tools-json flags.
+ * Returns { skillsDir, skipEmoji, allowToolsJson, filterSkills }.
+ */
+function parseCLIArgs(argv) {
+  const args = argv.slice(2);
+  let skillsDir = DEFAULT_SKILLS_DIR;
+  let skipEmoji = false;
+  let skipCategory = false;
+  let allowToolsJson = false;
+  const filterSkills = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--dir" && i + 1 < args.length) {
+      skillsDir = resolve(args[i + 1]);
+      i++; // skip next arg (the path)
+    } else if (args[i] === "--skip-emoji") {
+      skipEmoji = true;
+    } else if (args[i] === "--skip-category") {
+      skipCategory = true;
+    } else if (args[i] === "--allow-tools-json") {
+      allowToolsJson = true;
+    } else {
+      filterSkills.push(args[i]);
+    }
+  }
+
+  return { skillsDir, skipEmoji, skipCategory, allowToolsJson, filterSkills };
+}
+
+const { skillsDir: SKILLS_DIR, skipEmoji: SKIP_EMOJI, skipCategory: SKIP_CATEGORY, allowToolsJson: ALLOW_TOOLS_JSON, filterSkills: CLI_FILTER_SKILLS } = parseCLIArgs(process.argv);
+
+// --- Validation Rules ---
+
+const NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+
+/**
+ * Standard fields per Agent Skills spec (https://agentskills.io/specification).
+ */
+const STANDARD_FIELDS = new Set([
+  "name",
+  "description",
+  "license",
+  "compatibility",
+  "metadata",
+  "allowed-tools",
+]);
+
+/**
+ * Known vellum-specific extension fields that should be migrated to metadata.vellum.
+ */
+const VELLUM_EXTENSION_FIELDS = new Set(["includes"]);
+
+/**
+ * Fields that should be migrated to the compatibility field.
+ */
+const COMPATIBILITY_MIGRATION_FIELDS = new Set([]);
+
+function validateName(name, dirName) {
+  const errors = [];
+
+  if (typeof name !== "string" || name.length === 0) {
+    errors.push('Required field "name" is missing or empty.');
+    return errors;
+  }
+
+  if (name.length > 64) {
+    errors.push(`"name" must be at most 64 characters (got ${name.length}).`);
+  }
+
+  if (!NAME_PATTERN.test(name)) {
+    errors.push(
+      `"name" must contain only lowercase letters, numbers, and hyphens, and must not start or end with a hyphen. Got: "${name}".`,
+    );
+  }
+
+  if (name.includes("--")) {
+    errors.push(`"name" must not contain consecutive hyphens (--). Got: "${name}".`);
+  }
+
+  if (name !== dirName) {
+    errors.push(
+      `"name" must match the parent directory name. Expected "${dirName}", got "${name}".`,
+    );
+  }
+
+  return errors;
+}
+
+function validateDescription(description) {
+  const errors = [];
+
+  if (typeof description !== "string" || description.length === 0) {
+    errors.push('Required field "description" is missing or empty.');
+    return errors;
+  }
+
+  if (description.length > 1024) {
+    errors.push(
+      `"description" must be at most 1024 characters (got ${description.length}).`,
+    );
+  }
+
+  return errors;
+}
+
+function validateCompatibility(compatibility) {
+  const errors = [];
+
+  if (compatibility === undefined || compatibility === null) {
+    return errors;
+  }
+
+  if (typeof compatibility === "string" && compatibility.length > 500) {
+    errors.push(
+      `"compatibility" must be at most 500 characters (got ${compatibility.length}).`,
+    );
+  }
+
+  return errors;
+}
+
+function validateMetadataEmoji(metadata) {
+  const errors = [];
+
+  // Handle JSON string metadata (used by bundled skills)
+  if (typeof metadata === "string") {
+    try {
+      const parsed = JSON.parse(metadata);
+      // Check for top-level emoji or emoji nested in vellum namespace
+      if (
+        (typeof parsed.emoji === "string" && parsed.emoji.length > 0) ||
+        (typeof parsed.vellum?.emoji === "string" && parsed.vellum.emoji.length > 0)
+      ) {
+        return errors; // emoji found
+      }
+    } catch {
+      // JSON parsing failed — fall through to report missing emoji
+    }
+    errors.push(
+      'Required field "metadata.emoji" is missing. Skills must have an emoji in metadata.',
+    );
+    return errors;
+  }
+
+  if (!metadata || typeof metadata !== "object") {
+    errors.push(
+      'Required field "metadata.emoji" is missing. Skills must have an emoji in metadata.',
+    );
+    return errors;
+  }
+
+  const emoji = metadata.emoji;
+  if (typeof emoji !== "string" || emoji.length === 0) {
+    errors.push(
+      'Required field "metadata.emoji" is missing or empty. Skills must have an emoji in metadata.',
+    );
+  }
+
+  return errors;
+}
+
+// --- Category catalog loading ---
+
+function loadCategorySlugs(skillsDir) {
+  const catalogPath = join(skillsDir, "skill-categories-catalog.yaml");
+  try {
+    const raw = readFileSync(catalogPath, "utf-8");
+    const slugs = new Set();
+    for (const line of raw.split("\n")) {
+      const match = line.match(/^\s+-?\s*slug:\s*(.+)/);
+      if (match) {
+        slugs.add(match[1].trim());
+      }
+    }
+    return slugs;
+  } catch {
+    return null;
+  }
+}
+
+function validateCategory(metadata, validSlugs) {
+  const errors = [];
+
+  if (!validSlugs) {
+    return errors;
+  }
+
+  if (typeof metadata === "string") {
+    try {
+      const parsed = JSON.parse(metadata);
+      const cat = parsed.vellum?.category;
+      if (typeof cat === "string" && cat.length > 0) {
+        if (!validSlugs.has(cat)) {
+          errors.push(
+            `"metadata.vellum.category" value "${cat}" is not a valid category slug. ` +
+              `Valid slugs: ${[...validSlugs].join(", ")}`,
+          );
+        }
+        return errors;
+      }
+    } catch {
+      // fall through
+    }
+    errors.push(
+      'Required field "metadata.vellum.category" is missing. Skills must declare a category.',
+    );
+    return errors;
+  }
+
+  if (!metadata || typeof metadata !== "object") {
+    errors.push(
+      'Required field "metadata.vellum.category" is missing. Skills must declare a category.',
+    );
+    return errors;
+  }
+
+  const vellum = metadata.vellum;
+  if (!vellum || typeof vellum !== "object") {
+    errors.push(
+      'Required field "metadata.vellum.category" is missing. Skills must declare a category.',
+    );
+    return errors;
+  }
+
+  const cat = vellum.category;
+  if (typeof cat !== "string" || cat.length === 0) {
+    errors.push(
+      'Required field "metadata.vellum.category" is missing or empty. Skills must declare a category.',
+    );
+    return errors;
+  }
+
+  if (!validSlugs.has(cat)) {
+    errors.push(
+      `"metadata.vellum.category" value "${cat}" is not a valid category slug. ` +
+        `Valid slugs: ${[...validSlugs].join(", ")}`,
+    );
+  }
+
+  return errors;
+}
+
+/**
+ * Detect non-standard top-level fields and recommend migration.
+ *
+ * Returns errors for:
+ * - Known vellum extension fields → recommend moving to metadata.vellum
+ * - Compatibility-related fields → recommend moving to compatibility
+ * - Unknown fields → recommend using metadata for custom data or compatibility for requirements
+ */
+function validateNonStandardFields(frontmatter) {
+  const errors = [];
+
+  for (const key of Object.keys(frontmatter)) {
+    if (STANDARD_FIELDS.has(key)) {
+      continue;
+    }
+
+    if (VELLUM_EXTENSION_FIELDS.has(key)) {
+      errors.push(
+        `Non-standard field "${key}" should be moved to metadata.vellum.${key}. ` +
+          `The Agent Skills spec reserves top-level fields for standard properties. ` +
+          `Use the "metadata" field for vendor-specific extensions: metadata: { "vellum": { "${key}": ... } }`,
+      );
+    } else if (COMPATIBILITY_MIGRATION_FIELDS.has(key)) {
+      errors.push(
+        `Non-standard field "${key}" should be moved to the "compatibility" field. ` +
+          `The "compatibility" field is for environment requirements (required skills, CLIs, packages, network access).`,
+      );
+    } else {
+      errors.push(
+        `Unknown top-level field "${key}". ` +
+          `Only standard fields (name, description, license, compatibility, metadata, allowed-tools) are allowed at the top level. ` +
+          `Use "metadata" for custom properties: metadata: { "${key}": ... }. ` +
+          `Use "compatibility" for environment requirements (e.g., required CLIs, packages, network access).`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+function validateSkill(skillName, { skillsDir, skipEmoji, skipCategory, allowToolsJson, validSlugs }) {
+  const skillDir = join(skillsDir, skillName);
+  const skillMdPath = join(skillDir, "SKILL.md");
+  const toolsJsonPath = join(skillDir, "TOOLS.json");
+  const errors = [];
+  let category = undefined;
+  const prefix = `${skillName}/SKILL.md`;
+
+  if (!statSync(skillDir, { throwIfNoEntry: false })?.isDirectory()) {
+    return { errors, category };
+  }
+
+  // 0. TOOLS.json must not exist — skills should rely on CLI tools in scripts/, not custom tool definitions
+  if (!allowToolsJson) {
+    const toolsJsonStat = statSync(toolsJsonPath, { throwIfNoEntry: false });
+    if (toolsJsonStat?.isFile()) {
+      errors.push(
+        `${skillName}/TOOLS.json must not exist. Skills should rely on CLI tools in scripts/, not custom tool definitions.`,
+      );
+    }
+  }
+
+  // 1. SKILL.md must exist
+  const stat = statSync(skillMdPath, { throwIfNoEntry: false });
+  if (!stat || !stat.isFile()) {
+    errors.push(`${prefix} is missing.`);
+    return { errors, category };
+  }
+
+  // 2. Parse frontmatter
+  const content = readFileSync(skillMdPath, "utf-8");
+  let frontmatter;
+  try {
+    const parsed = parseFrontmatter(content);
+    frontmatter = parsed.frontmatter;
+  } catch (e) {
+    errors.push(`${prefix}: ${e.message}`);
+    return { errors, category };
+  }
+
+  // Extract category for cross-catalog validation
+  if (typeof frontmatter.metadata === "object") {
+    category = frontmatter.metadata?.vellum?.category;
+  }
+
+  // 3. Validate required fields
+  errors.push(
+    ...validateName(frontmatter.name, skillName).map(
+      (e) => `${prefix}: ${e}`,
+    ),
+  );
+
+  errors.push(
+    ...validateDescription(frontmatter.description).map(
+      (e) => `${prefix}: ${e}`,
+    ),
+  );
+
+  // 4. Validate optional fields
+  errors.push(
+    ...validateCompatibility(frontmatter.compatibility).map(
+      (e) => `${prefix}: ${e}`,
+    ),
+  );
+
+  // 5. Validate required metadata.emoji (Vellum requirement) — skippable via --skip-emoji
+  if (!skipEmoji) {
+    errors.push(
+      ...validateMetadataEmoji(frontmatter.metadata).map(
+        (e) => `${prefix}: ${e}`,
+      ),
+    );
+  }
+
+  // 6. Validate required metadata.vellum.category — skippable via --skip-category
+  if (!skipCategory && validSlugs) {
+    errors.push(
+      ...validateCategory(frontmatter.metadata, validSlugs).map(
+        (e) => `${prefix}: ${e}`,
+      ),
+    );
+  }
+
+  // 7. Check for non-standard fields and recommend migration
+  errors.push(
+    ...validateNonStandardFields(frontmatter).map(
+      (e) => `${prefix}: ${e}`,
+    ),
+  );
+
+  return { errors, category };
+}
+
+// --- Main ---
+
+function getSkillDirs(skillsDir, filter) {
+  let entries;
+  try {
+    entries = readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    console.log(`No ${skillsDir} directory found. Nothing to validate.`);
+    process.exit(0);
+  }
+
+  return entries
+    .filter((e) => e.isDirectory())
+    .filter((e) => !e.name.startsWith("_"))
+    .filter((e) => !filter || filter.length === 0 || filter.includes(e.name))
+    .map((e) => e.name)
+    .sort();
+}
+
+const skillDirs = getSkillDirs(SKILLS_DIR, CLI_FILTER_SKILLS);
+const validSlugs = SKIP_CATEGORY ? null : loadCategorySlugs(SKILLS_DIR);
+
+let totalErrors = 0;
+const referencedCategories = new Set();
+
+for (const skill of skillDirs) {
+  const { errors, category } = validateSkill(skill, {
+    skillsDir: SKILLS_DIR,
+    skipEmoji: SKIP_EMOJI,
+    skipCategory: SKIP_CATEGORY,
+    allowToolsJson: ALLOW_TOOLS_JSON,
+    validSlugs,
+  });
+  for (const err of errors) {
+    console.error(err);
+  }
+  totalErrors += errors.length;
+
+  if (category) referencedCategories.add(category);
+}
+
+// Cross-catalog validation: every category in the catalog must be used by at least one skill
+if (!SKIP_CATEGORY && validSlugs && CLI_FILTER_SKILLS.length === 0) {
+  for (const slug of validSlugs) {
+    if (!referencedCategories.has(slug)) {
+      console.error(
+        `skill-categories-catalog.yaml: category "${slug}" is not referenced by any skill. Remove it or assign at least one skill to it.`,
+      );
+      totalErrors++;
+    }
+  }
+}
+
+if (totalErrors > 0) {
+  console.error(`\nFound ${totalErrors} SKILL.md spec violation(s).`);
+  process.exit(1);
+} else {
+  console.log(
+    `Validated ${skillDirs.length} skill(s) - all SKILL.md files conform to the spec.`,
+  );
+}

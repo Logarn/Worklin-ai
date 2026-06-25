@@ -1,0 +1,468 @@
+import type { ApprovalRequired } from "@vellumai/service-contracts/credential-rpc";
+import type {
+  DiffInfo,
+  ExecutionTarget,
+  ProxyApprovalCallback,
+  SensitiveOutputBinding,
+  ToolExecutionErrorEvent as ContractsToolExecutionErrorEvent,
+  ToolExecutionStartEvent,
+  ToolPermissionDeniedEvent,
+  ToolPermissionPromptEvent,
+} from "@vellumai/skill-host-contracts";
+import { RiskLevel } from "@vellumai/skill-host-contracts";
+import { z } from "zod";
+
+import type { InterfaceId } from "../channels/types.js";
+import type { ToolActivityMetadata } from "../daemon/message-types/web-activity.js";
+import type { SecretPromptResult } from "../permissions/secret-prompter.js";
+import type { ContentBlock } from "../providers/types.js";
+import type { TrustClass } from "../runtime/actor-trust-resolver.js";
+import type { UsageAttributionSnapshot } from "../usage/attribution.js";
+
+export const DISK_PRESSURE_CLEANUP_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "bash",
+  "host_bash",
+  "file_read",
+  "file_list",
+  "host_file_read",
+  "background_tool_list",
+  "background_tool_cancel",
+]);
+
+export function isDiskPressureCleanupToolName(name: string): boolean {
+  return DISK_PRESSURE_CLEANUP_TOOL_NAMES.has(name);
+}
+
+// ---------------------------------------------------------------------------
+// Re-exports + concrete overlays for types that live in
+// @vellumai/skill-host-contracts.
+//
+// The canonical declarations moved into the neutral contracts package as
+// part of the skill-isolation work. This file preserves existing import
+// paths (`"../tools/types.js"`) so all callers keep resolving.
+//
+// Pure re-exports below cover types the contracts package could declare
+// without any assistant-side references. The remaining interfaces (`Tool`,
+// `ToolContext`, `ToolExecutionResult`, `ToolExecutedEvent`,
+// `ToolLifecycleEvent`, `ToolLifecycleEventHandler`, `ProxyToolResolver`)
+// reference daemon-internal types (CES client, host-proxy classes,
+// `ContentBlock`, `ApprovalRequired`, `TrustClass`, `InterfaceId`,
+// `SecretPromptResult`, `UsageAttributionSnapshot`) that can't move into a
+// neutral package. For those,
+// the contracts version uses opaque placeholders (`unknown`, broadened
+// `string`) and the assistant redeclares the interface here with the
+// concrete types. The two sides are structurally independent — no
+// inheritance, no intersection — which avoids TypeScript's contravariance
+// mismatches on lifecycle-event handlers.
+// `ToolExecutionErrorEvent` is the exception: its contracts fields are all
+// concrete, so the assistant overlay simply extends it with the
+// daemon-internal telemetry fields.
+// ---------------------------------------------------------------------------
+
+export type {
+  DiffInfo,
+  ErrorCategory,
+  ExecutionTarget,
+  ProxyApprovalCallback,
+  ProxyApprovalRequest,
+  ProxyEnvVars,
+  SensitiveOutputBinding,
+  SensitiveOutputKind,
+  ToolExecutionStartEvent,
+  ToolPermissionDeniedEvent,
+  ToolPermissionPromptEvent,
+} from "@vellumai/skill-host-contracts";
+export { RiskLevel } from "@vellumai/skill-host-contracts";
+
+// ---------------------------------------------------------------------------
+// Assistant-side concrete overlays
+// ---------------------------------------------------------------------------
+
+export interface ToolExecutionResult {
+  /** Textual result shown to the model in the tool-result block. Empty string is valid. */
+  content: string;
+  /** When true, the agent loop treats `content` as an error and may surface it / retry. */
+  isError: boolean;
+  /** Optional short status message for client display (e.g. `"truncated"`, `"timed out"`). */
+  status?: string;
+  /**
+   * When true, the agent loop should yield control back to the user after
+   * returning this result — tool results are pushed to history and the loop
+   * breaks without another LLM call. Two callers set this: interactive
+   * surfaces (tables with action buttons, file uploads) that force-stop the
+   * loop so the LLM cannot bypass the "wait for user action" instruction,
+   * and tools like `remember` that expose a `finish_turn` parameter letting
+   * the LLM voluntarily end its turn.
+   */
+  yieldToUser?: boolean;
+  diff?: DiffInfo;
+  /** Optional rich content blocks (e.g. images) to include alongside text in the tool result. */
+  contentBlocks?: ContentBlock[];
+  /**
+   * Runtime-internal sensitive output bindings (placeholder -> real value).
+   * Populated by the executor when tool output contains
+   * `<vellum-sensitive-output>` directives. The agent loop merges these
+   * into a per-run substitution map for deterministic post-generation
+   * replacement. MUST NOT be emitted in client-facing events or logs.
+   */
+  sensitiveBindings?: SensitiveOutputBinding[];
+  /** Risk level from the classifier (populated during permission check). */
+  riskLevel?: string;
+  /** Human-readable reason for the risk classification. */
+  riskReason?: string;
+  /** ID of the trust rule that matched this invocation (if any). */
+  matchedTrustRuleId?: string;
+  /** How the decision was reached: prompted, auto, blocked, or unknown (legacy). */
+  approvalMode?: string;
+  /** Why the decision was reached (stable enum for client display). */
+  approvalReason?: string;
+  /** Snapshot of the auto-approve threshold at the time of execution. */
+  riskThreshold?: string;
+  /** Whether the daemon is running in a containerized (Docker) environment. */
+  isContainerized?: boolean;
+  /**
+   * Display-only ladder of scope option labels for the rule editor
+   * (narrowest to broadest). The `pattern` field here is a regex-style
+   * descriptor used internally by the daemon and is NOT a valid trust
+   * rule pattern. Use `riskAllowlistOptions` for the pattern that gets
+   * saved as a trust rule.
+   */
+  riskScopeOptions?: Array<{ pattern: string; label: string }>;
+  /**
+   * Allowlist options for the rule editor save path (narrowest to
+   * broadest). Each `pattern` is a Minimatch-glob compatible string
+   * (e.g. raw command for exact match, `action:<program>` for command
+   * wildcards) — what the gateway actually matches against. Mirrors
+   * the `allowlistOptions` field on `ConfirmationRequest` SSE events.
+   */
+  riskAllowlistOptions?: Array<{
+    label: string;
+    description: string;
+    pattern: string;
+  }>;
+  /** Directory scope ladder for the rule editor (narrowest to broadest). */
+  riskDirectoryScopeOptions?: Array<{ scope: string; label: string }>;
+  /**
+   * When present, indicates that a CES tool returned an `approval_required`
+   * response. The executor uses the approval bridge to prompt the guardian,
+   * commit the grant decision to CES, and retry the original tool invocation
+   * with the granted grantId. CES tools populate this field rather than
+   * returning a textual error so the executor can intercept and handle the
+   * approval flow transparently.
+   */
+  cesApprovalRequired?: ApprovalRequired;
+  /** Structured activity metadata for client rendering (web search, web fetch, etc).
+   *  Populated by daemon-internal tools; plugins must not set this. */
+  activityMetadata?: ToolActivityMetadata;
+}
+
+export type ProxyToolResolver = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<ToolExecutionResult>;
+
+/**
+ * Telemetry fields stamped centrally by the executor's `emitLifecycleEvent`
+ * on terminal (executed/error) lifecycle events.
+ */
+export interface ExecutorTelemetryStamp {
+  /**
+   * Model attribution snapshot for the conversation at invocation time.
+   * Copied from {@link ToolContext.attribution} by the executor; `null` when
+   * resolution failed or no attribution was available.
+   */
+  attribution?: UsageAttributionSnapshot | null;
+  /**
+   * Serialized byte size of the RAW tool input, stamped by the executor
+   * before sensitive-field sanitization rewrites `input`. Only the size
+   * leaves the device, never the payload.
+   */
+  inputBytes?: number | null;
+  /**
+   * Byte size of the RAW tool result content, stamped by the executor
+   * before sensitive-output extraction rewrites `result.content`. Only
+   * stamped on `executed` events: error events carry no executor-side
+   * result — the audit listener sizes the error string it builds itself,
+   * which never goes through sanitization, so it is already raw. Only the
+   * size leaves the device, never the payload.
+   */
+  resultBytes?: number | null;
+}
+
+/**
+ * `ToolExecutedEvent` carries a `result: ToolExecutionResult` field, so
+ * the assistant re-declares it here to reference the assistant-side
+ * `ToolExecutionResult` (which narrows `contentBlocks` to `ContentBlock[]`
+ * and `cesApprovalRequired` to `ApprovalRequired`).
+ */
+export interface ToolExecutedEvent extends ExecutorTelemetryStamp {
+  type: "executed";
+  toolName: string;
+  input: Record<string, unknown>;
+  workingDir: string;
+  conversationId: string;
+  requestId?: string;
+  executionTarget?: ExecutionTarget;
+  riskLevel: string;
+  /** ID of the trust rule that matched this invocation (if any). */
+  matchedTrustRuleId?: string;
+  /** How the approval decision was reached. Copied from PermissionDecision for analytics consumers. */
+  approvalMode?: string;
+  /** Why the approval decision was reached (stable enum). Copied from PermissionDecision for analytics consumers. */
+  approvalReason?: string;
+  decision: string;
+  durationMs: number;
+  result: ToolExecutionResult;
+}
+
+/**
+ * Extends the contracts declaration with the assistant-side telemetry
+ * fields stamped centrally by the executor's `emitLifecycleEvent`.
+ */
+export interface ToolExecutionErrorEvent
+  extends ContractsToolExecutionErrorEvent, ExecutorTelemetryStamp {}
+
+export type ToolLifecycleEvent =
+  | ToolExecutionStartEvent
+  | ToolPermissionPromptEvent
+  | ToolPermissionDeniedEvent
+  | ToolExecutedEvent
+  | ToolExecutionErrorEvent;
+
+export type ToolLifecycleEventHandler = (
+  event: ToolLifecycleEvent,
+) => void | Promise<void>;
+
+/**
+ * Canonical serialization used for tool-input byte sizing. Shared by the
+ * executor (raw pre-sanitization sizing) and the audit listener (stored
+ * `input` column + fallback sizing) so the two always measure the same
+ * serialization.
+ */
+export function stringifyToolInput(input: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return "[unserializable-input]";
+  }
+}
+
+export interface ToolContext {
+  /** Identifier of the conversation this tool invocation belongs to. */
+  conversationId: string;
+  /** Working directory the daemon was launched from. */
+  workingDir: string;
+  /** Per-turn request id for cross-component log correlation. */
+  requestId?: string;
+  /** Cooperative cancellation signal for long-running tools. Tools should check `signal.aborted` periodically (or forward `signal` to fetch / child-process options). */
+  signal?: AbortSignal;
+  /** Optional incremental-output callback for streaming tools. Streaming tools should fall back to returning the full result in `content` when this is absent. */
+  onOutput?: (chunk: string) => void;
+  /** Logical assistant scope for multi-assistant routing. */
+  assistantId?: string;
+  /** When set, the tool execution is part of a task run. Used to retrieve ephemeral permission rules. */
+  taskRunId?: string;
+  /**
+   * Model attribution snapshot for the conversation at invocation time
+   * (provider/model/profile that issued this tool call). Used by tool
+   * telemetry; never sent to the tool itself.
+   */
+  attribution?: UsageAttributionSnapshot | null;
+  /** Optional callback for tool lifecycle events (start/prompt/deny/execute/error). */
+  onToolLifecycleEvent?: ToolLifecycleEventHandler;
+  /** Optional resolver for proxy tools - delegates execution to an external client. */
+  proxyToolResolver?: ProxyToolResolver;
+  /** When set, only tools in this set may execute. Tools outside the set are blocked with an error. */
+  allowedToolNames?: Set<string>;
+  /** True when this turn is restricted to storage cleanup-safe tools. */
+  diskPressureCleanupModeActive?: boolean;
+  /** Prompt the user for a secret value via native SecureField UI. */
+  requestSecret?: (params: {
+    service: string;
+    field: string;
+    label: string;
+    description?: string;
+    placeholder?: string;
+    purpose?: string;
+    allowedTools?: string[];
+    allowedDomains?: string[];
+  }) => Promise<SecretPromptResult>;
+  /** Optional callback to send a message to the connected client (e.g. open_url). */
+  sendToClient?: (msg: { type: string; [key: string]: unknown }) => void;
+  /** True when an interactive client is connected (not just a no-op callback). */
+  isInteractive?: boolean;
+  /** When true, tools with side effects should always prompt for confirmation. */
+  forcePromptSideEffects?: boolean;
+  /**
+   * When true, the tool requires a fresh interactive approval for every
+   * invocation - no cached grants, temporary overrides, persistent
+   * "Always Allow" rules, or non-interactive auto-approve shortcuts may
+   * bypass the prompt. This flag is independently sufficient: it
+   * promotes allow → prompt decisions on its own and suppresses
+   * temporary override options in the prompt UI. Used by
+   * `manage_secure_command_tool` to ensure a human reviews each secure
+   * bundle installation.
+   */
+  requireFreshApproval?: boolean;
+  /** Approval callback for proxy policy decisions that require user confirmation. */
+  proxyApprovalCallback?: ProxyApprovalCallback;
+  /** Optional principal identifier propagated to sub-tool confirmation flows. */
+  principal?: string;
+  /**
+   * Trust classification of the actor who initiated this tool invocation.
+   * Determines permission level: guardians self-approve, trusted contacts
+   * may escalate to guardian for approval, unknown actors are fail-closed.
+   * See {@link TrustClass} in actor-trust-resolver.ts for value semantics.
+   */
+  trustClass: TrustClass;
+  /** Channel through which the tool invocation originates (e.g. 'telegram', 'phone'). Used for scoped grant consumption. */
+  executionChannel?: string;
+  /** Voice/call session ID, if the invocation originates from a call. Used for scoped grant consumption. */
+  callSessionId?: string;
+  /** True when the tool invocation was triggered by a user clicking a surface action button (not a regular message). */
+  triggeredBySurfaceAction?: boolean;
+  /** True when the user explicitly approved this tool invocation via the interactive permission prompt (not auto-approved by trust rules or temporary overrides). */
+  approvedViaPrompt?: boolean;
+  /**
+   * True when the invocation is inside a scheduled task run whose
+   * `required_tools` array pre-authorized this tool at task-creation time.
+   * Tools that normally require a surface-action click (e.g. bulk archive,
+   * unsubscribe) may treat this as equivalent consent, since the user
+   * already reviewed the tool list when the task was saved.
+   */
+  batchAuthorizedByTask?: boolean;
+  /** External user ID of the requester (non-guardian actor). Used for scoped grant consumption. */
+  requesterExternalUserId?: string;
+  /** Chat ID of the requester (non-guardian actor). Used for tool grant request escalation notifications. */
+  requesterChatId?: string;
+  /** Human-readable identifier for the requester (e.g., @username). */
+  requesterIdentifier?: string;
+  /** Preferred display name for the requester. */
+  requesterDisplayName?: string;
+  /** Slack channel ID for channel-scoped permission enforcement. When set, tools are checked against the channel's permission profile. */
+  channelPermissionChannelId?: string;
+  /** The tool_use block ID from the LLM response, used to correlate confirmation prompts with specific tool invocations. */
+  toolUseId?: string;
+  /** True when the assistant is running as a platform-managed remote instance. Used to auto-approve sandboxed bash tools. */
+  isPlatformHosted?: boolean;
+  /**
+   * The interface ID of the connected client driving the current turn (e.g.
+   * "macos", "chrome-extension"). Browser backend policy uses this to decide
+   * transport preference — for example, macOS-originated turns prefer the
+   * user's real Chrome session via the paired extension before falling back
+   * to cdp-inspect or local Playwright.
+   */
+  transportInterface?: InterfaceId;
+  /**
+   * The per-turn inference-profile override the agent loop is currently
+   * running under, propagated through tool context so subagent-spawn tools
+   * can forward it when spawning nested subagents. Without this, sub-subagent
+   * spawns silently lose inheritance because their own conversation row never
+   * has `inferenceProfile` set — the override only flows through the
+   * in-memory `SubagentConfig.overrideProfile` chain. See
+   * `executeSubagentSpawn` in tools/subagent/spawn.ts.
+   */
+  overrideProfile?: string;
+  /**
+   * Canonical principal ID of the actor on whose behalf this tool invocation
+   * is running. Sourced from `conversation.trustContext.guardianPrincipalId`.
+   * Used by host proxies to bind cross-client targeted execution to the same
+   * authenticated user identity. May be undefined for legacy/internal flows
+   * with no resolved actor identity.
+   */
+  sourceActorPrincipalId?: string;
+}
+
+/**
+ * Schema describing the shape of a {@link ToolDefinition}. All fields are
+ * optional — loaders fill documented defaults for omitted fields via
+ * `finalizeTool` in `tool-defaults.ts`. The IPC layer parses incoming
+ * skill tools against this same schema and re-finalizes them locally,
+ * so author shape and wire shape are one schema.
+ *
+ * `input_schema` is `z.custom<object>(...)` rather than
+ * `z.record(z.string(), z.unknown())` so that authors can assign a typed
+ * JSON-schema literal (`{ type: "object", properties: { ... } }`)
+ * without `as Record<...>` gymnastics. The custom check still rejects
+ * `null`, primitives, and arrays at runtime.
+ *
+ * `execute` is `z.custom<(input, context) => Promise<ToolExecutionResult>>()`
+ * for the same reason — the wire path drops closures (they can't cross
+ * IPC) and `finalizeTool` synthesizes a no-op error closure on arrival.
+ * The custom shape gives `ToolDefinition.execute` a fully-typed
+ * signature via `z.infer` without an overlay type.
+ *
+ * Result: `ToolDefinition = z.infer<typeof ToolDefinitionSchema>` —
+ * one declaration, both `input_schema` and `execute` typed correctly.
+ */
+export const ToolDefinitionSchema = z.object({
+  /**
+   * Name the model sees when calling this tool. Loaders default to the
+   * source file basename (e.g. `tools/read.ts` → `read`) when omitted,
+   * so the literal only needs to set this when overriding the
+   * file-derived name.
+   */
+  name: z.string().min(1).optional(),
+  /** Human-readable description shown to the model in the tool catalog. */
+  description: z.string().optional(),
+  /** JSON schema describing the tool's input arguments. */
+  input_schema: z
+    .custom<object>(
+      (val) => val !== null && typeof val === "object" && !Array.isArray(val),
+      { message: "input_schema must be a plain object" },
+    )
+    .optional(),
+  /** Author-asserted risk band — low / medium / high. Drives default permission gating. */
+  defaultRiskLevel: z.enum(RiskLevel).optional(),
+  /** Tool category used for Slack channel `allowedToolCategories` enforcement. */
+  category: z.string().min(1).optional(),
+  /** Where the tool runs — sandbox (assistant container) or host (guardian device via proxy). Resolved by `resolveExecutionTarget` if omitted. */
+  executionTarget: z.enum(["sandbox", "host"]).optional(),
+  /**
+   * Implementation invoked when the model calls the tool. Optional
+   * because some `ToolDefinition` instances are schema-only (e.g.
+   * {@link ../memory/graph/tools.graphRememberDefinition},
+   * {@link ../messaging/style-analyzer.storeStyleAnalysisTool},
+   * {@link ../memory/v2/sweep-job.SWEEP_TOOL}) — handed to providers as
+   * a function-calling schema without ever being registered for
+   * execution. Closures can't cross IPC, so the wire path drops this
+   * and `finalizeTool` synthesizes a no-op error closure on arrival.
+   * Tool sources use `satisfies ToolDefinition` (not `: ToolDefinition`)
+   * so the inferred export type preserves `execute` as required at
+   * call sites that statically import the literal.
+   */
+  execute: z
+    .custom<
+      (
+        input: Record<string, unknown>,
+        context: ToolContext,
+      ) => Promise<ToolExecutionResult>
+    >()
+    .optional(),
+});
+
+/**
+ * Author-facing tool spec — re-exported from `@vellumai/plugin-api`.
+ * Loaders fill documented defaults for omitted fields via `finalizeTool`
+ * in `tool-defaults.ts`. The type is a direct `z.infer` of
+ * {@link ToolDefinitionSchema} — both `input_schema` and `execute` are
+ * typed correctly by the schema itself, no overlay needed.
+ */
+export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
+
+/** Tool after the loader has derived its name and filled defaults. */
+export type Tool = Required<ToolDefinition>;
+
+/** The kind of extension that owns a tool. Core tools have no owner. */
+export type OwnerKind = "skill" | "mcp" | "plugin" | "workspace";
+
+/**
+ * Identifies which extension owns a tool (skill / plugin / MCP server).
+ * Tracked by the tool registry keyed by tool name, not stored on the `Tool`
+ * object itself — query via {@link ../tools/registry.getToolOwner}.
+ */
+export interface OwnerInfo {
+  kind: OwnerKind;
+  /** ID of the owning extension (skill id / plugin name / MCP server id / workspace path). */
+  id: string;
+}

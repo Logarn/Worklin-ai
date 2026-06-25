@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "scaffold_managed_skill",
+      "description": "Create or update a managed skill in {workspaceDir}/skills. The skill becomes available for skill_load when a valid top-level SKILL.md is written under the skill directory. Never persist a skill without explicit user consent. Before persisting, test the snippet: write to a temp file with bash and run with `bun run /tmp/vellum-eval/snippet.ts`. Iterate up to 3 attempts, then ask the user. Clean up temp files after. Do not use file_write for temp files outside the working directory. After a skill is written, the next turn may run in a recreated conversation due to file-watcher eviction - continue normally.",
+      "category": "skills",
+      "risk": "high",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "skill_id": {
+            "type": "string",
+            "description": "Unique identifier for the skill (lowercase slug, e.g. \"my-skill\")."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable name for the skill."
+          },
+          "description": {
+            "type": "string",
+            "description": "Short description of what the skill does."
+          },
+          "body_markdown": {
+            "type": "string",
+            "description": "The full skill body in markdown - instructions, prompts, templates, etc."
+          },
+          "emoji": {
+            "type": "string",
+            "description": "Optional emoji icon for the skill."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Whether to overwrite an existing skill with the same ID (default: false)."
+          },
+          "includes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Optional list of child skill IDs that this skill includes (metadata only, no auto-activation)."
+          },
+          "add_to_index": {
+            "type": "boolean",
+            "description": "Deprecated no-op compatibility field. Skills are discovered from top-level SKILL.md files."
+          }
+        },
+        "required": ["skill_id", "name", "description", "body_markdown"]
+      },
+      "executor": "tools/scaffold-managed.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "delete_managed_skill",
+      "description": "Delete a managed skill directory from {workspaceDir}/skills. Never delete a skill without explicit user confirmation. After deletion, the next turn may run in a recreated conversation due to file-watcher eviction - continue normally.",
+      "category": "skills",
+      "risk": "high",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "skill_id": {
+            "type": "string",
+            "description": "The ID of the managed skill to delete."
+          },
+          "remove_from_index": {
+            "type": "boolean",
+            "description": "Deprecated no-op compatibility field. Skill deletion does not edit SKILLS.md."
+          }
+        },
+        "required": ["skill_id"]
+      },
+      "executor": "tools/delete-managed.ts",
+      "execution_target": "host"
+    }
+  ]
+}

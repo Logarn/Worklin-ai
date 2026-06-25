@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CLIENT_ID="${AUTH0_CLIENT_ID:-lWY6GcvryGi5ZxZlnbNU3ybUNXelD4uH}"
+CLIENT_SECRET="${AUTH0_CLIENT_SECRET:-}"
+ISSUER="${AUTH0_ISSUER_BASE_URL:-https://dev-t8ju8fx27q3pgjld.us.auth0.com}"
+WEB_ORIGIN="${WORKLIN_WEB_ORIGIN:-http://127.0.0.1:5177}"
+API_ORIGIN="${WORKLIN_API_ORIGIN:-http://127.0.0.1:19283}"
+DB_PATH="${WORKLIN_CONTROL_DB:-/private/tmp/worklin-local-control-plane.sqlite}"
+
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "openssl is required to generate local secrets." >&2
+  exit 1
+fi
+
+if [ -z "${CLIENT_SECRET}" ]; then
+  read -rsp "Auth0 client secret: " CLIENT_SECRET
+  echo
+fi
+
+SESSION_SECRET="$(openssl rand -hex 32)"
+AUTH0_SECRET="$(openssl rand -hex 32)"
+ACTOR_SIGNING_KEY="$(openssl rand -hex 32)"
+CES_SERVICE_TOKEN="$(openssl rand -hex 32)"
+
+cat >"${ROOT_DIR}/control-plane/.env" <<EOF
+WORKLIN_CONTROL_PLANE_HOST=127.0.0.1
+WORKLIN_CONTROL_PLANE_PORT=19283
+WORKLIN_WEB_ORIGIN=${WEB_ORIGIN}
+WORKLIN_API_ORIGIN=${API_ORIGIN}
+WORKLIN_GATEWAY_URL=http://127.0.0.1:7830
+WORKLIN_CONTROL_DB=${DB_PATH}
+WORKLIN_SESSION_SECRET=${SESSION_SECRET}
+ACTOR_TOKEN_SIGNING_KEY=${ACTOR_SIGNING_KEY}
+AUTH0_ISSUER_BASE_URL=${ISSUER}
+AUTH0_BASE_URL=${API_ORIGIN}
+AUTH0_CLIENT_ID=${CLIENT_ID}
+AUTH0_CLIENT_SECRET=${CLIENT_SECRET}
+AUTH0_SECRET=${AUTH0_SECRET}
+EOF
+
+cat >"${ROOT_DIR}/deploy/production/backend.env.local" <<EOF
+WORKLIN_WEB_ORIGIN=${WEB_ORIGIN}
+WORKLIN_API_ORIGIN=${API_ORIGIN}
+WORKLIN_API_PORT=19283
+WORKLIN_SESSION_SECRET=${SESSION_SECRET}
+WORKLIN_CONTROL_DB=/data/control-plane.sqlite
+WORKLIN_GATEWAY_URL=http://gateway:7830
+AUTH0_ISSUER_BASE_URL=${ISSUER}
+AUTH0_BASE_URL=${API_ORIGIN}
+AUTH0_CLIENT_ID=${CLIENT_ID}
+AUTH0_CLIENT_SECRET=${CLIENT_SECRET}
+AUTH0_SECRET=${AUTH0_SECRET}
+ACTOR_TOKEN_SIGNING_KEY=${ACTOR_SIGNING_KEY}
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+IS_CONTAINERIZED=true
+RUNTIME_HTTP_HOST=0.0.0.0
+RUNTIME_HTTP_PORT=3001
+VELLUM_WORKSPACE_DIR=/data/workspace
+GATEWAY_INTERNAL_URL=http://gateway:7830
+CES_CREDENTIAL_URL=http://credential-executor:8090
+GATEWAY_PORT=7830
+ASSISTANT_HOST=assistant
+GATEWAY_TRUST_PROXY=true
+DEFAULT_ASSISTANT_ID=
+UNMAPPED_POLICY=default
+RUNTIME_PROXY_REQUIRE_AUTH=true
+CES_MODE=managed
+CES_HEALTH_PORT=8090
+CES_DATA_DIR=/ces-data
+CREDENTIAL_SECURITY_DIR=/ces-security
+CES_ASSISTANT_DATA_MOUNT=/assistant-data-ro
+CES_SERVICE_TOKEN=${CES_SERVICE_TOKEN}
+EOF
+
+chmod 600 "${ROOT_DIR}/control-plane/.env" "${ROOT_DIR}/deploy/production/backend.env.local"
+
+cat <<EOF
+Created:
+  ${ROOT_DIR}/control-plane/.env
+  ${ROOT_DIR}/deploy/production/backend.env.local
+
+These files are ignored by git and chmodded to 600.
+EOF

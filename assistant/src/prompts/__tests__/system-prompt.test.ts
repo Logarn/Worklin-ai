@@ -1,0 +1,257 @@
+/**
+ * Smoke tests for buildSystemPrompt — covers tool-routing-guidance
+ * exclusions and other call-shape invariants. Background-conversation
+ * guidance is no longer rendered into the system prompt; see
+ * `__tests__/injector-background-turn.test.ts` for the per-turn
+ * user-message injection that replaced it.
+ */
+
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+const TEST_DIR = process.env.VELLUM_WORKSPACE_DIR!;
+
+const noopLogger: Record<string, unknown> = new Proxy(
+  {} as Record<string, unknown>,
+  {
+    get: (_target, prop) => (prop === "child" ? () => noopLogger : () => {}),
+  },
+);
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realLogger = require("../../util/logger.js");
+mock.module("../../util/logger.js", () => ({
+  ...realLogger,
+  getLogger: () => noopLogger,
+  getCliLogger: () => noopLogger,
+  truncateForLog: (v: string) => v,
+  initLogger: () => {},
+  pruneOldLogFiles: () => 0,
+}));
+
+const mockLoadedConfig: Record<string, unknown> = {};
+
+mock.module("../../config/loader.js", () => ({
+  getConfig: () => ({
+    ui: {},
+    services: {
+      inference: {
+        mode: "your-own",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+      },
+      "image-generation": {
+        mode: "your-own",
+        provider: "gemini",
+        model: "gemini-3.1-flash-image-preview",
+      },
+      "web-search": { mode: "your-own", provider: "inference-provider-native" },
+    },
+  }),
+  loadConfig: () => mockLoadedConfig,
+  loadRawConfig: () => ({}),
+  saveConfig: () => {},
+  saveRawConfig: () => {},
+  invalidateConfigCache: () => {},
+  getNestedValue: () => undefined,
+  setNestedValue: () => {},
+}));
+
+const { buildSystemPrompt, maybeReseedBootstrap } =
+  await import("../system-prompt.js");
+
+describe("buildSystemPrompt — tool routing guidance", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  test("does not include ask_question routing guidance", () => {
+    const result = buildSystemPrompt({});
+    expect(result).not.toContain("## Clarifying questions");
+    expect(result).not.toContain("ask_question");
+  });
+});
+
+describe("buildSystemPrompt — persona override", () => {
+  const DEFAULT_SENTINEL = "Sentinel: default persona body.";
+  const ALICE_SENTINEL = "Sentinel: alice persona body.";
+  const TELEGRAM_SENTINEL = "Sentinel: telegram channel persona body.";
+
+  beforeEach(() => {
+    mkdirSync(join(TEST_DIR, "users"), { recursive: true });
+    mkdirSync(join(TEST_DIR, "channels"), { recursive: true });
+    writeFileSync(join(TEST_DIR, "users", "default.md"), DEFAULT_SENTINEL);
+    writeFileSync(join(TEST_DIR, "users", "alice.md"), ALICE_SENTINEL);
+    writeFileSync(join(TEST_DIR, "channels", "telegram.md"), TELEGRAM_SENTINEL);
+  });
+
+  test("personaOverride renders the given user + channel persona sections", () => {
+    const result = buildSystemPrompt({
+      personaOverride: { userSlug: "alice", channelSlug: "telegram" },
+    });
+
+    expect(result).toContain(ALICE_SENTINEL);
+    expect(result).toContain(TELEGRAM_SENTINEL);
+    expect(result).not.toContain(DEFAULT_SENTINEL);
+  });
+
+  test("no override → trust-context-derived resolution (default persona, vellum channel)", () => {
+    // No trust context and no resolvable guardian contact in this test env,
+    // so the user persona falls back to users/default.md and the channel
+    // section resolves channels/vellum.md (absent → omitted).
+    const result = buildSystemPrompt({});
+
+    expect(result).toContain(DEFAULT_SENTINEL);
+    expect(result).not.toContain(ALICE_SENTINEL);
+    expect(result).not.toContain(TELEGRAM_SENTINEL);
+  });
+
+  test("partial override: userSlug alone leaves channel resolution untouched", () => {
+    const result = buildSystemPrompt({
+      personaOverride: { userSlug: "alice" },
+    });
+
+    expect(result).toContain(ALICE_SENTINEL);
+    expect(result).not.toContain(TELEGRAM_SENTINEL);
+  });
+
+  test("override userSlug with no matching file falls back to users/default.md", () => {
+    const result = buildSystemPrompt({
+      personaOverride: { userSlug: "missing-user" },
+    });
+
+    expect(result).toContain(DEFAULT_SENTINEL);
+  });
+});
+
+describe("buildSystemPrompt — hasNoClient pin", () => {
+  // Marker unique to the `{{^hasNoClient}}` branch of 05-access-preference:
+  // host fallbacks only render when a client is connected.
+  const WITH_CLIENT_MARKER = "`host_bash` with CLIs";
+
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  test("hasNoClient renders divergent access-preference text", () => {
+    expect(buildSystemPrompt({ hasNoClient: false })).toContain(
+      WITH_CLIENT_MARKER,
+    );
+    expect(buildSystemPrompt({ hasNoClient: true })).not.toContain(
+      WITH_CLIENT_MARKER,
+    );
+  });
+
+  test("personaOverride.hasNoClient pins the flag over the conversation-derived option", () => {
+    // Fork-retrospective case: the fork is hydrated clientless
+    // (hasNoClient: true) but pins the source's live-turn value (false) so
+    // the prompt byte-matches the source's cached prefix.
+    expect(
+      buildSystemPrompt({
+        hasNoClient: true,
+        personaOverride: { hasNoClient: false },
+      }),
+    ).toContain(WITH_CLIENT_MARKER);
+    // And the pin wins in the other direction too.
+    expect(
+      buildSystemPrompt({
+        hasNoClient: false,
+        personaOverride: { hasNoClient: true },
+      }),
+    ).not.toContain(WITH_CLIENT_MARKER);
+  });
+
+  test("a personaOverride without the pin leaves the conversation-derived flag untouched", () => {
+    expect(
+      buildSystemPrompt({ hasNoClient: true, personaOverride: {} }),
+    ).not.toContain(WITH_CLIENT_MARKER);
+    expect(
+      buildSystemPrompt({ hasNoClient: false, personaOverride: {} }),
+    ).toContain(WITH_CLIENT_MARKER);
+  });
+});
+
+describe("maybeReseedBootstrap — content-automation template", () => {
+  const templatesDir = join(import.meta.dirname!, "..", "templates");
+
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    // Seed the workspace with the generic BOOTSTRAP.md so the bootstrap
+    // reseed detects it as an unmodified template and overwrites it.
+    copyFileSync(
+      join(templatesDir, "BOOTSTRAP.md"),
+      join(TEST_DIR, "BOOTSTRAP.md"),
+    );
+  });
+
+  function reseedAndRead(): string {
+    maybeReseedBootstrap("BOOTSTRAP-CONTENT-AUTOMATION.md");
+    return readFileSync(join(TEST_DIR, "BOOTSTRAP.md"), "utf-8");
+  }
+
+  test("loads the geo-writing skill on first turn", () => {
+    const content = reseedAndRead();
+    expect(content).toContain("geo-writing");
+  });
+
+  test("uses skill-first onboarding approach", () => {
+    const content = reseedAndRead();
+    expect(content).toContain("Skill-First Onboarding");
+    expect(content).toContain("The skill is the onboarding");
+  });
+
+  test("includes comment-driven edit loop", () => {
+    const content = reseedAndRead();
+    expect(content).toContain("comment-driven");
+    expect(content).toContain("comment_resolve");
+    expect(content).toContain("document_update");
+  });
+
+  test("references VOICE.md for voice capture", () => {
+    const content = reseedAndRead();
+    expect(content).toContain("VOICE.md");
+  });
+});
+
+describe("maybeReseedBootstrap — activation rail template", () => {
+  const templatesDir = join(import.meta.dirname!, "..", "templates");
+
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    copyFileSync(
+      join(templatesDir, "BOOTSTRAP.md"),
+      join(TEST_DIR, "BOOTSTRAP.md"),
+    );
+  });
+
+  test("replaces generic bootstrap with the activation rail template", () => {
+    maybeReseedBootstrap("BOOTSTRAP-ACTIVATION-RAIL.md");
+    const content = readFileSync(join(TEST_DIR, "BOOTSTRAP.md"), "utf-8");
+
+    expect(content).toContain("BOOTSTRAP — Activation Rail");
+    expect(content).toContain("People don't read");
+    expect(content).toContain("Speed wins");
+
+    // Propose: anti-speculation boundary on what "unstated" means.
+    expect(content).toContain("status word");
+    expect(content).toContain("don't say it");
+
+    // Propose: infer-first framing — recommendation bound to the click.
+    expect(content).toContain("You didn't say this");
+    expect(content).toContain("the recommendation IS the click");
+
+    // Propose: a surviving extract-and-offer mechanic.
+    expect(content).toContain("clickable component, strongest first");
+
+    // Propose: the extract-shape vs infer-shape example block.
+    expect(content).toContain("extract-shape");
+    expect(content).toContain("infer-shape");
+
+    // Port: prompt-writing guidance (JARVIS-1124).
+    expect(content).toContain("portable context brief, not a self-summary");
+    expect(content).toContain("load-bearing work in the next month");
+    expect(content).toContain("what to help with first");
+    expect(content).toContain("another tool or collaborator");
+  });
+});

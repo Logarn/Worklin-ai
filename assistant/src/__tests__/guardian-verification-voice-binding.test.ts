@@ -1,0 +1,144 @@
+/**
+ * Regression test: guardian verification calls must create a voice channel
+ * binding so the conversation never appears as an unbound desktop conversation.
+ */
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+mock.module("../util/logger.js", () => ({
+  getLogger: () =>
+    new Proxy({} as Record<string, unknown>, {
+      get: () => () => {},
+    }),
+}));
+
+mock.module("../calls/twilio-config.js", () => ({
+  getTwilioConfig: () => ({
+    accountSid: "AC_test",
+    authToken: "test_token",
+    phoneNumber: "+15550001111",
+  }),
+}));
+
+mock.module("../calls/twilio-provider.js", () => ({
+  TwilioConversationRelayProvider: class {
+    async checkCallerIdEligibility() {
+      return { eligible: true };
+    }
+    async initiateCall() {
+      return { callSid: "CA_test_guardian_verify" };
+    }
+  },
+}));
+
+mock.module("../security/secure-keys.js", () => ({}));
+
+mock.module("../config/env.js", () => ({
+  isHttpAuthDisabled: () => true,
+}));
+
+mock.module("../inbound/public-ingress-urls.js", () => ({
+  getTwilioVoiceWebhookUrl: () => "https://test.example.com/voice",
+  getTwilioStatusCallbackUrl: () => "https://test.example.com/status",
+}));
+
+mock.module("../calls/voice-ingress-preflight.js", () => ({
+  preflightVoiceIngress: async () => ({
+    ok: true as const,
+    ingressConfig: {},
+    publicBaseUrl: "https://test.example.com",
+  }),
+}));
+
+mock.module("../config/loader.js", () => ({
+  loadConfig: () => ({
+    calls: {
+      callerIdentity: {
+        allowPerCallOverride: true,
+      },
+    },
+  }),
+}));
+
+mock.module("../inbound/platform-callback-registration.js", () => ({
+  resolveCallbackUrl: async (fn: () => string) => fn(),
+}));
+
+let mockPreflightResult:
+  | { ok: true; ingressConfig: unknown; publicBaseUrl: string }
+  | { ok: false; error: string; status: 503 } = {
+  ok: true,
+  ingressConfig: {
+    ingress: { enabled: true, publicBaseUrl: "https://test.example.com" },
+  },
+  publicBaseUrl: "https://test.example.com",
+};
+
+mock.module("../calls/voice-ingress-preflight.js", () => ({
+  preflightVoiceIngress: async () => mockPreflightResult,
+}));
+
+mock.module("../runtime/channel-verification-service.js", () => ({
+  isGuardian: () => false,
+}));
+
+mock.module("../memory/conversation-title-service.js", () => ({
+  queueGenerateConversationTitle: () => {},
+}));
+
+import { startVerificationCall } from "../calls/call-domain.js";
+import { getOrCreateConversation } from "../memory/conversation-key-store.js";
+import { initializeDb } from "../memory/db-init.js";
+import { getBindingByConversation } from "../memory/external-conversation-store.js";
+
+initializeDb();
+
+describe("startVerificationCall — voice binding", () => {
+  beforeEach(() => {
+    mockPreflightResult = {
+      ok: true as const,
+      ingressConfig: {
+        calls: { callerIdentity: { allowPerCallOverride: true } },
+        ingress: { enabled: true, publicBaseUrl: "https://test.example.com" },
+      },
+      publicBaseUrl: "https://test.example.com",
+    };
+  });
+
+  test("creates a voice channel binding for the guardian verification conversation", async () => {
+    const sessionId = "gv-session-001";
+    const result = await startVerificationCall({
+      phoneNumber: "+15559999999",
+      verificationSessionId: sessionId,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Look up the conversation that was created for this guardian verification
+    const convKey = `guardian-verify:${sessionId}`;
+    const { conversationId } = getOrCreateConversation(convKey);
+
+    // The conversation must have a voice channel binding
+    const binding = getBindingByConversation(conversationId);
+    expect(binding).not.toBeNull();
+    expect(binding!.sourceChannel).toBe("phone");
+  });
+
+  test("fails with 503 when voice ingress preflight fails", async () => {
+    mockPreflightResult = {
+      ok: false,
+      error: "Voice callback gateway is unhealthy",
+      status: 503,
+    };
+
+    const result = await startVerificationCall({
+      phoneNumber: "+15559999999",
+      verificationSessionId: "gv-session-preflight-fail",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(503);
+      expect(result.error).toContain("Voice callback gateway is unhealthy");
+    }
+  });
+});

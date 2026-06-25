@@ -1,0 +1,2044 @@
+/**
+ * Route handlers for migration endpoints.
+ *
+ * POST /v1/migrations/validate        — validate a .vbundle archive upload.
+ * POST /v1/migrations/export          — generate and download a .vbundle archive.
+ * POST /v1/migrations/import-preflight — dry-run import analysis of a .vbundle archive.
+ * POST /v1/migrations/import          — commit a .vbundle archive import to disk.
+ *
+ * Accepts raw binary body (Content-Type: application/octet-stream),
+ * multipart form data with a "file" field, or — on /import only — a JSON
+ * body of shape `{ "url": "<signed-gcs-url>" }` that causes the daemon to
+ * fetch the bundle from GCS and stream it through `streamCommitImport`.
+ * Returns structured validation results with is_valid flag and detailed
+ * error descriptions.
+ */
+
+import { createReadStream } from "node:fs";
+import { hostname } from "node:os";
+import { PassThrough, Readable } from "node:stream";
+
+import { z } from "zod";
+
+import { getPlatformAssistantId } from "../../config/env.js";
+import { invalidateConfigCache } from "../../config/loader.js";
+import { getAssistantName } from "../../daemon/identity-helpers.js";
+import { runAsyncSqlite } from "../../memory/db-async-query.js";
+import { getDb, resetDb } from "../../memory/db-connection.js";
+import { validateMigrationState } from "../../memory/migrations/validate-migration-state.js";
+import { credentialKey } from "../../security/credential-key.js";
+import {
+  bulkSetSecureKeysAsync,
+  getSecureKeyAsync,
+  getSecureKeyResultAsync,
+  listSecureKeysAsync,
+} from "../../security/secure-keys.js";
+import {
+  getCredentialMetadata,
+  upsertCredentialMetadata,
+} from "../../tools/credentials/metadata-store.js";
+import { getLogger } from "../../util/logger.js";
+import { getWorkspaceDir, getWorkspaceHooksDir } from "../../util/platform.js";
+import { APP_VERSION } from "../../version.js";
+import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
+import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
+import {
+  validateGcsSignedUrl,
+  type ValidateGcsSignedUrlOptions,
+} from "../migrations/gcs-signed-url.js";
+import {
+  JobAlreadyInProgressError,
+  migrationJobs,
+} from "../migrations/job-registry.js";
+import { getOriginMode } from "../migrations/origin-mode.js";
+import type {
+  VBundleAssistantInfo,
+  VBundleCompatibility,
+  VBundleExportOptions,
+  VBundleOriginInfo,
+} from "../migrations/vbundle-builder.js";
+import { streamExportVBundle } from "../migrations/vbundle-builder.js";
+import {
+  analyzeImport,
+  DefaultPathResolver,
+} from "../migrations/vbundle-import-analyzer.js";
+import {
+  evaluateRuntimeCompatibility,
+  formatRuntimeCompatibilityMessage,
+  type RuntimeCompatibility,
+} from "../migrations/vbundle-import-policy.js";
+import {
+  commitImport,
+  extractCredentialsFromBundle,
+  type ImportCommitReport,
+  type ImportCommitResult,
+} from "../migrations/vbundle-importer.js";
+import { streamCommitImport } from "../migrations/vbundle-streaming-importer.js";
+import { validateVBundle } from "../migrations/vbundle-validator.js";
+import {
+  BadGatewayError,
+  BadRequestError,
+  InternalError,
+  NotFoundError,
+  RouteError,
+  UnprocessableEntityError,
+} from "./errors.js";
+import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
+import { RouteResponse } from "./types.js";
+
+/**
+ * CES account prefix for platform-identity (`vellum:*`) credentials. Entries
+ * with an account that starts with this string are filtered out of any
+ * imported bundle so they don't overwrite the target's own Django-provisioned
+ * platform identity (most notably `assistant_api_key`).
+ *
+ * Derived from `credentialKey("vellum", "")` so the prefix automatically
+ * tracks the real CES account format — the literal string `"credential/vellum/"`.
+ */
+const PLATFORM_CREDENTIAL_PREFIX = credentialKey("vellum", "");
+
+/**
+ * Platform-identity fields that the managed runtime expects to see in CES.
+ * Django's post-hatch provisioning populates the first four via
+ * `POST /v1/secrets`; `platform_organization_id` and `platform_user_id` are
+ * populated by the signed-in client after hatch (onboarding, teleport,
+ * local→managed transfer) because Django has no signed-in user session to
+ * resolve them. Either set of writes can race with the import — the CES
+ * write survives (separate volume), but the metadata upsert may be
+ * clobbered by the in-place clear / atomic swap. After every import we
+ * reconcile metadata.json against CES so any field CES already holds a
+ * value for gets a matching metadata entry.
+ */
+const VELLUM_PLATFORM_IDENTITY_FIELDS = [
+  "platform_base_url",
+  "assistant_api_key",
+  "platform_assistant_id",
+  "platform_organization_id",
+  "platform_user_id",
+  "webhook_secret",
+] as const;
+
+/**
+ * Idempotent post-import reconciliation: for each vellum:* field, if CES
+ * has a value but metadata.json doesn't list it, upsert the entry. Pure
+ * add-only — never deletes anything. Safe to run whether or not Django's
+ * post-hatch provisioning has completed (missing CES values are skipped).
+ *
+ * Exported for direct unit-testing.
+ */
+export async function reconcileVellumMetadataFromCes(warningSink: {
+  warnings: string[];
+}): Promise<void> {
+  for (const field of VELLUM_PLATFORM_IDENTITY_FIELDS) {
+    try {
+      const value = await getSecureKeyAsync(credentialKey("vellum", field));
+      if (!value) continue;
+      if (getCredentialMetadata("vellum", field)) continue;
+      upsertCredentialMetadata("vellum", field, {});
+      log.info(
+        { field },
+        "Reconciled vellum:* metadata entry from CES after import",
+      );
+    } catch (err) {
+      warningSink.warnings.push(
+        `Failed to reconcile vellum:${field} metadata: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+}
+
+const log = getLogger("migration-routes");
+
+/**
+ * Fields the export pipeline must populate on the v1 manifest.
+ *
+ * Centralized so both the synchronous-bytes and async-to-gcs handlers
+ * compute the same values (and a future caller doesn't accidentally drift).
+ */
+interface ExportManifestInputs {
+  assistant: VBundleAssistantInfo;
+  origin: VBundleOriginInfo;
+  compatibility: VBundleCompatibility;
+  exportOptions: VBundleExportOptions;
+}
+
+/**
+ * Resolve the `assistant.id` for an export.
+ *
+ * Mirrors `platform/client.ts`'s precedence: in-memory override (set at
+ * daemon startup or by secret-routes) → credential store → daemon-internal
+ * fallback. The schema requires `id` to be non-empty, so we fall back to
+ * `DAEMON_INTERNAL_ASSISTANT_ID` rather than the empty string.
+ */
+async function resolveAssistantId(): Promise<string> {
+  const inMemory = getPlatformAssistantId();
+  if (inMemory) return inMemory;
+  try {
+    const stored = await getSecureKeyAsync(
+      credentialKey("vellum", "platform_assistant_id"),
+    );
+    if (stored) return stored;
+  } catch (err) {
+    log.warn(
+      { err },
+      "Failed to read platform_assistant_id from credential store; falling back to daemon-internal id",
+    );
+  }
+  return DAEMON_INTERNAL_ASSISTANT_ID;
+}
+
+/**
+ * Decide the truthful `secrets_redacted` flag for an export.
+ *
+ * The export entry points pass every collected credential through to the
+ * builder unfiltered, so the bundle is NOT redacted whenever any
+ * credentials made it in. Only flip to true when the credential list is
+ * empty AND every credential read succeeded — i.e. there genuinely are
+ * no secrets in the bundle.
+ *
+ * Two failure modes both force `false`:
+ *   - `storeUnreachable`: the top-level `listSecureKeysAsync()` call
+ *     failed, so we never even discovered which accounts exist.
+ *   - `perAccountUnreachable`: the LIST call succeeded but one or more
+ *     individual `getSecureKeyResultAsync(account)` reads returned
+ *     `unreachable: true`. Those accounts were silently skipped from the
+ *     `credentials` array, so a `credentialCount === 0` outcome could
+ *     reflect "we couldn't read them" rather than "no secrets exist".
+ *     Claiming a clean redaction in that case would be a lie.
+ *
+ * NOTE: a managed-mode bundle with `secrets_redacted: false` will fail
+ * the validator's cross-field refine. That surfaces an existing
+ * platform-side enforcement gap — the runtime emits the truthful value
+ * and lets the schema flag it.
+ */
+export function computeSecretsRedacted(
+  credentialCount: number,
+  storeUnreachable: boolean,
+  perAccountUnreachable: boolean,
+): boolean {
+  return credentialCount === 0 && !storeUnreachable && !perAccountUnreachable;
+}
+
+/**
+ * Compute the v1 manifest inputs that aren't tied to per-call options.
+ *
+ * `walkDirectoryForMetadata` skips `embedding-models`, `data/qdrant`,
+ * `signals`, and `deprecated` — `logs` is NOT in the skip list, so log
+ * files end up in `manifest.contents`. Browser state and memory vectors
+ * (qdrant) are skipped, so those flags are false.
+ */
+async function buildExportManifestInputs(): Promise<ExportManifestInputs> {
+  const assistantId = await resolveAssistantId();
+  const assistantName = getAssistantName() ?? "Assistant";
+  const originMode = await getOriginMode();
+  return {
+    assistant: {
+      id: assistantId,
+      name: assistantName,
+      runtime_version: APP_VERSION,
+    },
+    origin: {
+      mode: originMode,
+      hostname: hostname(),
+    },
+    compatibility: {
+      min_runtime_version: APP_VERSION,
+      max_runtime_version: null,
+    },
+    exportOptions: {
+      include_logs: true,
+      include_browser_state: false,
+      include_memory_vectors: false,
+    },
+  };
+}
+
+/**
+ * POST /v1/migrations/validate
+ *
+ * Validates a .vbundle archive. The file can be sent as:
+ * - Raw binary body with Content-Type: application/octet-stream
+ * - Multipart form data with a "file" field
+ *
+ * Returns:
+ *   200: { is_valid: true, manifest: { ... } }
+ *   200: { is_valid: false, errors: [{ code, message, path? }] }
+ *   400: Standard error envelope for missing/empty body
+ *   422: Standard error envelope for completely unparseable input
+ */
+export async function handleMigrationValidate({
+  rawBody,
+  headers,
+}: RouteHandlerArgs) {
+  const fileData = await extractFileData(rawBody, headers);
+
+  try {
+    const result = validateVBundle(fileData);
+
+    return {
+      is_valid: result.is_valid,
+      errors: result.errors,
+      ...(result.manifest ? { manifest: result.manifest } : {}),
+    };
+  } catch (err) {
+    log.error({ err }, "Unexpected error during vbundle validation");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Unexpected validation error",
+    );
+  }
+}
+
+/**
+ * POST /v1/migrations/export
+ *
+ * Exports the assistant's real data as a .vbundle archive. The archive
+ * contains the SQLite database (all conversations, messages, memory
+ * segments, embeddings) and the config file.
+ *
+ * Accepts an optional JSON body:
+ *   { "description": "Human-readable export description" }
+ *
+ * Returns:
+ *   200: Binary .vbundle archive (Content-Type: application/octet-stream)
+ *        with Content-Disposition header for download.
+ *   500: Standard error envelope for unexpected failures.
+ *
+ * Auth: Requires settings.write scope. Allowed for actor, svc_gateway, svc_daemon, local.
+ */
+export async function handleMigrationExport(
+  _args: RouteHandlerArgs,
+): Promise<RouteResponse> {
+  // The legacy `description` field is no longer carried on the v1
+  // manifest. Older clients still POST it; we silently ignore it.
+  let cleanup: (() => Promise<void>) | undefined;
+
+  try {
+    // Read all stored credentials to include in the export bundle
+    const credentialList = await listSecureKeysAsync();
+    const credentials: Array<{ account: string; value: string }> = [];
+    // Track per-account read failures separately from the top-level LIST
+    // failure. A single skipped account means we cannot truthfully claim
+    // the bundle is fully redacted — we don't know what we missed.
+    let perAccountUnreachable = false;
+    if (credentialList.unreachable) {
+      log.warn(
+        "Credential store is unreachable — export will not include credentials",
+      );
+    } else {
+      for (const account of credentialList.accounts) {
+        const result = await getSecureKeyResultAsync(account);
+        if (result.unreachable) {
+          perAccountUnreachable = true;
+          log.warn(
+            { account },
+            "Credential store unreachable when reading credential — skipping",
+          );
+        } else if (result.value != null) {
+          credentials.push({ account, value: result.value });
+        }
+      }
+    }
+
+    const manifestInputs = await buildExportManifestInputs();
+    const secretsRedacted = computeSecretsRedacted(
+      credentials.length,
+      credentialList.unreachable,
+      perAccountUnreachable,
+    );
+
+    const result = await streamExportVBundle({
+      workspaceDir: getWorkspaceDir(),
+      ...manifestInputs,
+      secretsRedacted,
+      credentials,
+      checkpoint: async () => {
+        // Dispatch through `runAsyncSqlite` so the WAL checkpoint runs
+        // in a sqlite3 subprocess on hosts where it's available. A WAL
+        // flush on a multi-GB WAL file can otherwise stall the daemon's
+        // event loop for the full duration of the flush.
+        //
+        // FULL (not TRUNCATE): TRUNCATE has a side effect where, if the
+        // WAL is empty after the checkpoint, SQLite unlinks the WAL file
+        // from the directory. When the daemon's in-process connection
+        // still holds the original WAL fd, the unlink orphans that fd
+        // into a "ghost WAL" only the daemon can reach, and subsequent
+        // connections create a fresh WAL on disk — split-brain. FULL
+        // gives us the same flush-completion guarantee without the
+        // unlink side effect. See assistant/AGENTS.md "SQLite WAL
+        // checkpointing".
+        const result = await runAsyncSqlite("PRAGMA wal_checkpoint(FULL)");
+        if (!result.ok) {
+          // Best-effort: if the DB can't be checkpointed (e.g. not a valid
+          // SQLite file, missing WAL, etc.) we still proceed with the export
+          // using whatever is on disk.
+          log.warn(
+            { error: result.error, backend: result.backend },
+            "WAL checkpoint failed — exporting without checkpoint",
+          );
+        }
+      },
+    });
+
+    cleanup = result.cleanup;
+    const { tempPath, size, manifest } = result;
+
+    const timestamp = manifest.created_at.replace(/[:.]/g, "-");
+    const filename = `export-${timestamp}.vbundle`;
+
+    const fileStream = createReadStream(tempPath);
+    fileStream.on("close", () => {
+      cleanup?.();
+      cleanup = undefined;
+    });
+
+    const streamBody = Readable.toWeb(fileStream) as unknown as ReadableStream;
+
+    return new RouteResponse(streamBody, {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": String(size),
+      // `schema_version` is now an integer; clients that parse this header
+      // continue to work, but the value flips from "1.0" to "1".
+      "X-Vbundle-Schema-Version": String(manifest.schema_version),
+      // Header name preserved for cross-version client compat; populated
+      // from the renamed manifest `checksum` field.
+      "X-Vbundle-Manifest-Sha256": manifest.checksum,
+      "X-Vbundle-Credentials-Included": String(credentials.length),
+    });
+  } catch (err) {
+    await cleanup?.();
+    log.error({ err }, "Failed to build export bundle");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Unexpected export error",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/migrations/export-to-gcs — async export streamed to a signed URL
+// ---------------------------------------------------------------------------
+
+/** 60 minutes — matches the URL-body import fetch deadline. */
+const EXPORT_TO_GCS_PUT_TIMEOUT_MS = 60 * 60 * 1000;
+
+const MigrationExportToGcsBody = z.object({
+  upload_url: z.string().url(),
+  description: z.string().optional(),
+});
+
+/**
+ * Collected credentials plus warning markers if the credential store was
+ * unreachable. The caller surfaces the warning in logs; production callers
+ * fail closed on errors (a thrown exception → 500) to avoid shipping a
+ * bundle with partial credentials. An unreachable store is NOT an error —
+ * `handleMigrationExport` treats that case as "export without credentials".
+ *
+ * - `unreachable`: the top-level `listSecureKeysAsync()` call failed.
+ * - `perAccountUnreachable`: the LIST succeeded but one or more individual
+ *   `getSecureKeyResultAsync(account)` calls returned `unreachable: true`.
+ *   Those accounts were silently skipped from `credentials`, so the count
+ *   here understates reality. The flag is what tells `computeSecretsRedacted`
+ *   it cannot claim a clean redaction.
+ */
+interface CollectedCredentials {
+  credentials: Array<{ account: string; value: string }>;
+  unreachable: boolean;
+  perAccountUnreachable: boolean;
+}
+
+/**
+ * Mirror of the credential-collection block inside `handleMigrationExport`.
+ * Factored out so the new async export-to-gcs handler can share the exact
+ * same behavior. Throws if the credential store raises an unexpected error —
+ * the caller translates that into a 500 (fail closed on credential errors).
+ */
+async function collectExportCredentials(): Promise<CollectedCredentials> {
+  const credentialList = await listSecureKeysAsync();
+  if (credentialList.unreachable) {
+    log.warn(
+      "Credential store is unreachable — export will not include credentials",
+    );
+    return {
+      credentials: [],
+      unreachable: true,
+      perAccountUnreachable: false,
+    };
+  }
+  const credentials: Array<{ account: string; value: string }> = [];
+  let perAccountUnreachable = false;
+  for (const account of credentialList.accounts) {
+    const result = await getSecureKeyResultAsync(account);
+    if (result.unreachable) {
+      perAccountUnreachable = true;
+      log.warn(
+        { account },
+        "Credential store unreachable when reading credential — skipping",
+      );
+    } else if (result.value != null) {
+      credentials.push({ account, value: result.value });
+    }
+  }
+  return { credentials, unreachable: false, perAccountUnreachable };
+}
+
+/**
+ * POST /v1/migrations/export-to-gcs
+ *
+ * Starts an async export job that streams a freshly-built .vbundle archive
+ * to a GCS signed PUT URL. Returns `202 Accepted` with a `job_id` the caller
+ * can poll via the job-status endpoint; the bundle upload runs in the
+ * background via `migrationJobs`.
+ *
+ * Request body (JSON):
+ *   { upload_url: string, description?: string }
+ *
+ * Responses:
+ *   202: { job_id, status: "pending", type: "export" }
+ *   400: { error: { code: "invalid_upload_url", reason } } — URL failed
+ *        `validateGcsSignedUrl` (scheme/host/signature/traversal).
+ *   409: { error: { code: "export_in_progress", job_id } } — another export
+ *        job is already pending or running.
+ *   500: Standard error envelope for credential-collection failures or
+ *        other unexpected errors before the job is enqueued.
+ *
+ * Terminal job state (surfaced via the job-status endpoint once poll lands):
+ *   result: { size, sha256, schemaVersion, credentialsIncluded }
+ *   error.code = "upload_failed" with `upstreamStatus` on non-2xx PUT
+ *   error.code = "fetch_failed" on transport errors from the PUT itself.
+ *
+ * Auth: settings.write scope (matches `migrations/export`).
+ */
+export async function handleMigrationExportToGcs({ body }: RouteHandlerArgs) {
+  // ── 1. Parse JSON body ────────────────────────────────────────────────
+  const parsed = MigrationExportToGcsBody.safeParse(body);
+  if (!parsed.success) {
+    throw new BadRequestError(
+      "Request body must be { upload_url: string, description?: string } with a valid URL",
+    );
+  }
+
+  // ── 2. Validate the upload URL. Never log `parsed.data.upload_url`.
+  const validated = validateGcsSignedUrl(
+    parsed.data.upload_url,
+    urlValidatorOptions,
+  );
+  if (!validated.ok) {
+    log.warn(
+      { reason: validated.reason },
+      "Rejected migration export-to-gcs upload URL",
+    );
+    throw new RouteError(
+      `Invalid upload URL: ${validated.reason}`,
+      "invalid_upload_url",
+      400,
+    );
+  }
+
+  log.info(
+    { host: validated.host, path: validated.path },
+    "migration export to GCS starting",
+  );
+
+  // ── 3. Collect credentials up front. Fail closed → 500.
+  let collected: CollectedCredentials;
+  try {
+    collected = await collectExportCredentials();
+  } catch (err) {
+    log.error({ err }, "Failed to collect credentials for export-to-gcs");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Failed to collect credentials",
+    );
+  }
+
+  const uploadUrl = parsed.data.upload_url;
+
+  // Compute the v1 manifest inputs once outside the async job runner so we
+  // surface failures (e.g. credential-store probe) as a synchronous 500
+  // before the caller starts polling.
+  let manifestInputs: ExportManifestInputs;
+  try {
+    manifestInputs = await buildExportManifestInputs();
+  } catch (err) {
+    log.error({ err }, "Failed to assemble export manifest inputs");
+    throw new InternalError(
+      err instanceof Error
+        ? err.message
+        : "Failed to assemble export manifest inputs",
+    );
+  }
+
+  const secretsRedacted = computeSecretsRedacted(
+    collected.credentials.length,
+    collected.unreachable,
+    collected.perAccountUnreachable,
+  );
+
+  // ── 4. Enqueue the job. The runner captures the collected credentials.
+  let job;
+  try {
+    job = migrationJobs.startJob("export", async () => {
+      let cleanup: (() => Promise<void>) | undefined;
+      try {
+        const result = await streamExportVBundle({
+          workspaceDir: getWorkspaceDir(),
+          ...manifestInputs,
+          secretsRedacted,
+          credentials: collected.credentials,
+          checkpoint: async () => {
+            // Dispatch through `runAsyncSqlite` so the WAL checkpoint runs
+            // in a sqlite3 subprocess on hosts where it's available. A
+            // WAL flush on a multi-GB WAL file can otherwise stall the
+            // daemon's event loop for the full duration of the flush.
+            //
+            // FULL (not TRUNCATE): see the disk-export checkpoint above
+            // for rationale. assistant/AGENTS.md "SQLite WAL
+            // checkpointing".
+            const result = await runAsyncSqlite("PRAGMA wal_checkpoint(FULL)");
+            if (!result.ok) {
+              log.warn(
+                { error: result.error, backend: result.backend },
+                "WAL checkpoint failed — exporting without checkpoint",
+              );
+            }
+          },
+        });
+
+        cleanup = result.cleanup;
+        const { tempPath, size, manifest } = result;
+
+        // Stream the temp file to GCS via PUT. Using Node's ReadableStream
+        // bridge keeps peak memory bounded — we do NOT load the archive
+        // into memory.
+        const fileStream = createReadStream(tempPath);
+        const webBody = Readable.toWeb(
+          fileStream,
+        ) as unknown as ReadableStream<Uint8Array>;
+
+        let response: Response;
+        try {
+          response = await fetch(uploadUrl, {
+            method: "PUT",
+            body: webBody,
+            // `duplex: "half"` is required when sending a streaming body
+            // via fetch in Node/Bun — without it the platform rejects the
+            // request as "duplex option is required when body is a
+            // ReadableStream".
+            duplex: "half",
+            // `validateGcsSignedUrl` only vets the initial URL. If the
+            // upstream responds with a 3xx, default fetch would follow
+            // the redirect and PUT bytes to an attacker-controlled host.
+            // Refuse redirects so the signed URL's origin is the only
+            // destination for the export archive.
+            redirect: "error",
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "Content-Length": String(size),
+            },
+            signal: AbortSignal.timeout(EXPORT_TO_GCS_PUT_TIMEOUT_MS),
+          } as RequestInit & { duplex: "half" });
+        } catch (err) {
+          // Transport-level fetch failures (DNS, reset, abort) — tag them
+          // with the fetch-body marker so the registry maps them to
+          // `error.code = "fetch_failed"` and logs stay consistent with
+          // the import URL path.
+          const wrapped = err instanceof Error ? err : new Error(String(err));
+          tagFetchBodyError(wrapped as NodeJS.ErrnoException);
+          (wrapped as { code?: string }).code = "fetch_failed";
+          throw wrapped;
+        }
+
+        if (!response.ok) {
+          // Drain so the socket is released promptly. Ignore drain errors.
+          try {
+            await response.body?.cancel();
+          } catch {
+            /* best-effort */
+          }
+          const uploadErr = new Error(
+            `Upload to GCS failed with status ${response.status}`,
+          );
+          (uploadErr as { code?: string }).code = "upload_failed";
+          (uploadErr as { upstreamStatus?: number }).upstreamStatus =
+            response.status;
+          throw uploadErr;
+        }
+
+        return {
+          size,
+          sha256: manifest.checksum,
+          schemaVersion: manifest.schema_version,
+          credentialsIncluded: collected.credentials.length,
+        };
+      } finally {
+        // Mirror the raw-bytes export cleanup pattern: the stream's
+        // `close` listener is the happy-path cleanup in that handler, but
+        // here we keep everything in the async block, so a finally is the
+        // right place to evict the temp file regardless of outcome.
+        if (cleanup) {
+          try {
+            await cleanup();
+          } catch (err) {
+            log.warn({ err }, "Failed to clean up export-to-gcs temp file");
+          }
+        }
+      }
+    });
+  } catch (err) {
+    if (err instanceof JobAlreadyInProgressError) {
+      throw new RouteError(
+        `Export already in progress: ${err.existingJobId}`,
+        "export_in_progress",
+        409,
+      );
+    }
+    log.error({ err }, "Unexpected error while enqueueing export-to-gcs job");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Unexpected export-to-gcs error",
+    );
+  }
+
+  return {
+    job_id: job.id,
+    status: "pending" as const,
+    type: "export" as const,
+  };
+}
+
+/**
+ * Extract file data from a request body, supporting both raw binary
+ * and multipart form data uploads.
+ *
+ * Shared between validate and import-preflight handlers.
+ */
+async function extractFileData(
+  rawBody: Uint8Array | undefined,
+  headers: Record<string, string> | undefined,
+): Promise<Uint8Array> {
+  const contentType = headers?.["content-type"] ?? "";
+
+  if (contentType.includes("multipart/form-data")) {
+    if (!rawBody) {
+      throw new BadRequestError("Request body is empty");
+    }
+    try {
+      const syntheticReq = new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": contentType },
+        body: rawBody.buffer as ArrayBuffer,
+      });
+      const formData = await syntheticReq.formData();
+      const file = formData.get("file");
+      if (!file || !(file instanceof Blob)) {
+        throw new BadRequestError('Multipart upload requires a "file" field');
+      }
+      return new Uint8Array(await file.arrayBuffer());
+    } catch (err) {
+      if (err instanceof BadRequestError) throw err;
+      log.error({ err }, "Failed to parse multipart form data");
+      throw new BadRequestError("Invalid multipart form data");
+    }
+  }
+
+  // Raw binary body — already provided as rawBody by the adapter
+  if (!rawBody || rawBody.length === 0) {
+    throw new BadRequestError(
+      "Request body is empty — a .vbundle file is required",
+    );
+  }
+  return rawBody;
+}
+
+/**
+ * POST /v1/migrations/import-preflight
+ *
+ * Dry-run import analysis. Accepts a .vbundle archive upload, validates it,
+ * and returns a detailed report of what would change if the bundle were
+ * actually imported — without modifying any data on disk.
+ *
+ * The file can be sent as:
+ * - Raw binary body with Content-Type: application/octet-stream
+ * - Multipart form data with a "file" field
+ *
+ * Returns:
+ *   200: {
+ *     can_import: boolean,
+ *     summary: { total_files, files_to_create, files_to_overwrite, files_unchanged },
+ *     files: [{ path, action, bundle_size, current_size, bundle_sha256, current_sha256 }],
+ *     conflicts: [{ code, message, path? }],
+ *     manifest: { ... }
+ *   }
+ *   200: { can_import: false, validation: { is_valid: false, errors: [...] } }
+ *        (when the bundle itself is invalid)
+ *   400: Standard error envelope for missing/empty body
+ *   500: Standard error envelope for unexpected failures
+ *
+ * Auth: Requires settings.write scope. Allowed for actor, svc_gateway, svc_daemon, local.
+ */
+export async function handleMigrationImportPreflight({
+  rawBody,
+  headers,
+}: RouteHandlerArgs) {
+  const fileData = await extractFileData(rawBody, headers);
+
+  try {
+    const validationResult = validateVBundle(fileData);
+
+    if (!validationResult.is_valid || !validationResult.manifest) {
+      return {
+        can_import: false,
+        validation: {
+          is_valid: false,
+          errors: validationResult.errors,
+        },
+      };
+    }
+
+    const pathResolver = new DefaultPathResolver(
+      getWorkspaceDir(),
+      getWorkspaceHooksDir(),
+    );
+
+    return analyzeImport({
+      manifest: validationResult.manifest,
+      pathResolver,
+    });
+  } catch (err) {
+    log.error({ err }, "Unexpected error during import preflight analysis");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Unexpected import preflight error",
+    );
+  }
+}
+
+/**
+ * POST /v1/migrations/import
+ *
+ * Commits a .vbundle archive import to disk. This is a destructive operation
+ * that writes bundle files to their target locations, replacing existing data.
+ *
+ * The import process:
+ * 1. Validates the bundle (validation before any state mutation)
+ * 2. Extracts files from the archive
+ * 3. Backs up existing files before overwriting
+ * 4. Writes bundle files to disk
+ * 5. Verifies post-write integrity (SHA-256 check)
+ * 6. Returns a detailed report of what was imported
+ *
+ * The bundle can be supplied in any of three ways:
+ * - Raw binary body with Content-Type: application/octet-stream
+ * - Multipart form data with a "file" field
+ * - JSON body `{ "url": "<signed-gcs-url>" }` (Content-Type:
+ *   application/json). The daemon fetches and streams the archive
+ *   through `streamCommitImport`, so peak memory stays bounded by a
+ *   single tar entry rather than bundle size.
+ *
+ * Returns (all three paths):
+ *   200: {
+ *     success: true,
+ *     summary: { total_files, files_created, files_overwritten, files_skipped, backups_created },
+ *     files: [{ path, disk_path, action, size, sha256, backup_path }],
+ *     manifest: { ... },
+ *     warnings: [...]
+ *   }
+ *   200: { success: false, reason: "validation_failed", errors: [...] }
+ *   400: Standard error envelope for missing/empty body or malformed URL
+ *   500: Standard error envelope for unexpected failures
+ *   502: { success: false, reason: "fetch_failed", upstream_status?: number }
+ *        (URL path only — upstream GCS fetch failed)
+ *
+ * Auth: Requires settings.write scope. Allowed for actor, svc_gateway, svc_daemon, local.
+ */
+export async function handleMigrationImport(
+  args: RouteHandlerArgs,
+): Promise<unknown> {
+  const { body, rawBody, headers } = args;
+  // JSON body means the caller is asking us to fetch the bundle from a
+  // signed URL and stream it through the importer.
+  const contentType = headers?.["content-type"] ?? "";
+  if (contentType.includes("application/json")) {
+    return handleMigrationImportFromUrl(body);
+  }
+
+  const fileData = await extractFileData(rawBody, headers);
+
+  try {
+    // Validate the bundle before closing the DB to avoid an unnecessary
+    // close/reopen cycle when the bundle is invalid. Pass the validated
+    // manifest and entries to commitImport so it skips re-validation
+    // (avoids holding two copies of decompressed data in memory).
+    const validation = validateVBundle(fileData);
+    if (!validation.is_valid) {
+      return {
+        success: false,
+        reason: "validation_failed",
+        errors: validation.errors,
+      };
+    }
+
+    // Pre-check runtime-version compat before the DB close/reopen cycle.
+    // commitImport runs the same gate as defense-in-depth for callers that
+    // don't pre-check; we run it here too so an incompatible bundle short-
+    // circuits before resetDb().
+    const compatResult = evaluateRuntimeCompatibility(
+      validation.manifest!.compatibility,
+      APP_VERSION,
+    );
+    if (!compatResult.ok) {
+      throwImportCommitFailure({
+        ok: false,
+        reason: "version_incompatible",
+        bundle_compat: compatResult.bundle_compat,
+        runtime_version: compatResult.runtime_version,
+      });
+    }
+
+    const pathResolver = new DefaultPathResolver(
+      getWorkspaceDir(),
+      getWorkspaceHooksDir(),
+    );
+
+    // Close the live SQLite connection before overwriting assistant.db on disk.
+    // The singleton will be lazily reopened on the next getDb() call.
+    resetDb();
+
+    const result = commitImport({
+      archiveData: fileData,
+      pathResolver,
+      preValidatedManifest: validation.manifest,
+      preValidatedEntries: validation.entries,
+      workspaceDir: getWorkspaceDir(),
+    });
+
+    if (!result.ok) {
+      throwImportCommitFailure(result);
+    }
+
+    // Import credentials from the bundle into CES (non-blocking — failures
+    // are logged as warnings but do not fail the overall import).
+    let credentialsImported: CredentialImportSummary | undefined;
+
+    if (validation.entries) {
+      const bundleCredentials = extractCredentialsFromBundle(
+        validation.entries,
+        validation.manifest!,
+      );
+      credentialsImported = await importBundleCredentialsIntoCes(
+        bundleCredentials,
+        result.report,
+      );
+    }
+
+    // Reconcile vellum:* metadata against CES so the gateway's
+    // readServiceCredentials can still find platform identity values even
+    // if Django's post-hatch provisioning raced with the import.
+    await reconcileVellumMetadataFromCes(result.report);
+
+    // Invalidate in-process config cache so imported settings.json takes effect
+    invalidateConfigCache();
+
+    // Check whether the imported database contains migration checkpoints from
+    // a newer version. This is non-blocking — the import has already
+    // succeeded — but we surface a warning so the caller knows some data may
+    // not be fully compatible with this daemon's schema.
+    appendNewerMigrationWarningsIfAny(result.report);
+
+    return importCommitSuccessResult(result.report, credentialsImported);
+  } catch (err) {
+    // Preserve typed RouteError instances (e.g. UnprocessableEntityError for
+    // version_incompatible, BadRequestError for validation_failed) — only
+    // wrap genuinely unexpected errors as 500 InternalError.
+    if (err instanceof RouteError) {
+      throw err;
+    }
+    log.error({ err }, "Unexpected error during import commit");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Unexpected import error",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GCS URL import pipeline — shared by the URL-body branch of
+// POST /v1/migrations/import and POST /v1/migrations/import-from-gcs.
+// ---------------------------------------------------------------------------
+
+/** 60 minutes — matches the gateway's upstream fetch deadline. */
+const URL_FETCH_TIMEOUT_MS = 60 * 60 * 1000;
+
+const MigrationImportUrlBody = z.object({ url: z.string().min(1) });
+
+const MigrationImportFromGcsBody = z.object({ bundle_url: z.string().url() });
+
+/**
+ * Marker attached to errors that originate from the upstream HTTP body
+ * stream (peer reset, abort mid-stream, DNS/transport failure after
+ * headers were received). The handler's catch/result-mapping path looks
+ * for this tag to return 502 `fetch_failed` instead of 500
+ * `extraction_failed` for truncated bodies, matching the OpenAPI
+ * contract.
+ */
+const kFetchBodyError = Symbol.for("vellum.migrationImport.fetchBodyError");
+
+/**
+ * Sidecar flag on the wrapper PassThrough indicating that its upstream
+ * was torn down by a tagged fetch-body error. Checked after
+ * streamCommitImport returns — the importer preserves the error message
+ * in `result.reason = "extraction_failed"` but strips the tag.
+ */
+const kFetchBodyTornDown = Symbol.for(
+  "vellum.migrationImport.fetchBodyTornDown",
+);
+
+function tagFetchBodyError(err: NodeJS.ErrnoException): void {
+  (err as unknown as Record<symbol, boolean>)[kFetchBodyError] = true;
+}
+
+function isFetchBodyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  return (err as unknown as Record<symbol, boolean>)[kFetchBodyError] === true;
+}
+
+function wasFetchBodyTornDown(stream: PassThrough): boolean {
+  return (
+    (stream as unknown as Record<symbol, boolean>)[kFetchBodyTornDown] === true
+  );
+}
+
+/**
+ * Test seam: the integration test needs to point the validator at a local
+ * HTTP server fixture. Production callers never pass this — the default
+ * keeps the validator strict (GCS host, HTTPS only, no explicit port).
+ */
+let urlValidatorOptions: ValidateGcsSignedUrlOptions | undefined;
+
+/**
+ * Test-only: override the allowed-host list used by the URL-body import
+ * handler. Call with `undefined` (or no arguments) to reset to production
+ * defaults. This is intentionally not exported from the module's public
+ * surface — tests import it directly from this file.
+ */
+export function _setUrlImportValidatorOptionsForTests(
+  options: ValidateGcsSignedUrlOptions | undefined,
+): void {
+  urlValidatorOptions = options;
+}
+
+/**
+ * Successful outcome of `runGcsImport`. Mirrors the wire shape produced by
+ * `importCommitSuccessResponse` (report fields spread at the top level, with
+ * an optional `credentialsImported` summary alongside) so the same value can
+ * be serialized directly as a Response body OR stashed as an async-job
+ * `result` — both the sync endpoint and the async job-status endpoint then
+ * hand the CLI a single, identical `ImportResponse`-compatible shape.
+ */
+export interface ImportSummary extends ImportCommitReport {
+  credentialsImported?: CredentialImportSummary;
+}
+
+/**
+ * Structured error thrown by `runGcsImport`. Carries the information needed
+ * to reconstruct the URL-body handler's legacy Response shapes and for the
+ * async-job registry to map to `error.code`/`upstreamStatus`.
+ */
+interface GcsImportErrorInit {
+  code:
+    | "invalid_url"
+    | "fetch_failed"
+    | "validation_failed"
+    | "extraction_failed"
+    | "version_incompatible"
+    | "write_failed";
+  message: string;
+  upstreamStatus?: number;
+  reason?: string;
+  errors?: Array<{ code: string; message: string; path?: string }>;
+  partial_report?: ImportCommitReport;
+  /** Populated for `version_incompatible` — mirrors the platform's PR #5470
+   *  response shape so the URL-body endpoint can return the same body. */
+  bundle_compat?: RuntimeCompatibility;
+  /** Populated for `version_incompatible`. */
+  runtime_version?: string;
+}
+
+class GcsImportError extends Error {
+  public readonly code: GcsImportErrorInit["code"];
+  public readonly upstreamStatus?: number;
+  public readonly reason?: string;
+  public readonly errors?: GcsImportErrorInit["errors"];
+  public readonly partial_report?: ImportCommitReport;
+  public readonly bundle_compat?: RuntimeCompatibility;
+  public readonly runtime_version?: string;
+
+  constructor(init: GcsImportErrorInit) {
+    super(init.message);
+    this.name = "GcsImportError";
+    this.code = init.code;
+    if (init.upstreamStatus !== undefined) {
+      this.upstreamStatus = init.upstreamStatus;
+    }
+    if (init.reason !== undefined) {
+      this.reason = init.reason;
+    }
+    if (init.errors !== undefined) {
+      this.errors = init.errors;
+    }
+    if (init.partial_report !== undefined) {
+      this.partial_report = init.partial_report;
+    }
+    if (init.bundle_compat !== undefined) {
+      this.bundle_compat = init.bundle_compat;
+    }
+    if (init.runtime_version !== undefined) {
+      this.runtime_version = init.runtime_version;
+    }
+  }
+}
+
+/**
+ * Fetch a .vbundle from a signed GCS URL and commit it via the streaming
+ * importer. On success, returns an `ImportSummary` the caller can serialize
+ * into a Response or stash as an async-job `result`. On failure, throws a
+ * `GcsImportError`:
+ *
+ *   - `invalid_url`        → URL failed `validateGcsSignedUrl` (pre-fetch).
+ *   - `fetch_failed`       → upstream fetch error, non-2xx response, missing
+ *                            body, OR a mid-stream body teardown tagged via
+ *                            `kFetchBodyError`. `upstreamStatus` is populated
+ *                            for non-2xx responses.
+ *   - `validation_failed`  → the bundle failed schema/structural validation
+ *                            inside `streamCommitImport`; `errors` carries
+ *                            the per-issue list.
+ *   - `extraction_failed`  → bundle extraction threw (malformed archive, hash
+ *                            mismatch, etc.) that was NOT an upstream tear-
+ *                            down. `reason` carries the importer's string.
+ *   - `write_failed`       → post-extraction disk write error; `partial_report`
+ *                            is attached when the importer produced one.
+ *
+ * The signed URL is never echoed into errors or logs — only the extracted
+ * `host`/`path` are.
+ */
+async function runGcsImport(
+  url: string,
+  _correlationId?: string,
+): Promise<ImportSummary> {
+  // ── 1. Validate the URL (defense-in-depth; never log the raw URL).
+  const validated = validateGcsSignedUrl(url, urlValidatorOptions);
+  if (!validated.ok) {
+    log.warn({ reason: validated.reason }, "Rejected migration import URL");
+    throw new GcsImportError({
+      code: "invalid_url",
+      message: `Invalid URL: ${validated.reason}`,
+      reason: validated.reason,
+    });
+  }
+
+  log.info(
+    { host: validated.host, path: validated.path },
+    "migration import from URL",
+  );
+
+  const startedAt = Date.now();
+
+  // ── 2. Fetch the URL ──────────────────────────────────────────────────
+  let upstream: Response;
+  try {
+    upstream = await fetch(url, {
+      signal: AbortSignal.timeout(URL_FETCH_TIMEOUT_MS),
+      // SSRF guard: `validateGcsSignedUrl` only vetted the initial URL.
+      // Default fetch behavior follows 3xx responses, which would let a
+      // validated `storage.googleapis.com` URL redirect to an arbitrary
+      // host and bypass the allowlist. Reject redirects so we only ever
+      // read bytes from the URL the caller handed us.
+      redirect: "error",
+    });
+  } catch (err) {
+    log.error(
+      {
+        host: validated.host,
+        path: validated.path,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Failed to fetch migration import URL",
+    );
+    throw new GcsImportError({
+      code: "fetch_failed",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (!upstream.ok) {
+    log.error(
+      {
+        host: validated.host,
+        path: validated.path,
+        upstream_status: upstream.status,
+      },
+      "Migration import URL fetch returned non-2xx",
+    );
+    // Drain the body so the underlying socket can be released promptly.
+    try {
+      await upstream.body?.cancel();
+    } catch {
+      /* best effort */
+    }
+    throw new GcsImportError({
+      code: "fetch_failed",
+      message: `Upstream fetch returned ${upstream.status}`,
+      upstreamStatus: upstream.status,
+    });
+  }
+
+  if (!upstream.body) {
+    log.error(
+      { host: validated.host, path: validated.path },
+      "Migration import URL fetch returned no body",
+    );
+    throw new GcsImportError({
+      code: "fetch_failed",
+      message: "Upstream fetch returned no body",
+    });
+  }
+
+  // ── 3. Stream the response through the importer ──────────────────────
+  // Convert the WHATWG ReadableStream from fetch() into a Node Readable so
+  // the tar-stream / gunzip / hash-verifier pipeline inside
+  // streamCommitImport can consume it via `.pipe()`.
+  const upstreamNodeStream = Readable.fromWeb(
+    upstream.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>,
+  );
+
+  // Wrap the upstream stream in a PassThrough that tags any error bubbling
+  // from the upstream HTTP body (peer reset, abort mid-stream, etc.) with a
+  // known symbol. When that tagged error surfaces out of
+  // streamCommitImport's gunzip/tar pipeline, we can distinguish it from a
+  // legitimate bundle-format failure and map it to `fetch_failed` instead
+  // of `extraction_failed` — matching the OpenAPI contract for the URL
+  // body shape. We also propagate errors from the wrapper back to the
+  // upstream stream so its underlying connection is torn down cleanly.
+  //
+  // Bun's `Readable.fromWeb(fetchBody)` does NOT emit `'error'` when the
+  // TCP socket is torn down mid-response — it just emits `'close'` with
+  // no final `'end'`. We therefore track BOTH signals:
+  //   • explicit `'error'`   → tag the error, destroy the wrapper.
+  //   • premature `'close'`  → synthesize an error, tag it, destroy the
+  //     wrapper. "Premature" = close fired without end first.
+  const taggedSource = new PassThrough();
+  let upstreamEnded = false;
+  // True once the importer (or any local consumer) initiates a teardown of
+  // `taggedSource`. The subsequent `close` on `upstreamNodeStream` is then a
+  // cascaded effect of our own teardown, NOT a real upstream failure — so
+  // we must NOT tag it as a fetch-body error, or local validation /
+  // extraction errors would be masked as fetch_failed.
+  let localTeardownInitiated = false;
+  upstreamNodeStream.on("end", () => {
+    upstreamEnded = true;
+  });
+  upstreamNodeStream.on("error", (err: NodeJS.ErrnoException) => {
+    tagFetchBodyError(err);
+    (taggedSource as unknown as Record<symbol, boolean>)[kFetchBodyTornDown] =
+      true;
+    taggedSource.destroy(err);
+  });
+  upstreamNodeStream.on("close", () => {
+    if (upstreamEnded) return;
+    // A local teardown path closed us; don't treat this as an upstream
+    // failure. The real error (validation / extraction / hash mismatch) is
+    // already propagating through `streamCommitImport`'s result.
+    if (localTeardownInitiated) return;
+    const err = new Error(
+      "Upstream body stream closed before end",
+    ) as NodeJS.ErrnoException;
+    err.code = "ERR_UPSTREAM_BODY_CLOSED";
+    tagFetchBodyError(err);
+    (taggedSource as unknown as Record<symbol, boolean>)[kFetchBodyTornDown] =
+      true;
+    taggedSource.destroy(err);
+  });
+  upstreamNodeStream.pipe(taggedSource);
+  // Absorb stream errors on `taggedSource`. `streamCommitImport` does
+  // several `await`s (workspace recovery, temp-dir mkdir) before
+  // `parseVBundleStream(source)` attaches its own `source.on('error')`
+  // listener. If the upstream socket is destroyed during that window,
+  // the `upstreamNodeStream.on('close')` handler above calls
+  // `taggedSource.destroy(err)` with no listener attached yet and the
+  // error surfaces as unhandled. We don't need to act on it here — the
+  // `kFetchBodyTornDown` flag has already been latched on the stream,
+  // and the post-import branch below (`wasFetchBodyTornDown(taggedSource)`)
+  // maps the failure to `fetch_failed`. Register this absorber
+  // unconditionally so there is always at least one `'error'` listener
+  // on the wrapper for the lifetime of the stream.
+  taggedSource.on("error", () => {});
+  // Propagate wrapper teardown back to the upstream fetch body. When the
+  // streaming importer hits a validation/extraction error, it destroys
+  // `source` (which is `taggedSource`). Without this listener the
+  // `Readable.fromWeb(fetchBody)` stream would stay alive and continue
+  // buffering the remote response in the background until GC or the
+  // 60-minute timeout — a socket/bandwidth leak for any non-upstream error
+  // (malformed bundle, hash mismatch, size cap, etc.). We set
+  // `localTeardownInitiated` BEFORE destroying upstream so the resulting
+  // cascaded `close` on `upstreamNodeStream` isn't misclassified as a real
+  // upstream failure (which would return fetch_failed and mask the actual
+  // validation error).
+  taggedSource.on("close", () => {
+    if (!upstreamNodeStream.destroyed) {
+      localTeardownInitiated = true;
+      upstreamNodeStream.destroy();
+    }
+  });
+
+  const pathResolver = new DefaultPathResolver(
+    getWorkspaceDir(),
+    getWorkspaceHooksDir(),
+  );
+
+  // streamCommitImport does its own resetDb() internally before the atomic
+  // swap, so we don't need to call it here.
+  let result: ImportCommitResult;
+  // Track credential-import outcome for inclusion in the success response.
+  // The streaming importer invokes our callback only after the atomic swap,
+  // so filling this in here is safe.
+  let credentialsImported: CredentialImportSummary | undefined;
+  // Per-invocation warning collector — scoped to this request so concurrent
+  // URL imports can't trample each other's warnings.
+  const credentialImportWarningSink: CredentialWarningSink = { warnings: [] };
+
+  try {
+    result = await streamCommitImport({
+      source: taggedSource,
+      pathResolver,
+      workspaceDir: getWorkspaceDir(),
+      importCredentials: async (bundleCredentials) => {
+        // We can't mutate `result.report.warnings` in place here — the
+        // streaming importer hasn't returned its report yet. Accumulate
+        // into a sidecar and merge into the final report below.
+        credentialsImported = await importBundleCredentialsIntoCes(
+          bundleCredentials,
+          credentialImportWarningSink,
+        );
+      },
+    });
+  } catch (err) {
+    if (isFetchBodyError(err)) {
+      log.error(
+        {
+          host: validated.host,
+          path: validated.path,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Upstream body stream failed mid-import",
+      );
+      throw new GcsImportError({
+        code: "fetch_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    log.error(
+      {
+        host: validated.host,
+        path: validated.path,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "streamCommitImport threw during URL-body import",
+    );
+    throw new GcsImportError({
+      code: "extraction_failed",
+      message: err instanceof Error ? err.message : "Unexpected import error",
+    });
+  }
+
+  if (!result.ok) {
+    // streamCommitImport swallows the raw cause and maps any
+    // non-validation throw to `extraction_failed`. If the cause was an
+    // upstream body failure that we tagged at the source, surface the
+    // tag through the result (the importer preserves the message) by
+    // detecting the latched flag on the wrapper stream.
+    if (wasFetchBodyTornDown(taggedSource)) {
+      log.error(
+        {
+          host: validated.host,
+          path: validated.path,
+          reason: result.reason,
+        },
+        "Upstream body stream failed mid-import (detected via result)",
+      );
+      throw new GcsImportError({
+        code: "fetch_failed",
+        message: "Upstream body stream failed mid-import",
+      });
+    }
+    log.warn(
+      {
+        host: validated.host,
+        path: validated.path,
+        reason: result.reason,
+      },
+      "streamCommitImport returned failure during URL-body import",
+    );
+    if (result.reason === "validation_failed") {
+      throw new GcsImportError({
+        code: "validation_failed",
+        message: "Bundle validation failed",
+        reason: result.reason,
+        errors: result.errors,
+      });
+    }
+    if (result.reason === "extraction_failed") {
+      throw new GcsImportError({
+        code: "extraction_failed",
+        message: result.message,
+        reason: result.reason,
+      });
+    }
+    if (result.reason === "version_incompatible") {
+      // Returned by commitImport / streamCommitImport when the runtime falls
+      // outside the bundle's compat range. The platform-side gate is the
+      // primary check; this catches legacy bundles whose ExportJob row
+      // predates PR #5470 (compat columns NULL → platform gate skipped).
+      throw new GcsImportError({
+        code: "version_incompatible",
+        message: formatRuntimeCompatibilityMessage(
+          result.bundle_compat,
+          result.runtime_version,
+        ),
+        reason: result.reason,
+        bundle_compat: result.bundle_compat,
+        runtime_version: result.runtime_version,
+      });
+    }
+    // write_failed
+    throw new GcsImportError({
+      code: "write_failed",
+      message: result.message,
+      reason: result.reason,
+      partial_report: result.partial_report,
+    });
+  }
+
+  // Merge any warnings accumulated by the credential-import callback into
+  // the final report.
+  if (credentialImportWarningSink.warnings.length > 0) {
+    result.report.warnings.push(...credentialImportWarningSink.warnings);
+  }
+
+  // Reconcile vellum:* metadata against CES so the gateway's
+  // readServiceCredentials can still find platform identity values even
+  // if Django's post-hatch provisioning raced with the streaming import
+  // (its metadata upsert may have landed in the backup-dir copy that the
+  // swap pushed aside, while its CES write survived on the separate
+  // volume).
+  await reconcileVellumMetadataFromCes(result.report);
+
+  // streamCommitImport already invalidated config + trust caches inside its
+  // post-swap cleanup. We only need to check whether the newly-imported DB
+  // carries migration checkpoints from a newer daemon version.
+  appendNewerMigrationWarningsIfAny(result.report);
+
+  const elapsedMs = Date.now() - startedAt;
+  log.info(
+    {
+      host: validated.host,
+      path: validated.path,
+      files_written: result.report.summary.files_created,
+      bytes_written: result.report.files.reduce((n, f) => n + f.size, 0),
+      elapsed_ms: elapsedMs,
+    },
+    "Migration import from URL complete",
+  );
+
+  return credentialsImported
+    ? { ...result.report, credentialsImported }
+    : { ...result.report };
+}
+
+/**
+ * Handle a JSON `{ "url": "..." }` body on POST /v1/migrations/import.
+ *
+ * Thin wrapper around `runGcsImport` that preserves the legacy synchronous
+ * Response shapes. `handleMigrationImportFromGcs` below uses the same helper
+ * asynchronously via the migration-job registry.
+ */
+async function handleMigrationImportFromUrl(
+  body: Record<string, unknown> | undefined,
+): Promise<unknown> {
+  const parsed = MigrationImportUrlBody.safeParse(body);
+  if (!parsed.success) {
+    throw new BadRequestError(
+      "Request body must be { url: string } with a non-empty url",
+    );
+  }
+
+  try {
+    const summary = await runGcsImport(parsed.data.url);
+    const { credentialsImported, ...report } = summary;
+    return importCommitSuccessResult(report, credentialsImported);
+  } catch (err) {
+    throwGcsImportError(err);
+  }
+}
+
+/**
+ * Map a `runGcsImport` error (or any other thrown value) to a thrown
+ * RouteError subclass or a plain-object error body. Always throws —
+ * callers should invoke this in a catch block.
+ */
+function throwGcsImportError(err: unknown): never {
+  if (err instanceof GcsImportError) {
+    if (err.code === "invalid_url") {
+      throw new BadRequestError(err.message);
+    }
+    if (err.code === "fetch_failed") {
+      throw new BadGatewayError(
+        err.upstreamStatus
+          ? `Upstream fetch returned ${err.upstreamStatus}`
+          : err.message,
+      );
+    }
+    if (err.code === "validation_failed") {
+      // Validation failure is not an HTTP error — return structured body
+      // with 200 (same as raw-bytes validate path).
+      throw new BadRequestError(
+        JSON.stringify({
+          success: false,
+          reason: "validation_failed",
+          errors: err.errors ?? [],
+        }),
+      );
+    }
+    if (err.code === "version_incompatible") {
+      // 422 (not 500) — the bundle is structurally valid but cannot be
+      // imported on this runtime. Body mirrors the platform's PR #5470
+      // response shape.
+      throw new UnprocessableEntityError(err.message, {
+        reason: "version_incompatible" as const,
+        ...(err.bundle_compat !== undefined && {
+          bundle_compat: err.bundle_compat,
+        }),
+        ...(err.runtime_version !== undefined && {
+          runtime_version: err.runtime_version,
+        }),
+      });
+    }
+    if (err.code === "extraction_failed") {
+      throw new InternalError(err.message);
+    }
+    // write_failed
+    throw new InternalError(err.message);
+  }
+
+  log.error({ err }, "Unexpected error from runGcsImport");
+  throw new InternalError(
+    err instanceof Error ? err.message : "Unexpected import error",
+  );
+}
+
+/**
+ * POST /v1/migrations/import-from-gcs
+ *
+ * Kick off an async bundle import from a signed GCS URL. Returns 202 with a
+ * `job_id` the caller can poll via `GET /v1/migrations/jobs/:job_id`
+ * (PR 4). 409 if another import is already pending or running.
+ *
+ * Auth: Requires settings.write scope. Allowed for actor, svc_gateway, svc_daemon, local.
+ */
+export async function handleMigrationImportFromGcs({ body }: RouteHandlerArgs) {
+  const parsed = MigrationImportFromGcsBody.safeParse(body);
+  if (!parsed.success) {
+    throw new BadRequestError(
+      "Request body must be { bundle_url: string } with a valid URL",
+    );
+  }
+
+  const { bundle_url } = parsed.data;
+
+  // Synchronously validate the GCS URL before consuming the single
+  // in-flight import slot.
+  const validated = validateGcsSignedUrl(bundle_url, urlValidatorOptions);
+  if (!validated.ok) {
+    log.warn(
+      { reason: validated.reason },
+      "Rejected migration import-from-gcs bundle URL",
+    );
+    throw new RouteError(
+      `Invalid bundle URL: ${validated.reason}`,
+      "invalid_bundle_url",
+      400,
+    );
+  }
+
+  try {
+    const job = migrationJobs.startJob("import", async (jobRecord) =>
+      runGcsImport(bundle_url, jobRecord.id),
+    );
+    return {
+      job_id: job.id,
+      status: "pending" as const,
+      type: "import" as const,
+    };
+  } catch (err) {
+    if (err instanceof JobAlreadyInProgressError) {
+      throw new RouteError(
+        `Import already in progress: ${err.existingJobId}`,
+        "import_in_progress",
+        409,
+      );
+    }
+    log.error({ err }, "Unexpected error scheduling import-from-gcs job");
+    throw new InternalError(
+      err instanceof Error ? err.message : "Unexpected import error",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for raw-bytes and URL paths
+// ---------------------------------------------------------------------------
+
+interface CredentialImportSummary {
+  total: number;
+  succeeded: number;
+  failed: number;
+  failedAccounts: string[];
+  skippedPlatform: number;
+}
+
+/**
+ * Minimal surface the credential-import helper needs to stash warnings —
+ * either a full `ImportCommitReport` (raw-bytes path, after commitImport
+ * returns) or an ephemeral per-request collector (streaming path, where the
+ * report doesn't exist yet when the callback fires).
+ */
+interface CredentialWarningSink {
+  warnings: string[];
+}
+
+/**
+ * Filter platform-identity (vellum:*) credentials out of the bundle, push
+ * user credentials into CES via `bulkSetSecureKeysAsync`, and return a
+ * structured summary. Never throws — CES failures become report warnings.
+ */
+async function importBundleCredentialsIntoCes(
+  bundleCredentials: Array<{ account: string; value: string }>,
+  warningSink: CredentialWarningSink,
+): Promise<CredentialImportSummary | undefined> {
+  // Filter out platform-identity credentials (vellum:*) — these are
+  // environment-specific and must not overwrite the target's own identity.
+  const userCredentials = bundleCredentials.filter(
+    (c) => !c.account.startsWith(PLATFORM_CREDENTIAL_PREFIX),
+  );
+  const skippedPlatform = bundleCredentials.length - userCredentials.length;
+  if (skippedPlatform > 0) {
+    log.info(`Skipped ${skippedPlatform} platform credential(s) from import`);
+  }
+
+  if (userCredentials.length === 0) {
+    if (skippedPlatform > 0) {
+      // All credentials in the bundle were platform credentials — report
+      // the skip count even though nothing was sent to CES.
+      return {
+        total: 0,
+        succeeded: 0,
+        failed: 0,
+        failedAccounts: [],
+        skippedPlatform,
+      };
+    }
+    return undefined;
+  }
+
+  try {
+    const credResults = await bulkSetSecureKeysAsync(userCredentials);
+    const failedResults = credResults.filter((r) => !r.ok);
+    if (failedResults.length > 0) {
+      log.warn(
+        { failed: failedResults.map((f) => f.account) },
+        "Some credentials failed to import",
+      );
+    }
+    log.info(
+      { total: userCredentials.length, failed: failedResults.length },
+      "Credential import complete",
+    );
+    const succeeded = userCredentials.length - failedResults.length;
+    if (failedResults.length > 0) {
+      warningSink.warnings.push(
+        `Imported ${succeeded} credential(s), ${failedResults.length} failed`,
+      );
+    }
+    return {
+      total: userCredentials.length,
+      succeeded,
+      failed: failedResults.length,
+      failedAccounts: failedResults.map((f) => f.account),
+      skippedPlatform,
+    };
+  } catch (err) {
+    log.warn({ err }, "Credential import failed entirely");
+    warningSink.warnings.push(
+      `Credential import failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {
+      total: userCredentials.length,
+      succeeded: 0,
+      failed: userCredentials.length,
+      failedAccounts: userCredentials.map((c) => c.account),
+      skippedPlatform,
+    };
+  }
+}
+
+/**
+ * Append a warning to `report` when the newly-imported database contains
+ * migration checkpoints from a daemon version newer than this one. Silent
+ * on any validation error — the import has already succeeded.
+ *
+ * Gated on the report's own file counts: if the import didn't create or
+ * overwrite any workspace files (no-swap success — e.g. credentials-only
+ * bundle, all-skipped legacy bundle), the live DB is unchanged and any
+ * "newer migrations" detected there came from the existing workspace,
+ * NOT from the imported bundle. Attributing them to the bundle would be a
+ * false positive, so skip the check entirely in that case.
+ */
+function appendNewerMigrationWarningsIfAny(report: ImportCommitReport): void {
+  if (report.summary.files_created + report.summary.files_overwritten === 0) {
+    return;
+  }
+  try {
+    const migrationValidation = validateMigrationState(getDb());
+    if (migrationValidation.unknownCheckpoints.length > 0) {
+      report.warnings.push(
+        `Imported data contains ${migrationValidation.unknownCheckpoints.length} migration(s) from a newer version. Some data may not be fully compatible.`,
+      );
+    }
+  } catch {
+    // Don't fail the import if validation itself errors
+  }
+}
+
+/**
+ * Build a success result from an ImportCommitReport.
+ */
+function importCommitSuccessResult(
+  report: ImportCommitReport,
+  credentialsImported: CredentialImportSummary | undefined,
+): unknown {
+  return {
+    ...report,
+    ...(credentialsImported ? { credentialsImported } : {}),
+  };
+}
+
+/**
+ * Map an `ImportCommitResult` failure to a thrown error or a plain-object
+ * error body. Status codes and body shapes are part of the public contract
+ * and must remain stable.
+ */
+function throwImportCommitFailure(
+  result: Extract<ImportCommitResult, { ok: false }>,
+): never {
+  if (result.reason === "validation_failed") {
+    // Validation failure uses 400 — structured body with error details
+    throw new BadRequestError(
+      JSON.stringify({
+        success: false,
+        reason: "validation_failed",
+        errors: result.errors,
+      }),
+    );
+  }
+
+  if (result.reason === "extraction_failed") {
+    throw new InternalError(result.message);
+  }
+
+  if (result.reason === "version_incompatible") {
+    // Returned by commitImport / streamCommitImport when the runtime falls
+    // outside the bundle's compat range. The platform-side gate is the
+    // primary check; this catches legacy bundles whose ExportJob row
+    // predates PR #5470 (compat columns NULL → platform gate skipped).
+    //
+    // 422 (not 500) — the bundle is structurally valid but cannot be
+    // imported on this runtime; the caller can act on it (upgrade the
+    // runtime, choose a different bundle). Body mirrors the platform's
+    // PR #5470 response shape.
+    throw new UnprocessableEntityError(
+      formatRuntimeCompatibilityMessage(
+        result.bundle_compat,
+        result.runtime_version,
+      ),
+      {
+        reason: "version_incompatible" as const,
+        bundle_compat: result.bundle_compat,
+        runtime_version: result.runtime_version,
+      },
+    );
+  }
+
+  // write_failed
+  throw new InternalError(result.message);
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/migrations/jobs/:job_id
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /v1/migrations/jobs/:job_id
+ *
+ * Returns the current status of a migration job tracked by
+ * `MigrationJobRegistry`. The response shape is a discriminated union on
+ * `status`:
+ *
+ *   - `{ job_id, type, status: "processing" }`
+ *     Covers both the internal `pending` and `running` states — collapsed
+ *     into a single wire value to match the platform's transport shape used
+ *     by `ExportStatusProcessingSerializer` / `ImportStatusProcessingSerializer`.
+ *   - `{ job_id, type, status: "complete", result }`
+ *   - `{ job_id, type, status: "failed", error, error_code, upstream_status? }`
+ *
+ * 404 `{ error: { code: "job_not_found" } }` when no job matches the id.
+ */
+export async function handleMigrationJobStatus({
+  pathParams,
+}: RouteHandlerArgs) {
+  const jobId = pathParams?.job_id;
+  if (!jobId) {
+    throw new BadRequestError("Missing job_id path parameter");
+  }
+
+  const job = migrationJobs.getJob(jobId);
+  if (job === null) {
+    throw new NotFoundError("Job not found");
+  }
+
+  if (job.status === "complete") {
+    return {
+      job_id: job.id,
+      type: job.type,
+      status: "complete",
+      result: job.result,
+    };
+  }
+
+  if (job.status === "failed") {
+    const error = job.error;
+    const result: Record<string, unknown> = {
+      job_id: job.id,
+      type: job.type,
+      status: "failed",
+      error: error?.message ?? "unknown",
+      error_code: error?.code ?? "unknown",
+    };
+    if (error?.upstreamStatus !== undefined) {
+      result.upstream_status = error.upstreamStatus;
+    }
+    return result;
+  }
+
+  // pending or running — collapse to the platform's "processing" wire value.
+  return {
+    job_id: job.id,
+    type: job.type,
+    status: "processing",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+export const ROUTES: RouteDefinition[] = [
+  {
+    operationId: "migrations_validate_post",
+    endpoint: "migrations/validate",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.read"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Validate a .vbundle archive",
+    description:
+      "Upload a .vbundle archive for validation. Accepts raw binary or multipart form data.",
+    tags: ["migrations"],
+    responseBody: z.object({
+      is_valid: z.boolean(),
+      errors: z.array(z.unknown()),
+      manifest: z.object({}).passthrough(),
+    }),
+    handler: handleMigrationValidate,
+  },
+  {
+    operationId: "migrations_export_post",
+    endpoint: "migrations/export",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Export a .vbundle archive",
+    description:
+      "Generate and download a .vbundle archive of the assistant's data. Optional JSON body for metadata.",
+    tags: ["migrations"],
+    requestBody: z.object({
+      description: z.string().describe("Human-readable export description"),
+    }),
+    handler: handleMigrationExport,
+  },
+  {
+    operationId: "migrations_importpreflight_post",
+    endpoint: "migrations/import-preflight",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Dry-run import analysis",
+    description:
+      "Validate a .vbundle archive and return a report of what would change on import without modifying data.",
+    tags: ["migrations"],
+    responseBody: z.object({
+      can_import: z.boolean(),
+      summary: z.object({}).passthrough(),
+      files: z.array(z.unknown()),
+      conflicts: z.array(z.unknown()),
+      manifest: z.object({}).passthrough(),
+    }),
+    handler: handleMigrationImportPreflight,
+  },
+  {
+    operationId: "migrations_import_post",
+    endpoint: "migrations/import",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Import a .vbundle archive",
+    description:
+      "Commit a .vbundle archive import to disk — destructive. Accepts the bundle as raw bytes (application/octet-stream), multipart/form-data, or a JSON body with `{ url }` carrying a signed URL the daemon fetches.",
+    tags: ["migrations"],
+    requestBody: z.object({
+      url: z
+        .string()
+        .url()
+        .describe(
+          "A signed GCS URL pointing to the .vbundle archive (JSON body path only).",
+        ),
+    }),
+    additionalResponses: {
+      "502": {
+        description: "Upstream fetch failed (URL body only).",
+      },
+    },
+    responseBody: z.object({
+      success: z.boolean(),
+      summary: z.object({}).passthrough(),
+      files: z.array(z.unknown()),
+      manifest: z.object({}).passthrough(),
+      warnings: z.array(z.unknown()),
+    }),
+    handler: handleMigrationImport,
+  },
+  {
+    operationId: "migrations_exporttogcs_post",
+    endpoint: "migrations/export-to-gcs",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Start an async export streamed to a GCS signed URL",
+    description:
+      "Kick off a background export job that PUTs a freshly-built .vbundle archive to the supplied GCS signed URL. Returns 202 with a job_id the caller can poll via the job-status endpoint. Fails fast with 409 if another export job is already pending or running.",
+    tags: ["migrations"],
+    requestBody: z.object({
+      upload_url: z
+        .string()
+        .url()
+        .describe("Signed GCS PUT URL that receives the exported bundle."),
+      description: z
+        .string()
+        .optional()
+        .describe("Human-readable export description."),
+    }),
+    responseStatus: "202",
+    responseBody: z.object({
+      job_id: z.string(),
+      status: z.literal("pending"),
+      type: z.literal("export"),
+    }),
+    handler: handleMigrationExportToGcs,
+  },
+  {
+    operationId: "migrations_importfromgcs_post",
+    endpoint: "migrations/import-from-gcs",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Start an async .vbundle import from a signed GCS URL",
+    description:
+      "Schedule a background import job that fetches the bundle at `bundle_url` and streams it through the importer. Returns 202 with a `job_id`; poll `GET /v1/migrations/jobs/{job_id}` for status. 409 if another import is already in flight.",
+    tags: ["migrations"],
+    requestBody: z.object({
+      bundle_url: z.string().url(),
+    }),
+    responseStatus: "202",
+    responseBody: z.object({
+      job_id: z.string(),
+      status: z.literal("pending"),
+      type: z.literal("import"),
+    }),
+    additionalResponses: {
+      "409": {
+        description: "Another import job is already pending or running.",
+      },
+    },
+    handler: handleMigrationImportFromGcs,
+  },
+  {
+    operationId: "migrations_jobs_by_job_id_get",
+    endpoint: "migrations/jobs/:job_id",
+    method: "GET",
+    policy: {
+      requiredScopes: ["settings.read"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Get migration job status",
+    description:
+      "Return the current status of an async migration job (export or import). The response discriminates on `status`: `processing` (pending or running), `complete` (with `result`), or `failed` (with `error`, `error_code`, optional `upstream_status`).",
+    tags: ["migrations"],
+    pathParams: [
+      { name: "job_id", description: "The migration job ID to query." },
+    ],
+    responseBody: z.discriminatedUnion("status", [
+      z.object({
+        job_id: z.string(),
+        type: z.enum(["export", "import"]),
+        status: z.literal("processing"),
+      }),
+      z.object({
+        job_id: z.string(),
+        type: z.enum(["export", "import"]),
+        status: z.literal("complete"),
+        result: z.unknown(),
+      }),
+      z.object({
+        job_id: z.string(),
+        type: z.enum(["export", "import"]),
+        status: z.literal("failed"),
+        error: z.string(),
+        error_code: z.string(),
+        upstream_status: z.number().int().optional(),
+      }),
+    ]),
+    additionalResponses: {
+      "404": {
+        description: "No job matches the given id.",
+      },
+    },
+    handler: handleMigrationJobStatus,
+  },
+];

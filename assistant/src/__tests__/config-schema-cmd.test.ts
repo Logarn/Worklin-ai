@@ -1,0 +1,322 @@
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, mock, test } from "bun:test";
+
+// ---------------------------------------------------------------------------
+// Mocks - declared before imports that depend on platform/logger/ipc
+// ---------------------------------------------------------------------------
+
+const WORKSPACE_DIR = process.env.VELLUM_WORKSPACE_DIR!;
+
+function ensureTestDir(): void {
+  const dirs = [
+    WORKSPACE_DIR,
+    join(WORKSPACE_DIR, "data"),
+    join(WORKSPACE_DIR, "data", "memory"),
+    join(WORKSPACE_DIR, "data", "memory", "knowledge"),
+    join(WORKSPACE_DIR, "data", "logs"),
+  ];
+  for (const dir of dirs) {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+}
+
+ensureTestDir();
+
+function makeLoggerStub(): Record<string, unknown> {
+  const stub: Record<string, unknown> = {};
+  for (const m of [
+    "info",
+    "warn",
+    "error",
+    "debug",
+    "trace",
+    "fatal",
+    "silent",
+    "child",
+  ]) {
+    stub[m] = m === "child" ? () => makeLoggerStub() : () => {};
+  }
+  return stub;
+}
+
+mock.module("../util/logger.js", () => ({
+  getLogger: () => makeLoggerStub(),
+  getCliLogger: () => makeLoggerStub(),
+}));
+
+// ---------------------------------------------------------------------------
+// Mocks - ipc/cli-client
+//
+// The `config` CLI is IPC-tagged, so all schema lookups go through the
+// daemon. Mock cliIpcCall so we can drive the response in each test and
+// assert on exit behavior without spinning up a daemon socket.
+// ---------------------------------------------------------------------------
+
+let mockIpcResult: {
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+  statusCode?: number;
+} = { ok: true, result: { schema: {} } };
+
+mock.module("../ipc/cli-client.js", () => ({
+  cliIpcCall: async () => mockIpcResult,
+  exitFromIpcResult: (r: {
+    error?: string;
+    statusCode?: number;
+  }) => {
+    process.stderr.write((r.error ?? "Unknown error") + "\n");
+    if (r.statusCode === undefined) {
+      process.exit(10);
+    } else if (r.statusCode >= 500) {
+      process.exit(3);
+    } else if (r.statusCode >= 400) {
+      process.exit(2);
+    } else {
+      process.exit(1);
+    }
+  },
+}));
+
+import { Command } from "commander";
+import { z } from "zod";
+
+import { registerConfigCommand } from "../cli/commands/config.js";
+import { AssistantConfigSchema } from "../config/schema.js";
+import { getSchemaAtPath } from "../config/schema-utils.js";
+
+// ---------------------------------------------------------------------------
+// Tests: getSchemaAtPath unit tests
+// ---------------------------------------------------------------------------
+
+describe("getSchemaAtPath", () => {
+  test("returns full schema for a leaf key (llm.default.maxTokens → number schema)", () => {
+    const result = getSchemaAtPath(
+      AssistantConfigSchema,
+      "llm.default.maxTokens",
+    );
+    expect(result).not.toBeNull();
+    // maxTokens has a default, so it should be parseable
+    const parsed = (result as z.ZodType).parse(undefined);
+    expect(parsed).toBe(64000);
+  });
+
+  test("navigates nested paths (memory.segmentation → object schema)", () => {
+    const result = getSchemaAtPath(
+      AssistantConfigSchema,
+      "memory.segmentation",
+    );
+    expect(result).not.toBeNull();
+    // Verify we can produce JSON Schema with the expected properties
+    const jsonSchema = z.toJSONSchema(result!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown>;
+    expect(properties).toBeDefined();
+    expect(properties.targetTokens).toBeDefined();
+    expect(properties.overlapTokens).toBeDefined();
+  });
+
+  test("navigates through .default() wrappers (calls → object schema)", () => {
+    const result = getSchemaAtPath(AssistantConfigSchema, "calls");
+    expect(result).not.toBeNull();
+    // Verify we can produce JSON Schema with the expected properties
+    const jsonSchema = z.toJSONSchema(result!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown>;
+    expect(properties).toBeDefined();
+    expect(properties.enabled).toBeDefined();
+    expect(properties.voice).toBeDefined();
+    expect(properties.safety).toBeDefined();
+  });
+
+  test("navigates through .transform() wrappers (ingress → object schema)", () => {
+    const result = getSchemaAtPath(AssistantConfigSchema, "ingress");
+    expect(result).not.toBeNull();
+    // ingress uses .transform() which creates a pipe — getSchemaAtPath
+    // must unwrap through the pipe to reach the input object shape
+    const jsonSchema = z.toJSONSchema(result!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown>;
+    expect(properties).toBeDefined();
+    expect(properties.enabled).toBeDefined();
+    expect(properties.webhook).toBeDefined();
+    expect(properties.rateLimit).toBeDefined();
+  });
+
+  test("navigates nested path through .transform() wrapper (ingress.webhook)", () => {
+    const result = getSchemaAtPath(AssistantConfigSchema, "ingress.webhook");
+    expect(result).not.toBeNull();
+    const jsonSchema = z.toJSONSchema(result!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown>;
+    expect(properties).toBeDefined();
+    expect(properties.secret).toBeDefined();
+    expect(properties.timeoutMs).toBeDefined();
+    expect(properties.maxRetries).toBeDefined();
+  });
+
+  test("returns null for non-existent top-level path", () => {
+    const result = getSchemaAtPath(AssistantConfigSchema, "nonexistent");
+    expect(result).toBeNull();
+  });
+
+  test("returns null for non-existent nested path", () => {
+    const result = getSchemaAtPath(AssistantConfigSchema, "calls.nonexistent");
+    expect(result).toBeNull();
+  });
+
+  test("returns null for path traversal through a leaf type", () => {
+    // maxTokens is a number, not an object — can't traverse further
+    const result = getSchemaAtPath(AssistantConfigSchema, "maxTokens.foo");
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: z.toJSONSchema integration tests
+// ---------------------------------------------------------------------------
+
+describe("z.toJSONSchema integration", () => {
+  test("full schema produces valid JSON Schema with type object and properties", () => {
+    const jsonSchema = z.toJSONSchema(AssistantConfigSchema, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    expect(jsonSchema.type).toBe("object");
+    const properties = jsonSchema.properties as Record<string, unknown>;
+    expect(properties).toBeDefined();
+    // Check that top-level keys are present
+    expect(properties.services).toBeDefined();
+    expect(properties.llm).toBeDefined();
+    expect(properties.calls).toBeDefined();
+    expect(properties.memory).toBeDefined();
+    expect(properties.timeouts).toBeDefined();
+    // permissions field removed — thresholds are gateway-owned
+  });
+
+  test("full schema emits real properties for transformed fields (ingress)", () => {
+    const jsonSchema = z.toJSONSchema(AssistantConfigSchema, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown>;
+    const ingress = properties.ingress as Record<string, unknown>;
+    // Without io: "input", transforms produce empty {} — verify we get real content
+    expect(ingress.properties).toBeDefined();
+    const ingressProps = ingress.properties as Record<string, unknown>;
+    expect(ingressProps.enabled).toBeDefined();
+    expect(ingressProps.webhook).toBeDefined();
+    expect(ingressProps.rateLimit).toBeDefined();
+  });
+
+  test("sub-schema at calls produces JSON Schema with expected properties", () => {
+    const callsSchema = getSchemaAtPath(AssistantConfigSchema, "calls");
+    expect(callsSchema).not.toBeNull();
+    const jsonSchema = z.toJSONSchema(callsSchema!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    const properties = jsonSchema.properties as
+      | Record<string, unknown>
+      | undefined;
+    expect(properties).toBeDefined();
+    expect(properties!.enabled).toBeDefined();
+    expect(properties!.voice).toBeDefined();
+    expect(properties!.safety).toBeDefined();
+  });
+
+  test("sub-schema at a leaf like llm.default.maxTokens produces integer schema", () => {
+    const maxTokensSchema = getSchemaAtPath(
+      AssistantConfigSchema,
+      "llm.default.maxTokens",
+    );
+    expect(maxTokensSchema).not.toBeNull();
+    const jsonSchema = z.toJSONSchema(maxTokensSchema!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    expect(jsonSchema.type).toBe("integer");
+  });
+
+  test("sub-schema at memory.segmentation produces JSON Schema with expected properties", () => {
+    const segSchema = getSchemaAtPath(
+      AssistantConfigSchema,
+      "memory.segmentation",
+    );
+    expect(segSchema).not.toBeNull();
+    const jsonSchema = z.toJSONSchema(segSchema!, {
+      unrepresentable: "any",
+      io: "input",
+    }) as Record<string, unknown>;
+    expect(jsonSchema.type).toBe("object");
+    const properties = jsonSchema.properties as
+      | Record<string, unknown>
+      | undefined;
+    expect(properties).toBeDefined();
+    expect(properties!.targetTokens).toBeDefined();
+    expect(properties!.overlapTokens).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: CLI schema command error path
+//
+// The CLI now routes `config schema <path>` through the daemon. When the
+// daemon throws a BadRequestError for an unknown path, the IPC layer
+// returns statusCode=400, and exitFromIpcResult maps that to process exit
+// code 2 (per the matrix in cli-client.ts:exitFromIpcResult).
+// ---------------------------------------------------------------------------
+
+describe("CLI schema command", () => {
+  test("daemon error for nonexistent path surfaces via exitFromIpcResult", async () => {
+    // Drive the IPC mock to return a BadRequest as the daemon would
+    mockIpcResult = {
+      ok: false,
+      error: "No schema found at path: nonexistent",
+      statusCode: 400,
+    };
+
+    const program = new Command();
+    program.exitOverride();
+    registerConfigCommand(program);
+
+    const origExit = process.exit;
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    let exitCode: number | undefined;
+    process.exit = ((code?: number) => {
+      exitCode = code;
+      throw new Error(`process.exit(${code})`);
+    }) as never;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+
+    try {
+      await program.parseAsync([
+        "node",
+        "test",
+        "config",
+        "schema",
+        "nonexistent",
+      ]);
+    } catch {
+      // Expected: process.exit stub throws
+    } finally {
+      process.exit = origExit;
+      process.stderr.write = origStderrWrite;
+    }
+
+    // 400 → exit 2 (per exitFromIpcResult matrix)
+    expect(exitCode).toBe(2);
+
+    // Restore default
+    mockIpcResult = { ok: true, result: { schema: {} } };
+  });
+});

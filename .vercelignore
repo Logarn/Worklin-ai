@@ -1,0 +1,10 @@
+**/node_modules
+**/.bun
+**/.vite
+**/dist
+**/storybook-static
+**/.DS_Store
+**/*.log
+.git
+.vercel
+coverage

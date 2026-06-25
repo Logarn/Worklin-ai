@@ -1,0 +1,467 @@
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+mock.module("../util/logger.js", () => ({
+  getLogger: () =>
+    new Proxy({} as Record<string, unknown>, {
+      get: () => () => {},
+    }),
+}));
+
+mock.module("../config/loader.js", () => ({
+  getConfig: () => ({
+    ui: {},
+    model: "test",
+    provider: "test",
+    memory: { enabled: false },
+    rateLimit: { maxRequestsPerMinute: 0 },
+    secretDetection: { enabled: false },
+  }),
+}));
+
+import { sql } from "drizzle-orm";
+
+import {
+  addMessage,
+  createConversation,
+  forkConversation,
+} from "../memory/conversation-crud.js";
+import { getDb } from "../memory/db-connection.js";
+import { initializeDb } from "../memory/db-init.js";
+import {
+  backfillMessageIdOnLogs,
+  getRequestLogsByMessageId,
+  recordRequestLog,
+  relinkLlmRequestLogs,
+} from "../memory/llm-request-log-store.js";
+import { llmRequestLogs, toolInvocations } from "../memory/schema.js";
+
+initializeDb();
+
+function resetTables(): void {
+  const db = getDb();
+  db.delete(llmRequestLogs).run();
+  db.delete(toolInvocations).run();
+  db.run("DELETE FROM message_attachments");
+  db.run("DELETE FROM attachments");
+  db.run("DELETE FROM messages");
+  db.run("DELETE FROM conversations");
+}
+
+function toolResultContent(toolUseIds: string[]): string {
+  return JSON.stringify(
+    toolUseIds.map((id) => ({
+      type: "tool_result",
+      tool_use_id: id,
+      content: "ok",
+      is_error: false,
+    })),
+  );
+}
+
+describe("getRequestLogsByMessageId — turn-aware query", () => {
+  beforeEach(() => {
+    resetTables();
+  });
+
+  test("single message, single log: backward compat — returns 1 log", async () => {
+    const conv = createConversation("single-msg");
+    await addMessage(conv.id, "user", "Hello", {
+      skipIndexing: true,
+    });
+    const a1 = await addMessage(conv.id, "assistant", "Hi!", {
+      skipIndexing: true,
+    });
+
+    // Record a log without messageId, then backfill
+    recordRequestLog(conv.id, '{"prompt":"hi"}', '{"result":"hello"}');
+    backfillMessageIdOnLogs(conv.id, a1.id);
+
+    const logs = getRequestLogsByMessageId(a1.id);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]?.messageId).toBe(a1.id);
+    expect(logs[0]?.conversationId).toBe(conv.id);
+  });
+
+  test("multi-step turn: returns logs from all assistant messages in the turn", async () => {
+    const conv = createConversation("multi-step");
+
+    // user → A1 (+ log1) → tool_result → A2 (+ log2)
+    await addMessage(conv.id, "user", "Do the task", {
+      skipIndexing: true,
+    });
+
+    // First LLM call → A1
+    recordRequestLog(conv.id, '{"step":1}', '{"tool_use":"bash"}');
+    const a1 = await addMessage(conv.id, "assistant", "Using tool...", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a1.id);
+
+    // tool_result user message
+    await addMessage(conv.id, "user", toolResultContent(["tool-1"]), {
+      skipIndexing: true,
+    });
+
+    // Second LLM call → A2
+    recordRequestLog(conv.id, '{"step":2}', '{"result":"done"}');
+    const a2 = await addMessage(conv.id, "assistant", "All done!", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a2.id);
+
+    // Query from A2 (the last message in the turn) → should return both logs
+    const logs = getRequestLogsByMessageId(a2.id);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]?.messageId).toBe(a1.id);
+    expect(logs[1]?.messageId).toBe(a2.id);
+    // Verify ordering is by createdAt ASC
+    expect(logs[0]!.createdAt).toBeLessThanOrEqual(logs[1]!.createdAt);
+  });
+
+  test("fork fallback still works: forked message with no logs, source has turn logs", async () => {
+    const source = createConversation("source-conv");
+
+    // Build a multi-step turn in the source conversation
+    await addMessage(source.id, "user", "Original task", {
+      skipIndexing: true,
+    });
+
+    recordRequestLog(source.id, '{"step":1}', '{"tool":"bash"}');
+    const a1 = await addMessage(source.id, "assistant", "Using tool...", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(source.id, a1.id);
+
+    await addMessage(source.id, "user", toolResultContent(["tool-1"]), {
+      skipIndexing: true,
+    });
+
+    recordRequestLog(source.id, '{"step":2}', '{"result":"ok"}');
+    const a2 = await addMessage(source.id, "assistant", "Done with source!", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(source.id, a2.id);
+
+    // Fork the conversation
+    const fork = forkConversation({ conversationId: source.id });
+    const forkMessages = (
+      await import("../memory/conversation-crud.js")
+    ).getMessages(fork.id);
+    const forkLastAssistant = forkMessages
+      .filter((m) => m.role === "assistant")
+      .at(-1);
+    expect(forkLastAssistant).toBeDefined();
+
+    // The fork has no LLM logs of its own — should fall back to source turn's logs
+    const logs = getRequestLogsByMessageId(forkLastAssistant!.id);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]?.conversationId).toBe(source.id);
+    expect(logs[1]?.conversationId).toBe(source.id);
+  });
+
+  test("logs from different turns don't bleed", async () => {
+    const conv = createConversation("two-turns");
+
+    // First turn: user → A1 (+ log1)
+    await addMessage(conv.id, "user", "First question", {
+      skipIndexing: true,
+    });
+    recordRequestLog(conv.id, '{"turn":1}', '{"answer":"first"}');
+    const a1 = await addMessage(conv.id, "assistant", "First answer", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a1.id);
+
+    // Second turn: user → A2 (+ log2) → tool_result → A3 (+ log3)
+    await addMessage(conv.id, "user", "Second question", {
+      skipIndexing: true,
+    });
+    recordRequestLog(conv.id, '{"turn":2,"step":1}', '{"tool":"bash"}');
+    const a2 = await addMessage(conv.id, "assistant", "Using tool...", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a2.id);
+
+    await addMessage(conv.id, "user", toolResultContent(["tool-2"]), {
+      skipIndexing: true,
+    });
+
+    recordRequestLog(conv.id, '{"turn":2,"step":2}', '{"result":"done"}');
+    const a3 = await addMessage(conv.id, "assistant", "Second done!", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a3.id);
+
+    // Query second turn → should only return logs for A2 and A3, NOT A1
+    const secondTurnLogs = getRequestLogsByMessageId(a3.id);
+    expect(secondTurnLogs).toHaveLength(2);
+    expect(secondTurnLogs[0]?.messageId).toBe(a2.id);
+    expect(secondTurnLogs[1]?.messageId).toBe(a3.id);
+
+    // Query first turn → should only return log for A1
+    const firstTurnLogs = getRequestLogsByMessageId(a1.id);
+    expect(firstTurnLogs).toHaveLength(1);
+    expect(firstTurnLogs[0]?.messageId).toBe(a1.id);
+  });
+
+  test("recovers orphaned logs from deleted intermediate messages", () => {
+    // Simulate a turn where intermediate messages were deleted but logs remain.
+    // Use explicit timestamps via raw SQL to avoid timing-dependent flakes.
+    const T = 1_700_000_000_000;
+    const db = getDb();
+    const conv = createConversation("orphan-test");
+
+    // Insert messages with controlled timestamps via raw SQL.
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-o', ${conv.id}, 'user', '"Do the task"', ${T})`,
+    );
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a3-o', ${conv.id}, 'assistant', '"Done!"', ${T + 30000})`,
+    );
+
+    // Orphaned log 1: message_id points to a deleted message
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-orphan-1",
+        conversationId: conv.id,
+        messageId: "deleted-msg-A1",
+        provider: "anthropic",
+        requestPayload: '{"step":1}',
+        responsePayload: '{"tool":"bash"}',
+        createdAt: T + 5000,
+      })
+      .run();
+
+    // Orphaned log 2
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-orphan-2",
+        conversationId: conv.id,
+        messageId: "deleted-msg-A2",
+        provider: "anthropic",
+        requestPayload: '{"step":2}',
+        responsePayload: '{"tool":"file_write"}',
+        createdAt: T + 15_000,
+      })
+      .run();
+
+    // Surviving log: backfilled to the surviving assistant message
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-surviving",
+        conversationId: conv.id,
+        messageId: "a3-o",
+        provider: "anthropic",
+        requestPayload: '{"step":3}',
+        responsePayload: '{"text":"Done!"}',
+        createdAt: T + 29_000,
+      })
+      .run();
+
+    // Query from the surviving assistant message → should find all 3 logs
+    const logs = getRequestLogsByMessageId("a3-o");
+    expect(logs).toHaveLength(3);
+    expect(logs[0]?.id).toBe("log-orphan-1");
+    expect(logs[1]?.id).toBe("log-orphan-2");
+    expect(logs[2]?.id).toBe("log-surviving");
+  });
+
+  test("recovers unlinked logs (messageId IS NULL) within the turn time range", () => {
+    // Simulate the race: logs recorded with NULL messageId, backfill hasn't run yet.
+    const T = 1_700_000_000_000;
+    const db = getDb();
+    const conv = createConversation("unlinked-test");
+
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-ul', ${conv.id}, 'user', '"Do the task"', ${T})`,
+    );
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-ul', ${conv.id}, 'assistant', '"Done!"', ${T + 30000})`,
+    );
+
+    // Unlinked log: messageId is NULL (backfill hasn't run yet)
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-unlinked-1",
+        conversationId: conv.id,
+        messageId: null,
+        provider: "anthropic",
+        requestPayload: '{"step":1}',
+        responsePayload: '{"tool":"bash"}',
+        createdAt: T + 5000,
+      })
+      .run();
+
+    // Linked log: already backfilled to the assistant message
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-linked-1",
+        conversationId: conv.id,
+        messageId: "a1-ul",
+        provider: "anthropic",
+        requestPayload: '{"step":2}',
+        responsePayload: '{"text":"Done!"}',
+        createdAt: T + 29_000,
+      })
+      .run();
+
+    const logs = getRequestLogsByMessageId("a1-ul");
+    expect(logs).toHaveLength(2);
+    expect(logs[0]?.id).toBe("log-unlinked-1");
+    expect(logs[1]?.id).toBe("log-linked-1");
+
+    // Verify opportunistic backfill ran: the unlinked log should now have a messageId
+    const backfilledLog = db
+      .select({ messageId: llmRequestLogs.messageId })
+      .from(llmRequestLogs)
+      .where(sql`${llmRequestLogs.id} = 'log-unlinked-1'`)
+      .get();
+    expect(backfilledLog?.messageId).toBe("a1-ul");
+  });
+
+  test("unlinked logs from different conversations don't bleed", () => {
+    const T = 1_700_000_000_000;
+    const db = getDb();
+    const convA = createConversation("conv-a");
+    const convB = createConversation("conv-b");
+
+    // Conversation A: user + assistant + unlinked log
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-a', ${convA.id}, 'user', '"Hello A"', ${T})`,
+    );
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-a', ${convA.id}, 'assistant', '"Hi A"', ${T + 10000})`,
+    );
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-conv-a",
+        conversationId: convA.id,
+        messageId: null,
+        provider: "anthropic",
+        requestPayload: '{"conv":"A"}',
+        responsePayload: '{"r":"A"}',
+        createdAt: T + 5000,
+      })
+      .run();
+
+    // Conversation B: user + assistant + unlinked log (overlapping timestamps)
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-b', ${convB.id}, 'user', '"Hello B"', ${T})`,
+    );
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-b', ${convB.id}, 'assistant', '"Hi B"', ${T + 10000})`,
+    );
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-conv-b",
+        conversationId: convB.id,
+        messageId: null,
+        provider: "anthropic",
+        requestPayload: '{"conv":"B"}',
+        responsePayload: '{"r":"B"}',
+        createdAt: T + 5000,
+      })
+      .run();
+
+    // Query from conv A → should only find conv A's log
+    const logsA = getRequestLogsByMessageId("a1-a");
+    expect(logsA).toHaveLength(1);
+    expect(logsA[0]?.id).toBe("log-conv-a");
+
+    // Query from conv B → should only find conv B's log
+    const logsB = getRequestLogsByMessageId("a1-b");
+    expect(logsB).toHaveLength(1);
+    expect(logsB[0]?.id).toBe("log-conv-b");
+  });
+
+  test("unlinked logs from different turns don't bleed", () => {
+    const T = 1_700_000_000_000;
+    const db = getDb();
+    const conv = createConversation("two-turn-unlinked");
+
+    // Turn 1: user → assistant (with linked log)
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-t', ${conv.id}, 'user', '"Turn 1"', ${T})`,
+    );
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-t', ${conv.id}, 'assistant', '"Answer 1"', ${T + 10000})`,
+    );
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-turn1-unlinked",
+        conversationId: conv.id,
+        messageId: null,
+        provider: "anthropic",
+        requestPayload: '{"turn":1}',
+        responsePayload: '{"r":1}',
+        createdAt: T + 5000,
+      })
+      .run();
+
+    // Turn 2: user → assistant (with unlinked log)
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u2-t', ${conv.id}, 'user', '"Turn 2"', ${T + 60000})`,
+    );
+    db.run(
+      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a2-t', ${conv.id}, 'assistant', '"Answer 2"', ${T + 70000})`,
+    );
+    db.insert(llmRequestLogs)
+      .values({
+        id: "log-turn2-unlinked",
+        conversationId: conv.id,
+        messageId: null,
+        provider: "anthropic",
+        requestPayload: '{"turn":2}',
+        responsePayload: '{"r":2}',
+        createdAt: T + 65000,
+      })
+      .run();
+
+    // Query turn 2 → should only find turn 2's unlinked log
+    const turn2Logs = getRequestLogsByMessageId("a2-t");
+    expect(turn2Logs).toHaveLength(1);
+    expect(turn2Logs[0]?.id).toBe("log-turn2-unlinked");
+
+    // Query turn 1 → should only find turn 1's unlinked log
+    const turn1Logs = getRequestLogsByMessageId("a1-t");
+    expect(turn1Logs).toHaveLength(1);
+    expect(turn1Logs[0]?.id).toBe("log-turn1-unlinked");
+  });
+
+  test("relinkLlmRequestLogs moves logs from deleted messages to consolidated message", async () => {
+    const conv = createConversation("relink-test");
+
+    // Simulate multi-step turn: user → A1 (+ log1) → tool_result → A2 (+ log2)
+    await addMessage(conv.id, "user", "Do the task", {
+      skipIndexing: true,
+    });
+
+    // First LLM call → A1 (tool_use response)
+    recordRequestLog(conv.id, '{"step":1}', '{"tool_use":"bash"}');
+    const a1 = await addMessage(conv.id, "assistant", "Using tool...", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a1.id);
+
+    // tool_result user message
+    await addMessage(conv.id, "user", toolResultContent(["tool-1"]), {
+      skipIndexing: true,
+    });
+
+    // Second LLM call → A2 (text response)
+    recordRequestLog(conv.id, '{"step":2}', '{"result":"done"}');
+    const a2 = await addMessage(conv.id, "assistant", "All done!", {
+      skipIndexing: true,
+    });
+    backfillMessageIdOnLogs(conv.id, a2.id);
+
+    // Simulate consolidation: re-link logs from A2 to A1, then delete A2
+    relinkLlmRequestLogs([a2.id], a1.id);
+
+    // Both logs should now be findable via A1
+    const logs = getRequestLogsByMessageId(a1.id);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]?.messageId).toBe(a1.id);
+    expect(logs[1]?.messageId).toBe(a1.id);
+  });
+});

@@ -1,0 +1,151 @@
+/**
+ * Transport-agnostic route for securely prompting the user for a credential.
+ *
+ * CLI commands and skill scripts call this route to trigger a secure input
+ * prompt in the user's app. The handler sends the prompt to connected
+ * clients, stores the credential and its metadata on success.
+ */
+
+import { z } from "zod";
+
+import {
+  formatSlackChannelStatus,
+  persistPromptedCredential,
+} from "../../credential-execution/prompted-credential.js";
+import { requestSecretStandalone } from "../../daemon/handlers/shared.js";
+import { assertMetadataWritable } from "../../tools/credentials/metadata-store.js";
+import { LOCAL_PRINCIPALS } from "../auth/route-policy.js";
+import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+const InjectionTemplateSchema = z.object({
+  hostPattern: z.string().min(1),
+  injectionType: z.enum(["header", "query"]),
+  headerName: z.string().optional(),
+  valuePrefix: z.string().optional(),
+  queryParamName: z.string().optional(),
+});
+
+const CredentialPromptParams = z.object({
+  service: z.string().min(1),
+  field: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  placeholder: z.string().optional(),
+  usageDescription: z.string().optional(),
+  allowedDomains: z.array(z.string()).optional(),
+  allowedTools: z.array(z.string()).optional(),
+  injectionTemplates: z.array(InjectionTemplateSchema).optional(),
+  conversationId: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Response type (shared with CLI consumer)
+// ---------------------------------------------------------------------------
+
+export type CredentialPromptResult = {
+  ok: boolean;
+  error?: string;
+  service?: string;
+  field?: string;
+  message?: string;
+};
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+async function handleCredentialPrompt({ body = {} }: RouteHandlerArgs) {
+  const validated = CredentialPromptParams.parse(body);
+
+  assertMetadataWritable();
+
+  const result = await requestSecretStandalone({
+    service: validated.service,
+    field: validated.field,
+    label: validated.label,
+    description: validated.description,
+    placeholder: validated.placeholder,
+    purpose: validated.usageDescription,
+    allowedTools: validated.allowedTools,
+    allowedDomains: validated.allowedDomains,
+    conversationId: validated.conversationId,
+  });
+
+  if (!result.value) {
+    const reason =
+      result.error === "unsupported_channel"
+        ? "No connected client supports secure credential entry"
+        : "User cancelled the credential prompt";
+    return { ok: false, error: reason };
+  }
+
+  const persisted = await persistPromptedCredential({
+    service: validated.service,
+    field: validated.field,
+    value: result.value,
+    delivery: result.delivery,
+    policy: {
+      allowedTools: validated.allowedTools,
+      allowedDomains: validated.allowedDomains,
+      usageDescription: validated.usageDescription,
+      injectionTemplates: validated.injectionTemplates,
+    },
+  });
+
+  if (persisted.outcome === "error") {
+    return { ok: false, error: persisted.message };
+  }
+
+  if (persisted.outcome === "transient") {
+    return {
+      ok: true,
+      service: validated.service,
+      field: validated.field,
+      message: `One-time credential provided for ${validated.service}/${validated.field}. The value was not saved and will be consumed by the next operation.`,
+    };
+  }
+
+  const slackStatus = persisted.slackChannel
+    ? formatSlackChannelStatus(persisted.slackChannel).trim()
+    : "";
+
+  return {
+    ok: true,
+    service: validated.service,
+    field: validated.field,
+    message: slackStatus.length > 0 ? slackStatus : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+export const ROUTES: RouteDefinition[] = [
+  {
+    operationId: "credentials_prompt",
+    endpoint: "credentials/prompt",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: LOCAL_PRINCIPALS,
+    },
+    handler: handleCredentialPrompt,
+    summary: "Prompt user for a credential",
+    description:
+      "Trigger a secure input prompt in the user's app to collect a credential value.",
+    tags: ["credentials"],
+    requestBody: CredentialPromptParams,
+    responseBody: z.object({
+      ok: z.boolean(),
+      error: z.string().optional(),
+      service: z.string().optional(),
+      field: z.string().optional(),
+      message: z.string().optional(),
+    }),
+  },
+];
