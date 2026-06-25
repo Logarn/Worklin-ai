@@ -3,7 +3,6 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Download,
@@ -884,119 +883,6 @@ function ChartPreview(props: ChartRenderProps) {
     return <MatrixChart {...props} />;
   }
   return <BarLikeChart {...props} />;
-}
-
-function ChartArtifactBlock({
-  chart,
-  index,
-  total,
-  selected,
-  onSelect,
-  onMoveUp,
-  onMoveDown,
-}: {
-  chart: AuditChartSpec;
-  index: number;
-  total: number;
-  selected: boolean;
-  onSelect: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-}) {
-  return (
-    <section
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      aria-label={`Select artifact ${index + 1}: ${chart.title}`}
-      className={`cursor-pointer rounded-lg border bg-[var(--surface-base)] p-5 outline-none transition-colors focus-visible:border-[var(--content-strong)] ${
-        selected
-          ? "border-[var(--content-strong)] bg-[var(--surface-active)] shadow-[inset_4px_0_0_var(--content-strong)]"
-          : "border-[var(--border-base)] hover:border-[var(--content-secondary)] hover:bg-[var(--surface-active)]"
-      }`}
-    >
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <button
-          type="button"
-          className="min-w-0 flex-1 text-left"
-          onClick={onSelect}
-          aria-pressed={selected}
-        >
-          <div className="flex items-center gap-2">
-            <ChartIcon type={chart.type} />
-            <h5 className="text-title-small text-[var(--content-strong)]">
-              {chart.title}
-            </h5>
-            {selected && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--content-strong)] px-2 py-0.5 text-label-small-default text-[var(--surface-base)]">
-                <CheckCircle2 className="h-3 w-3" />
-                Selected
-              </span>
-            )}
-          </div>
-          <p className="mt-1 text-label-small-default uppercase text-[var(--content-tertiary)]">
-            Artifact {index + 1} of {total} · {chart.family.replaceAll("_", " ")} / {chart.type}
-          </p>
-        </button>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            className="rounded-md border border-[var(--border-base)] p-1 text-[var(--content-secondary)] disabled:opacity-35"
-            onClick={(event) => {
-              event.stopPropagation();
-              onMoveUp();
-            }}
-            disabled={index === 0}
-            aria-label={`Move ${chart.title} up`}
-          >
-            <ArrowUp className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-[var(--border-base)] p-1 text-[var(--content-secondary)] disabled:opacity-35"
-            onClick={(event) => {
-              event.stopPropagation();
-              onMoveDown();
-            }}
-            disabled={index === total - 1}
-            aria-label={`Move ${chart.title} down`}
-          >
-            <ArrowDown className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-      <div
-        className="min-h-[340px] max-h-[520px] w-full overflow-hidden rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] p-4 text-left"
-      >
-        <ChartPreview chart={chart} compact={false} />
-      </div>
-      {chart.diagnosis && (
-        <p className="mt-4 text-body-small-default leading-5 text-[var(--content-secondary)]">
-          <span className="font-medium text-[var(--content-strong)]">
-            Diagnosis:
-          </span>{" "}
-          {chart.diagnosis}
-        </p>
-      )}
-      <button
-        type="button"
-        className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[var(--border-base)] bg-[var(--surface-base)] px-2.5 py-1.5 text-label-small-default text-[var(--content-secondary)]"
-        onClick={onSelect}
-      >
-        {selected ? (
-          <CheckCircle2 className="h-3.5 w-3.5" />
-        ) : (
-          <Eye className="h-3.5 w-3.5" />
-        )}
-        {selected ? "Selected artifact" : "Inspect artifact"}
-      </button>
-    </section>
-  );
 }
 
 function AuditPageNavItem({
