@@ -7,6 +7,7 @@ import { AppleLogo } from "@/components/icons/apple-logo";
 import { GoogleLogo } from "@/components/icons/google-logo";
 import { LoginErrorText, LoginHeading } from "@/domains/account/components/login-shell";
 import { withBrowserBase } from "@/domains/account/login-flow";
+import { AUTH0_PROVIDER_HINTS } from "@/domains/account/social-auth";
 import { routes } from "@/utils/routes";
 
 function SignUpFooter({ signUpHref }: { signUpHref: string }) {
@@ -26,7 +27,7 @@ function SignUpFooter({ signUpHref }: { signUpHref: string }) {
 }
 
 /**
- * Apple / Google / Email sign-in buttons routing through WorkOS.
+ * Apple / Google / Email sign-in buttons routing through Auth0.
  * Shared by the standalone web login and the local-mode login's platform card.
  */
 export function PlatformLoginButtons({
@@ -54,7 +55,7 @@ export function PlatformLoginButtons({
           type="button"
           variant="outlined"
           fullWidth
-          onClick={() => onProviderClick("AppleOAuth")}
+          onClick={() => onProviderClick(AUTH0_PROVIDER_HINTS.apple)}
           disabled={loading}
           leftIcon={<AppleLogo />}
           className="max-w-[300px] gap-3"
@@ -65,7 +66,7 @@ export function PlatformLoginButtons({
           type="button"
           variant="outlined"
           fullWidth
-          onClick={() => onProviderClick("GoogleOAuth")}
+          onClick={() => onProviderClick(AUTH0_PROVIDER_HINTS.google)}
           disabled={loading}
           leftIcon={<GoogleLogo />}
           className="max-w-[300px] gap-3"

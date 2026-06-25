@@ -7,19 +7,24 @@ import { ensureCsrfCookie, getCsrfToken } from "@/lib/auth/csrf";
 // ---------------------------------------------------------------------------
 
 export interface SocialProvider {
-  /** The allauth provider ID (e.g. "workos"). */
+  /** The allauth provider ID (e.g. "auth0"). */
   id: string;
   /** Display label for the button. */
   label: string;
 }
 
-/** Intent to convey to the backend provider-redirect view. Determines WorkOS screen_hint. */
+/** Intent to convey to the backend provider-redirect view. Determines the hosted auth screen hint. */
 export type ProviderIntent = "login" | "signup";
 
 /** Providers we currently surface in the UI. */
 export const SOCIAL_PROVIDERS: SocialProvider[] = [
-  { id: "workos", label: "Continue with WorkOS" },
+  { id: "auth0", label: "Continue with Auth0" },
 ];
+
+export const AUTH0_PROVIDER_HINTS = {
+  apple: "apple",
+  google: "google-oauth2",
+} as const;
 
 /**
  * Stock redirect endpoint that delegates to specified provider.
@@ -33,9 +38,9 @@ export const PROVIDER_REDIRECT_PATH =
 
 export interface ProviderRedirectOptions {
   readonly intent?: ProviderIntent;
-  /** Pre-fill the WorkOS AuthKit email field (and email-first flows). */
+  /** Pre-fill the hosted email field for email-first auth flows. */
   readonly loginHint?: string;
-  /** Skip AuthKit and go directly to a specific IdP ("GoogleOAuth" etc.). */
+  /** Go directly to a specific Auth0 connection, such as `google-oauth2`. */
   readonly providerHint?: string;
 }
 
