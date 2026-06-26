@@ -145,6 +145,14 @@ describe("managed entrypoint transport isolation", () => {
     // Should close the net server after one connection
     expect(src).toMatch(/netServer\.close\(\)/);
   });
+
+  test("managed-main.ts chmods bootstrap socket for cross-user sidecars", () => {
+    const src = readFileSync(
+      resolve(__dirname, "..", "managed-main.ts"),
+      "utf-8",
+    );
+    expect(src).toMatch(/chmodSync\(socketPath,\s*0o666\)/);
+  });
 });
 
 // ---------------------------------------------------------------------------
