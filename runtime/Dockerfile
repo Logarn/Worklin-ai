@@ -153,6 +153,10 @@ COPY --from=builder /app /app
 
 COPY packages/block-volume-bootstrap/scripts/*.sh /usr/local/bin/
 RUN chmod +x \
+    /app/assistant/docker-entrypoint.sh \
+    /app/assistant/docker-init-apt-root.sh \
+    /app/assistant/docker-kata-apt-env.sh \
+    /app/assistant/docker-kata-runtime-family.sh \
     /usr/local/bin/vellum-block-volume-common.sh \
     /usr/local/bin/vellum-block-volume-init.sh \
     /usr/local/bin/vellum-block-volume-mount.sh \
