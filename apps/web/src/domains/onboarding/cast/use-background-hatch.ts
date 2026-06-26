@@ -13,6 +13,7 @@ import {
   shouldRecoverFromHatchFailure,
 } from "@/assistant/lifecycle";
 import { seedHatchAvatar } from "@/assistant/seed-hatch-avatar";
+import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import { captureError } from "@/lib/sentry/capture-error";
 import { extractErrorMessage } from "@/utils/api-errors";
 import { BUNDLED_COMPONENTS } from "@/utils/avatar-bundled-components";
@@ -39,6 +40,8 @@ const sleep = (ms: number): Promise<void> =>
 export interface UseBackgroundHatch {
   /** Fire the hatch. Idempotent — only the first call provisions. */
   start: () => void;
+  /** Persist the chosen avatar for a freshly created assistant after selection. */
+  seedAvatar: (preferredAvatar?: AssistantCharacter | null) => Promise<void>;
   /** True only once the assistant has passed a health check. */
   ready: boolean;
   /** The provisioned assistant id, set once the hatch resolves. */
@@ -74,6 +77,8 @@ export function useBackgroundHatch(): UseBackgroundHatch {
   // timeout — mirrors the `cancelled` flag in `hatching-screen.tsx`. A
   // retry-remount would otherwise leave a stale loop polling in the background.
   const cancelledRef = useRef(false);
+  const freshAssistantIdRef = useRef<string | null>(null);
+  const avatarSeededRef = useRef(false);
   // Random hatch traits, generated once per instance via a lazy state
   // initializer (matching the standalone hatching screen) so a cast-hatched
   // assistant lands with a seeded avatar.
@@ -180,9 +185,11 @@ export function useBackgroundHatch(): UseBackgroundHatch {
         await sleep(POLL_INTERVAL_MS);
       }
 
-      // Fire-and-forget — readiness never blocks on the avatar render.
+      // Remember whether this hatch produced a new assistant. The user's
+      // avatar choice is collected later in onboarding, so actual avatar
+      // persistence waits for `seedAvatar(...)` during handoff.
       if (createdFreshAssistant) {
-        void seedHatchAvatar(activeAssistantId, hatchTraits, queryClient);
+        freshAssistantIdRef.current = activeAssistantId;
       }
 
       // 3. Poll healthz until the daemon is reachable, then mark ready.
@@ -205,6 +212,23 @@ export function useBackgroundHatch(): UseBackgroundHatch {
     })();
   }, [hatchTraits, queryClient, settleError, settleReady]);
 
+  const seedAvatar = useCallback(
+    async (preferredAvatar?: AssistantCharacter | null): Promise<void> => {
+      const settled = settledRef.current;
+      if (settled?.kind !== "ready") return;
+      if (avatarSeededRef.current) return;
+      if (freshAssistantIdRef.current !== settled.id) return;
+      avatarSeededRef.current = true;
+      await seedHatchAvatar(
+        settled.id,
+        hatchTraits,
+        queryClient,
+        preferredAvatar ?? null,
+      );
+    },
+    [hatchTraits, queryClient],
+  );
+
   // Cancel the poll loop on unmount so a retry-remount doesn't leave a stale
   // loop running to the 5-min timeout. Effect cleanup runs on unmount only
   // (empty deps), mirroring the hatching-screen's `cancelled` teardown.
@@ -223,5 +247,5 @@ export function useBackgroundHatch(): UseBackgroundHatch {
     });
   }, []);
 
-  return { start, ready, assistantId, error, awaitReady };
+  return { start, seedAvatar, ready, assistantId, error, awaitReady };
 }

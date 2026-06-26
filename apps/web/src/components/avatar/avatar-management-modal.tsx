@@ -20,8 +20,8 @@ import {
 import { createPortal } from "react-dom";
 
 import {
-  ASSISTANT_CHARACTER_PACKS,
   DEFAULT_ASSISTANT_CHARACTER,
+  WORKLIN_AVATAR_CHOICES,
   getAssistantCharacterPack,
   profileFromCharacter,
   resolveAssistantCharacter,
@@ -37,17 +37,13 @@ import {
 import { AvatarCustomizationPanel } from "@/components/avatar/avatar-customization-panel";
 import { ChatAvatar } from "@/components/avatar/chat-avatar";
 import { FaceBuilderAvatar } from "@/components/avatar/face-builder-avatar";
+import { PortraitAssetAvatar } from "@/components/avatar/portrait-asset-avatar";
 import { TvCharacterAvatar } from "@/components/avatar/tv-character-avatar";
 import {
   saveAssistantCharacterProfile,
   uploadAvatarImage,
 } from "@/assistant/avatar-api";
-import {
-  ASSISTANT_PERSONALITY_PRESETS,
-  ASSISTANT_ROLE_PRESETS,
-  type AssistantCharacterPackId,
-  type AssistantCharacterProfile,
-} from "@/types/assistant-character-profile";
+import type { AssistantCharacterProfile } from "@/types/assistant-character-profile";
 import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
 
 type ModalView = "identity-studio" | "face-builder" | "character-builder";
@@ -68,32 +64,37 @@ interface AvatarManagementModalProps {
 
 const fallbackCharacter = DEFAULT_ASSISTANT_CHARACTER;
 
+function isWorklinAvatar(characterItem: AssistantCharacter | null): boolean {
+  return !!characterItem && WORKLIN_AVATAR_CHOICES.includes(characterItem);
+}
+
 function createDraftProfile(
   profile: AssistantCharacterProfile | null,
 ): AssistantCharacterProfile {
   const characterItem = resolveAssistantCharacter(profile) ?? fallbackCharacter;
   if (!characterItem) {
     return {
-      assistantName: "Worklin",
-      characterPackId: "futurama",
-      characterId: "bender",
-      avatarStyle: "face_builder",
-      faceBuilder: faceBuilderForCharacter("futurama", "bender"),
-      portraitPrompt: buildCharacterPortraitPrompt("Bender", "Futurama"),
-      personalityPreset: "strategic",
+      assistantName: "Spiky Spark",
+      characterPackId: "worklin",
+      characterId: "spiky_spark",
+      avatarStyle: "portrait_asset",
+      faceBuilder: faceBuilderForCharacter("worklin", "spiky_spark"),
+      portraitAssetUrl: "/images/avatars/spiky-spark.mp4",
+      portraitPrompt: buildCharacterPortraitPrompt("Spiky Spark", "Worklin"),
+      personalityPreset: "playful",
       personalityText:
-        "Strategic, direct, and useful for turning messy retention work into next actions.",
-      role: "growth lead",
-      tone: "Clear, confident, and practical.",
-      bio: "A Worklin retention assistant for audits, opportunities, campaign packages, and QA.",
+        "Respond with playful confidence, quick wit, and a slightly rebellious edge. Challenge weak assumptions, keep answers useful, and avoid being mean or chaotic. Use short sharp lines when appropriate.",
+      role: "creative partner",
+      tone: "Playful, confident, and sharp.",
+      bio: "A mischievous challenger who keeps the work useful while poking holes in weak assumptions.",
       animationEnabled: true,
-      accentColor: "#111111",
-      voicePlaceholder: "Clear, direct, and useful.",
+      accentColor: "#F36B3D",
+      voicePlaceholder: "Quick, playful, lightly rebellious.",
       updatedAt: new Date().toISOString(),
     };
   }
 
-  if (profile && resolveAssistantCharacter(profile)) {
+  if (profile && isWorklinAvatar(resolveAssistantCharacter(profile))) {
     const packLabel =
       getAssistantCharacterPack(characterItem.packId)?.label ?? "Worklin";
     return {
@@ -114,13 +115,12 @@ function createDraftProfile(
 }
 
 function pickRandomCharacter(): AssistantCharacter {
-  const allCharacters = ASSISTANT_CHARACTER_PACKS.flatMap(
-    (pack) => pack.characters,
-  );
   return (
-    allCharacters[Math.floor(Math.random() * allCharacters.length)] ??
+    WORKLIN_AVATAR_CHOICES[
+      Math.floor(Math.random() * WORKLIN_AVATAR_CHOICES.length)
+    ] ??
     fallbackCharacter ??
-    ASSISTANT_CHARACTER_PACKS[0]!.characters[0]!
+    WORKLIN_AVATAR_CHOICES[0]!
   );
 }
 
@@ -157,8 +157,6 @@ export function AvatarManagementModal({
   const [draftProfile, setDraftProfile] = useState<AssistantCharacterProfile>(
     () => createDraftProfile(characterProfile),
   );
-  const [activePackId, setActivePackId] =
-    useState<AssistantCharacterPackId>(draftProfile.characterPackId);
   const [activeFaceCategoryId, setActiveFaceCategoryId] =
     useState<FaceBuilderCategoryId>("skinTone");
   const [isUploading, setIsUploading] = useState(false);
@@ -171,7 +169,6 @@ export function AvatarManagementModal({
     }
     const nextDraft = createDraftProfile(characterProfile);
     setDraftProfile(nextDraft);
-    setActivePackId(nextDraft.characterPackId);
     setActiveFaceCategoryId("skinTone");
     setView("identity-studio");
     setSaveError(null);
@@ -191,13 +188,6 @@ export function AvatarManagementModal({
   const selectedCharacter = useMemo(
     () => resolveAssistantCharacter(draftProfile) ?? fallbackCharacter,
     [draftProfile],
-  );
-
-  const activePack = useMemo(
-    () =>
-      getAssistantCharacterPack(activePackId) ??
-      ASSISTANT_CHARACTER_PACKS[0]!,
-    [activePackId],
   );
 
   const activeFaceCategory = useMemo(
@@ -307,19 +297,12 @@ export function AvatarManagementModal({
 
   const handleCharacterSelect = useCallback((characterItem: AssistantCharacter) => {
     setDraftProfile((current) => {
-      const currentCharacter = resolveAssistantCharacter(current);
-      const hasCustomName =
-        current.assistantName.trim().length > 0 &&
-        current.assistantName !== currentCharacter?.shortName;
       const next = profileFromCharacter(characterItem, current);
       return {
         ...next,
-        assistantName: hasCustomName
-          ? current.assistantName
-          : characterItem.shortName,
+        assistantName: characterItem.shortName,
       };
     });
-    setActivePackId(characterItem.packId);
     setSaveError(null);
   }, []);
 
@@ -380,6 +363,7 @@ export function AvatarManagementModal({
       faceBuilder:
         draftProfile.faceBuilder ??
         faceBuilderForCharacter(selectedCharacter.packId, selectedCharacter.id),
+      portraitAssetUrl: selectedCharacter.portraitAssetUrl,
       portraitPrompt:
         draftProfile.portraitPrompt ??
         buildCharacterPortraitPrompt(selectedCharacter.name, packLabel),
@@ -701,7 +685,7 @@ export function AvatarManagementModal({
               </section>
             </div>
           ) : (
-            <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+            <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
               <section
                 className="flex flex-col gap-4 rounded-xl border p-4"
                 style={{
@@ -709,8 +693,31 @@ export function AvatarManagementModal({
                   borderColor: "var(--border-base)",
                 }}
               >
+                <div>
+                  <p
+                    className="text-title-small"
+                    style={{ color: "var(--content-default)" }}
+                  >
+                    Selected avatar
+                  </p>
+                  <p
+                    className="mt-1 text-body-small-default"
+                    style={labelStyle()}
+                  >
+                    {selectedCharacter?.subtitle ?? "Choose one style"}
+                  </p>
+                </div>
+
                 <div className="flex justify-center py-3">
-                  {draftProfile.faceBuilder ? (
+                  {draftProfile.avatarStyle === "portrait_asset" &&
+                  draftProfile.portraitAssetUrl ? (
+                    <PortraitAssetAvatar
+                      src={draftProfile.portraitAssetUrl}
+                      alt={`${draftProfile.assistantName} assistant avatar`}
+                      size={164}
+                      animationEnabled={draftProfile.animationEnabled}
+                    />
+                  ) : draftProfile.faceBuilder ? (
                     <FaceBuilderAvatar
                       config={faceBuilderConfig}
                       size={164}
@@ -737,129 +744,26 @@ export function AvatarManagementModal({
                   )}
                 </div>
 
-                <label className="flex flex-col gap-1">
-                  <span className="text-label-medium-default" style={labelStyle()}>
-                    Display name
-                  </span>
-                  <input
-                    value={draftProfile.assistantName}
-                    onChange={(event) =>
-                      handleProfileChange("assistantName", event.target.value)
-                    }
-                    className="h-10 rounded-lg border px-3 text-body-medium-default outline-none focus:border-[var(--border-active)]"
-                    style={inputStyle()}
-                  />
-                </label>
-
-                <label className="flex flex-col gap-1">
-                  <span className="text-label-medium-default" style={labelStyle()}>
-                    Role
-                  </span>
-                  <select
-                    value={draftProfile.role}
-                    onChange={(event) =>
-                      handleProfileChange("role", event.target.value)
-                    }
-                    className="h-10 rounded-lg border px-3 text-body-medium-default outline-none focus:border-[var(--border-active)]"
-                    style={inputStyle()}
+                <div
+                  className="rounded-lg border p-3"
+                  style={{
+                    borderColor: "var(--border-base)",
+                    backgroundColor: "var(--surface-lift)",
+                  }}
+                >
+                  <p
+                    className="text-title-small"
+                    style={{ color: "var(--content-default)" }}
                   >
-                    {ASSISTANT_ROLE_PRESETS.map((role) => (
-                      <option key={role} value={role}>
-                        {role}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <div className="flex flex-col gap-2">
-                  <span className="text-label-medium-default" style={labelStyle()}>
-                    Personality
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    {ASSISTANT_PERSONALITY_PRESETS.map((preset) => {
-                      const active = draftProfile.personalityPreset === preset;
-                      return (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => {
-                            const defaultText =
-                              selectedCharacter?.defaults.personalityPreset === preset
-                                ? selectedCharacter.defaults.personalityText
-                                : `${preset[0]!.toUpperCase()}${preset.slice(1)} and useful.`;
-                            setDraftProfile((current) => ({
-                              ...current,
-                              personalityPreset: preset,
-                              personalityText: defaultText,
-                            }));
-                          }}
-                          className="rounded-full border px-3 py-1.5 text-label-medium-default capitalize transition-colors"
-                          style={{
-                            borderColor: active
-                              ? "var(--content-default)"
-                              : "var(--border-base)",
-                            backgroundColor: active
-                              ? "var(--content-default)"
-                              : "transparent",
-                            color: active
-                              ? "var(--content-inset)"
-                              : "var(--content-default)",
-                          }}
-                        >
-                          {preset}
-                        </button>
-                      );
-                    })}
-                  </div>
+                    {selectedCharacter?.name ?? draftProfile.assistantName}
+                  </p>
+                  <p
+                    className="mt-1 text-body-small-default"
+                    style={{ color: "var(--content-tertiary)" }}
+                  >
+                    {selectedCharacter?.defaults.tone ?? draftProfile.tone}
+                  </p>
                 </div>
-
-                <label className="flex flex-col gap-1">
-                  <span className="text-label-medium-default" style={labelStyle()}>
-                    Personality notes
-                  </span>
-                  <textarea
-                    value={draftProfile.personalityText}
-                    onChange={(event) =>
-                      setDraftProfile((current) => ({
-                        ...current,
-                        personalityPreset: "custom",
-                        personalityText: event.target.value,
-                      }))
-                    }
-                    rows={3}
-                    className="resize-none rounded-lg border px-3 py-2 text-body-small-default outline-none focus:border-[var(--border-active)]"
-                    style={inputStyle()}
-                  />
-                </label>
-
-                <label className="flex flex-col gap-1">
-                  <span className="text-label-medium-default" style={labelStyle()}>
-                    Tone
-                  </span>
-                  <input
-                    value={draftProfile.tone}
-                    onChange={(event) =>
-                      handleProfileChange("tone", event.target.value)
-                    }
-                    className="h-10 rounded-lg border px-3 text-body-medium-default outline-none focus:border-[var(--border-active)]"
-                    style={inputStyle()}
-                  />
-                </label>
-
-                <label className="flex flex-col gap-1">
-                  <span className="text-label-medium-default" style={labelStyle()}>
-                    Bio
-                  </span>
-                  <textarea
-                    value={draftProfile.bio}
-                    onChange={(event) =>
-                      handleProfileChange("bio", event.target.value)
-                    }
-                    rows={3}
-                    className="resize-none rounded-lg border px-3 py-2 text-body-small-default outline-none focus:border-[var(--border-active)]"
-                    style={inputStyle()}
-                  />
-                </label>
 
                 <label
                   className="flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2"
@@ -916,7 +820,7 @@ export function AvatarManagementModal({
                     }}
                   >
                     <Wrench className="h-4 w-4" />
-                    Customize
+                    Customize face
                   </button>
                   <button
                     type="button"
@@ -940,7 +844,7 @@ export function AvatarManagementModal({
                     }}
                   >
                     <ImageIcon className="h-4 w-4" />
-                    {isUploading ? "Uploading..." : "Upload"}
+                    {isUploading ? "Uploading..." : "Upload image"}
                   </button>
                   {onGenerateWithAI && (
                     <button
@@ -977,62 +881,29 @@ export function AvatarManagementModal({
                       color: "var(--content-inset)",
                     }}
                   >
-                    {isSavingProfile ? "Saving..." : "Save Identity"}
+                    {isSavingProfile ? "Saving..." : "Save avatar"}
                   </button>
                 </div>
               </section>
 
               <section className="min-w-0">
-                <div className="mb-4 flex flex-wrap gap-2">
-                  {ASSISTANT_CHARACTER_PACKS.map((pack) => {
-                    const active = activePackId === pack.id;
-                    return (
-                      <button
-                        key={pack.id}
-                        type="button"
-                        onClick={() => setActivePackId(pack.id)}
-                        className="rounded-full border px-4 py-2 text-body-small-default transition-colors"
-                        style={{
-                          borderColor: active
-                            ? "var(--content-default)"
-                            : "var(--border-base)",
-                          backgroundColor: active
-                            ? "var(--content-default)"
-                            : "var(--surface-base)",
-                          color: active
-                            ? "var(--content-inset)"
-                            : "var(--content-default)",
-                        }}
-                      >
-                        {pack.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div
-                  className="mb-4 rounded-xl border p-4"
-                  style={{
-                    borderColor: "var(--border-base)",
-                    backgroundColor: "var(--surface-base)",
-                  }}
-                >
+                <div className="mb-4">
                   <p
-                    className="text-title-small"
+                    className="text-title-medium"
                     style={{ color: "var(--content-default)" }}
                   >
-                    {activePack.label}
+                    Choose your avatar
                   </p>
                   <p
                     className="mt-1 text-body-small-default"
                     style={labelStyle()}
                   >
-                    {activePack.description}
+                    Pick one assistant style. You can change it anytime.
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {activePack.characters.map((characterItem) => {
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {WORKLIN_AVATAR_CHOICES.map((characterItem) => {
                     const selected =
                       draftProfile.characterPackId === characterItem.packId &&
                       draftProfile.characterId === characterItem.id;
@@ -1040,8 +911,10 @@ export function AvatarManagementModal({
                       <button
                         key={characterItem.id}
                         type="button"
+                        aria-pressed={selected}
+                        aria-label={`Choose ${characterItem.name}: ${characterItem.subtitle}`}
                         onClick={() => handleCharacterSelect(characterItem)}
-                        className="group flex min-h-24 items-center gap-3 rounded-xl border p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
+                        className="group flex min-h-48 flex-col items-center rounded-xl border p-4 text-center outline-none transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-[var(--content-default)]"
                         style={{
                           borderColor: selected
                             ? characterItem.visual.accent
@@ -1051,22 +924,32 @@ export function AvatarManagementModal({
                             : "var(--surface-base)",
                         }}
                       >
-                        <TvCharacterAvatar
-                          character={characterItem}
-                          size={58}
-                          interactive
-                          selected={selected}
-                          animationEnabled={draftProfile.animationEnabled}
-                        />
-                        <span className="min-w-0 flex-1">
+                        {characterItem.portraitAssetUrl ? (
+                          <PortraitAssetAvatar
+                            src={characterItem.portraitAssetUrl}
+                            poster={characterItem.portraitPosterUrl}
+                            alt={`${characterItem.name} assistant avatar`}
+                            size={88}
+                            animationEnabled={draftProfile.animationEnabled}
+                          />
+                        ) : (
+                          <TvCharacterAvatar
+                            character={characterItem}
+                            size={88}
+                            interactive
+                            selected={selected}
+                            animationEnabled={draftProfile.animationEnabled}
+                          />
+                        )}
+                        <span className="mt-3 min-w-0">
                           <span
-                            className="block truncate text-body-medium-default"
+                            className="block text-body-medium-default"
                             style={{ color: "var(--content-default)" }}
                           >
                             {characterItem.name}
                           </span>
                           <span
-                            className="mt-0.5 block line-clamp-2 text-body-small-default"
+                            className="mt-1 block text-body-small-default"
                             style={{ color: "var(--content-tertiary)" }}
                           >
                             {characterItem.subtitle}

@@ -7,6 +7,8 @@
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { renderHook, act, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
 
 import type {
   GetAssistantResult,
@@ -48,13 +50,11 @@ mock.module("@/lib/sentry/capture-error", () => ({
 }));
 
 // Avatar seeding is fire-and-forget and tested separately; stub it and the
-// QueryClient the hook reads so the hook renders without a provider.
+// avatar write path so the hook can exercise the real QueryClient dependency
+// without hitting the network-facing side effect.
 const seedHatchAvatarMock = mock(async (..._args: unknown[]) => {});
 mock.module("@/assistant/seed-hatch-avatar", () => ({
   seedHatchAvatar: seedHatchAvatarMock,
-}));
-mock.module("@tanstack/react-query", () => ({
-  useQueryClient: () => ({ invalidateQueries: () => {} }),
 }));
 mock.module("@/utils/api-errors", () => ({
   extractErrorMessage: (
@@ -68,6 +68,9 @@ mock.module("@/utils/api-errors", () => ({
 }));
 
 const { useBackgroundHatch } = await import("./use-background-hatch");
+const { WORKLIN_AVATAR_CHOICES } = await import(
+  "@/components/avatar/assistant-character-packs"
+);
 
 beforeEach(() => {
   hatchResult = { ok: true, status: 201, data: { id: "ast-cast" } as never };
@@ -83,9 +86,23 @@ beforeEach(() => {
   seedHatchAvatarMock.mockClear();
 });
 
+function renderUseBackgroundHatch() {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+
+  return renderHook(() => useBackgroundHatch(), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children),
+  });
+}
+
 describe("useBackgroundHatch", () => {
   test("start() called twice hatches once", async () => {
-    const { result } = renderHook(() => useBackgroundHatch());
+    const { result } = renderUseBackgroundHatch();
 
     act(() => {
       result.current.start();
@@ -98,7 +115,7 @@ describe("useBackgroundHatch", () => {
   });
 
   test("awaitReady() resolves to the id after health passes", async () => {
-    const { result } = renderHook(() => useBackgroundHatch());
+    const { result } = renderUseBackgroundHatch();
 
     let resolved: string | undefined;
     act(() => {
@@ -122,7 +139,7 @@ describe("useBackgroundHatch", () => {
       error: { detail: "Bad hatch request" },
     };
 
-    const { result } = renderHook(() => useBackgroundHatch());
+    const { result } = renderUseBackgroundHatch();
 
     let rejection: Error | undefined;
     act(() => {
@@ -139,16 +156,24 @@ describe("useBackgroundHatch", () => {
     expect(getAssistantMock).not.toHaveBeenCalled();
   });
 
-  test("seeds the avatar for a freshly created (201) assistant", async () => {
-    const { result } = renderHook(() => useBackgroundHatch());
+  test("seeds the chosen avatar for a freshly created (201) assistant", async () => {
+    const { result } = renderUseBackgroundHatch();
 
     act(() => {
       result.current.start();
     });
 
     await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(seedHatchAvatarMock).not.toHaveBeenCalled();
+    const preferredAvatar = WORKLIN_AVATAR_CHOICES.find(
+      (avatar) => avatar.id === "tin_grin",
+    );
+    await act(async () => {
+      await result.current.seedAvatar(preferredAvatar);
+    });
     expect(seedHatchAvatarMock).toHaveBeenCalledTimes(1);
     expect(seedHatchAvatarMock.mock.calls[0]?.[0]).toBe("ast-cast");
+    expect(seedHatchAvatarMock.mock.calls[0]?.[3]).toBe(preferredAvatar);
   });
 
   test("does not seed the avatar for an existing (200) assistant", async () => {
@@ -158,13 +183,16 @@ describe("useBackgroundHatch", () => {
       data: { id: "ast-cast" } as never,
     };
 
-    const { result } = renderHook(() => useBackgroundHatch());
+    const { result } = renderUseBackgroundHatch();
 
     act(() => {
       result.current.start();
     });
 
     await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => {
+      await result.current.seedAvatar(WORKLIN_AVATAR_CHOICES[0]);
+    });
     // A 200 returned an existing assistant — its avatar must not be clobbered.
     expect(seedHatchAvatarMock).not.toHaveBeenCalled();
   });

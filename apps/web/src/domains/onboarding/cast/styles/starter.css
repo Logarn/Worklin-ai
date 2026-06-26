@@ -97,3 +97,151 @@
     grid-template-columns: repeat(3, 1fr);
   }
 }
+
+/* ---- Worklin Pika avatar picker ---- */
+
+.cast-worklin-starter {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 36px min(6vw, 48px);
+}
+
+.cast-worklin-starter__header {
+  max-width: 680px;
+  text-align: center;
+}
+
+.cast-worklin-starter__eyebrow {
+  margin: 0 0 10px;
+  color: var(--content-tertiary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cast-worklin-starter__grid {
+  display: grid;
+  width: min(100%, 880px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.cast-worklin-starter__card {
+  appearance: none;
+  min-height: 238px;
+  border: 1px solid var(--border-base);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.06), transparent 58%),
+    var(--surface-base);
+  color: var(--content-default);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.cast-worklin-starter__card:hover,
+.cast-worklin-starter__card:focus-visible {
+  border-color: var(--content-secondary);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.26);
+  transform: translateY(-3px);
+  outline: none;
+}
+
+.cast-worklin-starter__card.is-selected {
+  border-color: var(--content-default);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.12), transparent 62%),
+    color-mix(in oklab, var(--surface-active) 70%, var(--surface-base));
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--content-default) 18%, transparent),
+    0 18px 48px rgba(0, 0, 0, 0.32);
+}
+
+.cast-worklin-starter__name {
+  margin-top: 4px;
+  font-size: 17px;
+  font-weight: 760;
+}
+
+.cast-worklin-starter__subtitle {
+  min-height: 34px;
+  color: var(--content-tertiary);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.cast-worklin-starter__select {
+  margin-top: auto;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-pill);
+  color: var(--content-secondary);
+  font-size: 13px;
+  font-weight: 720;
+  padding: 7px 14px;
+}
+
+.cast-worklin-starter__card.is-selected .cast-worklin-starter__select {
+  border-color: var(--content-default);
+  background: var(--content-default);
+  color: var(--content-inset);
+}
+
+.cast-worklin-starter__continue {
+  appearance: none;
+  border: 1px solid var(--content-default);
+  border-radius: var(--radius-pill);
+  background: var(--content-default);
+  color: var(--content-inset);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 760;
+  min-height: 48px;
+  padding: 0 24px;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.cast-worklin-starter__continue:hover,
+.cast-worklin-starter__continue:focus-visible {
+  transform: translateY(-1px);
+}
+
+.cast-worklin-starter__continue:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (max-width: 780px) {
+  .cast-worklin-starter {
+    justify-content: flex-start;
+    overflow-y: auto;
+  }
+
+  .cast-worklin-starter__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .cast-worklin-starter__grid {
+    grid-template-columns: 1fr;
+  }
+}

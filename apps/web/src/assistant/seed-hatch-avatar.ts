@@ -1,6 +1,16 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { fetchCharacterTraits, saveCharacterTraits } from "@/assistant/avatar-api";
+import {
+  fetchAssistantCharacterProfile,
+  fetchCharacterTraits,
+  saveAssistantCharacterProfile,
+  saveCharacterTraits,
+} from "@/assistant/avatar-api";
+import {
+  WORKLIN_AVATAR_CHOICES,
+  profileFromCharacter,
+  type AssistantCharacter,
+} from "@/components/avatar/assistant-character-packs";
 import { captureError } from "@/lib/sentry/capture-error";
 import { avatarQueryKey } from "@/lib/sync/query-tags";
 import type { CharacterTraits } from "@/types/avatar";
@@ -28,11 +38,28 @@ export async function seedHatchAvatar(
   assistantId: string,
   traits: CharacterTraits,
   queryClient: QueryClient,
+  preferredAvatar?: AssistantCharacter | null,
 ): Promise<void> {
   try {
-    const existing = await fetchCharacterTraits(assistantId);
-    if (!existing) {
-      await saveCharacterTraits(assistantId, traits);
+    const [existingProfile, existingTraits] = await Promise.all([
+      fetchAssistantCharacterProfile(assistantId),
+      fetchCharacterTraits(assistantId),
+    ]);
+    if (!existingProfile && !existingTraits) {
+      const defaultAvatar =
+        preferredAvatar ??
+        WORKLIN_AVATAR_CHOICES[
+          Math.floor(Math.random() * WORKLIN_AVATAR_CHOICES.length)
+        ];
+      const savedProfile = defaultAvatar
+        ? await saveAssistantCharacterProfile(
+            assistantId,
+            profileFromCharacter(defaultAvatar),
+          )
+        : false;
+      if (!savedProfile) {
+        await saveCharacterTraits(assistantId, traits);
+      }
     }
     void queryClient.invalidateQueries({
       queryKey: avatarQueryKey(assistantId),

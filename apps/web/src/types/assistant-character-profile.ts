@@ -2,6 +2,7 @@ export const ASSISTANT_CHARACTER_PROFILE_PATH =
   "data/avatar/assistant-character-profile.json";
 
 export const ASSISTANT_CHARACTER_PACK_IDS = [
+  "worklin",
   "rick_and_morty",
   "simpsons",
   "futurama",
