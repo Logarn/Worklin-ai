@@ -10,6 +10,8 @@
 !gateway/**
 !packages/
 !packages/**
+!runtime/
+!runtime/**
 !skills/
 !skills/meet-join/
 !skills/meet-join/package.json
