@@ -124,17 +124,17 @@ import { startOrphanReaper, stopOrphanReaper } from "./orphan-reaper.js";
 import { processMessage } from "./process-message.js";
 import { runProfilerSweep } from "./profiler-run-store.js";
 import {
-  RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
-  shouldRetryRuntimeHttpOnLoopback,
-} from "./runtime-http-startup.js";
-import {
   initializeProvidersAndTools,
   registerMessagingProviders,
   registerWatcherProviders,
 } from "./providers-setup.js";
+import {
+  RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
+  shouldRetryRuntimeHttpOnLoopback,
+} from "./runtime-http-startup.js";
 import { DaemonServer } from "./server.js";
 import { installShutdownHandlers } from "./shutdown-handlers.js";
-import { refreshSkillCapabilityMemories } from "./skill-memory-refresh.js";
+import { refreshSkillCapabilityMemoriesOnStartup } from "./skill-memory-refresh.js";
 
 const log = getLogger("lifecycle");
 let diskPressureStartupSampleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -984,7 +984,7 @@ export async function runDaemon(): Promise<void> {
       try {
         const { seedCliGraphNodes } =
           await import("../memory/graph/capability-seed.js");
-        refreshSkillCapabilityMemories(config);
+        refreshSkillCapabilityMemoriesOnStartup(config);
         await seedCliGraphNodes();
       } catch (err) {
         log.warn({ err }, "Graph capability seeding failed — continuing");
