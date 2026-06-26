@@ -153,7 +153,7 @@ export function useChatEmptyState({
               traits={avatarTraits}
               customImageUrl={avatarImageUrl}
               characterProfile={characterProfile}
-              size={56}
+              size={28}
               interactive
               isStreaming={isAssistantStreaming}
               isProcessing={activeConversationIsProcessing}

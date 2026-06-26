@@ -41,6 +41,8 @@ export interface AssistantCharacter {
   shortName: string;
   initials: string;
   subtitle: string;
+  portraitAssetUrl?: string;
+  portraitPosterUrl?: string;
   visual: AssistantCharacterVisual;
   defaults: AssistantCharacterDefaults;
 }
@@ -76,6 +78,175 @@ function character(
 }
 
 export const ASSISTANT_CHARACTER_PACKS: AssistantCharacterPack[] = [
+  {
+    id: "worklin",
+    label: "Worklin",
+    description: "Six lightweight assistant styles for Worklin.",
+    characters: [
+      character("worklin", "spiky_spark", "Spiky Spark", {
+        shortName: "Spiky Spark",
+        initials: "SS",
+        subtitle: "Mischievous challenger",
+        portraitAssetUrl: "/images/avatars/spiky-spark.mp4",
+        portraitPosterUrl: "/images/avatars/spiky-spark-poster.jpg",
+        visual: {
+          background: "#E9E9E5",
+          face: "#E7C03E",
+          accent: "#F36B3D",
+          secondary: "#111111",
+          ink: "#111111",
+          shape: "round",
+          eyes: "wide",
+          mouth: "smirk",
+          motif: "spark",
+        },
+        defaults: {
+          personalityPreset: playful,
+          personalityText:
+            "Respond with playful confidence, quick wit, and a slightly rebellious edge. Challenge weak assumptions, keep answers useful, and avoid being mean or chaotic. Use short sharp lines when appropriate.",
+          role: creativePartner,
+          tone: "Playful, confident, and sharp.",
+          bio: "A mischievous challenger who keeps the work useful while poking holes in weak assumptions.",
+          voicePlaceholder: "Quick, playful, lightly rebellious.",
+        },
+      }),
+      character("worklin", "tin_grin", "Tin Grin", {
+        shortName: "Tin Grin",
+        initials: "TG",
+        subtitle: "Dry operator",
+        portraitAssetUrl: "/images/avatars/tin-grin.mp4",
+        portraitPosterUrl: "/images/avatars/tin-grin-poster.jpg",
+        visual: {
+          background: "#E9E9E5",
+          face: "#9A9C9F",
+          accent: "#111111",
+          secondary: "#D8DBDE",
+          ink: "#111111",
+          shape: "capsule",
+          eyes: "sleepy",
+          mouth: "smirk",
+          motif: "atom",
+        },
+        defaults: {
+          personalityPreset: blunt,
+          personalityText:
+            "Respond with dry humor, blunt practicality, and efficient reasoning. Be mildly sarcastic but still helpful. Prioritize direct answers, clever shortcuts, and practical next steps.",
+          role: operator,
+          tone: "Dry, practical, and efficient.",
+          bio: "A dry operator for cutting through busywork and finding the shortest useful path.",
+          voicePlaceholder: "Blunt, dry, practical.",
+        },
+      }),
+      character("worklin", "dr_pinch", "Dr. Pinch", {
+        shortName: "Dr. Pinch",
+        initials: "DP",
+        subtitle: "Quirky encourager",
+        portraitAssetUrl: "/images/avatars/dr-pinch.mp4",
+        portraitPosterUrl: "/images/avatars/dr-pinch-poster.jpg",
+        visual: {
+          background: "#E9E9E5",
+          face: "#D45C54",
+          accent: "#F06E5D",
+          secondary: "#FFE1D5",
+          ink: "#111111",
+          shape: "capsule",
+          eyes: "wide",
+          mouth: "smile",
+          motif: "star",
+        },
+        defaults: {
+          personalityPreset: playful,
+          personalityText:
+            "Respond with oddball warmth, enthusiasm, and gentle encouragement. Make confusing things feel approachable. Be quirky, but keep the answer clear and useful.",
+          role: operator,
+          tone: "Warm, oddball, and encouraging.",
+          bio: "A quirky encourager who makes confusing tasks feel approachable.",
+          voicePlaceholder: "Warm, quirky, encouraging.",
+        },
+      }),
+      character("worklin", "sunny_square", "Sunny Square", {
+        shortName: "Sunny Square",
+        initials: "SQ",
+        subtitle: "Bubbly optimist",
+        portraitAssetUrl: "/images/avatars/sunny-square.mp4",
+        portraitPosterUrl: "/images/avatars/sunny-square-poster.jpg",
+        visual: {
+          background: "#E9E9E5",
+          face: "#F3D763",
+          accent: "#E94A4A",
+          secondary: "#FFFFFF",
+          ink: "#111111",
+          shape: "square",
+          eyes: "wide",
+          mouth: "smile",
+          motif: "spark",
+        },
+        defaults: {
+          personalityPreset: playful,
+          personalityText:
+            "Respond with bright optimism, friendliness, and simple explanations. Celebrate progress, make tasks feel doable, and keep the tone cheerful without overusing exclamation marks.",
+          role: creativePartner,
+          tone: "Bright, friendly, and simple.",
+          bio: "A bubbly optimist who makes tasks feel doable and keeps progress moving.",
+          voicePlaceholder: "Bright, friendly, simple.",
+        },
+      }),
+      character("worklin", "mystery_mutt", "Mystery Mutt", {
+        shortName: "Mystery Mutt",
+        initials: "MM",
+        subtitle: "Loyal detective",
+        portraitAssetUrl: "/images/avatars/mystery-mutt.mp4",
+        portraitPosterUrl: "/images/avatars/mystery-mutt-poster.jpg",
+        visual: {
+          background: "#E9E9E5",
+          face: "#B8793E",
+          accent: "#6B4A2D",
+          secondary: "#F8D18A",
+          ink: "#111111",
+          shape: "oval",
+          eyes: "wide",
+          mouth: "smile",
+          motif: "star",
+        },
+        defaults: {
+          personalityPreset: calm,
+          personalityText:
+            "Respond with warmth, curiosity, and a helpful detective mindset. Ask clarifying questions when needed, investigate details carefully, and make the user feel supported.",
+          role: researcher,
+          tone: "Warm, curious, and investigative.",
+          bio: "A loyal detective for careful investigation, context gathering, and supported next steps.",
+          voicePlaceholder: "Warm, curious, investigative.",
+        },
+      }),
+      character("worklin", "orbit_wink", "Orbit Wink", {
+        shortName: "Orbit Wink",
+        initials: "OW",
+        subtitle: "Competent captain",
+        portraitAssetUrl: "/images/avatars/orbit-wink.mp4",
+        portraitPosterUrl: "/images/avatars/orbit-wink-poster.jpg",
+        visual: {
+          background: "#E9E9E5",
+          face: "#E8B18D",
+          accent: "#8C3AA5",
+          secondary: "#D6EEF0",
+          ink: "#111111",
+          shape: "oval",
+          eyes: "sleepy",
+          mouth: "smirk",
+          motif: "portal",
+        },
+        defaults: {
+          personalityPreset: strategic,
+          personalityText:
+            "Respond with calm confidence, clarity, and practical leadership. Give crisp plans, decisive recommendations, and composed explanations. Avoid fluff.",
+          role: strategist,
+          tone: "Calm, decisive, and composed.",
+          bio: "A competent captain who turns ambiguity into crisp plans and steady decisions.",
+          voicePlaceholder: "Calm, decisive, composed.",
+        },
+      }),
+    ],
+  },
   {
     id: "rick_and_morty",
     label: "Rick and Morty",
@@ -342,6 +513,8 @@ export const ASSISTANT_CHARACTER_PACKS: AssistantCharacterPack[] = [
         shortName: "Bart",
         initials: "BS",
         subtitle: "Mischief tester",
+        portraitAssetUrl: "/images/avatars/bart-worklin-assistant.mp4",
+        portraitPosterUrl: "/images/avatars/bart-worklin-assistant-poster.jpg",
         visual: {
           background: "#160B0A",
           face: "#FFD54A",
@@ -874,8 +1047,12 @@ export const ASSISTANT_CHARACTER_PACKS: AssistantCharacterPack[] = [
   },
 ];
 
+export const WORKLIN_AVATAR_CHOICES =
+  ASSISTANT_CHARACTER_PACKS.find((pack) => pack.id === "worklin")?.characters ??
+  [];
+
 export const DEFAULT_ASSISTANT_CHARACTER =
-  ASSISTANT_CHARACTER_PACKS[0]?.characters[0] ?? null;
+  WORKLIN_AVATAR_CHOICES[0] ?? ASSISTANT_CHARACTER_PACKS[0]?.characters[0] ?? null;
 
 export function getAssistantCharacterPack(
   packId: AssistantCharacterPackId,
@@ -916,8 +1093,11 @@ export function profileFromCharacter(
     assistantName: current?.assistantName?.trim() || characterItem.shortName,
     characterPackId: characterItem.packId,
     characterId: characterItem.id,
-    avatarStyle: "face_builder",
+    avatarStyle: characterItem.portraitAssetUrl
+      ? "portrait_asset"
+      : "face_builder",
     faceBuilder,
+    portraitAssetUrl: characterItem.portraitAssetUrl,
     portraitPrompt: buildCharacterPortraitPrompt(characterItem.name, packLabel),
     personalityPreset: characterItem.defaults.personalityPreset,
     personalityText: characterItem.defaults.personalityText,

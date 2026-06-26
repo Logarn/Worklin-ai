@@ -26,6 +26,7 @@ import { AnimatePresence } from "motion/react";
 
 import type { StyleProfile } from "@/domains/onboarding/cast/cast-templates";
 import type { CastCharacter } from "@/domains/onboarding/cast/cast-roster";
+import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import type { Rect } from "@/domains/onboarding/cast/cast-hero-types";
 import { MemoryList, SetupShell } from "@/domains/onboarding/cast/cast-shell";
 import { LoginScreen } from "@/domains/onboarding/cast/screens/login-screen";
@@ -121,6 +122,7 @@ export interface CastCompletionData {
   tone: "fast" | "deep" | null;
   connectedTools: string[];
   style: StyleProfile;
+  assistantAvatar?: AssistantCharacter | null;
   credits: number;
 }
 
@@ -199,6 +201,8 @@ function InteractiveCastFlow({
   // `userRole` is the field the later handoff maps to `occupation`.
   const [userRole, setUserRole] = useState("");
   const [selected, setSelected] = useState<CastCharacter | null>(null);
+  const [selectedAvatar, setSelectedAvatar] =
+    useState<AssistantCharacter | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [customizing, setCustomizing] = useState(false);
   const [brainFileContent, setBrainFileContent] = useState<string | null>(null);
@@ -274,6 +278,7 @@ function InteractiveCastFlow({
       tone,
       connectedTools,
       style,
+      assistantAvatar: selectedAvatar,
       credits: earnedCredits,
     };
   }
@@ -288,8 +293,13 @@ function InteractiveCastFlow({
     onComplete(data);
   }
 
-  function chooseStarter(char: CastCharacter, chosenName: string) {
+  function chooseStarter(
+    char: CastCharacter,
+    chosenName: string,
+    assistantAvatar?: AssistantCharacter | null,
+  ) {
     setSelected(char);
+    setSelectedAvatar(assistantAvatar ?? null);
     setNames((prev) => ({ ...prev, [char.id]: chosenName }));
     addMemory("face", `Look & feel: ${chosenName}`, "dialogue");
     emitPhaseOnce("starter");
@@ -515,7 +525,7 @@ function CastFlowBody({
   isPreview: boolean;
 }) {
   const navigate = useNavigate();
-  const { start, awaitReady } = useBackgroundHatch();
+  const { start, awaitReady, seedAvatar } = useBackgroundHatch();
   const handoffStartedRef = useRef(false);
 
   async function runHandoff(data: CastCompletionData): Promise<void> {
@@ -531,6 +541,7 @@ function CastFlowBody({
       );
       return;
     }
+    await seedAvatar(data.assistantAvatar);
 
     const { context, assistantName } = buildHandoffFromCompletion(data);
     setPendingPreChatContext(context);

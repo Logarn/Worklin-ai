@@ -521,10 +521,9 @@ export function buildCharacterPortraitPrompt(
   packLabel: string,
 ): string {
   return [
-    `Square transparent PNG avatar portrait of ${characterName} from ${packLabel}.`,
-    "Make the character immediately recognizable and faithful to the adult animated TV source.",
+    `Square product-avatar portrait of ${characterName} for ${packLabel}.`,
     "Head-and-shoulders crop, centered, clean edges, expressive face, crisp linework, high resolution.",
-    "No background, no text, no watermark, no frame, no extra characters.",
+    "Simple monochrome studio background, no text, no watermark, no frame, no extra characters.",
     "Friendly polished product-avatar finish suitable for a SaaS assistant identity picker.",
   ].join(" ");
 }
