@@ -1697,12 +1697,26 @@ async function main() {
           { signal: AbortSignal.timeout(3000) },
         );
         if (!upstream.ok) {
+          log.warn(
+            {
+              assistantRuntimeBaseUrl: config.assistantRuntimeBaseUrl,
+              upstreamStatus: upstream.status,
+            },
+            "Gateway readiness probe: assistant /readyz returned a non-OK status",
+          );
           return Response.json(
             { status: "upstream_unhealthy", upstream: upstream.status },
             { status: 503 },
           );
         }
-      } catch {
+      } catch (err) {
+        log.warn(
+          {
+            err,
+            assistantRuntimeBaseUrl: config.assistantRuntimeBaseUrl,
+          },
+          "Gateway readiness probe: assistant /readyz was unreachable",
+        );
         return Response.json(
           { status: "upstream_unreachable" },
           { status: 503 },
