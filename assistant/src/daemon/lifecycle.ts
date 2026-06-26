@@ -124,6 +124,10 @@ import { startOrphanReaper, stopOrphanReaper } from "./orphan-reaper.js";
 import { processMessage } from "./process-message.js";
 import { runProfilerSweep } from "./profiler-run-store.js";
 import {
+  RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
+  shouldRetryRuntimeHttpOnLoopback,
+} from "./runtime-http-startup.js";
+import {
   initializeProvidersAndTools,
   registerMessagingProviders,
   registerWatcherProviders,
@@ -332,27 +336,80 @@ export async function runDaemon(): Promise<void> {
     const httpHostname = getRuntimeHttpHost();
     log.info({ httpPort }, "Daemon startup: starting runtime HTTP server");
 
-    runtimeHttp = new RuntimeHttpServer({
-      port: httpPort,
-      hostname: httpHostname,
-    });
-
     // Isolated try/catch around start() — a bind failure (port in use,
     // permission denied, fd exhaustion) must not tear down the rest of
     // daemon startup. The daemon falls back to IPC-only operation when
     // runtimeHttp is null.
-    try {
-      await runtimeHttp.start();
+    const startRuntimeHttpServer = async (
+      hostname: string,
+    ): Promise<RuntimeHttpServer> => {
+      const server = new RuntimeHttpServer({
+        port: httpPort,
+        hostname,
+      });
+      await server.start();
       log.info(
-        { port: httpPort, hostname: httpHostname },
+        { port: httpPort, hostname },
         "Daemon startup: runtime HTTP server listening",
       );
+      return server;
+    };
+
+    try {
+      runtimeHttp = await startRuntimeHttpServer(httpHostname);
     } catch (err) {
-      log.warn(
-        { err, port: httpPort },
-        "Failed to start runtime HTTP server, continuing without it",
+      console.error(
+        `Failed to start runtime HTTP server on ${httpHostname}:${httpPort}:`,
+        err,
       );
-      runtimeHttp = null;
+
+      if (shouldRetryRuntimeHttpOnLoopback(httpHostname, err)) {
+        log.warn(
+          {
+            err,
+            port: httpPort,
+            requestedHostname: httpHostname,
+            fallbackHostname: RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
+          },
+          "Configured runtime HTTP host failed to bind; retrying on loopback",
+        );
+        console.warn(
+          `Retrying runtime HTTP server on ${RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST}:${httpPort} after ${httpHostname} bind failure.`,
+        );
+        try {
+          runtimeHttp = await startRuntimeHttpServer(
+            RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
+          );
+          log.warn(
+            {
+              port: httpPort,
+              requestedHostname: httpHostname,
+              hostname: RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
+            },
+            "Runtime HTTP server recovered on loopback after configured-host bind failure",
+          );
+        } catch (fallbackErr) {
+          console.error(
+            `Failed to start runtime HTTP server on ${RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST}:${httpPort}:`,
+            fallbackErr,
+          );
+          log.warn(
+            {
+              err: fallbackErr,
+              port: httpPort,
+              hostname: RUNTIME_HTTP_LOOPBACK_FALLBACK_HOST,
+            },
+            "Failed to start runtime HTTP server, continuing without it",
+          );
+          runtimeHttp = null;
+        }
+      } else {
+        log.warn(
+          { err, port: httpPort, hostname: httpHostname },
+          "Failed to start runtime HTTP server, continuing without it",
+        );
+        runtimeHttp = null;
+      }
     }
 
     // Pre-populate feature flag overrides so subsequent sync
