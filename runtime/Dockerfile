@@ -60,20 +60,41 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     bash \
-    bubblewrap \
     ca-certificates \
     curl \
-    debootstrap \
-    debian-archive-keyring \
     debconf \
-    e2fsprogs \
     ffmpeg \
     fonts-freefont-ttf \
     g++ \
     git \
     htop \
-    iproute2 \
     jq \
+    lsof \
+    make \
+    openssl \
+    procps \
+    python3 \
+    sqlite3 \
+    sudo \
+    unzip \
+    uuid-runtime \
+    vim \
+    wget \
+    xclip \
+    xdg-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y \
+    bubblewrap \
+    debootstrap \
+    debian-archive-keyring \
+    e2fsprogs \
+    iproute2 \
+    mount \
+    util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -102,21 +123,6 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxshmfence1 \
     libxtst6 \
-    lsof \
-    make \
-    mount \
-    openssl \
-    procps \
-    python3 \
-    sqlite3 \
-    sudo \
-    util-linux \
-    unzip \
-    uuid-runtime \
-    vim \
-    wget \
-    xclip \
-    xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /root/.bun/bin/bun /usr/local/bin/bun
