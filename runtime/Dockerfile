@@ -33,6 +33,9 @@ RUN cd /app/packages/service-contracts && bun install --frozen-lockfile
 COPY assistant/package.json assistant/bun.lock ./assistant/
 RUN cd /app/assistant && bun install --frozen-lockfile
 
+COPY control-plane/package.json control-plane/tsconfig.json control-plane/bun.lock ./control-plane/
+RUN cd /app/control-plane && bun install --frozen-lockfile
+
 COPY gateway/package.json gateway/bun.lock ./gateway/
 RUN cd /app/gateway && bun install --frozen-lockfile --production
 
@@ -48,6 +51,7 @@ RUN set -eu; for pkg in /app/skills/*/package.json; do \
     done
 
 COPY assistant ./assistant
+COPY control-plane ./control-plane
 COPY gateway ./gateway
 COPY credential-executor ./credential-executor
 COPY runtime ./runtime
@@ -165,6 +169,7 @@ RUN chmod +x \
 
 RUN mkdir -p /run/ces-bootstrap && chmod 777 /run/ces-bootstrap
 
+EXPOSE 8080
 EXPOSE 7830
 EXPOSE 8090
 

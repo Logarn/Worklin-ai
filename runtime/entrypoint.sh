@@ -8,10 +8,11 @@ set -euo pipefail
 : "${CREDENTIAL_SECURITY_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-security}"
 : "${CES_BOOTSTRAP_SOCKET_DIR:=/run/ces-bootstrap}"
 : "${DEBUG_STDOUT_LOGS:=1}"
-: "${PORT:=7830}"
+: "${PORT:=8080}"
+: "${WORKLIN_CONTROL_PLANE_PORT:=${PORT}}"
 : "${CES_HEALTH_PORT:=8090}"
 : "${CES_CREDENTIAL_URL:=http://127.0.0.1:${CES_HEALTH_PORT}}"
-: "${GATEWAY_PORT:=${PORT}}"
+: "${GATEWAY_PORT:=7830}"
 : "${RUNTIME_HTTP_PORT:=3001}"
 : "${RUNTIME_HTTP_HOST:=0.0.0.0}"
 : "${ASSISTANT_HOST:=127.0.0.1}"
@@ -29,6 +30,7 @@ export CREDENTIAL_SECURITY_DIR
 export CES_BOOTSTRAP_SOCKET_DIR
 export DEBUG_STDOUT_LOGS
 export PORT
+export WORKLIN_CONTROL_PLANE_PORT
 export CES_HEALTH_PORT
 export CES_CREDENTIAL_URL
 export GATEWAY_PORT
@@ -40,6 +42,7 @@ export UNMAPPED_POLICY
 export GATEWAY_TRUST_PROXY
 export IS_CONTAINERIZED
 export CES_MODE
+export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 
 mkdir -p \
   "${WORKLIN_RUNTIME_ROOT}" \
@@ -95,6 +98,7 @@ fi
 
 start_as gateway bash -lc "cd /app/gateway && exec bun --smol run src/index.ts"
 start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
+start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
 
 exit_code=0
 if ! wait -n "${pids[@]}"; then
