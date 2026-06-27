@@ -311,6 +311,18 @@ function checkCsrf(req: Request, form?: URLSearchParams): boolean {
   return !!cookieCsrf && !!submitted && safeEqual(cookieCsrf, submitted);
 }
 
+function checkProviderRedirectCsrf(req: Request, form: URLSearchParams): boolean {
+  if (checkCsrf(req, form)) return true;
+
+  // Hosted production login starts on Vercel and posts to Railway. Some
+  // browsers decline to persist the backend-domain CSRF cookie during the
+  // bootstrap fetch, which would otherwise dead-end login on a 403 despite the
+  // request originating from our own allowed web origin. Keep full double-submit
+  // CSRF everywhere else; only this login-initiation endpoint falls back to an
+  // allowlisted Origin check.
+  return !!allowedOrigin(req) && !!form.get("csrfmiddlewaretoken");
+}
+
 function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
@@ -537,7 +549,7 @@ async function handleSession(req: Request, res: Response): Promise<void> {
 
 async function handleProviderRedirect(req: Request, res: Response): Promise<void> {
   const form = new URLSearchParams(parseTextBody(req));
-  if (!checkCsrf(req, form)) {
+  if (!checkProviderRedirectCsrf(req, form)) {
     sendJson(req, res, { errors: [{ code: "csrf_failed", message: "CSRF validation failed." }] }, 403);
     return;
   }
