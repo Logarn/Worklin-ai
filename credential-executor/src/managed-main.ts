@@ -21,7 +21,7 @@
  * All RPC traffic flows exclusively over the accepted Unix socket stream.
  */
 
-import { mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
 import { createServer as createNetServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -543,6 +543,17 @@ function acceptOneConnection(
     });
 
     netServer.listen(socketPath, () => {
+      try {
+        // The bootstrap socket is shared across distinct container users
+        // (`assistant`, `gateway`, `ces`), so it cannot rely on the default
+        // process umask for connect permissions.
+        chmodSync(socketPath, 0o666);
+      } catch (err) {
+        signal.removeEventListener("abort", onAbort);
+        cleanup();
+        reject(err);
+        return;
+      }
       log.info(`Bootstrap socket listening at ${socketPath}`);
     });
 

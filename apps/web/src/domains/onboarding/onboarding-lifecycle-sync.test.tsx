@@ -5,7 +5,15 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import { useEffect, useState, type ReactNode } from "react";
 
 import {
@@ -51,14 +59,20 @@ let getAssistantImpl: () => Promise<unknown> = async () =>
 const getAssistantMock = mock(() => getAssistantImpl());
 
 let fetchTraitsImpl: () => Promise<unknown> = async () => null;
+let fetchAssistantCharacterProfileImpl: () => Promise<unknown> = async () => null;
 const fetchCharacterTraitsMock = mock(() => fetchTraitsImpl());
-const saveCharacterTraitsMock = mock(async () => undefined);
+const fetchAssistantCharacterProfileMock = mock(() =>
+  fetchAssistantCharacterProfileImpl(),
+);
+const saveAssistantCharacterProfileMock = mock(async () => true);
+const saveCharacterTraitsMock = mock(async () => true);
 const invalidateQueriesMock = mock(() => {});
 const queryClientMock = {
   fetchQuery: mock(async () => []),
   invalidateQueries: invalidateQueriesMock,
 };
 const writeSelectedVersionMock = mock(() => {});
+let randomSpy: ReturnType<typeof spyOn> | null = null;
 
 type TestOnboardingRecipe = {
   cohort: string;
@@ -102,7 +116,9 @@ mock.module("@/assistant/api", () => ({
 }));
 
 mock.module("@/assistant/avatar-api", () => ({
+  fetchAssistantCharacterProfile: fetchAssistantCharacterProfileMock,
   fetchCharacterTraits: fetchCharacterTraitsMock,
+  saveAssistantCharacterProfile: saveAssistantCharacterProfileMock,
   saveCharacterTraits: saveCharacterTraitsMock,
 }));
 
@@ -398,6 +414,7 @@ beforeEach(() => {
   searchParams = new URLSearchParams();
   checkAssistantImpl = async () => {};
   fetchTraitsImpl = async () => null;
+  fetchAssistantCharacterProfileImpl = async () => null;
   getAssistantImpl = async () => assistantResult("active");
   preChatOnboardingExperiment = "variant-a";
   activationFlowExperiment = "control";
@@ -409,6 +426,7 @@ beforeEach(() => {
   isLocalModeValue = false;
   platformSessionValue = "absent";
   fetchOnboardingRecipeImpl = async () => null;
+  randomSpy = spyOn(Math, "random").mockReturnValue(0);
   sessionStorage.clear();
   localStorage.clear();
 
@@ -416,7 +434,9 @@ beforeEach(() => {
   checkAssistantMock.mockClear();
   hatchAssistantMock.mockClear();
   getAssistantMock.mockClear();
+  fetchAssistantCharacterProfileMock.mockClear();
   fetchCharacterTraitsMock.mockClear();
+  saveAssistantCharacterProfileMock.mockClear();
   saveCharacterTraitsMock.mockClear();
   invalidateQueriesMock.mockClear();
   writeSelectedVersionMock.mockClear();
@@ -424,6 +444,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  randomSpy?.mockRestore();
+  randomSpy = null;
   cleanup();
 });
 
@@ -685,12 +707,16 @@ describe("onboarding lifecycle sync", () => {
     render(<HatchingScreen />);
 
     await waitFor(() =>
-      expect(saveCharacterTraitsMock).toHaveBeenCalledWith("asst-1", {
-        bodyShape: "round",
-        eyeStyle: "dot",
-        color: "green",
-      }),
+      expect(saveAssistantCharacterProfileMock).toHaveBeenCalledWith(
+        "asst-1",
+        expect.objectContaining({
+          characterPackId: "worklin",
+          characterId: "spiky_spark",
+          avatarStyle: "portrait_asset",
+        }),
+      ),
     );
+    expect(saveCharacterTraitsMock).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(invalidateQueriesMock).toHaveBeenCalledWith({
         queryKey: ["assistantAvatar", "asst-1"],
@@ -718,6 +744,7 @@ describe("onboarding lifecycle sync", () => {
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
       timeout: 2_000,
     });
+    expect(saveAssistantCharacterProfileMock).not.toHaveBeenCalled();
     expect(saveCharacterTraitsMock).not.toHaveBeenCalled();
     expect(invalidateQueriesMock).not.toHaveBeenCalled();
   });
@@ -740,6 +767,7 @@ describe("onboarding lifecycle sync", () => {
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
       timeout: 2_000,
     });
+    expect(saveAssistantCharacterProfileMock).not.toHaveBeenCalled();
     expect(saveCharacterTraitsMock).not.toHaveBeenCalled();
     expect(invalidateQueriesMock).not.toHaveBeenCalled();
   });
@@ -763,12 +791,16 @@ describe("onboarding lifecycle sync", () => {
     render(<HatchingScreen />);
 
     await waitFor(() =>
-      expect(saveCharacterTraitsMock).toHaveBeenCalledWith("asst-1", {
-        bodyShape: "round",
-        eyeStyle: "dot",
-        color: "green",
-      }),
+      expect(saveAssistantCharacterProfileMock).toHaveBeenCalledWith(
+        "asst-1",
+        expect.objectContaining({
+          characterPackId: "worklin",
+          characterId: "spiky_spark",
+          avatarStyle: "portrait_asset",
+        }),
+      ),
     );
+    expect(saveCharacterTraitsMock).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(invalidateQueriesMock).toHaveBeenCalledWith({
         queryKey: ["assistantAvatar", "asst-1"],

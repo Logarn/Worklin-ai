@@ -1,554 +1,385 @@
 # Worklin Context Handoff
 
-Last updated: 2026-06-25
+Last updated: 2026-06-26
 
 This handoff is for a fresh Codex chat. Read this file first, then read `AGENTS.md`.
 
 ## Current Objective
 
-Make the current Worklin app usable in production:
+Continue from the local Worklin repo and finish the avatar/onboarding change:
 
-- Frontend live on Vercel.
-- Backend/control-plane live on Railway.
-- Auth works through Auth0.
-- Frontend and backend talk to each other.
-- Product remains Worklin, not Vellum.
-- Retention/audit features remain usable; do not delete product features just to satisfy tests.
+1. Verify the local changes.
+2. Commit and push the branch.
+3. Deploy the frontend.
+4. Help the user inspect how the selected avatars look in a real chat/session UI.
 
-The user has Auth0, Railway, and Vercel open and prefers clear click-by-click guidance over dashboard automation.
+The user specifically wants:
 
-## Repo And Source State
+- Only the six Pika-provided avatars.
+- No extra generated/static avatar.
+- Avatar selection in onboarding with clear selectable cards/buttons.
+- The selected character to persist into the assistant profile.
+- Chat/session avatars to feel cute, realistic, and visible at real chat scale.
+- Preview/static behavior explained clearly: the temporary preview was made static for screenshot QA, but real product code uses MP4 playback through `PortraitAssetAvatar`.
 
-Current up-to-date local checkout:
+## Repo And Branch
+
+Current repo:
 
 ```text
-/private/tmp/worklin-git.1ykbSk/repo
-```
-
-GitHub repo:
-
-```text
-https://github.com/Logarn/Worklin-ai.git
+/Users/admin/Documents/New project 2/Worklin-ai
 ```
 
 Current branch:
 
 ```text
-main
+codex/worklin-runtime-railway
 ```
 
-Latest known commit:
+Remote:
 
 ```text
-8a4d5b9 Use Bun start command for Railway
+origin https://github.com/Logarn/Worklin-ai.git
 ```
 
-Recent commits:
+## Important Project Rules
+
+- Product name is **Worklin**.
+- Do not delete or change features merely to pass tests.
+- Do not run unscoped full test suites. Use focused tests and typechecks.
+- Use Bun through:
+
+```bash
+export PATH="$HOME/.bun/bin:$PATH"
+```
+
+- Do not expose secrets in chat or committed docs.
+- The old Vellum app is the technical base, but user-facing product should be Worklin.
+
+## Current Working Tree
+
+Expected changed files from the avatar/onboarding work:
 
 ```text
-8a4d5b9 Use Bun start command for Railway
-190d1c6 Add Railway control-plane deploy config
-7fab9ca Update README for Worklin
-0d80fbc Publish current Worklin app
-5cefd09 Publish current Worklin app
+apps/web/src/assistant/seed-hatch-avatar.test.ts
+apps/web/src/assistant/seed-hatch-avatar.ts
+apps/web/src/components/avatar/assistant-character-packs.ts
+apps/web/src/components/avatar/assistant-face-builder.test.ts
+apps/web/src/components/avatar/assistant-face-builder.ts
+apps/web/src/components/avatar/avatar-management-modal.tsx
+apps/web/src/components/avatar/chat-avatar.tsx
+apps/web/src/components/avatar/portrait-asset-avatar.tsx
+apps/web/src/domains/onboarding/cast/cast-onboarding-flow.tsx
+apps/web/src/domains/onboarding/cast/cast-starter.tsx
+apps/web/src/domains/onboarding/cast/screens/screen-slot.ts
+apps/web/src/domains/onboarding/cast/screens/starter-screen.tsx
+apps/web/src/domains/onboarding/cast/styles/starter.css
+apps/web/src/domains/onboarding/cast/use-background-hatch.test.ts
+apps/web/src/domains/onboarding/cast/use-background-hatch.ts
+apps/web/src/types/assistant-character-profile.test.ts
+apps/web/src/types/assistant-character-profile.ts
+assistant/src/prompts/templates/system-sections.ts
+apps/web/public/images/avatars/
 ```
 
-Working tree was clean when this handoff was written.
+New avatar assets under `apps/web/public/images/avatars/`:
 
-## Product Direction
+```text
+spiky-spark.mp4
+spiky-spark-poster.jpg
+tin-grin.mp4
+tin-grin-poster.jpg
+dr-pinch.mp4
+dr-pinch-poster.jpg
+sunny-square.mp4
+sunny-square-poster.jpg
+mystery-mutt.mp4
+mystery-mutt-poster.jpg
+orbit-wink.mp4
+orbit-wink-poster.jpg
+```
 
-The app name is **Worklin** everywhere user-facing. Do not refer to the product as Vellum in UI/copy/docs unless explaining historical source code.
+The generated/static extra avatar was removed. The search:
 
-Strategic architecture:
+```bash
+rg -n "zap_bean|Zap Bean|zap-bean" apps/web/src assistant/src apps/web/public/images/avatars
+```
 
-- Use the Vellum-style app/runtime architecture as the base product.
-- Treat old Worklin code as a source of retention concepts and domain logic only.
-- Do not make a messy hybrid app.
-- Do not port old Worklin Next pages, dashboards, auth, Prisma runtime, generic agent router, or token storage wholesale.
-- Worklin should feel like a clean autonomous retention marketer for DTC brands.
+should return no matches.
 
-Preserve Worklin-specific retention value:
+## What Changed
 
-- Brand Brain.
-- Shopify and Klaviyo read-only source analysis.
-- Customer intelligence and feature store.
-- Retention scoring and micro-segments.
-- Opportunity engine.
-- Deep retention audits.
-- Campaign package generation.
-- QA, approvals, action logs, safety metadata.
-- Draft-only Klaviyo behavior, no live send/schedule in v1.
+### Six-avatar Worklin pack
 
-## Current Product Requirements
+`apps/web/src/components/avatar/assistant-character-packs.ts`
 
-The user wants Worklin to become a functional autonomous retention marketer:
+- Worklin pack now has exactly six avatar choices:
+  - `spiky_spark`
+  - `tin_grin`
+  - `dr_pinch`
+  - `sunny_square`
+  - `mystery_mutt`
+  - `orbit_wink`
+- Each uses an MP4 `portraitAssetUrl` and JPG `portraitPosterUrl`.
+- The generated `zap_bean` avatar was removed.
 
-1. Conversational onboarding.
-2. Brand Brain created during onboarding.
-3. Website/domain is the first simple onboarding question.
-4. Agent asks one simple question at a time.
-5. Questions should often have clickable options so users do not need to type everything.
-6. Agent should detect missing integrations and show a working connection card, not ask awkwardly whether to reconnect.
-7. Klaviyo + Shopify are the core source layer, but current deep audit testing can be Klaviyo-only when Shopify is unavailable.
-8. Klaviyo behavior is read-only for audits and draft-only after approval.
-9. Shopify behavior is read-only.
-10. No Klaviyo send, schedule, flow activation, profile mutation, segment mutation, or Shopify write.
-11. Deep audits must be much richer than the current output.
-12. Deep audits should have large, clear, interactive artifacts and charts.
-13. Deep audits must be downloadable as PDF, with charts included in the PDF.
-14. Audit UI should be simple: quick summary first, clear open/download actions for the full audit.
-15. Users should see audit progress/reasoning/steps, but not truncated cards.
-16. Audits take time; UI must clearly say an audit can take a while, give an estimate, and tell users not to close the tab until it finishes.
+### Portrait asset renderer
 
-## Audit Output Direction
+`apps/web/src/components/avatar/portrait-asset-avatar.tsx`
 
-The user supplied real audit examples, especially a Dr. Rachael-style Klaviyo retention audit. The desired output is not just mirrored design; the audit content matters.
+- Renders MP4/WebM/MOV avatars with:
+  - `autoPlay`
+  - `muted`
+  - `loop`
+  - `playsInline`
+  - poster fallback
+- Uses poster image when reduced motion is enabled or animation is disabled.
+- Adds a light grey background so video cutout edges do not look harsh.
 
-Expected audit modules:
+### Chat avatar path
 
-- Data trust and input readiness.
-- Product performance when Shopify or product data exists.
-- Campaign cadence and send frequency.
-- Subject-line and word-bank analysis.
-- Campaign theme mix.
-- Sale vs non-sale analysis.
-- Segment performance and whitespace.
-- Flow/lifecycle coverage.
-- Forms/pop-up acquisition data where available.
-- Prioritized opportunity backlog.
-- QA and safety metadata.
+`apps/web/src/components/avatar/chat-avatar.tsx`
 
-Visual artifact inspiration:
+- If `characterProfile.avatarStyle === "portrait_asset"` and a `portraitAssetUrl` exists, chat renders `PortraitAssetAvatar`.
+- Real chat size is usually `28px`; empty state can use about `40px`.
+- While streaming/processing, a small ring appears around the portrait asset.
+- If reduced motion is enabled, it falls back to the poster.
 
-- Clean report format.
-- Strong headings.
-- Big readable cards.
-- Large charts.
-- Red/yellow/green/purple and other useful chart colors.
-- Charts should be interactive in the app and included in PDF export.
-- PDF must be downloadable reliably outside the Codex browser too.
+### Onboarding picker
 
-Important known issue:
+`apps/web/src/domains/onboarding/cast/cast-starter.tsx`
 
-- The recent audit generated in-app was wrong/off-brand and not Dr. Rachael-specific.
-- Artifacts were too small, unclear, not interactive enough, and sometimes invisible/clicks did not work.
-- PDF download/open failed.
-- Audit copy sounded too robotic and too short.
+- Replaced the old generated-avatar roster UI with a simple Worklin picker.
+- Shows six cards.
+- Each card has:
+  - avatar preview
+  - name
+  - short subtitle
+  - `Select` / `Selected` state
+- CTA says `Continue with {avatarName}`.
+- Uses internal cast placeholders only for downstream onboarding plumbing; visible/saved avatar is the selected Worklin avatar.
 
-Potential implementation direction:
+`apps/web/src/domains/onboarding/cast/styles/starter.css`
 
-- Build a real audit swarm where separate audit agents handle modules, then a coordinator combines them.
-- The first swarm implementation may have been deterministic rather than true background child compositions. The user asked to make it actual agents doing actual work.
-- Do not break existing audit features while improving architecture.
+- Adds large responsive card grid styling.
+- Desktop: 3 columns.
+- Tablet: 2 columns.
+- Small mobile: 1 column.
 
-## Branding And UI Direction
+### Persistence path
 
-Brand:
+`apps/web/src/assistant/seed-hatch-avatar.ts`
 
-- Product name: Worklin.
-- Logo assets were supplied earlier by the user.
-- Primary colors: black and white.
-- Secondary color: navy from favicon, but blue/navy should be less than 2 percent of the site and used only for special states.
-- Error/destructive UI may keep red/orange where appropriate.
+- `seedHatchAvatar()` accepts an optional preferred `AssistantCharacter`.
+- If provided, that exact avatar is saved.
+- Otherwise it falls back to a random Worklin avatar.
 
-UI issues user flagged:
+`apps/web/src/domains/onboarding/cast/use-background-hatch.ts`
 
-- Dropdowns/settings modals were translucent and hard to read.
-- Language model/provider settings were confusing.
-- Open ChatGPT sign-in initially did not open properly.
-- Chat screen copy was generic, not retention-focused.
-- Safety metadata in onboarding UI was too technical and unfriendly.
-- Onboarding was too skewed to Dr. Rachael and must support any brand.
-- Queue/composer UI felt confusing.
-- Connection artifacts/cards for Klaviyo did not reliably show or work.
-- Avatar creation is not customizable enough; user likes Notion Faces-style customization. If implementing this later, avoid copying copyrighted characters exactly in shipped assets; use original, configurable avatar parts.
+- Background hatch no longer saves a random avatar immediately.
+- It tracks whether the hatch created a fresh assistant.
+- It exposes `seedAvatar(preferredAvatar)` so onboarding can persist the user-selected avatar after the choice.
+- Existing assistants are not clobbered.
 
-## Deployment State
+`apps/web/src/domains/onboarding/cast/cast-onboarding-flow.tsx`
 
-Frontend:
+- Stores the selected avatar in onboarding completion data.
+- Calls `seedAvatar(data.assistantAvatar)` during handoff.
+
+### Assistant tone mapping
+
+`assistant/src/prompts/templates/system-sections.ts`
+
+- Maps the six avatar IDs to lightweight internal tone/personality styles.
+- Removed `zap_bean`.
+
+## Verification Already Completed
+
+These passed earlier:
+
+```bash
+cd "/Users/admin/Documents/New project 2/Worklin-ai/apps/web"
+PATH="$HOME/.bun/bin:$PATH" bunx tsc --noEmit
+PATH="$HOME/.bun/bin:$PATH" bun test src/types/assistant-character-profile.test.ts src/components/avatar/assistant-face-builder.test.ts src/assistant/seed-hatch-avatar.test.ts src/domains/onboarding/cast/use-background-hatch.test.ts
+```
+
+Focused test result:
+
+```text
+19 pass
+0 fail
+```
+
+Assistant typecheck passed earlier:
+
+```bash
+cd "/Users/admin/Documents/New project 2/Worklin-ai/assistant"
+PATH="$HOME/.bun/bin:$PATH" bunx tsc --noEmit
+```
+
+Diff whitespace check passed earlier:
+
+```bash
+cd "/Users/admin/Documents/New project 2/Worklin-ai"
+git diff --check
+```
+
+Before committing, rerun the checks above because this handoff may be picked up after time has passed.
+
+## Temporary Preview State
+
+The user currently has this local preview open:
+
+```text
+http://127.0.0.1:41779/index.html
+```
+
+That page is a **temporary preview harness**, not the real Worklin app route.
+
+Important:
+
+- The preview was changed to static poster images for screenshot QA.
+- This is why avatars look static when the user opens that preview page in a normal browser.
+- The product component still uses MP4s via `PortraitAssetAvatar`.
+- Real app animation should work when:
+  - Worklin renders the selected profile,
+  - `animationEnabled` is true,
+  - reduced motion is not enabled.
+
+If the user wants the temporary preview to animate too, change the temp preview HTML only, not product code, back to `<video autoplay muted loop playsinline>`.
+
+## Visual QA Already Completed
+
+Temporary visual QA confirmed:
+
+- Six cards only.
+- Names:
+  - Spiky Spark
+  - Tin Grin
+  - Dr. Pinch
+  - Sunny Square
+  - Mystery Mutt
+  - Orbit Wink
+- Clicking Orbit Wink updates:
+  - selected state to Orbit Wink
+  - CTA to `Continue with Orbit Wink`
+- Screenshot was generated at:
+
+```text
+/private/tmp/worklin-avatar-preview/worklin-avatar-onboarding.png
+```
+
+In-app browser route note:
+
+- The real onboarding route redirected to login:
+
+```text
+/assistant/onboarding/prechat?preview=true -> /account/login?returnTo=...
+```
+
+- Do not bypass auth in product code just to preview it.
+
+## How Avatars Should Look In Real Chat
+
+`ChatAvatar` renders selected portrait avatars at chat scale:
+
+- Default normal chat size: about `28px`.
+- Empty state/greeting avatar can be about `40px`.
+- It is a small circular character presence marker, not the large onboarding card.
+- It should sit near the latest assistant response area.
+- User messages are right-aligned bubbles.
+- Assistant content is more of a left/main-column response stream rather than a matching bubble.
+- The latest assistant avatar appears directly below/near the latest assistant response content, not pushed away by layout spacer.
+
+Relevant files:
+
+```text
+apps/web/src/components/avatar/chat-avatar.tsx
+apps/web/src/domains/chat/transcript/transcript.tsx
+apps/web/src/domains/chat/transcript/latest-turn-row.tsx
+apps/web/src/domains/chat/hooks/use-chat-empty-state.tsx
+```
+
+If the user asks "Can I see?", create a quick chat-scale visual mock or run the real app if auth/session is available. Since the temp preview is static, explain the distinction clearly.
+
+## Push And Deploy Plan
+
+From repo root:
+
+```bash
+cd "/Users/admin/Documents/New project 2/Worklin-ai"
+git status --short
+git diff --check
+```
+
+Run focused checks:
+
+```bash
+cd "/Users/admin/Documents/New project 2/Worklin-ai/apps/web"
+PATH="$HOME/.bun/bin:$PATH" bunx tsc --noEmit
+PATH="$HOME/.bun/bin:$PATH" bun test src/types/assistant-character-profile.test.ts src/components/avatar/assistant-face-builder.test.ts src/assistant/seed-hatch-avatar.test.ts src/domains/onboarding/cast/use-background-hatch.test.ts
+
+cd "/Users/admin/Documents/New project 2/Worklin-ai/assistant"
+PATH="$HOME/.bun/bin:$PATH" bunx tsc --noEmit
+```
+
+Commit:
+
+```bash
+cd "/Users/admin/Documents/New project 2/Worklin-ai"
+git add apps/web assistant/src/prompts/templates/system-sections.ts WORKLIN_CONTEXT_HANDOFF.md
+git commit -m "Add Worklin avatar picker to onboarding"
+```
+
+Push:
+
+```bash
+git push origin codex/worklin-runtime-railway
+```
+
+Deploy frontend:
+
+```bash
+PATH="$HOME/.bun/bin:$PATH" bunx vercel deploy --prod
+```
+
+This avatar/onboarding work is primarily frontend/static asset/profile behavior. It should not require a backend redeploy unless the current branch includes unrelated backend changes that have not yet been deployed.
+## Vercel/Railway Context
+
+Frontend target:
 
 ```text
 https://worklin-ai.vercel.app
 ```
 
-Confirmed with curl:
-
-```text
-https://worklin-ai.vercel.app/account/login
-```
-
-returned HTTP 200 and served `index.html`. It may still be an older Vercel deployment until env vars and redeploy are fixed.
-
-Backend/control-plane on Railway:
+Backend/control-plane target:
 
 ```text
 https://worklin-ai-production.up.railway.app
 ```
 
-Confirmed with curl:
-
-```text
-curl -i https://worklin-ai-production.up.railway.app/healthz
-```
-
-returned:
-
-```json
-{"ok":true}
-```
-
-Railway project:
-
-```text
-adequate-possibility
-```
-
-Railway environment:
-
-```text
-production
-```
-
-Railway service:
-
-```text
-Worklin-ai
-```
-
-Railway service settings URL:
-
-```text
-https://railway.com/project/938404be-040e-4d8f-a6ad-129fe36fc07f/service/6652911c-2726-425a-af5c-b3a66be07dc5/settings?environmentId=20611cc5-31f1-4fe8-a0c8-4237ee95a924
-```
-
-Railway service variables URL:
-
-```text
-https://railway.com/project/938404be-040e-4d8f-a6ad-129fe36fc07f/service/6652911c-2726-425a-af5c-b3a66be07dc5/variables?environmentId=20611cc5-31f1-4fe8-a0c8-4237ee95a924
-```
-
-Railway status:
-
-- Service is online.
-- Public Railway domain exists.
-- Wait for CI is now off.
-- The last attempted raw editor update did **not** land. Railway still appeared to show only two service variables.
-
-Known Railway variables present:
-
-```text
-WORKLIN_SESSION_SECRET
-ACTOR_TOKEN_SIGNING_KEY
-```
-
-Do not expose the values.
-
-Auth status:
-
-```text
-curl -i https://worklin-ai-production.up.railway.app/_allauth/browser/v1/config
-```
-
-returned:
-
-```json
-{"data":{},"meta":{},"status":200}
-```
-
-This means the backend is live but Auth0 is not fully configured in Railway env yet.
-
-Unauthenticated session endpoint:
-
-```text
-curl -i https://worklin-ai-production.up.railway.app/_allauth/browser/v1/auth/session
-```
-
-returned HTTP 401 with `is_authenticated:false`, which is expected before login.
-
-## Auth0 State
-
-Tenant:
-
-```text
-https://dev-t8ju8fx27q3pgjld.us.auth0.com
-```
-
-Client ID:
-
-```text
-lWY6GcvryGi5ZxZlnbNU3ybUNXelD4uH
-```
-
-The user provided the Auth0 client secret in the prior chat. Do not print it. Ask the user to paste it directly into Railway if needed.
-
-Auth0 app should be a Regular Web Application using `client_secret_post`.
-
-Required Auth0 Application Settings:
-
-Allowed Callback URLs:
-
-```text
-https://worklin-ai-production.up.railway.app/callback, http://127.0.0.1:19283/callback
-```
-
-Allowed Logout URLs:
-
-```text
-https://worklin-ai.vercel.app/account/login, http://127.0.0.1:5177/account/login
-```
-
-Allowed Web Origins:
-
-```text
-https://worklin-ai.vercel.app, https://worklin-ai-production.up.railway.app, http://127.0.0.1:5177, http://127.0.0.1:19283
-```
-
-Allowed Origins (CORS):
-
-```text
-https://worklin-ai.vercel.app, https://worklin-ai-production.up.railway.app, http://127.0.0.1:5177, http://127.0.0.1:19283
-```
-
-Save changes in Auth0 after editing.
-
-## Railway Env Vars Still Needed
-
-Go to Railway service variables. Add these without revealing secrets in chat:
-
-```text
-WORKLIN_WEB_ORIGIN=https://worklin-ai.vercel.app
-WORKLIN_API_ORIGIN=https://worklin-ai-production.up.railway.app
-AUTH0_ISSUER_BASE_URL=https://dev-t8ju8fx27q3pgjld.us.auth0.com
-AUTH0_BASE_URL=https://worklin-ai-production.up.railway.app
-AUTH0_CLIENT_ID=lWY6GcvryGi5ZxZlnbNU3ybUNXelD4uH
-AUTH0_CLIENT_SECRET=<paste from Auth0 dashboard>
-AUTH0_SECRET=<generate with openssl rand -hex 32>
-```
-
-Keep the existing variables:
-
-```text
-WORKLIN_SESSION_SECRET
-ACTOR_TOKEN_SIGNING_KEY
-```
-
-Do not overwrite those unless Railway says they are invalid.
-
-Generate `AUTH0_SECRET` locally:
-
-```bash
-openssl rand -hex 32
-```
-
-After changing Railway env vars, click Deploy/apply changes and wait for the service to return Online.
-
-Then verify:
+Previous backend health check had worked:
 
 ```bash
 curl -i https://worklin-ai-production.up.railway.app/healthz
-curl -i https://worklin-ai-production.up.railway.app/_allauth/browser/v1/config
 ```
 
-Expected config after Auth0 is set:
+If deploying only this avatar UI change, focus on Vercel. If auth/backend is still broken, consult older deployment notes or inspect current Railway/Vercel env vars, but do not mix deployment debugging into the avatar PR unless necessary.
 
-```json
-{"data":{"socialaccount":{"providers":[{"id":"auth0","name":"Auth0","client_id":"lWY6GcvryGi5ZxZlnbNU3ybUNXelD4uH","flows":["login","signup"]}]}},"meta":{},"status":200}
-```
+## Known Caveats
 
-Exact JSON shape may vary slightly, but it must no longer be empty.
+- The current temporary preview at `41779` may show static avatars because it uses posters.
+- Actual product component uses MP4 video when reduced motion allows it.
+- The real onboarding route may require auth/login, so a temporary preview or a logged-in session may be needed to inspect the UI.
+- A wider integration test involving cast handoff previously hit an environment dependency issue around `@radix-ui/react-slot` from `packages/design-library`; do not delete features to work around that. Investigate package resolution if that test is needed.
+- Commit should include the avatar MP4 and JPG files under `apps/web/public/images/avatars/`.
 
-## Vercel Env Vars Still Needed
+## Suggested Opening Message For New Codex Chat
 
-In Vercel project settings for `worklin-ai`, set these environment variables for Production:
+Use this prompt:
 
 ```text
-VITE_PLATFORM_MODE=true
-VITE_PLATFORM_API_BASE_URL=https://worklin-ai-production.up.railway.app
-VITE_AUTH_API_BASE_URL=https://worklin-ai-production.up.railway.app
-VITE_DAEMON_API_BASE_URL=https://worklin-ai-production.up.railway.app
+Read /Users/admin/Documents/New project 2/Worklin-ai/WORKLIN_CONTEXT_HANDOFF.md and AGENTS.md first.
+
+Continue the Worklin avatar onboarding work. Verify the six-avatar picker, rerun focused checks, commit, push branch codex/worklin-runtime-railway, and deploy frontend to Vercel if checks pass. Do not delete or weaken features just to pass tests. Also help me preview how the selected animated avatar looks in a real chat/session, not only the static temporary onboarding preview.
 ```
-
-Then redeploy the latest main commit.
-
-Vercel config in repo:
-
-```text
-vercel.json
-```
-
-Railway config in repo:
-
-```text
-railway.json
-```
-
-If Vercel build fails, inspect logs first. Do not delete features just to make build pass. Fix only real deployment/build configuration issues.
-
-## Click-By-Click Plan For The Next Chat
-
-Use this order.
-
-### 1. Railway
-
-1. Open Railway project `adequate-possibility`.
-2. Click service `Worklin-ai`.
-3. Open `Variables`.
-4. Confirm existing variables include:
-   - `WORKLIN_SESSION_SECRET`
-   - `ACTOR_TOKEN_SIGNING_KEY`
-5. Add the missing vars listed in "Railway Env Vars Still Needed".
-6. Paste `AUTH0_CLIENT_SECRET` directly from Auth0 into Railway. Do not paste it into Codex.
-7. Generate `AUTH0_SECRET` with `openssl rand -hex 32` and paste only into Railway.
-8. Apply/deploy changes.
-9. Wait until Railway says Online.
-10. Verify `/healthz`.
-11. Verify `/_allauth/browser/v1/config` is no longer empty.
-
-### 2. Auth0
-
-1. Open Auth0 dashboard.
-2. Go to `Applications -> Applications`.
-3. Open the Worklin application.
-4. Go to `Settings`.
-5. Confirm:
-   - Application Type: Regular Web Application.
-   - Token Endpoint Authentication Method: `client_secret_post`.
-6. Add the callback/logout/web origin/CORS URLs above.
-7. Save changes.
-
-### 3. Vercel
-
-1. Open Vercel project `worklin-ai`.
-2. Go to `Settings -> Environment Variables`.
-3. Add/update the four Vite env vars listed above for Production.
-4. Redeploy latest `main`.
-5. If build fails, inspect logs before changing code.
-6. Open `https://worklin-ai.vercel.app/account/login`.
-7. Confirm login page loads.
-
-### 4. Auth Smoke Test
-
-1. Open:
-
-```text
-https://worklin-ai.vercel.app/account/login?returnTo=%2Fassistant%2Fhome
-```
-
-2. Click signup/login.
-3. Expected redirect:
-
-```text
-Worklin frontend -> Railway backend auth redirect -> Auth0 hosted login -> Railway /callback -> Worklin frontend
-```
-
-4. If callback mismatch appears, compare browser callback URL exactly against Auth0 Allowed Callback URLs.
-5. If CORS error appears, compare frontend origin exactly against Auth0 Allowed Origins and Railway CORS config.
-
-## Current Code Deployment Pieces
-
-`control-plane/src/index.ts` is the production backend/control-plane currently deployed on Railway.
-
-It reads:
-
-```text
-PORT or WORKLIN_CONTROL_PLANE_PORT
-WORKLIN_WEB_ORIGIN
-WORKLIN_API_ORIGIN
-WORKLIN_GATEWAY_URL
-WORKLIN_CONTROL_DB
-WORKLIN_SESSION_SECRET
-ACTOR_TOKEN_SIGNING_KEY
-AUTH0_ISSUER_BASE_URL
-AUTH0_BASE_URL
-AUTH0_CLIENT_ID
-AUTH0_CLIENT_SECRET
-AUTH0_SECRET
-```
-
-It exposes:
-
-```text
-/healthz
-/_allauth/browser/v1/config
-/_allauth/browser/v1/auth/session
-/_allauth/browser/v1/auth/provider/redirect
-/callback
-```
-
-The Auth0 provider only appears in config when all required Auth0 env vars are set.
-
-## Safety Boundaries
-
-Do not expose raw secrets in chat or docs.
-
-Do not use live Klaviyo/Shopify write behavior.
-
-Blocked in v1:
-
-- Klaviyo send.
-- Klaviyo schedule.
-- Klaviyo flow activation.
-- Klaviyo profile mutation.
-- Klaviyo segment mutation.
-- Shopify write actions.
-
-Audit results and tools should include:
-
-```text
-externalActionTaken:false
-canGoLiveNow:false
-source freshness
-caveats
-blocked capabilities
-approval status
-```
-
-But do not show raw safety metadata as ugly user-facing onboarding copy. Translate it into human language.
-
-## Known Local App Issues To Revisit After Deployment
-
-- Onboarding Q&A needs simpler, generic questions.
-- Website/domain should be the first question.
-- More questions need clickable option cards.
-- Klaviyo connection card must appear automatically when missing and must work.
-- Audit progress/reasoning card should be visible and not truncated.
-- Audit copy needs to be much deeper and more human.
-- Audit artifacts should be bigger, clearer, interactive, and downloadable.
-- PDF export must work and include charts.
-- Worklin should not require unnatural giant prompts from users. "Can you run an audit?" should trigger the full audit flow.
-- UI should be cleaner: summary first, clear open/download actions.
-- Avatar builder should become more customizable later.
-
-## Commands Useful For The Next Chat
-
-From repo:
-
-```bash
-cd /private/tmp/worklin-git.1ykbSk/repo
-git status --short --branch
-git log --oneline -5
-curl -i https://worklin-ai-production.up.railway.app/healthz
-curl -i https://worklin-ai-production.up.railway.app/_allauth/browser/v1/config
-curl -i https://worklin-ai.vercel.app/account/login
-```
-
-If building locally:
-
-```bash
-export PATH="$HOME/.bun/bin:$PATH"
-cd /private/tmp/worklin-git.1ykbSk/repo/apps/web
-bun install --frozen-lockfile
-VITE_PLATFORM_MODE=true VERCEL=1 bun run build
-```
-
-Do not run unscoped full test suites. Follow `AGENTS.md`.
-
-## Suggested First Reply In The New Chat
-
-The next Codex chat should say something like:
-
-```text
-I read WORKLIN_CONTEXT_HANDOFF.md. I will not ask you to restate context. First we will configure Railway env vars, then Auth0 URLs, then Vercel env vars, then run an auth smoke test. I will give click-by-click instructions and keep secrets out of chat.
-```
-
-Then guide the user step by step.

@@ -42,12 +42,12 @@ describe("faceBuilderForCharacter", () => {
 describe("buildCharacterPortraitPrompt", () => {
   test("creates a portrait prompt that can be pasted into an image generator", () => {
     const prompt = buildCharacterPortraitPrompt(
-      "Rick Sanchez",
-      "Rick and Morty",
+      "Spiky Spark",
+      "Worklin",
     );
 
-    expect(prompt).toContain("Rick Sanchez");
-    expect(prompt).toContain("transparent PNG");
+    expect(prompt).toContain("Spiky Spark");
+    expect(prompt).toContain("product-avatar portrait");
     expect(prompt).toContain("no text");
   });
 });

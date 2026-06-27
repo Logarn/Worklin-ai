@@ -3,6 +3,7 @@ import { memo, useCallback, useMemo, useState, type CSSProperties } from "react"
 
 import { resolveAssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import { FaceBuilderAvatar } from "@/components/avatar/face-builder-avatar";
+import { PortraitAssetAvatar } from "@/components/avatar/portrait-asset-avatar";
 import { TvCharacterAvatar } from "@/components/avatar/tv-character-avatar";
 import type { AssistantCharacterProfile } from "@/types/assistant-character-profile";
 import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
@@ -57,7 +58,7 @@ function AvatarStreamingRing({ size }: { size: number }) {
  * Displays the assistant's avatar in chat messages.
  *
  * Priority:
- * 1. Saved TV-character identity profile
+ * 1. Saved Worklin avatar identity profile
  * 2. Animated character avatar from saved traits
  * 3. Custom uploaded image
  * 4. Default animated character avatar from first component of each type
@@ -147,13 +148,12 @@ function ChatAvatarComponent({
           flexShrink: 0,
         }}
       >
-        <img
+        <PortraitAssetAvatar
           src={characterProfile.portraitAssetUrl}
           alt={characterProfile.assistantName || "Assistant avatar"}
-          width={size}
-          height={size}
-          className={`rounded-full object-cover ${className ?? ""}`}
-          style={{ width: size, height: size, flexShrink: 0 }}
+          size={size}
+          className={className}
+          animationEnabled={characterProfile.animationEnabled ?? true}
         />
         {(isStreaming || isProcessing) && <AvatarStreamingRing size={size} />}
       </motion.div>

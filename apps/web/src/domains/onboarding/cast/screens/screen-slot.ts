@@ -18,6 +18,7 @@
 import type { StyleProfile } from "@/domains/onboarding/cast/cast-templates";
 import type { CastCharacter } from "@/domains/onboarding/cast/cast-roster";
 import type { Rect } from "@/domains/onboarding/cast/cast-hero-types";
+import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
 
 /** A `[step, text]` tuple in the persistent "making of" memory list. */
 export type MemoryEntry = [step: string, text: string];
@@ -70,7 +71,11 @@ export interface PreambleScreenProps extends BaseScreenProps {
 export interface StarterScreenProps extends BaseScreenProps {
   resume: StarterResume | null;
   /** Commit a chosen character + display name; the orchestrator advances. */
-  onChoose: (character: CastCharacter, name: string) => void;
+  onChoose: (
+    character: CastCharacter,
+    name: string,
+    assistantAvatar?: AssistantCharacter | null,
+  ) => void;
   /** Notify the orchestrator the user opened the customize panel. */
   onCustomizing: (customizing: boolean) => void;
 }

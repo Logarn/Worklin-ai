@@ -173,47 +173,47 @@ VITE_DAEMON_API_BASE_URL=https://<backend-domain>
 
 ### Backend: Railway
 
-Deploy the backend as container services.
-
-Start with the public API service:
+Deploy the backend from the repo root. The default Railway shape is now a
+single public service using the repo-root `railway.json`, which builds
+`runtime/Dockerfile` and starts the control-plane, gateway, assistant, and
+credential executor together.
 
 ```text
-Service name: worklin-api
-Dockerfile path: control-plane/Dockerfile
+Service name: worklin-runtime
+Dockerfile path: runtime/Dockerfile
 Root/build context: /
-Health check: /healthz
+Health check: /readyz
 Volume mount: /data
 ```
 
-Minimal production variables for `worklin-api`:
+Minimal production variables for the Railway service:
 
 ```bash
 WORKLIN_WEB_ORIGIN=https://worklin-ai.vercel.app
 WORKLIN_API_ORIGIN=https://<railway-backend-domain>
 AUTH0_ISSUER_BASE_URL=https://<auth0-tenant>
 AUTH0_BASE_URL=https://<railway-backend-domain>
-AUTH0_CLIENT_ID=<auth0-client-id>
-AUTH0_CLIENT_SECRET=<auth0-client-secret>
-AUTH0_SECRET=<generated-secret>
-WORKLIN_SESSION_SECRET=<generated-secret>
-ACTOR_TOKEN_SIGNING_KEY=<64-hex-secret>
 WORKLIN_CONTROL_DB=/data/control-plane.sqlite
 ```
+
+Set `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_SECRET`,
+`WORKLIN_SESSION_SECRET`, and `ACTOR_TOKEN_SIGNING_KEY` separately from your
+Auth0 app settings and generated production secrets.
 
 Railway can generate a temporary HTTPS domain. A custom domain such as
 `api.worklin.ai` is useful later but is not required for the first deployment.
 
-The full backend stack also needs runtime and credential services:
+The combined container keeps the gateway private on loopback and wires the
+public control-plane to it internally. Root `railway.json` is the default
+deploy target. The split configs remain in the repo for future multi-service
+topologies:
 
 | Service | Dockerfile | Notes |
 | --- | --- | --- |
-| `worklin-api` | `control-plane/Dockerfile` | Public HTTP service. Auth, sessions, web API, and gateway proxy. |
-| `worklin-runtime` | to be bundled for Railway | Gateway and assistant currently need co-located networking for callbacks. |
-| `worklin-credentials` | `credential-executor/Dockerfile` | Private credential service with a persistent `/ces-data` volume. |
-
-Until `worklin-runtime` and `worklin-credentials` are live, auth may work but
-chat, audits, tools, and credential-backed integrations will not be fully
-usable in production.
+| `railway.json` | `runtime/Dockerfile` | Default single-service Railway deploy. Public control-plane plus co-located runtime services. |
+| `railway.runtime.json` | `runtime/Dockerfile` | Same combined runtime shape when you want an explicit alternate Railway config file. |
+| `railway.gateway.json` | `gateway/Dockerfile` | Future split private gateway service. |
+| `railway.assistant.json` | `assistant/Dockerfile` | Future split assistant service. |
 
 ## Auth
 

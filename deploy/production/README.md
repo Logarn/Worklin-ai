@@ -6,12 +6,12 @@ real container backend.
 ## Production Shape
 
 - `apps/web` runs on Vercel.
-- `control-plane` runs the public `api.worklin.ai` API for login, sessions,
-  organizations, assistant ownership, and runtime proxying.
-- `assistant`, `gateway`, and `credential-executor` run as long-lived Docker
-  services behind the control-plane.
-- The gateway is private inside the Compose network. Do not expose it directly
-  to the public internet.
+- Railway can run Worklin as a single public container built from
+  `runtime/Dockerfile`.
+- That container starts the public `control-plane` plus the private
+  `assistant`, `gateway`, and `credential-executor` processes together.
+- The control-plane is the only public HTTP surface. The gateway stays private
+  on the container loopback network and should not be exposed directly.
 
 This is the smallest backend that matches the current Worklin web architecture:
 the browser signs in through the control-plane, receives a self-hosted assistant
@@ -42,6 +42,16 @@ customer or workspace and make the control-plane route each user to the correct
 stack.
 
 ## Backend
+
+For Railway, the repo-root `railway.json` is now the fast-path config for the
+single-service production deploy:
+
+- Dockerfile: `runtime/Dockerfile`
+- Health check: `/readyz`
+- Persistent volume: `/data`
+
+The service listens publicly through the control-plane and wires
+`WORKLIN_GATEWAY_URL` to the co-located gateway over `127.0.0.1`.
 
 Create a real env file from the template:
 
@@ -75,14 +85,9 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 ```
 
-Expose the control-plane through HTTPS at:
-
-```text
-https://api.worklin.ai
-```
-
-Your reverse proxy or container platform should terminate TLS and forward to
-the control-plane container on port `8080`.
+Expose the control-plane through HTTPS at your Railway domain or custom API
+domain. Railway terminates TLS and forwards to the control-plane inside the
+combined container.
 
 ## DNS
 
@@ -104,10 +109,10 @@ callback target; the public control-plane backend is.
 
 Production Auth0 settings:
 
-- Allowed Callback URLs: `https://api.worklin.ai/callback`
-- Allowed Logout URLs: `https://worklin-ai.vercel.app/account/login`
-- Allowed Web Origins: `https://worklin-ai.vercel.app`
-- Allowed Origins (CORS): `https://worklin-ai.vercel.app`
+- Allowed Callback URLs: `https://<public-backend-domain>/callback`
+- Allowed Logout URLs: `https://<frontend-domain>/account/login`
+- Allowed Web Origins: `https://<frontend-domain>`
+- Allowed Origins (CORS): `https://<frontend-domain>`
 
 Local smoke-test settings, if you run the control-plane on `19282`:
 
@@ -120,11 +125,11 @@ Set:
 
 ```bash
 AUTH0_ISSUER_BASE_URL=https://dev-t8ju8fx27q3pgjld.us.auth0.com
-AUTH0_BASE_URL=https://api.worklin.ai
-AUTH0_CLIENT_ID=...
-AUTH0_CLIENT_SECRET=...
-AUTH0_SECRET=...
+AUTH0_BASE_URL=https://<public-backend-domain>
 ```
+
+Provide `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, and `AUTH0_SECRET` from the
+Auth0 application settings, alongside the generated Worklin secrets.
 
 `AUTH0_SECRET` is the SDK cookie encryption secret. Generate it separately from
 the Auth0 client secret:
@@ -149,9 +154,9 @@ Set these in the Vercel project:
 
 ```bash
 VITE_PLATFORM_MODE=true
-VITE_PLATFORM_API_BASE_URL=https://api.worklin.ai
-VITE_AUTH_API_BASE_URL=https://api.worklin.ai
-VITE_DAEMON_API_BASE_URL=https://api.worklin.ai
+VITE_PLATFORM_API_BASE_URL=https://<public-backend-domain>
+VITE_AUTH_API_BASE_URL=https://<public-backend-domain>
+VITE_DAEMON_API_BASE_URL=https://<public-backend-domain>
 ```
 
 Then deploy from the repo root:

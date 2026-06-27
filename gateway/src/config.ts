@@ -104,7 +104,7 @@ function parsePositiveInteger(
 }
 
 export function loadConfig(): GatewayConfig {
-  const portRaw = process.env.GATEWAY_PORT || "7830";
+  const portRaw = process.env.GATEWAY_PORT || process.env.PORT || "7830";
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("GATEWAY_PORT must be a valid port number");

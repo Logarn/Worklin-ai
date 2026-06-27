@@ -14,6 +14,7 @@
  */
 
 import type { CastCharacter } from "@/domains/onboarding/cast/cast-roster";
+import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import { CastStarter } from "@/domains/onboarding/cast/cast-starter";
 import type { StarterScreenProps } from "@/domains/onboarding/cast/screens/screen-slot";
 
@@ -23,8 +24,12 @@ export function StarterScreen({
   onChoose,
   onCustomizing,
 }: StarterScreenProps) {
-  const handleChoose = (character: CastCharacter, name: string) => {
-    onChoose(character, name);
+  const handleChoose = (
+    character: CastCharacter,
+    name: string,
+    assistantAvatar?: AssistantCharacter | null,
+  ) => {
+    onChoose(character, name, assistantAvatar);
     onAdvance();
   };
 

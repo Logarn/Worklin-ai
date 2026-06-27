@@ -10215,6 +10215,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: download
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Use attachment disposition when set to 1 or true.
       responses:
         "200":
           description: Successful response
@@ -26106,6 +26112,7 @@ paths:
                   enum:
                     - confirmation
                     - form
+                    - choice
                 title:
                   type: string
                 data:

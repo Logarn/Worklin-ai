@@ -6,13 +6,14 @@ import {
   isAssistantCharacterProfile,
   type AssistantCharacterProfile,
 } from "@/types/assistant-character-profile";
+import { WORKLIN_AVATAR_CHOICES } from "@/components/avatar/assistant-character-packs";
 
 describe("isAssistantCharacterProfile", () => {
   const profile: AssistantCharacterProfile = {
-    assistantName: "Ralph",
-    characterPackId: "simpsons",
-    characterId: "ralph",
-    avatarStyle: "face_builder",
+    assistantName: "Spiky Spark",
+    characterPackId: "worklin",
+    characterId: "spiky_spark",
+    avatarStyle: "portrait_asset",
     faceBuilder: {
       skinTone: "yellow",
       eyes: "wide",
@@ -25,12 +26,13 @@ describe("isAssistantCharacterProfile", () => {
       lineStyle: "clean",
       background: "white",
     },
-    portraitPrompt: "Square transparent PNG avatar portrait of Ralph.",
+    portraitAssetUrl: "/images/avatars/spiky-spark.mp4",
+    portraitPrompt: "Square product-avatar portrait of Spiky Spark.",
     personalityPreset: "playful",
-    personalityText: "Gentle, simple, and persistent.",
-    role: "operator",
-    tone: "Simple and useful.",
-    bio: "Keeps looping until the task is done.",
+    personalityText: "Playful, useful, and sharp.",
+    role: "creative partner",
+    tone: "Playful and useful.",
+    bio: "Challenges weak assumptions without getting mean.",
     animationEnabled: true,
     accentColor: "#65B76C",
     voicePlaceholder: "Soft and persistent.",
@@ -63,11 +65,29 @@ describe("assistant character profile constants", () => {
     );
   });
 
-  test("defines the three requested TV character packs", () => {
+  test("defines the Worklin pack plus legacy character packs", () => {
     expect(ASSISTANT_CHARACTER_PACK_IDS).toEqual([
+      "worklin",
       "rick_and_morty",
       "simpsons",
       "futurama",
     ]);
+  });
+
+  test("exposes only the six supplied Worklin video avatars", () => {
+    expect(WORKLIN_AVATAR_CHOICES).toHaveLength(6);
+    expect(WORKLIN_AVATAR_CHOICES.map((avatar) => avatar.id)).toEqual([
+      "spiky_spark",
+      "tin_grin",
+      "dr_pinch",
+      "sunny_square",
+      "mystery_mutt",
+      "orbit_wink",
+    ]);
+    expect(
+      WORKLIN_AVATAR_CHOICES.every((avatar) =>
+        avatar.portraitAssetUrl?.endsWith(".mp4"),
+      ),
+    ).toBe(true);
   });
 });

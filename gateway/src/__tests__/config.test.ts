@@ -33,24 +33,50 @@ describe("config: hardcoded defaults", () => {
 
   test("GATEWAY_PORT defaults to 7830", () => {
     const saved = process.env.GATEWAY_PORT;
+    const savedPort = process.env.PORT;
     delete process.env.GATEWAY_PORT;
+    delete process.env.PORT;
     try {
       const config = loadConfig();
       expect(config.port).toBe(7830);
     } finally {
       if (saved !== undefined) process.env.GATEWAY_PORT = saved;
+      else delete process.env.GATEWAY_PORT;
+      if (savedPort !== undefined) process.env.PORT = savedPort;
+      else delete process.env.PORT;
     }
   });
 
   test("GATEWAY_PORT is configurable via env var", () => {
     const saved = process.env.GATEWAY_PORT;
+    const savedPort = process.env.PORT;
     process.env.GATEWAY_PORT = "9090";
+    process.env.PORT = "7777";
     try {
       const config = loadConfig();
       expect(config.port).toBe(9090);
     } finally {
       if (saved !== undefined) process.env.GATEWAY_PORT = saved;
       else delete process.env.GATEWAY_PORT;
+      if (savedPort !== undefined) process.env.PORT = savedPort;
+      else delete process.env.PORT;
+    }
+  });
+
+  test("PORT is used when GATEWAY_PORT is unset", () => {
+    const saved = process.env.GATEWAY_PORT;
+    const savedPort = process.env.PORT;
+    delete process.env.GATEWAY_PORT;
+    process.env.PORT = "7878";
+    try {
+      const config = loadConfig();
+      expect(config.port).toBe(7878);
+      expect(config.gatewayInternalBaseUrl).toBe("http://127.0.0.1:7878");
+    } finally {
+      if (saved !== undefined) process.env.GATEWAY_PORT = saved;
+      else delete process.env.GATEWAY_PORT;
+      if (savedPort !== undefined) process.env.PORT = savedPort;
+      else delete process.env.PORT;
     }
   });
 

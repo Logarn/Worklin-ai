@@ -20,12 +20,14 @@ import { CAST_RESEARCH_DIRECTIVE } from "@/domains/onboarding/cast/cast-prechat-
 
 // --- background hatch --------------------------------------------------------
 const startMock = mock(() => {});
+const seedAvatarMock = mock(async (_avatar?: unknown) => {});
 let awaitReadyImpl: () => Promise<string> = async () => "asst-ready";
 const awaitReadyMock = mock(() => awaitReadyImpl());
 
 mock.module("@/domains/onboarding/cast/use-background-hatch", () => ({
   useBackgroundHatch: () => ({
     start: startMock,
+    seedAvatar: seedAvatarMock,
     ready: false,
     assistantId: null,
     error: null,
@@ -183,6 +185,7 @@ beforeEach(() => {
   searchParamsValue = new URLSearchParams();
   awaitReadyImpl = async () => "asst-ready";
   startMock.mockClear();
+  seedAvatarMock.mockClear();
   awaitReadyMock.mockClear();
   setPendingPreChatContextMock.mockClear();
   setPendingAssistantNameMock.mockClear();
