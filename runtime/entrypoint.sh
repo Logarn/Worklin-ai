@@ -10,17 +10,22 @@ set -euo pipefail
 : "${DEBUG_STDOUT_LOGS:=1}"
 : "${PORT:=8080}"
 : "${WORKLIN_CONTROL_PLANE_PORT:=${PORT}}"
+: "${WORKLIN_CONTROL_DB:=${WORKLIN_RUNTIME_ROOT}/control-plane.sqlite}"
 : "${CES_HEALTH_PORT:=8090}"
 : "${CES_CREDENTIAL_URL:=http://127.0.0.1:${CES_HEALTH_PORT}}"
 : "${GATEWAY_PORT:=7830}"
 : "${RUNTIME_HTTP_PORT:=3001}"
 : "${RUNTIME_HTTP_HOST:=0.0.0.0}"
 : "${ASSISTANT_HOST:=127.0.0.1}"
-: "${GATEWAY_INTERNAL_URL:=http://127.0.0.1:${GATEWAY_PORT}}"
 : "${UNMAPPED_POLICY:=default}"
 : "${GATEWAY_TRUST_PROXY:=true}"
 : "${IS_CONTAINERIZED:=true}"
 : "${CES_MODE:=managed}"
+
+# runtime/Dockerfile is the combined single-container deploy. The gateway is
+# co-located with the public control-plane, so service-to-service traffic must
+# stay on loopback even if a stale split-service/docker-compose env var exists.
+GATEWAY_INTERNAL_URL="http://127.0.0.1:${GATEWAY_PORT}"
 
 export WORKLIN_RUNTIME_ROOT
 export VELLUM_WORKSPACE_DIR
@@ -31,6 +36,7 @@ export CES_BOOTSTRAP_SOCKET_DIR
 export DEBUG_STDOUT_LOGS
 export PORT
 export WORKLIN_CONTROL_PLANE_PORT
+export WORKLIN_CONTROL_DB
 export CES_HEALTH_PORT
 export CES_CREDENTIAL_URL
 export GATEWAY_PORT
