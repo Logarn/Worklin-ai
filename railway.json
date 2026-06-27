@@ -5,6 +5,7 @@
     "dockerfilePath": "runtime/Dockerfile"
   },
   "deploy": {
+    "startCommand": "/app/runtime/entrypoint.sh",
     "healthcheckPath": "/readyz",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
