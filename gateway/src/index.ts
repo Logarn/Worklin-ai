@@ -297,12 +297,13 @@ async function main() {
   await initGatewayDb();
   initTrustRuleCache();
 
-  // Wait for the assistant runtime to be healthy before serving traffic.
-  // Data migrations (e.g. m0002 actor-token-tables-to-gateway) must
-  // complete before the HTTP server starts accepting auth requests —
-  // otherwise newly minted tokens can be overwritten by stale rows
-  // migrated from the assistant DB.
-  await runPostAssistantReady();
+  // Don't block gateway port binding on assistant IPC readiness.
+  // Railway probes the public control-plane, which in turn probes this
+  // gateway over loopback. If we wait here, the control-plane stays alive
+  // while /readyz reports gatewayStatus:null because nothing is listening yet.
+  //
+  // Post-ready tasks still run after startup and keep their own retry/skip
+  // behavior, and auth flows already tolerate the token-migration window.
 
   // ── TTL caches ──
   // Instantiate caches for credential and config file reads.
@@ -1834,6 +1835,13 @@ async function main() {
 
   log.info({ port: server.port }, "Gateway HTTP server listening");
   logAuthBypassState();
+  void runPostAssistantReady()
+    .then(() => {
+      log.info("Post-assistant-ready tasks completed");
+    })
+    .catch((err) => {
+      log.error({ err }, "Post-assistant-ready tasks crashed");
+    });
 
   // Start periodic background cleanup for dedup caches
   telegramDedupCache.startCleanup();
