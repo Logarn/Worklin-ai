@@ -58,9 +58,14 @@ mkdir -p \
   "${CREDENTIAL_SECURITY_DIR}" \
   "${CES_BOOTSTRAP_SOCKET_DIR}"
 
-chown assistant:vellum "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
-chown gateway:gateway "${GATEWAY_SECURITY_DIR}"
-chown ces:ces "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
+# Repair ownership on persisted volume contents before handing control to the
+# unprivileged service users. Railway can reuse a volume that contains files
+# written by an older root-run deployment, and directory-only chowns leave the
+# existing SQLite/WAL files inaccessible to the new assistant/gateway/CES
+# processes.
+chown -R assistant:vellum "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
+chown -R gateway:gateway "${GATEWAY_SECURITY_DIR}"
+chown -R ces:ces "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 2775 "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
 chmod 700 "${GATEWAY_SECURITY_DIR}" "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 777 "${CES_BOOTSTRAP_SOCKET_DIR}"
