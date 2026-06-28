@@ -33,7 +33,11 @@ import {
     writeStoredThemePreference,
 } from "@/domains/settings/utils/theme-preferences";
 import { client } from "@/generated/api/client.gen";
-import { useActiveAssistantIsPlatformHosted, usePlatformGate } from "@/hooks/use-platform-gate";
+import {
+  useActiveAssistantIsPlatformHosted,
+  useActiveAssistantLifecycleIsLoading,
+  usePlatformGate,
+} from "@/hooks/use-platform-gate";
 import {
     getSelectedAssistant,
     isLocalAssistant,
@@ -211,6 +215,7 @@ export function TimezoneCard() {
 }
 
 export function GeneralPage() {
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const {
     assistant,
     assistantLoading,
@@ -219,12 +224,13 @@ export function GeneralPage() {
     healthzPolling,
     refetch,
     refetchUntilResized,
-  } = useAssistantWithHealthz();
+  } = useAssistantWithHealthz(activeAssistantId);
   const multiPlatformAssistant = useClientFeatureFlagStore.use.multiPlatformAssistant();
   const settingsSleepPolicy = useAssistantFeatureFlagStore.use.settingsSleepPolicy();
   const isAuthenticated = useIsAuthenticated();
   const navigate = useNavigate();
   const platformGate = usePlatformGate();
+  const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
   const infraGate = usePlatformGate({ platformHostedOnly: true });
   const isPlatformHosted = useActiveAssistantIsPlatformHosted();
   const diskPressure = useDiskPressureMonitor({
@@ -269,7 +275,7 @@ export function GeneralPage() {
       <DetailCard title="General">
         <AssistantStatusPanel
           assistant={platformAssistant}
-          assistantLoading={assistantLoading}
+          assistantLoading={assistantLoading || isLifecycleLoading}
           healthz={healthz}
           healthzLoading={healthzLoading}
         />

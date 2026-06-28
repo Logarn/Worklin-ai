@@ -1,4 +1,4 @@
-import { listAssistants, retireAssistantById } from "@/assistant/api";
+import { listPlatformAssistants, retireAssistantById } from "@/assistant/api";
 import {
   getLockfile,
   isLocalAssistant,
@@ -79,7 +79,7 @@ export async function retireAssistant(
       }
       if (isLocalMode()) {
         try {
-          const remaining = await listAssistants();
+          const remaining = await listPlatformAssistants();
           if (remaining.ok) {
             await syncPlatformAssistantsToLockfile(
               remaining.data,

@@ -6,9 +6,13 @@ import { type Assistant, getAssistant } from "@/assistant/api";
 import { AssistantBackups } from "@/domains/settings/components/assistant-backups";
 import { RecoveryModeControls } from "@/domains/settings/components/recovery-mode-controls";
 import { RestartAssistant } from "@/domains/settings/components/restart-assistant";
-import { usePlatformGate } from "@/hooks/use-platform-gate";
+import {
+  useActiveAssistantLifecycleIsLoading,
+  usePlatformGate,
+} from "@/hooks/use-platform-gate";
 import { captureError } from "@/lib/sentry/capture-error";
 import { useAuthStore } from "@/stores/auth-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { clearConsentForUser } from "@/utils/onboarding-cleanup";
 import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
@@ -22,8 +26,10 @@ function isInternalUser(email: string | null, isAdmin: boolean): boolean {
 
 export function DebugControlsPanel() {
   const navigate = useNavigate();
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const user = useAuthStore.use.user();
   const platformGate = usePlatformGate();
+  const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
   const showInternalControls = isInternalUser(user?.email ?? null, user?.isStaff ?? false);
 
   const [assistant, setAssistant] = useState<Assistant | null>(null);
@@ -40,11 +46,16 @@ export function DebugControlsPanel() {
     if (!force && fetchedRef.current) {
       return;
     }
+    if (!activeAssistantId) {
+      setAssistant(null);
+      setLoading(false);
+      return;
+    }
     if (!force) {
       setLoading(true);
     }
     try {
-      const result = await getAssistant();
+      const result = await getAssistant(activeAssistantId);
       if (result.ok) {
         fetchedRef.current = true;
         setAssistant(result.data);
@@ -57,11 +68,18 @@ export function DebugControlsPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeAssistantId]);
+
+  useEffect(() => {
+    fetchedRef.current = false;
+    setAssistant(null);
+  }, [activeAssistantId]);
 
   useEffect(() => {
     fetchAssistant();
   }, [fetchAssistant]);
+
+  const showLoading = loading || isLifecycleLoading;
 
   return (
     <div className="space-y-4">
@@ -80,7 +98,7 @@ export function DebugControlsPanel() {
         </div>
       </div>
 
-      {loading ? (
+      {showLoading ? (
         <div className="flex items-center gap-2 text-body-medium-lighter text-[var(--content-tertiary)]">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading assistant info...

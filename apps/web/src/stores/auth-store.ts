@@ -50,7 +50,7 @@ import {
   primeLocalGatewayConnectionWithRepair,
   syncPlatformAssistantsToLockfile,
 } from "@/lib/local-mode";
-import { listAssistants } from "@/assistant/api";
+import { listPlatformAssistants } from "@/assistant/api";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { deleteBiometricToken } from "@/runtime/native-biometric";
 import { fetchMe, patchConsent } from "@/domains/account/profile";
@@ -342,7 +342,7 @@ function probePlatformSession(
             await Promise.race([
               (async () => {
                 await useOrganizationStore.getState().fetchOrganizations();
-                const apiAssistants = await listAssistants();
+                const apiAssistants = await listPlatformAssistants();
                 if (syncIsCurrent() && apiAssistants.ok) {
                   await syncPlatformAssistantsToLockfile(
                     apiAssistants.data,
@@ -466,7 +466,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
             // Re-sync platform assistants to remove stale lockfile entries.
             try {
               await useOrganizationStore.getState().fetchOrganizations();
-              const apiAssistants = await listAssistants();
+              const apiAssistants = await listPlatformAssistants();
               if (apiAssistants.ok) {
                 await syncPlatformAssistantsToLockfile(
                   apiAssistants.data,
@@ -511,7 +511,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
         await syncUserScopedState(user?.id ?? null);
         try {
           await useOrganizationStore.getState().fetchOrganizations();
-          const apiAssistants = await listAssistants();
+          const apiAssistants = await listPlatformAssistants();
           if (apiAssistants.ok) {
             useResolvedAssistantsStore.getState().setFromApi(apiAssistants.data);
           }
@@ -545,7 +545,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
             await syncUserScopedState(user?.id ?? null);
             try {
               await useOrganizationStore.getState().fetchOrganizations();
-              const apiAssistants = await listAssistants();
+              const apiAssistants = await listPlatformAssistants();
               if (apiAssistants.ok) {
                 useResolvedAssistantsStore.getState().setFromApi(apiAssistants.data);
               }
@@ -648,7 +648,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
         if (isLocalMode()) {
           try {
             await useOrganizationStore.getState().fetchOrganizations();
-            const apiAssistants = await listAssistants();
+            const apiAssistants = await listPlatformAssistants();
             if (apiAssistants.ok) {
               await syncPlatformAssistantsToLockfile(
                 apiAssistants.data,

@@ -9,14 +9,16 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { useNavigate, useSearchParams } from "react-router";
 
-import { type Assistant, getAssistant } from "@/assistant/api";
 import { IntegrationDetailModal } from "@/domains/settings/components/integration-detail-modal";
 import { IntegrationRow } from "@/domains/settings/components/integration-row";
 import { assistantsOauthConnectionsListOptions } from "@/generated/api/@tanstack/react-query.gen";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import { oauthProvidersGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
-import { usePlatformGate } from "@/hooks/use-platform-gate";
-import { captureError } from "@/lib/sentry/capture-error";
+import {
+  useActiveAssistantLifecycleIsLoading,
+  usePlatformGate,
+} from "@/hooks/use-platform-gate";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { routes } from "@/utils/routes";
 import { Input } from "@vellumai/design-library/components/input";
 import { Notice } from "@vellumai/design-library/components/notice";
@@ -49,9 +51,8 @@ function IntegrationsPanelInner() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const platformGate = usePlatformGate();
-
-  const [assistant, setAssistant] = useState<Assistant | null>(null);
-  const [assistantLoading, setAssistantLoading] = useState(true);
+  const assistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
 
   const [searchText, setSearchText] = useState("");
   const [selectedFilter, setSelectedFilter] =
@@ -74,44 +75,23 @@ function IntegrationsPanelInner() {
     setLocalSetting(BANNER_STORAGE_KEY, "true");
   };
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const result = await getAssistant();
-        if (active && result.ok) {
-          setAssistant(result.data);
-        }
-      } catch (error) {
-        captureError(error, { context: "integrations.getAssistant" });
-      } finally {
-        if (active) {
-          setAssistantLoading(false);
-        }
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
-
   const {
     data: providers,
     isLoading: providersLoading,
     isError: providersError,
   } = useQuery({
     ...oauthProvidersGetOptions({
-      path: { assistant_id: assistant?.id ?? "" },
+      path: { assistant_id: assistantId ?? "" },
     }),
     select: (data) => data.providers,
-    enabled: !!assistant,
+    enabled: assistantId != null,
   });
 
   const { data: connections, isLoading: connectionsLoading } = useQuery({
     ...assistantsOauthConnectionsListOptions({
-      path: { assistant_id: assistant?.id ?? "" },
+      path: { assistant_id: assistantId ?? "" },
     }),
-    enabled: !!assistant && platformGate === "full",
+    enabled: assistantId != null && platformGate === "full",
   });
 
   // Handle OAuth callback query params.
@@ -194,7 +174,7 @@ function IntegrationsPanelInner() {
     });
   }, [managedProviders, connections, searchText, selectedFilter]);
 
-  const loading = assistantLoading || providersLoading || connectionsLoading;
+  const loading = isLifecycleLoading || providersLoading || connectionsLoading;
   const selectedFilterLabel =
     FILTER_OPTIONS.find((o) => o.value === selectedFilter)?.label ?? "All";
 
@@ -314,7 +294,7 @@ function IntegrationsPanelInner() {
           <p className="text-body-medium-lighter text-[var(--content-tertiary)]">
             Failed to load integrations. Please try again.
           </p>
-        ) : !assistant ? (
+        ) : !assistantId ? (
           <p className="text-body-medium-lighter text-[var(--content-tertiary)]">
             No assistant found. Hatch an assistant to connect integrations.
           </p>
@@ -333,7 +313,7 @@ function IntegrationsPanelInner() {
             {filteredProviders.map((provider) => (
               <IntegrationRow
                 key={provider.provider_key}
-                assistantId={assistant.id}
+                assistantId={assistantId}
                 providerKey={provider.provider_key}
                 displayName={
                   provider.display_name ?? provider.provider_key
@@ -354,9 +334,9 @@ function IntegrationsPanelInner() {
         )}
       </div>
 
-      {selectedProvider && assistant && (
+      {selectedProvider && assistantId && (
         <IntegrationDetailModal
-          assistantId={assistant.id}
+          assistantId={assistantId}
           providerKey={selectedProvider.provider_key}
           displayName={
             selectedProvider.display_name ?? selectedProvider.provider_key

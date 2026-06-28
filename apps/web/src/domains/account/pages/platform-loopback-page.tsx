@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router";
 
-import { listAssistants } from "@/assistant/api";
+import { listPlatformAssistants } from "@/assistant/api";
 import { syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import { setMenuPlatformSession } from "@/runtime/menu";
 import { useAuthStore } from "@/stores/auth-store";
@@ -63,7 +63,7 @@ export function PlatformLoopbackPage() {
       await setMenuPlatformSession(true);
 
       try {
-        const result = await listAssistants();
+        const result = await listPlatformAssistants();
         if (result.ok && result.data.length > 0) {
           await syncPlatformAssistantsToLockfile(
             result.data,

@@ -24,7 +24,8 @@ import { isTransientNetworkError } from "@/utils/is-transient-network-error";
 import { toast } from "@vellumai/design-library";
 import { Tag } from "@vellumai/design-library/components/tag";
 
-const CURRENT_ASSISTANT_QUERY_KEY = ["currentAssistant"] as const;
+const currentAssistantQueryKey = (assistantId: string) =>
+  ["currentAssistant", assistantId] as const;
 
 // A resize rolls the assistant pod, so the new allocation only appears once it
 // comes back up. Poll /v1/health for a bounded window, tolerating the restart
@@ -62,20 +63,23 @@ export interface AssistantWithHealthz {
   refetchUntilResized: (baseline: HealthzGetResponse | null) => Promise<void>;
 }
 
-export function useAssistantWithHealthz(): AssistantWithHealthz {
+export function useAssistantWithHealthz(
+  assistantId: string | null,
+): AssistantWithHealthz {
   const {
     data: assistant = null,
     isLoading: assistantLoading,
     refetch: refetchAssistant,
   } = useQuery({
-    queryKey: CURRENT_ASSISTANT_QUERY_KEY,
+    queryKey: currentAssistantQueryKey(assistantId ?? "none"),
     queryFn: async () => {
-      const result = await getAssistant();
+      if (!assistantId) return null;
+      const result = await getAssistant(assistantId);
       return result.ok ? result.data : null;
     },
+    enabled: assistantId != null,
     retry: false,
   });
-  const assistantId = assistant?.id;
 
   const [healthz, setHealthz] = useState<HealthzGetResponse | null>(null);
   const [healthzLoading, setHealthzLoading] = useState(false);

@@ -1,4 +1,4 @@
-import { hatchAssistant, listAssistants } from "@/assistant/api";
+import { hatchAssistant, listPlatformAssistants } from "@/assistant/api";
 import { setSelectedAssistant } from "@/assistant/selection";
 import { syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import { useOrganizationStore } from "@/stores/organization-store";
@@ -38,7 +38,7 @@ export async function createPlatformAssistant(
   // Best-effort: refresh the lockfile so the new assistant shows up for the
   // tray/CLI. The assistant was created regardless of whether this succeeds.
   try {
-    const remaining = await listAssistants();
+    const remaining = await listPlatformAssistants();
     if (remaining.ok) {
       await syncPlatformAssistantsToLockfile(
         remaining.data,

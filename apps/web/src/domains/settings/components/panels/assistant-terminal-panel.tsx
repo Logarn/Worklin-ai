@@ -9,6 +9,7 @@ import {
     usePlatformGate,
 } from "@/hooks/use-platform-gate";
 import { captureError } from "@/lib/sentry/capture-error";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { toast } from "@vellumai/design-library";
 import { Dropdown } from "@vellumai/design-library/components/dropdown";
 import { Notice } from "@vellumai/design-library/components/notice";
@@ -25,6 +26,7 @@ const TERMINAL_SERVICE_OPTIONS: ReadonlyArray<{
 ];
 
 export function AssistantTerminalPanel() {
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   // The terminal session is a platform-routed exec channel — `platformHostedOnly`
   // flips "gated" when the active assistant is self-hosted, even on a
   // platform-mode app where the standard gate would still resolve to "full".
@@ -48,11 +50,17 @@ export function AssistantTerminalPanel() {
     if (!force && fetchedRef.current) {
       return;
     }
+    if (!activeAssistantId) {
+      setAssistantId(null);
+      setMaintenanceMode(null);
+      setLoading(false);
+      return;
+    }
     if (!force) {
       setLoading(true);
     }
     try {
-      const result = await getAssistant();
+      const result = await getAssistant(activeAssistantId);
       if (result.ok) {
         fetchedRef.current = true;
         setAssistantId(result.data.id);
@@ -64,7 +72,13 @@ export function AssistantTerminalPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeAssistantId]);
+
+  useEffect(() => {
+    fetchedRef.current = false;
+    setAssistantId(null);
+    setMaintenanceMode(null);
+  }, [activeAssistantId]);
 
   // `getAssistant` is a daemon-side call (safe in every lifecycle state
   // where we have a daemon connection), so fire it eagerly whenever the

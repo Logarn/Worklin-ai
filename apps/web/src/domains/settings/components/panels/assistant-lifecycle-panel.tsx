@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 
-import { hatchAssistant, listAssistants } from "@/assistant/api";
+import { hatchAssistant, listPlatformAssistants } from "@/assistant/api";
 import { DetailCard } from "@/components/detail-card";
 import { isLocalMode, syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import {
@@ -54,7 +54,7 @@ export function AssistantLifecyclePanel() {
         // succeeded regardless of the sync outcome.
         if (isLocalMode()) {
           try {
-            const list = await listAssistants();
+            const list = await listPlatformAssistants();
             if (list.ok) {
               await syncPlatformAssistantsToLockfile(
                 list.data,

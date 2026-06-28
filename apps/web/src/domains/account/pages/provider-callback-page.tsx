@@ -4,7 +4,7 @@ import { captureError } from "@/lib/sentry/capture-error";
 
 import { AccountHeading } from "@/components/account/account-form";
 import { AccountShell } from "@/components/account/account-shell";
-import { listAssistants } from "@/assistant/api";
+import { listPlatformAssistants } from "@/assistant/api";
 import { getSession } from "@/lib/auth/allauth-client";
 import { waitForProviderCallbackOutcome } from "@/lib/auth/provider-callback";
 import {
@@ -56,7 +56,7 @@ export function ProviderCallbackPage() {
 
             if (isLocalMode()) {
               try {
-                const assistants = await listAssistants();
+                const assistants = await listPlatformAssistants();
                 if (assistants.ok && assistants.data.length > 0) {
                   await syncPlatformAssistantsToLockfile(
                     assistants.data,

@@ -1,38 +1,49 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { DetailCard } from "@/components/detail-card";
 import { useAssistantWithHealthz } from "@/domains/settings/components/assistant-status-panel";
 import { UpdateWindowPolicy } from "@/domains/settings/components/update-window-policy";
 import { configGetOptions, configGetSetQueryData, useConfigPatchMutation } from "@/generated/daemon/@tanstack/react-query.gen";
-import { usePlatformGate } from "@/hooks/use-platform-gate";
+import {
+  useActiveAssistantLifecycleIsLoading,
+  usePlatformGate,
+} from "@/hooks/use-platform-gate";
 import { captureError } from "@/lib/sentry/capture-error";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { Notice } from "@vellumai/design-library/components/notice";
 import { toast } from "@vellumai/design-library/components/toast";
 import { Toggle } from "@vellumai/design-library/components/toggle";
 
 export function AdvancedPage() {
-  const { assistant, healthz } = useAssistantWithHealthz();
+  const assistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
+  const { assistant, healthz } = useAssistantWithHealthz(assistantId);
   const infraGate = usePlatformGate({ platformHostedOnly: true });
   const platformAssistant = assistant?.is_local ? null : assistant;
-  const assistantId = useActiveAssistantId();
   const queryClient = useQueryClient();
-  const showMemoryOptOut = healthz?.capabilities?.memoryOptOut === true;
+  const showMemoryOptOut =
+    assistantId != null && healthz?.capabilities?.memoryOptOut === true;
 
   const { data: config } = useQuery({
-    ...configGetOptions({ path: { assistant_id: assistantId } }),
+    ...configGetOptions({ path: { assistant_id: assistantId ?? "" } }),
     staleTime: 30_000,
     enabled: showMemoryOptOut,
   });
 
   const configMutation = useConfigPatchMutation({
     onSuccess: (data) => {
+      if (assistantId == null) {
+        return;
+      }
       configGetSetQueryData(queryClient, { path: { assistant_id: assistantId } }, data);
     },
   });
   const memoryEnabled = config?.memory?.enabled !== false;
 
   const handleMemoryToggle = async (enabled: boolean) => {
+    if (assistantId == null) {
+      return;
+    }
     try {
       await configMutation.mutateAsync({
         path: { assistant_id: assistantId },
@@ -78,6 +89,12 @@ export function AdvancedPage() {
             />
           }
           compactAccessory
+        />
+      ) : null}
+      {!platformAssistant && !isLifecycleLoading ? (
+        <DetailCard
+          title="Memory"
+          subtitle="Memory controls are available after your assistant is ready."
         />
       ) : null}
     </div>

@@ -24,7 +24,7 @@
  * and `listAssistants` are shared infra, unchanged.
  */
 
-import { listAssistants } from "@/assistant/api";
+import { listPlatformAssistants } from "@/assistant/api";
 import { JOBS, RATHERS, type JobKey, type RatherKey } from "@/domains/onboarding/cast/cast-content";
 import type { StyleProfile } from "@/domains/onboarding/cast/cast-templates";
 import { inferenceSendPost } from "@/generated/daemon/sdk.gen";
@@ -47,7 +47,7 @@ export async function resolveAssistantId(fromStore: string | null): Promise<stri
   if (fromStore) return fromStore;
   if (resolvedAssistantId !== undefined) return resolvedAssistantId;
   try {
-    const result = await listAssistants();
+    const result = await listPlatformAssistants();
     resolvedAssistantId = result.ok && result.data.length ? result.data[0].id : null;
   } catch {
     resolvedAssistantId = null;
