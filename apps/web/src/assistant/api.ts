@@ -59,6 +59,13 @@ export type AcknowledgeAssistantDiskPressureResult =
   | { ok: true; status: number; data: DiskPressureStatusResponse }
   | { ok: false; status: number; error: Record<string, unknown> };
 
+function filterHostedManagedAssistants(
+  assistants: Assistant[],
+): Assistant[] {
+  if (isLocalMode()) return assistants;
+  return assistants.filter((assistant) => !assistant.is_local);
+}
+
 /**
  * Hatch a managed assistant.
  *
@@ -170,7 +177,9 @@ export async function getAssistant(
     };
   }
 
-  const platformResults = platformResult.data?.results ?? [];
+  const platformResults = filterHostedManagedAssistants(
+    platformResult.data?.results ?? [],
+  );
   if (platformResults.length > 0) {
     return {
       ok: true,
@@ -675,7 +684,7 @@ export async function listPlatformAssistants(): Promise<ListAssistantsResult> {
     return {
       ok: true,
       status: response.status,
-      data: data?.results ?? [],
+      data: filterHostedManagedAssistants(data?.results ?? []),
     };
   }
 

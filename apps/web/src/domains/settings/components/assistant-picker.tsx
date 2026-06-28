@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Check, Monitor } from "lucide-react";
+import { useMemo } from "react";
 
 import { setSelectedAssistant } from "@/assistant/selection";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { DetailCard } from "@/components/detail-card";
 import { assistantsListOptions } from "@/generated/api/@tanstack/react-query.gen";
 import type { Assistant } from "@/generated/api/types.gen";
+import { isLocalMode } from "@/lib/local-mode";
 import { Button } from "@vellumai/design-library/components/button";
 import { Tag } from "@vellumai/design-library/components/tag";
 import { toast } from "@vellumai/design-library/components/toast";
@@ -17,7 +19,13 @@ const PLATFORM_LIST_OPTIONS = assistantsListOptions({
 export function AssistantPicker() {
   const activeAssistantId = useActiveAssistantId();
   const listQuery = useQuery(PLATFORM_LIST_OPTIONS);
-  const platformAssistants = (listQuery.data?.results ?? []) as Assistant[];
+  const platformAssistants = useMemo(
+    () =>
+      ((listQuery.data?.results ?? []) as Assistant[]).filter(
+        (assistant) => isLocalMode() || !assistant.is_local,
+      ),
+    [listQuery.data],
+  );
 
   if (listQuery.isPending || platformAssistants.length < 2) {
     return null;
