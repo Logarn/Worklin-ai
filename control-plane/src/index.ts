@@ -852,6 +852,12 @@ app.get("/_allauth/browser/v1/config", (req, res) => sendJson(req, res, authConf
 app.use(
   asyncHandler(async (req, res) => {
     const url = new URL(req.originalUrl, env.apiOrigin);
+
+    if (url.pathname === "/v1/feature-flags/client-flag-values/") {
+      handleFeatureFlags(req, res);
+      return;
+    }
+
     const user = requireUser(req, res);
     if (!user) return;
 
@@ -861,10 +867,6 @@ app.use(
     }
     if (url.pathname === "/v1/organizations/") {
       handleOrganizations(req, res, user);
-      return;
-    }
-    if (url.pathname === "/v1/feature-flags/client-flag-values/") {
-      handleFeatureFlags(req, res);
       return;
     }
     if (url.pathname === "/v1/organizations/billing/summary/") {

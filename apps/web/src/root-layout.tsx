@@ -11,7 +11,6 @@ import { useAssistantLifecycle } from "@/assistant/use-lifecycle";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import {
   useAuthStore,
-  useIsSessionInitializing,
   useHasPlatformSession,
 } from "@/stores/auth-store";
 import { handleLogout } from "@/lib/auth/handle-logout";
@@ -26,7 +25,6 @@ import { useNotificationIntentSync } from "@/hooks/use-notification-intent-sync"
 import { useOnboardingWindowSize } from "@/hooks/use-onboarding-window-size";
 import { useConversationSync } from "@/hooks/use-conversation-sync";
 import { useFeatureFlagBusSync } from "@/hooks/use-feature-flag-bus-sync";
-import { useClientFeatureFlagSync } from "@/hooks/use-client-feature-flag-sync";
 import { useAssistantFeatureFlagSync } from "@/hooks/use-assistant-feature-flag-sync";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { useAssistantIdentityStore } from "@/stores/assistant-identity-store";
@@ -89,9 +87,7 @@ export function RootLayout() {
 
   const navigate = useNavigate();
   const sessionStatus = useAuthStore.use.sessionStatus();
-  const isSessionInitializing = useIsSessionInitializing();
   const hasPlatformSession = useHasPlatformSession();
-  useClientFeatureFlagSync(!isSessionInitializing);
   useAssistantLifecycle({
     sessionStatus,
     hasPlatformSession,

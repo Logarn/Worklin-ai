@@ -52,7 +52,6 @@ export function useClientFeatureFlagSync(enabled: boolean) {
     queryFn: fetchClientFlagValues,
     enabled: enabled && !platformDisabled,
     ...freshness,
-    retry: 1,
   });
 
   useEffect(() => {
@@ -109,7 +108,6 @@ export function useActivationFlowArm(): { arm: string; settled: boolean } {
     queryFn: fetchClientFlagValues,
     enabled: !platformDisabled,
     ...freshness,
-    retry: 1,
   });
   const override = readActivationFlowOverride();
   const synced = data?.flags

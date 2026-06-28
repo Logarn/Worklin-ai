@@ -26,6 +26,7 @@ import { Toaster } from "@vellumai/design-library/components/toast";
 import { useState, type ReactNode } from "react";
 
 import { ProfileQuickAddProvider } from "@/components/profile-quick-add-provider";
+import { useClientFeatureFlagSync } from "@/hooks/use-client-feature-flag-sync";
 import { useAuthStore, useIsAuthenticated } from "@/stores/auth-store";
 import { useOrganizationStore } from "@/stores/organization-store";
 import { queryRetryDelay, shouldRetryQuery } from "@/utils/query-retry";
@@ -72,6 +73,7 @@ function ScopeKeyedQueryClientProvider({
 }: {
   children: ReactNode;
 }) {
+  useClientFeatureFlagSync(true);
   const isAuthenticated = useIsAuthenticated();
   const user = useAuthStore.use.user();
   const currentOrganizationId =
