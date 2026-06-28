@@ -21,6 +21,7 @@ import {
 import { applyPendingProviderKey } from "@/domains/onboarding/provider-key";
 import { getLocalGatewayUrl, getPlatformRuntimeUrl, isLocalMode, loadLockfile, primeLocalGatewayConnection, saveLockfileAssistant } from "@/lib/local-mode";
 import { clearGatewayToken } from "@/lib/auth/gateway-session";
+import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { resolveNavigation } from "@/lib/navigation/navigation-resolver";
 import { buildNavigationState } from "@/lib/navigation/build-state";
 import { hatchLocalAssistant } from "@/runtime/local-mode-host";
@@ -65,6 +66,14 @@ const PHASE_LABEL: Record<HatchPhase, string> = {
   connecting: "Connecting to your assistant…",
   ready: "Ready",
 };
+
+function primePlatformAssistantConnection(assistant: Assistant): void {
+  if (!assistant.is_local) return;
+  setSelfHostedConnection({
+    url: assistant.ingress_url ?? null,
+    token: assistant.platform_actor_token ?? null,
+  });
+}
 
 export function interpolateSegmentProgress(
   segmentStart: number,
@@ -227,7 +236,12 @@ export function HatchingScreen() {
         try {
           const existing = await getAssistant();
           const preflightState = resolveAssistantLifecycleState(existing);
-          if (!cancelled && existing.ok && preflightState.kind === "active") {
+          if (
+            !cancelled &&
+            existing.ok &&
+            (preflightState.kind === "active" ||
+              preflightState.kind === "self_hosted")
+          ) {
             if (isLocalMode()) {
               void saveLockfileAssistant({
                 assistantId: existing.data.id,
@@ -427,11 +441,12 @@ export function HatchingScreen() {
           if (cancelled) return;
         }
         const next = resolveAssistantLifecycleState(result);
-        if (next.kind === "active") {
+        if (next.kind === "active" || next.kind === "self_hosted") {
           if (result.ok) {
             const assistantId = result.data.id;
             useResolvedAssistantsStore.getState().upsertFromApi(result.data);
             void setSelectedAssistant(assistantId);
+            primePlatformAssistantConnection(result.data);
             if (createdFreshAssistant || preflightFoundNoAssistant) {
               void persistHatchAvatar(assistantId);
             }

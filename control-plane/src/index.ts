@@ -264,6 +264,14 @@ function clearCookie(name: string): string {
   return `${name}=; Path=/; Max-Age=0; ${cookieSecurityAttributes()}`;
 }
 
+function sessionCookieValue(sessionId: string): string {
+  return cookie(
+    SESSION_COOKIE,
+    sessionId,
+    `Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; ${cookieSecurityAttributes()}`,
+  );
+}
+
 function appendCookie(res: Response, value: string): void {
   res.append("Set-Cookie", value);
 }
@@ -516,6 +524,12 @@ function createSession(userId: string): string {
   return id;
 }
 
+function ensureUserSessionCookie(req: Request, res: Response, user: UserRow): void {
+  const existingUser = getSessionUser(req);
+  if (existingUser?.id === user.id) return;
+  appendCookie(res, sessionCookieValue(createSession(user.id)));
+}
+
 function isAllowedCallbackUrl(value: string): boolean {
   try {
     const parsed = new URL(value, env.webOrigin);
@@ -540,6 +554,7 @@ async function handleSession(req: Request, res: Response): Promise<void> {
 
   const user = getAuth0User(req) ?? getSessionUser(req);
   if (user) {
+    ensureUserSessionCookie(req, res, user);
     getOrCreateOrganization(user);
     sendJson(req, res, authenticatedPayload(user));
     return;
@@ -798,6 +813,11 @@ if (auth0Configured()) {
       },
       transactionCookie: {
         sameSite: cookieSameSite,
+      },
+      afterCallback: async (req, res, session) => {
+        const user = upsertAuth0User(session as Auth0Claims);
+        ensureUserSessionCookie(req, res, user);
+        return session;
       },
     }),
   );

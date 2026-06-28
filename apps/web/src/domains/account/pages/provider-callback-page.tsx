@@ -6,11 +6,11 @@ import { AccountHeading } from "@/components/account/account-form";
 import { AccountShell } from "@/components/account/account-shell";
 import { listAssistants } from "@/assistant/api";
 import { getSession } from "@/lib/auth/allauth-client";
+import { waitForProviderCallbackOutcome } from "@/lib/auth/provider-callback";
 import {
   readAuthCallbackIntent,
   resolvePostAuthDestination,
 } from "@/domains/account/login-flow";
-import { classifyCallbackFlows } from "@/domains/account/social-auth";
 import { isLocalMode, syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOrganizationStore } from "@/stores/organization-store";
@@ -48,11 +48,7 @@ export function ProviderCallbackPage() {
 
     (async () => {
       try {
-        const result = await getSession();
-
-        const isAuthenticated = result.ok && !!result.data.user;
-        const pendingFlows = result.ok ? [] : (result.flows ?? []);
-        const outcome = classifyCallbackFlows(isAuthenticated, pendingFlows);
+        const outcome = await waitForProviderCallbackOutcome(getSession);
 
         switch (outcome.kind) {
           case "authenticated": {

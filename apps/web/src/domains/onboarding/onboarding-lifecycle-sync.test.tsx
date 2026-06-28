@@ -44,7 +44,10 @@ const hatchAssistantMock = mock(async () => ({
   },
 }));
 
-const assistantResult = (status: string) => ({
+const assistantResult = (
+  status: string,
+  overrides: Record<string, unknown> = {},
+) => ({
   ok: true,
   status: 200,
   data: {
@@ -52,11 +55,19 @@ const assistantResult = (status: string) => ({
     status,
     is_local: false,
     maintenance_mode: { enabled: false },
+    ...overrides,
   },
 });
 let getAssistantImpl: () => Promise<unknown> = async () =>
   assistantResult("active");
 const getAssistantMock = mock(() => getAssistantImpl());
+let getAssistantHealthzImpl: () => Promise<unknown> = async () => ({
+  ok: true,
+  status: 200,
+  data: { status: "ok" },
+});
+const getAssistantHealthzMock = mock(() => getAssistantHealthzImpl());
+const setSelfHostedConnectionMock = mock(() => {});
 
 let fetchTraitsImpl: () => Promise<unknown> = async () => null;
 let fetchAssistantCharacterProfileImpl: () => Promise<unknown> = async () => null;
@@ -112,7 +123,7 @@ mock.module("@/assistant/lifecycle-service", () => ({
 mock.module("@/assistant/api", () => ({
   hatchAssistant: hatchAssistantMock,
   getAssistant: getAssistantMock,
-  getAssistantHealthz: async () => ({ ok: true, status: 200, data: { status: "ok" } }),
+  getAssistantHealthz: getAssistantHealthzMock,
 }));
 
 mock.module("@/assistant/avatar-api", () => ({
@@ -124,6 +135,10 @@ mock.module("@/assistant/avatar-api", () => ({
 
 mock.module("@/lib/sync/query-tags", () => ({
   avatarQueryKey: (assistantId: string) => ["assistantAvatar", assistantId],
+}));
+
+mock.module("@/lib/self-hosted/connection", () => ({
+  setSelfHostedConnection: setSelfHostedConnectionMock,
 }));
 
 mock.module("@/utils/avatar-bundled-components", () => ({
@@ -416,6 +431,11 @@ beforeEach(() => {
   fetchTraitsImpl = async () => null;
   fetchAssistantCharacterProfileImpl = async () => null;
   getAssistantImpl = async () => assistantResult("active");
+  getAssistantHealthzImpl = async () => ({
+    ok: true,
+    status: 200,
+    data: { status: "ok" },
+  });
   preChatOnboardingExperiment = "variant-a";
   activationFlowExperiment = "control";
   selfIntroGreeting = true;
@@ -434,10 +454,12 @@ beforeEach(() => {
   checkAssistantMock.mockClear();
   hatchAssistantMock.mockClear();
   getAssistantMock.mockClear();
+  getAssistantHealthzMock.mockClear();
   fetchAssistantCharacterProfileMock.mockClear();
   fetchCharacterTraitsMock.mockClear();
   saveAssistantCharacterProfileMock.mockClear();
   saveCharacterTraitsMock.mockClear();
+  setSelfHostedConnectionMock.mockClear();
   invalidateQueriesMock.mockClear();
   writeSelectedVersionMock.mockClear();
   fetchOnboardingRecipeMock.mockClear();
@@ -450,6 +472,53 @@ afterEach(() => {
 });
 
 describe("onboarding lifecycle sync", () => {
+  test("platform hatch primes the runtime connection before assistant health polling", async () => {
+    let assistantCalls = 0;
+    let sawConnectionBeforeHealthz = false;
+    getAssistantImpl = async () =>
+      assistantResult(
+        ++assistantCalls === 1 ? "initializing" : "active",
+        {
+          is_local: true,
+          ingress_url: "https://worklin-ai-production.up.railway.app",
+          platform_actor_token: "actor-token-1",
+        },
+      );
+    getAssistantHealthzImpl = async () => {
+      const connectionCalls = setSelfHostedConnectionMock.mock.calls as unknown as Array<
+        [{ url?: string | null; token?: string | null }]
+      >;
+      sawConnectionBeforeHealthz = connectionCalls.some(([connection]) =>
+        connection?.url === "https://worklin-ai-production.up.railway.app" &&
+        connection?.token === "actor-token-1"
+      );
+      return { ok: true, status: 200, data: { status: "ok" } };
+    };
+
+    render(<HatchingScreen />);
+
+    await waitFor(() => expect(getAssistantHealthzMock).toHaveBeenCalled(), {
+      timeout: 2_000,
+    });
+    expect(sawConnectionBeforeHealthz).toBe(true);
+  });
+
+  test("an already-active self-hosted assistant skips rehatching", async () => {
+    getAssistantImpl = async () =>
+      assistantResult("active", {
+        is_local: true,
+        ingress_url: "https://worklin-ai-production.up.railway.app",
+        platform_actor_token: "actor-token-1",
+      });
+
+    render(<HatchingScreen />);
+
+    await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
+      timeout: 2_000,
+    });
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
+  });
+
   test("hatching refreshes the root assistant lifecycle before leaving onboarding", async () => {
     let resolveLifecycle!: () => void;
     checkAssistantImpl = () =>
