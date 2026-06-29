@@ -36,6 +36,7 @@ import {
   readSelectedAssistantId,
   writeSelectedAssistantId,
 } from "@/assistant/selected-assistant-storage";
+import { isPlatformManagedAssistant } from "@/assistant/hosting";
 import { useLockfileStore } from "@/stores/lockfile-store";
 import type { Lockfile } from "@/runtime/local-mode-host";
 import type { Assistant } from "@/generated/api/types.gen";
@@ -131,7 +132,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
           name: a.name,
           hatchedAt: a.created,
           isLocal: a.is_local,
-          isPlatformHosted: !a.is_local,
+          isPlatformHosted: isPlatformManagedAssistant(a),
         })),
       }),
 
@@ -142,7 +143,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
           name: assistant.name,
           hatchedAt: assistant.created,
           isLocal: assistant.is_local,
-          isPlatformHosted: !assistant.is_local,
+          isPlatformHosted: isPlatformManagedAssistant(assistant),
         };
         const idx = state.assistants.findIndex((a) => a.id === assistant.id);
         if (idx >= 0) {

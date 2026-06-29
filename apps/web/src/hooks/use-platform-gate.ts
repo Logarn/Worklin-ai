@@ -1,5 +1,6 @@
 import { useHasPlatformSession } from "@/stores/auth-store";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { isLocalMode, isPlatformDisabled } from "@/lib/local-mode";
 
 export type PlatformGateState = "full" | "disabled" | "gated";
@@ -67,7 +68,16 @@ export interface PlatformGateOptions {
  * `isLocal: false`).
  */
 function useActiveAssistantIsSelfHosted(): boolean {
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  const activeAssistantIsPlatformHosted = useResolvedAssistantsStore(
+    (state) =>
+      activeAssistantId != null
+        ? state.assistants.find((assistant) => assistant.id === activeAssistantId)
+            ?.isPlatformHosted === true
+        : false,
+  );
   const assistantState = useAssistantLifecycleStore.use.assistantState();
+  if (!isLocalMode() && activeAssistantIsPlatformHosted) return false;
   if (assistantState.kind === "self_hosted") return true;
   if (assistantState.kind === "active" && assistantState.isLocal) return true;
   return false;
@@ -104,7 +114,16 @@ function useActiveAssistantIsSelfHosted(): boolean {
  * ```
  */
 export function useActiveAssistantIsPlatformHosted(): boolean {
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  const activeAssistantIsPlatformHosted = useResolvedAssistantsStore(
+    (state) =>
+      activeAssistantId != null
+        ? state.assistants.find((assistant) => assistant.id === activeAssistantId)
+            ?.isPlatformHosted === true
+        : false,
+  );
   const assistantState = useAssistantLifecycleStore.use.assistantState();
+  if (!isLocalMode() && activeAssistantIsPlatformHosted) return true;
   if (assistantState.kind === "active" && !assistantState.isLocal) return true;
   return false;
 }

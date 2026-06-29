@@ -4,6 +4,7 @@ import {
   filterHostedAssistants,
   firstHostedAssistant,
   isHostedAssistant,
+  isPlatformManagedAssistant,
 } from "@/assistant/hosting";
 
 describe("assistant hosting helpers", () => {
@@ -12,28 +13,57 @@ describe("assistant hosting helpers", () => {
     expect(isHostedAssistant({ is_local: true })).toBe(false);
   });
 
+  test("treats platform-managed proxy descriptors as hosted", () => {
+    expect(
+      isPlatformManagedAssistant({
+        is_local: true,
+        ingress_url: "https://worklin-ai-production.up.railway.app",
+        platform_actor_token: "actor-token-1",
+      }),
+    ).toBe(true);
+  });
+
   test("filters self-hosted assistants out of mixed platform lists", () => {
     const assistants = [
       { id: "self-hosted", is_local: true },
+      {
+        id: "managed-via-proxy",
+        is_local: true,
+        ingress_url: "https://worklin-ai-production.up.railway.app",
+        platform_actor_token: "actor-token-1",
+      },
       { id: "hosted-a", is_local: false },
       { id: "hosted-b", is_local: false },
     ];
 
     expect(filterHostedAssistants(assistants)).toEqual([
+      {
+        id: "managed-via-proxy",
+        is_local: true,
+        ingress_url: "https://worklin-ai-production.up.railway.app",
+        platform_actor_token: "actor-token-1",
+      },
       { id: "hosted-a", is_local: false },
       { id: "hosted-b", is_local: false },
     ]);
   });
 
-  test("picks the first hosted assistant and ignores leading self-hosted rows", () => {
+  test("picks the first hosted assistant-like entry and ignores local-only rows", () => {
     const assistants = [
       { id: "self-hosted", is_local: true },
-      { id: "hosted-a", is_local: false },
+      {
+        id: "managed-via-proxy",
+        is_local: true,
+        ingress_url: "https://worklin-ai-production.up.railway.app",
+        platform_actor_token: "actor-token-1",
+      },
     ];
 
     expect(firstHostedAssistant(assistants)).toEqual({
-      id: "hosted-a",
-      is_local: false,
+      id: "managed-via-proxy",
+      is_local: true,
+      ingress_url: "https://worklin-ai-production.up.railway.app",
+      platform_actor_token: "actor-token-1",
     });
     expect(firstHostedAssistant([{ id: "self-hosted", is_local: true }])).toBe(
       null,

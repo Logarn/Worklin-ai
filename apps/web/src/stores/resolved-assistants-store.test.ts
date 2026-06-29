@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+
+mock.module("@/lib/local-mode", () => ({
+  getActiveAssistant: () => null,
+  isLocalAssistant: (assistant: { cloud?: string }) => assistant.cloud !== "vellum",
+  isLocalMode: () => false,
+  isPlatformAssistant: (assistant: { cloud?: string }) => assistant.cloud === "vellum",
+}));
 
 import {
   assistantsValidForOrg,
@@ -106,6 +113,24 @@ describe("upsertFromApi", () => {
     const entry = useResolvedAssistantsStore.getState().assistants[0];
     expect(entry.id).toBe("asst-platform");
     expect(entry.organizationId).toBe("org-1");
+  });
+
+  it("marks platform-managed proxy descriptors as platform hosted", () => {
+    useResolvedAssistantsStore.getState().upsertFromApi({
+      id: "asst-managed-proxy",
+      name: "Managed Proxy",
+      created: "2026-01-01T00:00:00Z",
+      is_local: true,
+      ingress_url: "https://worklin-ai-production.up.railway.app",
+      platform_actor_token: "actor-token-1",
+    } as Parameters<
+      ReturnType<typeof useResolvedAssistantsStore.getState>["upsertFromApi"]
+    >[0]);
+
+    const entry = useResolvedAssistantsStore.getState().assistants[0];
+    expect(entry.id).toBe("asst-managed-proxy");
+    expect(entry.isLocal).toBe(true);
+    expect(entry.isPlatformHosted).toBe(true);
   });
 });
 

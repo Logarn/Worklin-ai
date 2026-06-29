@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import type { Assistant } from "@/assistant/api";
+import { isHostedAssistant } from "@/assistant/hosting";
 import { DetailCard } from "@/components/detail-card";
 import { formatResourceMb } from "@/domains/settings/components/assistant-status-panel";
 import { CapacityBar } from "@/domains/settings/components/capacity-bar";
@@ -55,7 +56,7 @@ export function ResizeCard({
     organizationsBillingSubscriptionRetrieveOptions(),
   );
   const subscription = subscriptionQuery.data;
-  const isPlatform = !assistant.is_local;
+  const isPlatform = isHostedAssistant(assistant);
   const isPro = subscription?.plan_id === "pro";
 
   const onboardingQuery = useQuery({

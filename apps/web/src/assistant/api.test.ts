@@ -60,13 +60,22 @@ mock.module("@/lib/auth/gateway-session", () => ({
 }));
 
 mock.module("@/lib/local-mode", () => ({
+  getActiveAssistant: () => null,
+  getLocalGatewayUrl: () => null,
+  getPlatformRuntimeUrl: () => undefined,
   getSelectedAssistant: () => undefined,
   getSelfHostedIngressUrl: () => undefined,
+  isLocalAssistant: () => false,
   isLocalMode: () => localMode,
+  isPlatformAssistant: () => false,
   isPlatformDisabled: () => false,
   getPlatformAssistants: () => [],
   getLocalAssistants: () => [],
+  loadLockfile: async () => ({ assistants: [], activeAssistant: null }),
+  primeLocalGatewayConnection: async () => {},
   primeLocalGatewayConnectionWithRepair: async () => {},
+  saveLockfileAssistant: async () => {},
+  setActiveLockfileAssistant: async () => {},
   syncPlatformAssistantsToLockfile: async () => {},
 }));
 
@@ -122,6 +131,31 @@ describe("hosted assistant filtering", () => {
     });
   });
 
+  test("getAssistant() keeps platform-managed self-hosted descriptors on web", async () => {
+    assistantsListMock.mockImplementationOnce(async () => ({
+      data: {
+        results: [
+          {
+            id: "managed-via-proxy",
+            is_local: true,
+            created: "",
+            ingress_url: "https://worklin-ai-production.up.railway.app",
+            platform_actor_token: "actor-token-1",
+          },
+        ],
+      },
+      error: undefined,
+      response: { ok: true, status: 200 },
+    }));
+
+    const result = await getAssistant();
+    expect(result).toMatchObject({
+      ok: true,
+      status: 200,
+      data: { id: "managed-via-proxy", is_local: true },
+    });
+  });
+
   test("listPlatformAssistants() filters out self-hosted results on web", async () => {
     const result = await listPlatformAssistants();
     expect(result).toMatchObject({
@@ -154,6 +188,27 @@ describe("hosted assistant filtering", () => {
       ok: false,
       status: 404,
       error: { detail: "No platform assistant found" },
+    });
+  });
+
+  test("getAssistant(id) accepts a platform-managed self-hosted descriptor on web", async () => {
+    assistantsRetrieveMock.mockImplementationOnce(async () => ({
+      data: {
+        id: "managed-via-proxy",
+        is_local: true,
+        created: "",
+        ingress_url: "https://worklin-ai-production.up.railway.app",
+        platform_actor_token: "actor-token-1",
+      },
+      error: undefined,
+      response: { ok: true, status: 200 },
+    }));
+
+    const result = await getAssistant("managed-via-proxy");
+    expect(result).toMatchObject({
+      ok: true,
+      status: 200,
+      data: { id: "managed-via-proxy", is_local: true },
     });
   });
 });

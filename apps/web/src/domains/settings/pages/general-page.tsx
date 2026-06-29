@@ -2,6 +2,7 @@ import { Heart, Monitor, Moon, Sun } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
+import { isHostedAssistant } from "@/assistant/hosting";
 import { useDiskPressureMonitor } from "@/assistant/use-disk-pressure-monitor";
 import { DetailCard } from "@/components/detail-card";
 import { DiskPressureBanner, type DiskPressureBannerMode } from "@/components/disk-pressure-banner";
@@ -238,7 +239,10 @@ export function GeneralPage() {
     enabled: infraGate === "full" && isPlatformHosted,
   });
 
-  const platformAssistant = assistant?.is_local && !isLocalMode() ? null : assistant;
+  const platformAssistant =
+    assistant && (isLocalMode() || isHostedAssistant(assistant))
+      ? assistant
+      : null;
   const selected = getSelectedAssistant();
   const canRetireLocally =
     isLocalMode() && !!assistant && !!selected && isLocalAssistant(selected);

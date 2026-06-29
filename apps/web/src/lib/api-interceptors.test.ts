@@ -25,8 +25,23 @@ import {
 
 const isPlatformDisabledMock = mock(() => false);
 mock.module("@/lib/local-mode", () => ({
+  getActiveAssistant: () => null,
+  getLocalAssistants: () => [],
+  getLocalGatewayUrl: () => null,
+  getPlatformAssistants: () => [],
+  getPlatformRuntimeUrl: () => undefined,
+  getSelectedAssistant: () => undefined,
+  getSelfHostedIngressUrl: () => undefined,
+  isLocalAssistant: () => false,
   isLocalMode: () => !process.env.VITE_PLATFORM_MODE,
+  isPlatformAssistant: () => false,
   isPlatformDisabled: isPlatformDisabledMock,
+  loadLockfile: async () => ({ assistants: [], activeAssistant: null }),
+  primeLocalGatewayConnection: async () => {},
+  primeLocalGatewayConnectionWithRepair: async () => {},
+  saveLockfileAssistant: async () => {},
+  setActiveLockfileAssistant: async () => {},
+  syncPlatformAssistantsToLockfile: async () => {},
 }));
 
 import {

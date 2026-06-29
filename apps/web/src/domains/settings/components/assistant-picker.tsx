@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Check, Monitor } from "lucide-react";
 import { useMemo } from "react";
 
+import { isHostedAssistant } from "@/assistant/hosting";
 import { setSelectedAssistant } from "@/assistant/selection";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { DetailCard } from "@/components/detail-card";
@@ -22,7 +23,7 @@ export function AssistantPicker() {
   const platformAssistants = useMemo(
     () =>
       ((listQuery.data?.results ?? []) as Assistant[]).filter(
-        (assistant) => isLocalMode() || !assistant.is_local,
+        (assistant) => isLocalMode() || isHostedAssistant(assistant),
       ),
     [listQuery.data],
   );

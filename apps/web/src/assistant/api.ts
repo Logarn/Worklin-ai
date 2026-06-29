@@ -33,6 +33,7 @@ import { isGatewayAuthMode } from "@/lib/auth/gateway-session";
 import {
   filterHostedAssistants,
   firstHostedAssistant,
+  isHostedAssistant,
 } from "@/assistant/hosting";
 import { getSelectedAssistant, isLocalMode } from "@/lib/local-mode";
 import { getSelfHostedIngressUrl } from "@/lib/self-hosted/connection";
@@ -132,7 +133,7 @@ export async function getAssistant(
     assertHasResponse(response, error, "Failed to get assistant.");
 
     if (response.ok) {
-      if (!isLocalMode() && data?.is_local) {
+      if (!isLocalMode() && data && !isHostedAssistant(data as Assistant)) {
         return {
           ok: false,
           status: 404,

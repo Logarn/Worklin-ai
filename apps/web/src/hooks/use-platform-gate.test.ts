@@ -4,12 +4,28 @@ import { cleanup, renderHook } from "@testing-library/react";
 const isLocalModeMock = mock(() => false);
 const isPlatformDisabledMock = mock(() => false);
 mock.module("@/lib/local-mode", () => ({
+  getActiveAssistant: () => null,
+  getLocalAssistants: () => [],
+  getLocalGatewayUrl: () => null,
+  getPlatformAssistants: () => [],
+  getPlatformRuntimeUrl: () => undefined,
+  getSelectedAssistant: () => undefined,
+  getSelfHostedIngressUrl: () => undefined,
+  isLocalAssistant: () => false,
   isLocalMode: isLocalModeMock,
+  isPlatformAssistant: () => false,
   isPlatformDisabled: isPlatformDisabledMock,
+  loadLockfile: async () => ({ assistants: [], activeAssistant: null }),
+  primeLocalGatewayConnection: async () => {},
+  primeLocalGatewayConnectionWithRepair: async () => {},
+  saveLockfileAssistant: async () => {},
+  setActiveLockfileAssistant: async () => {},
+  syncPlatformAssistantsToLockfile: async () => {},
 }));
 
 import { useAuthStore } from "@/stores/auth-store";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import type { AssistantState } from "@/assistant/types";
 import {
   useActiveAssistantIsPlatformHosted,
@@ -19,6 +35,7 @@ import {
 
 const initialAuthState = useAuthStore.getState();
 const initialLifecycleState = useAssistantLifecycleStore.getState();
+const initialResolvedAssistantsState = useResolvedAssistantsStore.getState();
 
 function setLifecycle(assistantState: AssistantState) {
   useAssistantLifecycleStore.setState({ assistantState });
@@ -29,6 +46,7 @@ beforeEach(() => {
   isPlatformDisabledMock.mockImplementation(() => false);
   useAuthStore.setState(initialAuthState, true);
   useAssistantLifecycleStore.setState(initialLifecycleState, true);
+  useResolvedAssistantsStore.setState(initialResolvedAssistantsState, true);
 });
 
 afterEach(() => {
@@ -93,6 +111,25 @@ describe("usePlatformGate — { platformHostedOnly: true }", () => {
       usePlatformGate({ platformHostedOnly: true }),
     );
     expect(result.current).toBe("gated");
+  });
+
+  test('returns "full" for platform-managed proxy assistants even when runtime is self_hosted', () => {
+    setLifecycle({ kind: "self_hosted" });
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "asst-managed-proxy",
+      assistants: [
+        {
+          id: "asst-managed-proxy",
+          isLocal: true,
+          isPlatformHosted: true,
+        },
+      ],
+    });
+    useAuthStore.setState({ platformSession: "present" });
+    const { result } = renderHook(() =>
+      usePlatformGate({ platformHostedOnly: true }),
+    );
+    expect(result.current).toBe("full");
   });
 
   test('returns "gated" when lifecycle resolves to active+isLocal (gateway-auth short-circuit)', () => {
@@ -200,6 +237,22 @@ describe("useActiveAssistantIsPlatformHosted", () => {
     setLifecycle({ kind: "self_hosted" });
     const { result } = renderHook(() => useActiveAssistantIsPlatformHosted());
     expect(result.current).toBe(false);
+  });
+
+  test("returns true for platform-managed proxy assistants resolved through the store", () => {
+    setLifecycle({ kind: "self_hosted" });
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "asst-managed-proxy",
+      assistants: [
+        {
+          id: "asst-managed-proxy",
+          isLocal: true,
+          isPlatformHosted: true,
+        },
+      ],
+    });
+    const { result } = renderHook(() => useActiveAssistantIsPlatformHosted());
+    expect(result.current).toBe(true);
   });
 
   test("returns false for kind: active with isLocal: true (gateway-auth short-circuit)", () => {
