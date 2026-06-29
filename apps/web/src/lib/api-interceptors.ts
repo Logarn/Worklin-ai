@@ -49,6 +49,7 @@ import { getDeviceId } from "@/runtime/device-id";
 import { isElectron } from "@/runtime/is-electron";
 import { getElectronSessionToken } from "@/runtime/session-token";
 import { getActiveOrganizationIdForRequests } from "@/stores/organization-store";
+import { useAuthStore } from "@/stores/auth-store";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const ELECTRON_RENDERER_ORIGIN_HEADER = "X-Vellum-Electron-Renderer-Origin";
@@ -125,6 +126,7 @@ export async function rewriteForSelfHostedIngress(
   const prefix = rewrittenUrl.pathname.replace(/\/$/, "");
   rewrittenUrl.pathname = prefix + url.pathname;
   rewrittenUrl.search = url.search;
+  const usesPublicControlPlaneProxy = rewrittenUrl.origin === url.origin;
 
   // Build a fresh header set. Drop platform-only headers; keep client +
   // interface ids so the user's gateway can echo them back for self-echo
@@ -136,12 +138,19 @@ export async function rewriteForSelfHostedIngress(
   const token = getSelfHostedActorToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
-  } else {
+  } else if (!usesPublicControlPlaneProxy) {
     // Belt-and-braces — never forward a stale Authorization header that
     // happened to be set by a caller. Without a token we want the
     // gateway to respond 401 so the chat surface lands on its error
     // state rather than spinning indefinitely.
     headers.delete("Authorization");
+  }
+
+  if (usesPublicControlPlaneProxy) {
+    const userId = useAuthStore.getState().user?.id;
+    if (userId) {
+      headers.set("X-Vellum-User-Id", userId);
+    }
   }
 
   // In local mode the gateway proxy runs over plain HTTP, and Chrome
@@ -157,9 +166,14 @@ export async function rewriteForSelfHostedIngress(
     method: request.method,
     headers,
     body,
-    // Bearer auth replaces cookie auth — don't leak the platform's
-    // session cookie to the user's gateway.
-    credentials: "omit",
+    // Direct-to-gateway traffic replaces cookie auth with bearer auth,
+    // but the single-domain Worklin production deploy proxies gateway
+    // routes back through the public control-plane origin. Preserve the
+    // authenticated Worklin session in that case so the control-plane can
+    // admit the request and forward the caller's platform identity.
+    credentials: usesPublicControlPlaneProxy
+      ? request.credentials
+      : "omit",
     redirect: request.redirect,
     signal: request.signal,
   };

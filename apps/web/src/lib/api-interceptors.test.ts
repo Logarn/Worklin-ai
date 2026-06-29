@@ -40,8 +40,10 @@ import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { getClientId } from "@/lib/telemetry/client-identity";
 import { __resetForTesting as resetSessionToken } from "@/runtime/session-token";
 import { useOrganizationStore } from "@/stores/organization-store";
+import { useAuthStore } from "@/stores/auth-store";
 
 const TEST_ORG_ID = "org-test-1234";
+const TEST_USER_ID = "user-test-1234";
 const ELECTRON_RENDERER_ORIGIN_HEADER = "X-Vellum-Electron-Renderer-Origin";
 
 function setCsrfCookie(token: string): void {
@@ -210,6 +212,16 @@ const RUNTIME_PROXIED_PATH = `/v1/assistants/${SELF_HOSTED_ID}/conversations/`;
 describe("api-interceptors / self-hosted rewriting", () => {
   beforeAll(() => {
     useOrganizationStore.setState({ currentOrganizationId: TEST_ORG_ID });
+    useAuthStore.setState({
+      user: {
+        id: TEST_USER_ID,
+        username: "tester",
+        email: "tester@example.com",
+        isStaff: false,
+        firstName: "Test",
+        lastName: "User",
+      },
+    });
     setCsrfCookie("test-csrf-token");
   });
 
@@ -283,11 +295,30 @@ describe("api-interceptors / self-hosted rewriting", () => {
     expect(output.headers.get("X-Vellum-Interface-Id")).toBe("vellum");
   });
 
-  test("omits cookie credentials on the rewritten request", async () => {
+  test("omits cookie credentials on cross-origin rewritten requests", async () => {
     setSelfHostedConnection({ url: INGRESS, token: ACTOR_TOKEN });
-    const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`);
+    const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`, {
+      credentials: "include",
+    });
     const output = await requestInterceptor(input);
     expect(output.credentials).toBe("omit");
+  });
+
+  test("preserves cookie auth and forwards X-Vellum-User-Id when ingress matches the public origin", async () => {
+    setSelfHostedConnection({
+      url: "https://platform.test",
+      token: ACTOR_TOKEN,
+    });
+    const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`, {
+      credentials: "include",
+    });
+    const output = await requestInterceptor(input);
+    expect(new URL(output.url).origin).toBe("https://platform.test");
+    expect(output.credentials).toBe("include");
+    expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
+    expect(output.headers.get("Authorization")).toBe(
+      `Bearer ${ACTOR_TOKEN}`,
+    );
   });
 
   test("does NOT rewrite when no connection is set", async () => {
@@ -377,6 +408,16 @@ const DAEMON_MEMORY_PATH = `/v1/assistants/${SELF_HOSTED_ID}/memory-items/`;
 describe("api-interceptors / daemon client self-hosted rewriting", () => {
   beforeAll(() => {
     useOrganizationStore.setState({ currentOrganizationId: TEST_ORG_ID });
+    useAuthStore.setState({
+      user: {
+        id: TEST_USER_ID,
+        username: "tester",
+        email: "tester@example.com",
+        isStaff: false,
+        firstName: "Test",
+        lastName: "User",
+      },
+    });
     setCsrfCookie("test-csrf-token");
   });
 
@@ -435,6 +476,16 @@ describe("api-interceptors / daemon client self-hosted rewriting", () => {
     const output = await daemonRequestInterceptor(input);
     expect(output.headers.get("X-Vellum-Client-Id")).toBe(getClientId());
     expect(output.headers.get("X-Vellum-Interface-Id")).toBe("vellum");
+  });
+
+  test("preserves session credentials and forwards X-Vellum-User-Id for same-origin daemon routes", async () => {
+    setSelfHostedConnection({ url: "https://platform.test", token: ACTOR_TOKEN });
+    const input = new Request(`https://platform.test${DAEMON_SKILLS_PATH}`, {
+      credentials: "include",
+    });
+    const output = await daemonRequestInterceptor(input);
+    expect(output.credentials).toBe("include");
+    expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
   });
 });
 
