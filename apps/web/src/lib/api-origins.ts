@@ -12,29 +12,19 @@ function normalizeConfiguredOrigin(value: string | undefined): string | undefine
   }
 }
 
-const CANONICAL_WEB_ORIGIN = "https://worklin-ai.vercel.app";
-const LEGACY_WEB_ORIGIN = "https://ai-retention-marketer.vercel.app";
-
-function shouldUseHostedProxy(): boolean {
-  if (typeof window === "undefined") return false;
-  const origin = window.location.origin;
-  return origin === CANONICAL_WEB_ORIGIN || origin === LEGACY_WEB_ORIGIN;
-}
-
-function resolveHostedOrigin(value: string | undefined): string | undefined {
-  return shouldUseHostedProxy() ? undefined : normalizeConfiguredOrigin(value);
-}
-
+// Hosted Worklin should honor the explicit Railway origins from Vercel env.
+// Falling back to same-origin Vercel rewrites changes some trailing-slash API
+// paths (for example client feature flags) before they reach Railway.
 export const platformApiBaseUrl = normalizeConfiguredOrigin(
-  resolveHostedOrigin(import.meta.env.VITE_PLATFORM_API_BASE_URL),
+  import.meta.env.VITE_PLATFORM_API_BASE_URL,
 );
 
 export const authApiBaseUrl =
-  resolveHostedOrigin(import.meta.env.VITE_AUTH_API_BASE_URL) ??
+  normalizeConfiguredOrigin(import.meta.env.VITE_AUTH_API_BASE_URL) ??
   platformApiBaseUrl;
 
 export const daemonApiBaseUrl =
-  resolveHostedOrigin(import.meta.env.VITE_DAEMON_API_BASE_URL) ??
+  normalizeConfiguredOrigin(import.meta.env.VITE_DAEMON_API_BASE_URL) ??
   platformApiBaseUrl;
 
 export function resolveAuthActionUrl(path: string): string {
