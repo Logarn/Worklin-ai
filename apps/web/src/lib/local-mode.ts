@@ -86,7 +86,7 @@ const PLATFORM_MODE_TRUTHY = new Set(["1", "true", "yes"]);
 
 export function isLocalMode(): boolean {
   const raw = import.meta.env.VITE_PLATFORM_MODE;
-  if (raw == null || raw === "") return false;
+  if (!raw || raw.trim() === "") return false;
   return !PLATFORM_MODE_TRUTHY.has(raw.toLowerCase());
 }
 
