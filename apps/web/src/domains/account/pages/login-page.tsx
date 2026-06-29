@@ -1,11 +1,17 @@
-import { useState } from "react";
-import { useSearchParams } from "react-router";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router";
 
 import { NativeSplash } from "@/components/native-splash";
 import { DarkLoginShell, LoginCard, LoginErrorText } from "@/domains/account/components/login-shell";
 import { PlatformLoginButtons } from "@/domains/account/components/platform-login-buttons";
-import { PROVIDER_ID, buildProviderCallbackUrl } from "@/domains/account/login-flow";
+import {
+  PROVIDER_ID,
+  buildProviderCallbackUrl,
+  resolvePostLoginDestination,
+} from "@/domains/account/login-flow";
 import { startAuthFlow, startNativeLogin, useIsNativePlatform } from "@/runtime/native-auth";
+import { useIsAuthenticated } from "@/stores/auth-store";
+import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library";
 
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
@@ -131,8 +137,36 @@ function WebLoginForm({ returnTo }: { returnTo: string | null }) {
  */
 export function LoginPage() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const isNative = useIsNativePlatform();
+  const isAuthenticated = useIsAuthenticated();
   const returnTo = searchParams.get("returnTo");
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const { destination, requiresFullPageNavigation } =
+      resolvePostLoginDestination(returnTo, routes.assistant);
+
+    if (requiresFullPageNavigation) {
+      window.location.replace(destination);
+      return;
+    }
+
+    navigate(destination, { replace: true });
+  }, [isAuthenticated, navigate, returnTo]);
+
+  if (isAuthenticated) {
+    return (
+      <DarkLoginShell>
+        <LoginCard>
+          <p className="text-center text-sm text-[var(--content-secondary)]">
+            Redirecting you to Worklin...
+          </p>
+        </LoginCard>
+      </DarkLoginShell>
+    );
+  }
 
   if (isNative) return <NativeLoginForm returnTo={returnTo} />;
   return <WebLoginForm returnTo={returnTo} />;
