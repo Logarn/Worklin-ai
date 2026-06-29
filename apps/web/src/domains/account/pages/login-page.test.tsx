@@ -38,9 +38,19 @@ mock.module("@/runtime/native-auth", () => ({
   useIsNativePlatform: () => false,
 }));
 
-mock.module("@/stores/auth-store", () => ({
-  useIsAuthenticated: () => isAuthenticated,
-}));
+mock.module("@/stores/auth-store", () => {
+  const useAuthStore = () => null;
+  useAuthStore.use = {
+    sessionStatus: () => (isAuthenticated ? "authenticated" : "unauthenticated"),
+  };
+  useAuthStore.getState = () => ({
+    sessionStatus: isAuthenticated ? "authenticated" : "unauthenticated",
+  });
+  return {
+    useAuthStore,
+    useIsAuthenticated: () => isAuthenticated,
+  };
+});
 
 mock.module("@vellumai/design-library", () => ({
   Button: ({ children, ...props }: ComponentProps<"button">) => (
