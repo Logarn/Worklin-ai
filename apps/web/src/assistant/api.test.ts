@@ -51,13 +51,23 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
 }));
 
 mock.module("@/lib/auth/gateway-session", () => ({
+  isGatewayAuthEnabled: () => false,
   isGatewayAuthMode: () => false,
+  ensureGatewayToken: async () => "",
+  clearGatewayToken: () => {},
+  getLocalTokenUrl: () => undefined,
+  getGatewayToken: () => null,
 }));
 
 mock.module("@/lib/local-mode", () => ({
   getSelectedAssistant: () => undefined,
   getSelfHostedIngressUrl: () => undefined,
   isLocalMode: () => localMode,
+  isPlatformDisabled: () => false,
+  getPlatformAssistants: () => [],
+  getLocalAssistants: () => [],
+  primeLocalGatewayConnectionWithRepair: async () => {},
+  syncPlatformAssistantsToLockfile: async () => {},
 }));
 
 let getAssistant: typeof import("./api").getAssistant;
