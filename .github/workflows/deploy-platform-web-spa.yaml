@@ -91,7 +91,7 @@ jobs:
           VITE_STRIPE_PUBLISHABLE_KEY: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
           VITE_VELAY_HOST: ${{ vars.VITE_VELAY_HOST }}
           VITE_APP_VERSION: ${{ github.sha }}
-          SENTRY_UPLOAD_SOURCE_MAPS: "true"
+          SENTRY_UPLOAD_SOURCE_MAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && 'true' || 'false' }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: bun run build
 
