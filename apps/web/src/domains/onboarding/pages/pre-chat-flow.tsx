@@ -21,7 +21,7 @@ import { PriorAssistantSelectionScreen } from "@/domains/onboarding/screens/prio
 import { TaskToneSelectionScreen } from "@/domains/onboarding/screens/task-tone-selection-screen.js";
 import { ToolSelectionScreen } from "@/domains/onboarding/screens/tool-selection-screen.js";
 import { VibeStepScreen } from "@/domains/onboarding/screens/vibe-step-screen.js";
-import { assistantsActiveRetrieveOptions } from "@/generated/api/@tanstack/react-query.gen.js";
+import { useAssistantQuery } from "@/assistant/queries";
 import { usePrefilledInput } from "@/hooks/use-prefilled-input.js";
 import {
   setPendingAssistantName,
@@ -130,13 +130,15 @@ export function PreChatFlow() {
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleScopes, setGoogleScopes] = useState<string[]>([]);
 
-  const { data: activeAssistant } = useQuery({
-    ...assistantsActiveRetrieveOptions(),
+  const { data: activeAssistantResult } = useAssistantQuery({
     enabled:
       !isAuthInitializing &&
       isAuthenticated &&
       (!localMode || hasPlatformSession),
   });
+  const activeAssistant = activeAssistantResult?.ok
+    ? activeAssistantResult.data
+    : null;
   const { data: fetchedRecipe, isLoading: recipeLoading } = useQuery({
     queryKey: ["onboarding-recipe", userId],
     queryFn: fetchOnboardingRecipe,

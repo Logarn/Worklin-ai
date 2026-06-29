@@ -30,6 +30,10 @@ import {
 import type { HealthzGetResponse } from "@/generated/daemon/types.gen";
 import { assertHasResponse, toErrorObject } from "@/utils/api-errors";
 import { isGatewayAuthMode } from "@/lib/auth/gateway-session";
+import {
+  filterHostedAssistants,
+  firstHostedAssistant,
+} from "@/assistant/hosting";
 import { getSelectedAssistant, isLocalMode } from "@/lib/local-mode";
 import { getSelfHostedIngressUrl } from "@/lib/self-hosted/connection";
 
@@ -58,13 +62,6 @@ export type GetAssistantDiskPressureStatusResult =
 export type AcknowledgeAssistantDiskPressureResult =
   | { ok: true; status: number; data: DiskPressureStatusResponse }
   | { ok: false; status: number; error: Record<string, unknown> };
-
-function filterHostedManagedAssistants(
-  assistants: Assistant[],
-): Assistant[] {
-  if (isLocalMode()) return assistants;
-  return assistants.filter((assistant) => !assistant.is_local);
-}
 
 /**
  * Hatch a managed assistant.
@@ -177,14 +174,13 @@ export async function getAssistant(
     };
   }
 
-  const platformResults = filterHostedManagedAssistants(
-    platformResult.data?.results ?? [],
-  );
-  if (platformResults.length > 0) {
+  const platformResults = platformResult.data?.results ?? [];
+  const hostedAssistant = firstHostedAssistant(platformResults);
+  if (hostedAssistant) {
     return {
       ok: true,
       status: platformResult.response.status,
-      data: platformResults[0]!,
+      data: hostedAssistant,
     };
   }
 
@@ -684,7 +680,7 @@ export async function listPlatformAssistants(): Promise<ListAssistantsResult> {
     return {
       ok: true,
       status: response.status,
-      data: filterHostedManagedAssistants(data?.results ?? []),
+      data: data?.results ?? [],
     };
   }
 
@@ -695,6 +691,18 @@ export async function listPlatformAssistants(): Promise<ListAssistantsResult> {
   };
 }
 
+export async function listHostedAssistants(): Promise<ListAssistantsResult> {
+  const result = await listPlatformAssistants();
+  if (!result.ok) {
+    return result;
+  }
+
+  return {
+    ok: true,
+    status: result.status,
+    data: filterHostedAssistants(result.data),
+  };
+}
 export type ActivateResult =
   | { ok: true; data: Assistant }
   | { ok: false; status: number; error: Record<string, unknown> };

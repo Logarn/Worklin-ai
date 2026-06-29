@@ -3,9 +3,10 @@ import { useState } from "react";
 
 import { useQuery } from "@tanstack/react-query";
 
+import { useAssistantQuery } from "@/assistant/queries";
+import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { extractResizeError } from "@/domains/settings/components/resize-errors";
 import {
-    assistantsActiveRetrieveOptions,
     organizationsBillingSubscriptionOnboardingRetrieveOptions,
     useAssistantsResizeMutation,
 } from "@/generated/api/@tanstack/react-query.gen";
@@ -68,16 +69,17 @@ export function TierUpgradeResizeModal({
   open,
   onClose,
 }: TierUpgradeResizeModalProps) {
-  const assistantQuery = useQuery({
-    ...assistantsActiveRetrieveOptions(),
+  const assistantId = useActiveAssistantId();
+  const assistantQuery = useAssistantQuery({
     enabled: open,
+    selectedPlatformAssistantId: assistantId,
   });
   const onboardingQuery = useQuery({
     ...organizationsBillingSubscriptionOnboardingRetrieveOptions(),
     enabled: open,
   });
 
-  const assistant = assistantQuery.data;
+  const assistant = assistantQuery.data?.ok ? assistantQuery.data.data : null;
   const currentSize = (assistant?.machine_size as MachineSizeEnum) || "small";
   const currentGib = assistant?.provisioned_storage_gib ?? null;
 

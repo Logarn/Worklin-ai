@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useAssistantQuery } from "@/assistant/queries";
+import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import {
-    assistantsActiveRetrieveOptions,
     assistantsDomainsListOptions,
     assistantsListQueryKey,
     organizationsBillingSubscriptionOnboardingDomainCreateMutation,
@@ -22,14 +23,20 @@ import { DOMAIN_EXIT_DELAY_MS, extractOnboardingErrorMessage } from "./utils";
 export function DomainStep({ onBack, onExit }: { onBack: () => void; onExit: () => void }) {
   const queryClient = useQueryClient();
   const emailRootDomain = useEnvironmentStore.use.emailRootDomain();
-  const { data: activeAssistant } = useQuery(assistantsActiveRetrieveOptions());
-  const assistantId = activeAssistant?.id;
+  const assistantId = useActiveAssistantId();
+  const { data: activeAssistantResult } = useAssistantQuery({
+    enabled: true,
+    selectedPlatformAssistantId: assistantId,
+  });
+  const activeAssistant = activeAssistantResult?.ok
+    ? activeAssistantResult.data
+    : null;
 
   const { data: domainsData } = useQuery({
     ...assistantsDomainsListOptions({
-      path: { assistant_id: assistantId ?? "" },
+      path: { assistant_id: assistantId },
     }),
-    enabled: !!assistantId,
+    enabled: true,
   });
   const existingDomain = domainsData?.results?.[0];
 
