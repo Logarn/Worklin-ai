@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import {
+  afterAll,
   afterEach,
   beforeEach,
   describe,
@@ -26,6 +27,28 @@ import {
 } from "@/domains/onboarding/prechat-context";
 import type { PlatformSessionStatus } from "@/stores/session-status";
 import { routes } from "@/utils/routes";
+
+const assistantApi = await import(
+  new URL("../../assistant/api.ts?actual", import.meta.url).href,
+);
+const actualReactQuery = await import(
+  new URL(
+    "../../../node_modules/@tanstack/react-query/build/modern/index.js?actual",
+    import.meta.url,
+  ).href,
+);
+const actualButtonModule = await import(
+  new URL(
+    "../../../../../packages/design-library/src/components/button.tsx?actual",
+    import.meta.url,
+  ).href,
+);
+const actualGeneratedApiQueryModule = await import(
+  new URL(
+    "../../generated/api/@tanstack/react-query.gen.ts?actual",
+    import.meta.url,
+  ).href,
+);
 
 let searchParams = new URLSearchParams();
 const navigateMock = mock(() => {});
@@ -107,6 +130,9 @@ let platformSessionValue: PlatformSessionStatus = "absent";
 let fetchOnboardingRecipeImpl: () => Promise<TestOnboardingRecipe | null> =
   async () => null;
 const fetchOnboardingRecipeMock = mock(() => fetchOnboardingRecipeImpl());
+let activeAssistantQueryResult:
+  | ReturnType<typeof assistantResult>
+  | undefined = assistantResult("active");
 
 mock.module("react-router", () => ({
   useNavigate: () => navigateMock,
@@ -120,10 +146,10 @@ mock.module("@/assistant/lifecycle-service", () => ({
   },
 }));
 
-mock.module("@/assistant/api", () => ({
-  hatchAssistant: hatchAssistantMock,
-  getAssistant: getAssistantMock,
-  getAssistantHealthz: getAssistantHealthzMock,
+mock.module("@/assistant/queries", () => ({
+  useAssistantQuery: (options?: { enabled?: boolean }) => ({
+    data: options?.enabled === false ? undefined : activeAssistantQueryResult,
+  }),
 }));
 
 mock.module("@/assistant/avatar-api", () => ({
@@ -164,6 +190,7 @@ mock.module("@/domains/onboarding/components/onboarding-layout", () => ({
 }));
 
 mock.module("@vellumai/design-library/components/button", () => ({
+  ...actualButtonModule,
   Button: ({
     children,
     onClick,
@@ -313,6 +340,7 @@ type EmulatedQueryOptions = {
 // mock so the hooks run unconditionally on every `useQuery` call regardless of
 // which query it is — only the returned value branches on the query key.
 mock.module("@tanstack/react-query", () => ({
+  ...actualReactQuery,
   useQuery: (options?: EmulatedQueryOptions) => {
     const isRecipeQuery =
       Array.isArray(options?.queryKey) &&
@@ -345,6 +373,7 @@ mock.module("@tanstack/react-query", () => ({
 }));
 
 mock.module("@/generated/api/@tanstack/react-query.gen", () => ({
+  ...actualGeneratedApiQueryModule,
   assistantsActiveRetrieveOptions: () => ({}),
   assistantsOauthConnectionsListOptions: () => ({}),
   useAssistantsOauthStartCreateMutation: () => ({
@@ -425,6 +454,10 @@ const { HatchingScreen } =
 const { PreChatFlow } =
   await import("@/domains/onboarding/pages/pre-chat-flow");
 
+afterAll(() => {
+  mock.restore();
+});
+
 beforeEach(() => {
   searchParams = new URLSearchParams();
   checkAssistantImpl = async () => {};
@@ -446,6 +479,7 @@ beforeEach(() => {
   isLocalModeValue = false;
   platformSessionValue = "absent";
   fetchOnboardingRecipeImpl = async () => null;
+  activeAssistantQueryResult = assistantResult("active");
   randomSpy = spyOn(Math, "random").mockReturnValue(0);
   sessionStorage.clear();
   localStorage.clear();
@@ -463,11 +497,17 @@ beforeEach(() => {
   invalidateQueriesMock.mockClear();
   writeSelectedVersionMock.mockClear();
   fetchOnboardingRecipeMock.mockClear();
+  spyOn(assistantApi, "hatchAssistant").mockImplementation(hatchAssistantMock);
+  spyOn(assistantApi, "getAssistant").mockImplementation(getAssistantMock);
+  spyOn(assistantApi, "getAssistantHealthz").mockImplementation(
+    getAssistantHealthzMock,
+  );
 });
 
 afterEach(() => {
   randomSpy?.mockRestore();
   randomSpy = null;
+  mock.restore();
   cleanup();
 });
 

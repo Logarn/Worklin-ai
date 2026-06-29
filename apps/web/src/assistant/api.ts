@@ -677,10 +677,11 @@ export async function listPlatformAssistants(): Promise<ListAssistantsResult> {
   assertHasResponse(response, error, "Failed to list assistants.");
 
   if (response.ok) {
+    const results = data?.results ?? [];
     return {
       ok: true,
       status: response.status,
-      data: data?.results ?? [],
+      data: isLocalMode() ? results : filterHostedAssistants(results),
     };
   }
 

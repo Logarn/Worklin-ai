@@ -5,8 +5,12 @@
  * refresh the lockfile, and switch to the new assistant.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 
+const assistantApi = await import("./api");
+const selectionModule = await import("./selection");
+const localModeModule = await import("../lib/local-mode");
+const organizationStoreModule = await import("../stores/organization-store");
 let hatchResult:
   | { ok: true; status: number; data: { id: string } }
   | { ok: false; status: number; error: Record<string, unknown> } = {
@@ -18,7 +22,7 @@ let hatchResult:
 const hatchAssistantMock = mock(
   async (_input?: unknown, _mode?: string) => hatchResult,
 );
-const listAssistantsMock = mock(async () => ({
+const listPlatformAssistantsMock = mock(async () => ({
   ok: true as const,
   status: 200,
   data: [{ id: "ast-new", is_local: false, created: "" }],
@@ -27,37 +31,45 @@ const setSelectedAssistantMock = mock(async (_id: string) => {});
 const syncPlatformAssistantsToLockfileMock = mock(
   async (_a: unknown, _orgId?: string) => {},
 );
+let createPlatformAssistant: typeof import("./create-platform-assistant").createPlatformAssistant;
+let moduleNonce = 0;
 
-mock.module("@/assistant/api", () => ({
-  hatchAssistant: hatchAssistantMock,
-  listAssistants: listAssistantsMock,
-}));
-mock.module("@/assistant/selection", () => ({
-  setSelectedAssistant: setSelectedAssistantMock,
-}));
-mock.module("@/lib/local-mode", () => ({
-  syncPlatformAssistantsToLockfile: syncPlatformAssistantsToLockfileMock,
-}));
-mock.module("@/stores/organization-store", () => ({
-  useOrganizationStore: {
-    getState: () => ({ currentOrganizationId: "org-test" }),
-  },
-}));
-mock.module("@/utils/api-errors", () => ({
-  extractErrorMessage: (e: unknown, _r: unknown, fallback?: string) =>
-    e && typeof e === "object" && typeof (e as { detail?: unknown }).detail === "string"
-      ? (e as { detail: string }).detail
-      : (fallback ?? "error"),
-}));
-
-const { createPlatformAssistant } = await import("./create-platform-assistant");
-
-beforeEach(() => {
+beforeEach(async () => {
   hatchResult = { ok: true, status: 201, data: { id: "ast-new" } };
+  mock.restore();
   hatchAssistantMock.mockClear();
-  listAssistantsMock.mockClear();
+  listPlatformAssistantsMock.mockClear();
   setSelectedAssistantMock.mockClear();
   syncPlatformAssistantsToLockfileMock.mockClear();
+  spyOn(assistantApi, "hatchAssistant").mockImplementation(
+    hatchAssistantMock as typeof assistantApi.hatchAssistant,
+  );
+  spyOn(assistantApi, "listPlatformAssistants").mockImplementation(
+    listPlatformAssistantsMock as unknown as typeof assistantApi.listPlatformAssistants,
+  );
+  spyOn(selectionModule, "setSelectedAssistant").mockImplementation(
+    setSelectedAssistantMock as typeof selectionModule.setSelectedAssistant,
+  );
+  spyOn(
+    localModeModule,
+    "syncPlatformAssistantsToLockfile",
+  ).mockImplementation(
+    syncPlatformAssistantsToLockfileMock as typeof localModeModule.syncPlatformAssistantsToLockfile,
+  );
+  spyOn(organizationStoreModule.useOrganizationStore, "getState").mockImplementation(
+    () =>
+      ({
+        currentOrganizationId: "org-test",
+      }) as ReturnType<typeof organizationStoreModule.useOrganizationStore.getState>,
+  );
+
+  ({ createPlatformAssistant } = await import(
+    new URL(`./create-platform-assistant.ts?test=${++moduleNonce}`, import.meta.url).href,
+  ));
+});
+
+afterEach(() => {
+  mock.restore();
 });
 
 describe("createPlatformAssistant", () => {
