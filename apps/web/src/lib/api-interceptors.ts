@@ -126,7 +126,17 @@ export async function rewriteForSelfHostedIngress(
   const prefix = rewrittenUrl.pathname.replace(/\/$/, "");
   rewrittenUrl.pathname = prefix + url.pathname;
   rewrittenUrl.search = url.search;
-  const usesPublicControlPlaneProxy = rewrittenUrl.origin === url.origin;
+  const shouldProxyThroughPublicOrigin =
+    rewrittenUrl.origin === url.origin &&
+    window.location.origin !== url.origin;
+  if (shouldProxyThroughPublicOrigin) {
+    rewrittenUrl.protocol = window.location.protocol;
+    rewrittenUrl.host = window.location.host;
+    rewrittenUrl.pathname = url.pathname;
+    rewrittenUrl.search = url.search;
+  }
+  const usesPublicControlPlaneProxy =
+    rewrittenUrl.origin === window.location.origin;
 
   // Build a fresh header set. Drop platform-only headers; keep client +
   // interface ids so the user's gateway can echo them back for self-echo

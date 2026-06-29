@@ -223,6 +223,7 @@ const SELF_HOSTED_ID = "01h1234567890abcdefg";
 const INGRESS = "https://my-gateway.example";
 const ACTOR_TOKEN = "test-actor-token-abc123";
 const RUNTIME_PROXIED_PATH = `/v1/assistants/${SELF_HOSTED_ID}/conversations/`;
+const PUBLIC_ORIGIN = window.location.origin;
 
 describe("api-interceptors / self-hosted rewriting", () => {
   beforeAll(() => {
@@ -321,6 +322,23 @@ describe("api-interceptors / self-hosted rewriting", () => {
 
   test("preserves cookie auth and forwards X-Vellum-User-Id when ingress matches the public origin", async () => {
     setSelfHostedConnection({
+      url: PUBLIC_ORIGIN,
+      token: ACTOR_TOKEN,
+    });
+    const input = new Request(`${PUBLIC_ORIGIN}${RUNTIME_PROXIED_PATH}`, {
+      credentials: "include",
+    });
+    const output = await requestInterceptor(input);
+    expect(new URL(output.url).origin).toBe(PUBLIC_ORIGIN);
+    expect(output.credentials).toBe("include");
+    expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
+    expect(output.headers.get("Authorization")).toBe(
+      `Bearer ${ACTOR_TOKEN}`,
+    );
+  });
+
+  test("routes hosted proxy requests back through the public origin when the configured platform base is cross-origin", async () => {
+    setSelfHostedConnection({
       url: "https://platform.test",
       token: ACTOR_TOKEN,
     });
@@ -328,7 +346,9 @@ describe("api-interceptors / self-hosted rewriting", () => {
       credentials: "include",
     });
     const output = await requestInterceptor(input);
-    expect(new URL(output.url).origin).toBe("https://platform.test");
+    const outUrl = new URL(output.url);
+    expect(outUrl.origin).toBe(PUBLIC_ORIGIN);
+    expect(outUrl.pathname).toBe(RUNTIME_PROXIED_PATH);
     expect(output.credentials).toBe("include");
     expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
     expect(output.headers.get("Authorization")).toBe(
@@ -338,10 +358,10 @@ describe("api-interceptors / self-hosted rewriting", () => {
 
   test("upgrades same-origin rewritten requests to credentials: include", async () => {
     setSelfHostedConnection({
-      url: "https://platform.test",
+      url: PUBLIC_ORIGIN,
       token: ACTOR_TOKEN,
     });
-    const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`);
+    const input = new Request(`${PUBLIC_ORIGIN}${RUNTIME_PROXIED_PATH}`);
     expect(input.credentials).toBe("same-origin");
     const output = await requestInterceptor(input);
     expect(output.credentials).toBe("include");
@@ -506,8 +526,8 @@ describe("api-interceptors / daemon client self-hosted rewriting", () => {
   });
 
   test("preserves session credentials and forwards X-Vellum-User-Id for same-origin daemon routes", async () => {
-    setSelfHostedConnection({ url: "https://platform.test", token: ACTOR_TOKEN });
-    const input = new Request(`https://platform.test${DAEMON_SKILLS_PATH}`, {
+    setSelfHostedConnection({ url: PUBLIC_ORIGIN, token: ACTOR_TOKEN });
+    const input = new Request(`${PUBLIC_ORIGIN}${DAEMON_SKILLS_PATH}`, {
       credentials: "include",
     });
     const output = await daemonRequestInterceptor(input);
@@ -516,8 +536,8 @@ describe("api-interceptors / daemon client self-hosted rewriting", () => {
   });
 
   test("upgrades same-origin daemon routes to credentials: include even from the default request mode", async () => {
-    setSelfHostedConnection({ url: "https://platform.test", token: ACTOR_TOKEN });
-    const input = new Request(`https://platform.test${DAEMON_SKILLS_PATH}`);
+    setSelfHostedConnection({ url: PUBLIC_ORIGIN, token: ACTOR_TOKEN });
+    const input = new Request(`${PUBLIC_ORIGIN}${DAEMON_SKILLS_PATH}`);
     expect(input.credentials).toBe("same-origin");
     const output = await daemonRequestInterceptor(input);
     expect(output.credentials).toBe("include");
