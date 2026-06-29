@@ -1,14 +1,15 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 let daemonConfig: { memory?: { enabled?: boolean } } | undefined;
 let memoryOptOutCapability = true;
+let assistantIsLocal = false;
 const configPatchMock = mock(async () => daemonConfig);
 
 mock.module("@/domains/settings/components/assistant-status-panel", () => ({
   useAssistantWithHealthz: () => ({
-    assistant: { id: "assistant-1", is_local: true },
+    assistant: { id: "assistant-1", is_local: assistantIsLocal },
     healthz: memoryOptOutCapability
       ? { capabilities: { memoryOptOut: true } }
       : { capabilities: {} },
@@ -17,10 +18,19 @@ mock.module("@/domains/settings/components/assistant-status-panel", () => ({
 
 mock.module("@/hooks/use-platform-gate", () => ({
   usePlatformGate: () => "hidden",
+  useActiveAssistantLifecycleIsLoading: () => false,
 }));
 
 mock.module("@/assistant/use-active-assistant-id", () => ({
   useActiveAssistantId: () => "assistant-1",
+}));
+
+mock.module("@/stores/resolved-assistants-store", () => ({
+  useResolvedAssistantsStore: {
+    use: {
+      activeAssistantId: () => "assistant-1",
+    },
+  },
 }));
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
@@ -52,6 +62,10 @@ mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
 const { configGetQueryKey } = await import("@/generated/daemon/@tanstack/react-query.gen");
 const { AdvancedPage } = await import("./advanced-page");
 
+afterAll(() => {
+  mock.restore();
+});
+
 function renderWithQuery(ui: React.ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
@@ -66,6 +80,7 @@ function renderWithQuery(ui: React.ReactElement) {
 beforeEach(() => {
   daemonConfig = { memory: { enabled: true } };
   memoryOptOutCapability = true;
+  assistantIsLocal = false;
   configPatchMock.mockClear();
 });
 

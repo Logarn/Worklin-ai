@@ -50,7 +50,10 @@ import {
   primeLocalGatewayConnectionWithRepair,
   syncPlatformAssistantsToLockfile,
 } from "@/lib/local-mode";
-import { listPlatformAssistants } from "@/assistant/api";
+import {
+  listHostedAssistants,
+  listPlatformAssistants,
+} from "@/assistant/api";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { deleteBiometricToken } from "@/runtime/native-biometric";
 import { fetchMe, patchConsent } from "@/domains/account/profile";
@@ -511,7 +514,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
         await syncUserScopedState(user?.id ?? null);
         try {
           await useOrganizationStore.getState().fetchOrganizations();
-          const apiAssistants = await listPlatformAssistants();
+          const apiAssistants = await listHostedAssistants();
           if (apiAssistants.ok) {
             useResolvedAssistantsStore.getState().setFromApi(apiAssistants.data);
           }
@@ -545,7 +548,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
             await syncUserScopedState(user?.id ?? null);
             try {
               await useOrganizationStore.getState().fetchOrganizations();
-              const apiAssistants = await listPlatformAssistants();
+              const apiAssistants = await listHostedAssistants();
               if (apiAssistants.ok) {
                 useResolvedAssistantsStore.getState().setFromApi(apiAssistants.data);
               }

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-    assistantsActiveRetrieveOptions,
     organizationsBillingSubscriptionOnboardingRetrieveOptions,
     organizationsBillingSubscriptionOnboardingRetrieveQueryKey,
     organizationsBillingSubscriptionRetrieveOptions,
@@ -85,11 +84,6 @@ export function BillingOnboardingModal({
   const onboardingQuery = useQuery({
     ...organizationsBillingSubscriptionOnboardingRetrieveOptions(),
     enabled: open && step !== "confirm-pro",
-  });
-
-  useQuery({
-    ...assistantsActiveRetrieveOptions(),
-    enabled: open,
   });
 
   const domainSetupAvailable = onboardingQuery.data?.domain_setup_available;

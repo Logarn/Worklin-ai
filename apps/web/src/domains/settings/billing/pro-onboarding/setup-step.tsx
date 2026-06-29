@@ -1,10 +1,11 @@
 import { ArrowLeft, ArrowRight, Cpu, HardDrive, Server } from "lucide-react";
 import { useState } from "react";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 
+import { useAssistantQuery } from "@/assistant/queries";
+import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import {
-    assistantsActiveRetrieveOptions,
     assistantsResizeMutation,
 } from "@/generated/api/@tanstack/react-query.gen";
 import type { MachineSizeEnum, MachineTierEnum } from "@/generated/api/types.gen";
@@ -95,7 +96,14 @@ export function SetupStep({
   dotIndex: number;
   dotTotal: number;
 }) {
-  const { data: activeAssistant } = useQuery(assistantsActiveRetrieveOptions());
+  const assistantId = useActiveAssistantId();
+  const { data: activeAssistantResult } = useAssistantQuery({
+    enabled: true,
+    selectedPlatformAssistantId: assistantId,
+  });
+  const activeAssistant = activeAssistantResult?.ok
+    ? activeAssistantResult.data
+    : null;
   const currentSize = (activeAssistant?.machine_size as MachineSizeEnum) || "small";
   const currentGib = activeAssistant?.provisioned_storage_gib ?? null;
 

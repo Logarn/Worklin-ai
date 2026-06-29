@@ -6,7 +6,14 @@
  * pin that routing plus the failure/404/cleanup behavior.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+
+const assistantApi = await import("./api");
+const localModeModule = await import("../lib/local-mode");
+const organizationStoreModule = await import("../stores/organization-store");
+const navigationResolverModule = await import("../lib/navigation/navigation-resolver");
+const buildStateModule = await import("../lib/navigation/build-state");
+const resolvedAssistantsStoreModule = await import("../stores/resolved-assistants-store");
 
 // --- mutable mock state (set per test) --- //
 
@@ -19,89 +26,100 @@ let retireLocalResult: { ok: true } | { ok: false; error?: string } = { ok: true
 // --- module mocks --- //
 
 const retireAssistantByIdMock = mock(async (_id: string) => retireByIdResult);
-const listAssistantsMock = mock(async () => ({ ok: true as const, status: 200, data: [{ id: "p1", is_local: false, created: "" }] }));
-mock.module("@/assistant/api", () => ({
-  retireAssistantById: retireAssistantByIdMock,
-  listAssistants: listAssistantsMock,
+const listPlatformAssistantsMock = mock(async () => ({
+  ok: true as const,
+  status: 200,
+  data: [{ id: "p1", is_local: false, created: "" }],
 }));
 
 const retireLocalAssistantMock = mock(async (_id: string) => retireLocalResult);
 const syncPlatformAssistantsToLockfileMock = mock(
   async (_a: unknown, _orgId?: string) => {},
 );
-mock.module("@/lib/local-mode", () => ({
-  getLockfile: () => ({ assistants: lockfileAssistants, activeAssistant: null }),
-  isLocalAssistant: (a: { cloud?: string }) => a.cloud !== "vellum",
-  isLocalMode: () => isLocalModeValue,
-  retireLocalAssistant: retireLocalAssistantMock,
-  syncPlatformAssistantsToLockfile: syncPlatformAssistantsToLockfileMock,
-}));
-mock.module("@/stores/organization-store", () => ({
-  useOrganizationStore: {
-    getState: () => ({ currentOrganizationId: "org-test" }),
-  },
-}));
-
-mock.module("@/lib/navigation/navigation-resolver", () => ({
-  resolveNavigation: (
-    state: Record<string, unknown>,
-    query: { kind: string },
-  ) => {
-    if (query.kind !== "post-retire") return { action: "allow" };
-    if (state.hasAssistants) return { action: "redirect", to: state.isLocalMode ? "/assistant/select-assistant" : "/assistant" };
-    if (!state.isLocalMode) return { action: "redirect", to: "/assistant/onboarding/privacy" };
-    if (state.platformSession === "present") return { action: "redirect", to: "/assistant/onboarding/hosting" };
-    return { action: "redirect", to: "/assistant/welcome" };
-  },
-}));
-mock.module("@/lib/navigation/build-state", () => ({
-  buildNavigationState: () => ({
-    isLocalMode: isLocalModeValue,
-    isAuthenticated: false,
-    platformSession: "absent",
-    hasAssistants: storeAssistants.length > 0,
-  }),
-}));
 
 const removeMock = mock((assistantId: string) => {
   storeAssistants = storeAssistants.filter((a) => a.id !== assistantId);
 });
-mock.module("@/stores/resolved-assistants-store", () => ({
-  useResolvedAssistantsStore: {
-    getState: () => ({ remove: removeMock }),
-  },
-}));
+let retireAssistant: typeof import("./retire-service").retireAssistant;
+let moduleNonce = 0;
 
-mock.module("@/utils/routes", () => ({
-  routes: {
-    assistant: "/assistant",
-    welcome: "/assistant/welcome",
-    selectAssistant: "/assistant/select-assistant",
-    onboarding: {
-      hosting: "/assistant/onboarding/hosting",
-      prechat: "/assistant/onboarding/prechat",
-      privacy: "/assistant/onboarding/privacy",
-    },
-  },
-}));
-
-const { retireAssistant } = await import("./retire-service");
-
-beforeEach(() => {
+beforeEach(async () => {
   isLocalModeValue = false;
   lockfileAssistants = [];
   storeAssistants = [];
   retireByIdResult = { ok: true };
   retireLocalResult = { ok: true };
+  mock.restore();
   retireAssistantByIdMock.mockClear();
-  listAssistantsMock.mockClear();
+  listPlatformAssistantsMock.mockClear();
   retireLocalAssistantMock.mockClear();
   syncPlatformAssistantsToLockfileMock.mockClear();
   removeMock.mockClear();
+
+  spyOn(assistantApi, "retireAssistantById").mockImplementation(
+    retireAssistantByIdMock as typeof assistantApi.retireAssistantById,
+  );
+  spyOn(assistantApi, "listPlatformAssistants").mockImplementation(
+    listPlatformAssistantsMock as unknown as typeof assistantApi.listPlatformAssistants,
+  );
+  spyOn(localModeModule, "getLockfile").mockImplementation(() => ({
+    assistants: lockfileAssistants,
+    activeAssistant: null,
+  }));
+  spyOn(localModeModule, "isLocalAssistant").mockImplementation(
+    (a: { cloud?: string }) => a.cloud !== "vellum",
+  );
+  spyOn(localModeModule, "isLocalMode").mockImplementation(() => isLocalModeValue);
+  spyOn(localModeModule, "retireLocalAssistant").mockImplementation(
+    retireLocalAssistantMock as typeof localModeModule.retireLocalAssistant,
+  );
+  spyOn(
+    localModeModule,
+    "syncPlatformAssistantsToLockfile",
+  ).mockImplementation(
+    syncPlatformAssistantsToLockfileMock as typeof localModeModule.syncPlatformAssistantsToLockfile,
+  );
+  spyOn(organizationStoreModule.useOrganizationStore, "getState").mockImplementation(
+    () =>
+      ({
+        currentOrganizationId: "org-test",
+      }) as ReturnType<typeof organizationStoreModule.useOrganizationStore.getState>,
+  );
+  spyOn(navigationResolverModule, "resolveNavigation").mockImplementation(
+    ((state: Record<string, unknown>, query: { kind: string }) => {
+      if (query.kind !== "post-retire") return { action: "allow" };
+      if (state.hasAssistants) return { action: "redirect", to: state.isLocalMode ? "/assistant/select-assistant" : "/assistant" };
+      if (!state.isLocalMode) return { action: "redirect", to: "/assistant/onboarding/privacy" };
+      if (state.platformSession === "present") return { action: "redirect", to: "/assistant/onboarding/hosting" };
+      return { action: "redirect", to: "/assistant/welcome" };
+    }) as unknown as typeof navigationResolverModule.resolveNavigation,
+  );
+  spyOn(buildStateModule, "buildNavigationState").mockImplementation(
+    () =>
+      ({
+        isLocalMode: isLocalModeValue,
+        isAuthenticated: false,
+        platformSession: "absent",
+        hasAssistants: storeAssistants.length > 0,
+      }) as ReturnType<typeof buildStateModule.buildNavigationState>,
+  );
+  spyOn(
+    resolvedAssistantsStoreModule.useResolvedAssistantsStore,
+    "getState",
+  ).mockImplementation(
+    () =>
+      ({
+        remove: removeMock,
+      }) as unknown as ReturnType<typeof resolvedAssistantsStoreModule.useResolvedAssistantsStore.getState>,
+  );
+
+  ({ retireAssistant } = await import(
+    new URL(`./retire-service.ts?test=${++moduleNonce}`, import.meta.url).href,
+  ));
 });
 
 afterEach(() => {
-  // keep mock state isolated between tests
+  mock.restore();
 });
 
 describe("retireAssistant", () => {

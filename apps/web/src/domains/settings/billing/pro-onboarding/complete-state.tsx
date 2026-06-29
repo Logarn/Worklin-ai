@@ -2,15 +2,21 @@ import { ArrowLeft, PartyPopper } from "lucide-react";
 
 import { useNavigate } from "react-router";
 
-import { useQuery } from "@tanstack/react-query";
-
-import { assistantsActiveRetrieveOptions } from "@/generated/api/@tanstack/react-query.gen";
+import { useAssistantQuery } from "@/assistant/queries";
+import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
 
 export function CompleteState({ onBack }: { onBack: () => void }) {
   const navigate = useNavigate();
-  const { data: activeAssistant } = useQuery(assistantsActiveRetrieveOptions());
+  const assistantId = useActiveAssistantId();
+  const { data: activeAssistantResult } = useAssistantQuery({
+    enabled: true,
+    selectedPlatformAssistantId: assistantId,
+  });
+  const activeAssistant = activeAssistantResult?.ok
+    ? activeAssistantResult.data
+    : null;
   const assistantName = activeAssistant?.name || "your assistant";
 
   return (

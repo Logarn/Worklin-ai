@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 type AssistantListCall = { query?: unknown; throwOnError?: boolean };
 type AssistantRetrieveCall = { path?: unknown; throwOnError?: boolean };
@@ -60,13 +60,25 @@ mock.module("@/lib/local-mode", () => ({
   isLocalMode: () => localMode,
 }));
 
-const { getAssistant, listPlatformAssistants } = await import("./api");
+let getAssistant: typeof import("./api").getAssistant;
+let listPlatformAssistants: typeof import("./api").listPlatformAssistants;
+let moduleNonce = 0;
+
+afterAll(() => {
+  mock.restore();
+});
 
 beforeEach(() => {
   localMode = false;
   assistantsListMock.mockClear();
   assistantsRetrieveMock.mockClear();
   noop.mockClear();
+});
+
+beforeEach(async () => {
+  ({ getAssistant, listPlatformAssistants } = await import(
+    new URL(`./api.ts?api-test=${++moduleNonce}`, import.meta.url).href,
+  ));
 });
 
 describe("hosted assistant filtering", () => {

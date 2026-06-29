@@ -53,10 +53,10 @@ let mockBiometricToken: string | null = null;
 const installSessionCookiesMock = mock((_token: string) => {});
 const retrieveBiometricTokenMock = mock(async () => mockBiometricToken);
 
-// Controls the managed-assistant list returned to the lockfile-sync path and
-// spies on the sync itself. Default `listAssistants` to the legacy `[]` shape
-// (whose missing `.ok` short-circuits the sync) so existing tests are
-// unaffected; the reconciliation tests override it to a well-formed result.
+// Controls the managed-assistant list returned to the hosted-web hydration and
+// local-mode lockfile-sync paths. Default to the legacy `[]` shape (whose
+// missing `.ok` short-circuits the sync) so existing tests are unaffected; the
+// reconciliation tests override it to a well-formed result.
 let mockListAssistantsResult: unknown = [];
 const listAssistantsMock = mock(async () => mockListAssistantsResult);
 const syncPlatformAssistantsToLockfileMock = mock(
@@ -206,6 +206,8 @@ mock.module("@/assistant/lifecycle-service", () => ({
 // before any test runs.
 mock.module("@/assistant/api", () => ({
   listAssistants: listAssistantsMock,
+  listPlatformAssistants: listAssistantsMock,
+  listHostedAssistants: listAssistantsMock,
 }));
 
 const { useAuthStore } = await import("@/stores/auth-store");

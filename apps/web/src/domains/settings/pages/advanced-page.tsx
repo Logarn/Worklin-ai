@@ -1,7 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { DetailCard } from "@/components/detail-card";
-import { useAssistantWithHealthz } from "@/domains/settings/components/assistant-status-panel";
+import {
+  useAssistantWithHealthz,
+} from "@/domains/settings/components/assistant-status-panel";
 import { UpdateWindowPolicy } from "@/domains/settings/components/update-window-policy";
 import { configGetOptions, configGetSetQueryData, useConfigPatchMutation } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
