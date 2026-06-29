@@ -226,6 +226,17 @@ function allowedOrigin(req: Request): string | null {
   return allowedOriginValue(origin) ? origin : null;
 }
 
+function allowedRefererOrigin(req: Request): string | null {
+  const referer = req.headers.referer;
+  if (!referer) return null;
+  try {
+    const origin = new URL(referer).origin;
+    return allowedOriginValue(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
 function setCorsHeaders(req: Request, res: Response): void {
   const origin = allowedOrigin(req);
   if (origin) {
@@ -338,11 +349,13 @@ function checkProviderRedirectCsrf(req: Request, form: URLSearchParams): boolean
 
   // Hosted production login starts on Vercel and posts to Railway. Some
   // browsers decline to persist the backend-domain CSRF cookie during the
-  // bootstrap fetch, which would otherwise dead-end login on a 403 despite the
-  // request originating from our own allowed web origin. Keep full double-submit
-  // CSRF everywhere else; only this login-initiation endpoint falls back to an
-  // allowlisted Origin check.
-  return !!allowedOrigin(req) && !!form.get("csrfmiddlewaretoken");
+  // bootstrap fetch, and Safari may omit `Origin` on the top-level form POST,
+  // which would otherwise dead-end login on a 403 despite the request
+  // originating from our own allowed hosted page. Keep full double-submit CSRF
+  // everywhere else; only this login-initiation endpoint falls back to an
+  // allowlisted `Origin` / `Referer` check plus the submitted form token.
+  const trustedSource = allowedOrigin(req) ?? allowedRefererOrigin(req);
+  return !!trustedSource && !!form.get("csrfmiddlewaretoken");
 }
 
 function safeEqual(a: string, b: string): boolean {
