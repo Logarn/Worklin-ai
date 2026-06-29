@@ -247,7 +247,9 @@ function setCorsHeaders(req: Request, res: Response): void {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Authorization,Content-Type,X-CSRFToken,X-Session-Token,Vellum-Device-Id,Vellum-Organization-Id,X-Vellum-Client-Id,X-Vellum-Interface-Id",
+    // Hosted assistant runtime routes rely on the platform user id header for
+    // edge auth, so preflight must explicitly allow it.
+    "Authorization,Content-Type,X-CSRFToken,X-Session-Token,Vellum-Device-Id,Vellum-Organization-Id,X-Vellum-Client-Id,X-Vellum-Interface-Id,X-Vellum-User-Id",
   );
   res.setHeader("Access-Control-Expose-Headers", "X-CSRFToken");
 }
