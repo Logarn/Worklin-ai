@@ -172,7 +172,7 @@ export async function rewriteForSelfHostedIngress(
     // authenticated Worklin session in that case so the control-plane can
     // admit the request and forward the caller's platform identity.
     credentials: usesPublicControlPlaneProxy
-      ? request.credentials
+      ? "include"
       : "omit",
     redirect: request.redirect,
     signal: request.signal,

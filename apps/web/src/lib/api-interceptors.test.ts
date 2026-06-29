@@ -336,6 +336,18 @@ describe("api-interceptors / self-hosted rewriting", () => {
     );
   });
 
+  test("upgrades same-origin rewritten requests to credentials: include", async () => {
+    setSelfHostedConnection({
+      url: "https://platform.test",
+      token: ACTOR_TOKEN,
+    });
+    const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`);
+    expect(input.credentials).toBe("same-origin");
+    const output = await requestInterceptor(input);
+    expect(output.credentials).toBe("include");
+    expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
+  });
+
   test("does NOT rewrite when no connection is set", async () => {
     const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`);
     const output = await requestInterceptor(input);
@@ -498,6 +510,15 @@ describe("api-interceptors / daemon client self-hosted rewriting", () => {
     const input = new Request(`https://platform.test${DAEMON_SKILLS_PATH}`, {
       credentials: "include",
     });
+    const output = await daemonRequestInterceptor(input);
+    expect(output.credentials).toBe("include");
+    expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
+  });
+
+  test("upgrades same-origin daemon routes to credentials: include even from the default request mode", async () => {
+    setSelfHostedConnection({ url: "https://platform.test", token: ACTOR_TOKEN });
+    const input = new Request(`https://platform.test${DAEMON_SKILLS_PATH}`);
+    expect(input.credentials).toBe("same-origin");
     const output = await daemonRequestInterceptor(input);
     expect(output.credentials).toBe("include");
     expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
