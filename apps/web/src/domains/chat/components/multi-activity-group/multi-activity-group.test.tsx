@@ -19,6 +19,7 @@
 
 import { type ComponentProps } from "react";
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { cleanup, fireEvent, render } from "@testing-library/react";
 
@@ -31,10 +32,9 @@ import { toolCallStatusWireFields } from "@/domains/chat/utils/message-test-help
 // endpoints so the module loads; the card never invokes them.
 // We read the real module's export names and build a stub object dynamically.
 const sdkStub = async () => ({ data: undefined });
-const realSdkPath = new URL(
-  "../../../../generated/daemon/sdk.gen.ts",
-  import.meta.url,
-).pathname;
+const realSdkPath = fileURLToPath(
+  new URL("../../../../generated/daemon/sdk.gen.ts", import.meta.url),
+);
 const sdkSource = await Bun.file(realSdkPath).text();
 const exportNames = [...sdkSource.matchAll(/^export const (\w+)/gm)].map(
   (m) => m[1]!,

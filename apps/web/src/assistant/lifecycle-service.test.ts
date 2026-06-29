@@ -46,7 +46,11 @@ mock.module("@/lib/self-hosted/connection", () => ({
 const isGatewayAuthModeMock = mock(() => false);
 const getGatewayTokenMock = mock(() => "token");
 mock.module("@/lib/auth/gateway-session", () => ({
+  isGatewayAuthEnabled: isGatewayAuthModeMock,
   isGatewayAuthMode: isGatewayAuthModeMock,
+  ensureGatewayToken: async () => "token",
+  clearGatewayToken: () => {},
+  getLocalTokenUrl: () => undefined,
   getGatewayToken: getGatewayTokenMock,
 }));
 
@@ -62,13 +66,18 @@ const loadLockfileMock = mock(async () => ({
 const primeLocalGatewayConnectionWithRepairMock = mock(async () => {});
 mock.module("@/lib/local-mode", () => ({
   isLocalMode: isLocalModeMock,
+  isPlatformDisabled: () => false,
   isLocalAssistant: () => false,
   isPlatformAssistant: () => false,
+  getPlatformAssistants: () => [],
+  getLocalAssistants: () => [],
   getSelectedAssistant: getSelectedAssistantMock,
   getLocalGatewayUrl: getLocalGatewayUrlMock,
   loadLockfile: loadLockfileMock,
+  primeLocalGatewayConnection: async () => {},
   primeLocalGatewayConnectionWithRepair:
     primeLocalGatewayConnectionWithRepairMock,
+  syncPlatformAssistantsToLockfile: async () => {},
 }));
 
 // Sentry is a side-effect-only dep here; silence it.
@@ -149,6 +158,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  isGatewayAuthModeMock.mockImplementation(() => false);
+  getGatewayTokenMock.mockImplementation(() => "token");
+  isLocalModeMock.mockImplementation(() => false);
+  getSelectedAssistantMock.mockImplementation(() => undefined);
+  getLocalGatewayUrlMock.mockImplementation(() => undefined);
   lifecycleService.__resetForTesting();
 });
 
