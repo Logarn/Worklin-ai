@@ -14,16 +14,33 @@ const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
 const LOCAL_CSRF_COOKIE = "csrftoken";
 const AUTH0_SESSION_COOKIE = "worklin_auth0_session";
-const LEGACY_VERCEL_WEB_ORIGIN = "https://worklin-ai.vercel.app";
-const CURRENT_VERCEL_WEB_ORIGIN = "https://ai-retention-marketer.vercel.app";
+const CANONICAL_VERCEL_WEB_ORIGIN = "https://worklin-ai.vercel.app";
+const LEGACY_VERCEL_WEB_ORIGIN = "https://ai-retention-marketer.vercel.app";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const ACTOR_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const POLICY_EPOCH = 1;
 
+function canonicalHostedWebOrigin(origin: string): string | null {
+  if (origin === CANONICAL_VERCEL_WEB_ORIGIN || origin === LEGACY_VERCEL_WEB_ORIGIN) {
+    return CANONICAL_VERCEL_WEB_ORIGIN;
+  }
+  return null;
+}
+
+const configuredWebOrigin = trimTrailingSlash(
+  process.env.WORKLIN_WEB_ORIGIN ?? CANONICAL_VERCEL_WEB_ORIGIN,
+);
+const configuredAuth0BaseUrl = trimTrailingSlash(
+  process.env.AUTH0_BASE_URL ??
+    process.env.BASE_URL ??
+    process.env.WORKLIN_API_ORIGIN ??
+    "https://api.worklin.ai",
+);
+
 const env = {
   port: Number(process.env.WORKLIN_CONTROL_PLANE_PORT ?? process.env.PORT ?? 8080),
   host: process.env.WORKLIN_CONTROL_PLANE_HOST ?? "0.0.0.0",
-  webOrigin: trimTrailingSlash(process.env.WORKLIN_WEB_ORIGIN ?? "https://worklin-ai.vercel.app"),
+  webOrigin: configuredWebOrigin,
   apiOrigin: trimTrailingSlash(process.env.WORKLIN_API_ORIGIN ?? "https://api.worklin.ai"),
   gatewayUrl: trimTrailingSlash(process.env.WORKLIN_GATEWAY_URL ?? "http://gateway:7830"),
   dbPath: process.env.WORKLIN_CONTROL_DB ?? "/data/control-plane.sqlite",
@@ -32,9 +49,8 @@ const env = {
   auth0IssuerBaseUrl: trimTrailingSlash(
     process.env.AUTH0_ISSUER_BASE_URL ?? process.env.ISSUER_BASE_URL ?? "",
   ),
-  auth0BaseUrl: trimTrailingSlash(
-    process.env.AUTH0_BASE_URL ?? process.env.BASE_URL ?? process.env.WORKLIN_API_ORIGIN ?? "https://api.worklin.ai",
-  ),
+  auth0BaseUrl:
+    canonicalHostedWebOrigin(configuredWebOrigin) ?? configuredAuth0BaseUrl,
   auth0ClientId: process.env.AUTH0_CLIENT_ID ?? process.env.CLIENT_ID ?? "",
   auth0ClientSecret: process.env.AUTH0_CLIENT_SECRET ?? process.env.CLIENT_SECRET ?? "",
   auth0Secret: process.env.AUTH0_SECRET ?? process.env.SECRET ?? process.env.WORKLIN_SESSION_SECRET ?? "",
@@ -190,15 +206,13 @@ function authConfigPayload() {
 function allowedWebOrigins(): Set<string> {
   return new Set([
     env.webOrigin,
+    CANONICAL_VERCEL_WEB_ORIGIN,
     LEGACY_VERCEL_WEB_ORIGIN,
-    CURRENT_VERCEL_WEB_ORIGIN,
   ]);
 }
 
 function publicWebOrigin(): string {
-  return env.webOrigin === LEGACY_VERCEL_WEB_ORIGIN
-    ? CURRENT_VERCEL_WEB_ORIGIN
-    : env.webOrigin;
+  return canonicalHostedWebOrigin(env.webOrigin) ?? env.webOrigin;
 }
 
 function allowedOriginValue(origin: string): boolean {

@@ -23,7 +23,22 @@ import "./index.css";
 import { initSafeAreaBridge } from "@/runtime/native-safe-area";
 import { initInputModality } from "@vellumai/design-library";
 
+const CANONICAL_WEB_HOST = "worklin-ai.vercel.app";
+const LEGACY_WEB_HOST = "ai-retention-marketer.vercel.app";
+
+function redirectLegacyHostedDomain(): boolean {
+  if (typeof window === "undefined") return false;
+  if (window.location.hostname !== LEGACY_WEB_HOST) return false;
+
+  const canonicalUrl = new URL(window.location.href);
+  canonicalUrl.hostname = CANONICAL_WEB_HOST;
+  window.location.replace(canonicalUrl.toString());
+  return true;
+}
+
 async function boot() {
+  if (redirectLegacyHostedDomain()) return;
+
   initInputModality();
   await initSafeAreaBridge();
   initSentry();

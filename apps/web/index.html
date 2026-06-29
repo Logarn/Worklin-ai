@@ -14,6 +14,13 @@
   <link rel="icon" type="image/png" sizes="1024x1024" href="/favicon-black-on-white.png" media="(prefers-color-scheme: light)" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <title>Worklin AI</title>
+  <script>
+    if (window.location.hostname === "ai-retention-marketer.vercel.app") {
+      const canonicalUrl = new URL(window.location.href);
+      canonicalUrl.hostname = "worklin-ai.vercel.app";
+      window.location.replace(canonicalUrl.toString());
+    }
+  </script>
   <script src="/theme-init.js"></script>
 </head>
 <body>
