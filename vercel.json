@@ -4,6 +4,47 @@
   "installCommand": "cd apps/web && bun install --frozen-lockfile",
   "buildCommand": "cd apps/web && VITE_PLATFORM_MODE=true VERCEL=1 bun run build",
   "outputDirectory": "apps/web/dist",
+  "headers": [
+    {
+      "source": "/_allauth/:path*",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "private, no-store, max-age=0"
+        },
+        {
+          "key": "Pragma",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/v1/:path*",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "private, no-store, max-age=0"
+        },
+        {
+          "key": "Pragma",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/callback",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "private, no-store, max-age=0"
+        },
+        {
+          "key": "Pragma",
+          "value": "no-cache"
+        }
+      ]
+    }
+  ],
   "redirects": [
     {
       "source": "/",
