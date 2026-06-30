@@ -7,6 +7,7 @@ set -euo pipefail
 : "${CES_DATA_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-data}"
 : "${CREDENTIAL_SECURITY_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-security}"
 : "${CES_BOOTSTRAP_SOCKET_DIR:=/run/ces-bootstrap}"
+: "${GATEWAY_IPC_SOCKET_DIR:=/run/gateway-ipc}"
 : "${DEBUG_STDOUT_LOGS:=1}"
 : "${PORT:=8080}"
 : "${WORKLIN_CONTROL_PLANE_PORT:=${PORT}}"
@@ -33,6 +34,7 @@ export GATEWAY_SECURITY_DIR
 export CES_DATA_DIR
 export CREDENTIAL_SECURITY_DIR
 export CES_BOOTSTRAP_SOCKET_DIR
+export GATEWAY_IPC_SOCKET_DIR
 export DEBUG_STDOUT_LOGS
 export PORT
 export WORKLIN_CONTROL_PLANE_PORT
@@ -56,7 +58,8 @@ mkdir -p \
   "${GATEWAY_SECURITY_DIR}" \
   "${CES_DATA_DIR}" \
   "${CREDENTIAL_SECURITY_DIR}" \
-  "${CES_BOOTSTRAP_SOCKET_DIR}"
+  "${CES_BOOTSTRAP_SOCKET_DIR}" \
+  "${GATEWAY_IPC_SOCKET_DIR}"
 
 signing_key_path="${GATEWAY_SECURITY_DIR%/}/actor-token-signing-key"
 if [[ -z "${ACTOR_TOKEN_SIGNING_KEY:-}" ]]; then
@@ -75,10 +78,12 @@ export ACTOR_TOKEN_SIGNING_KEY
 # processes.
 chown -R assistant:vellum "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
 chown -R gateway:gateway "${GATEWAY_SECURITY_DIR}"
+chown -R gateway:vellum "${GATEWAY_IPC_SOCKET_DIR}"
 chown -R ces:ces "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 2775 "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
 chmod 700 "${GATEWAY_SECURITY_DIR}" "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 777 "${CES_BOOTSTRAP_SOCKET_DIR}"
+chmod 2770 "${GATEWAY_IPC_SOCKET_DIR}"
 
 declare -a pids=()
 
