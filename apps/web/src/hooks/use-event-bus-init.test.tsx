@@ -8,19 +8,32 @@ import {
   spyOn,
   test,
 } from "bun:test";
-import { cleanup, renderHook } from "@testing-library/react";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
 
+import { lifecycleService } from "@/assistant/lifecycle-service";
 import { sseService } from "@/assistant/sse-service";
 import { useEventBusInit } from "@/hooks/use-event-bus-init";
 import { __resetForTesting } from "@/lib/event-bus";
 
 const detachMock = mock(() => {});
+let callOrder: string[] = [];
+const checkAssistantSpy = spyOn(
+  lifecycleService,
+  "checkAssistant",
+).mockImplementation(async (assistantId?: string) => {
+  callOrder.push(`check:${assistantId ?? ""}`);
+});
 const attachSpy = spyOn(sseService, "attach").mockImplementation(
-  () => detachMock,
+  (assistantId: string) => {
+    callOrder.push(`attach:${assistantId}`);
+    return detachMock;
+  },
 );
 
 beforeEach(() => {
   __resetForTesting();
+  callOrder = [];
+  checkAssistantSpy.mockClear();
   attachSpy.mockClear();
   detachMock.mockClear();
 });
@@ -31,6 +44,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
+  checkAssistantSpy.mockRestore();
   attachSpy.mockRestore();
 });
 
@@ -55,11 +69,14 @@ describe("useEventBusInit — attach gating", () => {
     expect(attachSpy).not.toHaveBeenCalled();
   });
 
-  test("attaches sseService with the resolved id when the assistant becomes active", () => {
+  test("refreshes the assistant before attaching sseService", async () => {
     renderHook(() =>
       useEventBusInit({ assistantId: "asst-1", isAssistantActive: true }),
     );
-    expect(attachSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(attachSpy).toHaveBeenCalledTimes(1));
+    expect(checkAssistantSpy).toHaveBeenCalledTimes(1);
+    expect(checkAssistantSpy.mock.calls[0]![0]).toBe("asst-1");
     expect(attachSpy.mock.calls[0]![0]).toBe("asst-1");
+    expect(callOrder).toEqual(["check:asst-1", "attach:asst-1"]);
   });
 });

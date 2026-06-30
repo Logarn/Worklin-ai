@@ -23,6 +23,7 @@
  */
 import { useEffect } from "react";
 
+import { lifecycleService } from "@/assistant/lifecycle-service";
 import { sseService } from "@/assistant/sse-service";
 import { subscribeLifecycleDiagnostics } from "@/lib/lifecycle-diagnostics";
 import { setupQueryFocusManager } from "@/lib/query-focus-manager";
@@ -70,6 +71,18 @@ export function useEventBusInit({
 
   useEffect(() => {
     if (!assistantId || !isAssistantActive) return;
-    return sseService.attach(assistantId);
+    let detach: (() => void) | null = null;
+    let cancelled = false;
+
+    void (async () => {
+      await lifecycleService.checkAssistant(assistantId);
+      if (cancelled) return;
+      detach = sseService.attach(assistantId);
+    })();
+
+    return () => {
+      cancelled = true;
+      detach?.();
+    };
   }, [assistantId, isAssistantActive]);
 }
