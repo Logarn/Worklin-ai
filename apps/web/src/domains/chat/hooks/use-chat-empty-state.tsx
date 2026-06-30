@@ -13,7 +13,10 @@ import { ChatAvatar } from "@/components/avatar/chat-avatar";
 import type { ChatEmptyStateProps } from "@/domains/chat/components/chat-empty-state";
 import { ConversationStarterGrid } from "@/domains/chat/components/conversation-starter-grid";
 import { buildEditAppGreeting, buildEditAppStarters } from "@/domains/chat/utils/edit-app-empty-state";
-import { pickRandomPlaceholder } from "@/domains/chat/utils/empty-state-constants";
+import {
+  DEFAULT_EMPTY_STATE_GREETING,
+  pickRandomPlaceholder,
+} from "@/domains/chat/utils/empty-state-constants";
 import type { ConversationStarter } from "@/domains/chat/utils/conversation-starters";
 import type { useAssistantAvatar } from "@/hooks/use-assistant-avatar";
 
@@ -42,9 +45,6 @@ export interface ChatEmptyStateResult {
   renderAvatar: (() => ReactNode) | undefined;
   emptyStatePlaceholder: string;
 }
-
-const WORKLIN_EMPTY_STATE_GREETING =
-  "Let’s onboard your brand and find the first retention opportunities.";
 
 const WORKLIN_RETENTION_STARTERS: ConversationStarter[] = [
   {
@@ -123,7 +123,7 @@ export function useChatEmptyState({
       ) : null,
     greeting: editingApp
       ? buildEditAppGreeting(editingApp)
-      : WORKLIN_EMPTY_STATE_GREETING,
+      : DEFAULT_EMPTY_STATE_GREETING,
     isGenerating: false,
   };
 

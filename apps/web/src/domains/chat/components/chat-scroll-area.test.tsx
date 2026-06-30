@@ -78,7 +78,7 @@ describe("ChatScrollArea — empty-state layout (LUM-1566)", () => {
     );
     // Default Worklin retention greeting from ChatEmptyState
     expect(html).toContain(
-      "Let’s onboard your brand and find the first retention opportunities.",
+      "One Assistant To Rule Them All 💍",
     );
   });
 
@@ -89,7 +89,7 @@ describe("ChatScrollArea — empty-state layout (LUM-1566)", () => {
       />,
     );
     expect(html).not.toContain(
-      "Let’s onboard your brand and find the first retention opportunities.",
+      "One Assistant To Rule Them All 💍",
     );
   });
 });

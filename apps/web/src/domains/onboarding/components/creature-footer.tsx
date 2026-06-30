@@ -1,7 +1,7 @@
-import { publicAsset } from "@/utils/public-asset";
+import { WorklinAvatarRosterArt } from "@/components/avatar/worklin-avatar-roster-art";
 
 /**
- * Decorative SVG footer for onboarding screens.
+ * Decorative assistant footer for onboarding screens.
  *
  * Positioned `fixed` (not `absolute`) so it anchors to the layout viewport
  * bottom and bleeds past `RootLayout`'s `app-shell` bottom safe-area padding
@@ -13,21 +13,13 @@ import { publicAsset } from "@/utils/public-asset";
  * `fixed` resolves against the viewport. `viewport-fit=cover` (index.html)
  * makes the layout viewport span the full physical screen.
  *
- * Uses a plain `<img>` (Vite serves static assets — no Next.js Image needed).
+ * Uses the six Worklin assistant portraits so onboarding stays visually aligned
+ * with the rest of the avatar system.
  */
 export function CreatureFooter({ className = "" }: { className?: string }) {
   return (
-    <div
-      aria-hidden="true"
+    <WorklinAvatarRosterArt
       className={`pointer-events-none fixed bottom-0 left-0 right-0 flex justify-center overflow-hidden ${className}`}
-    >
-      <img
-        src={publicAsset("/login-background-characters.svg")}
-        alt=""
-        width={1200}
-        height={180}
-        className="w-full max-w-[900px] object-cover object-bottom"
-      />
-    </div>
+    />
   );
 }

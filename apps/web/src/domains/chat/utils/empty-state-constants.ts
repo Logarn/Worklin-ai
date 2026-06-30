@@ -7,7 +7,7 @@
  */
 
 export const DEFAULT_EMPTY_STATE_GREETING =
-  "Let’s onboard your brand and find the first retention opportunities.";
+  "One Assistant To Rule Them All 💍";
 
 export const EMPTY_STATE_PLACEHOLDERS: readonly string[] = [
   "Paste your brand website...",

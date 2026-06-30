@@ -39,6 +39,7 @@ export async function seedHatchAvatar(
   traits: CharacterTraits,
   queryClient: QueryClient,
   preferredAvatar?: AssistantCharacter | null,
+  preferredAssistantName?: string | null,
 ): Promise<void> {
   try {
     const [existingProfile, existingTraits] = await Promise.all([
@@ -51,11 +52,13 @@ export async function seedHatchAvatar(
         WORKLIN_AVATAR_CHOICES[
           Math.floor(Math.random() * WORKLIN_AVATAR_CHOICES.length)
         ];
+      const preferredName = preferredAssistantName?.trim();
       const savedProfile = defaultAvatar
-        ? await saveAssistantCharacterProfile(
-            assistantId,
-            profileFromCharacter(defaultAvatar),
-          )
+        ? await saveAssistantCharacterProfile(assistantId, {
+            ...profileFromCharacter(defaultAvatar),
+            assistantName:
+              preferredName || defaultAvatar.shortName,
+          })
         : false;
       if (!savedProfile) {
         await saveCharacterTraits(assistantId, traits);

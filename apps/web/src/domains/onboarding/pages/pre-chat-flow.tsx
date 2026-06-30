@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
+import { saveAssistantCharacterProfile } from "@/assistant/avatar-api";
 import { useIsIOSWeb } from "@/runtime/platform-detection";
 import { readIOSAppDownloaded } from "@/hooks/use-ios-app-nudge";
 import { fetchOnboardingRecipe } from "@/domains/onboarding/recipe-client.js";
@@ -22,6 +23,11 @@ import { TaskToneSelectionScreen } from "@/domains/onboarding/screens/task-tone-
 import { ToolSelectionScreen } from "@/domains/onboarding/screens/tool-selection-screen.js";
 import { VibeStepScreen } from "@/domains/onboarding/screens/vibe-step-screen.js";
 import { useAssistantQuery } from "@/assistant/queries";
+import {
+  WORKLIN_AVATAR_CHOICES,
+  profileFromCharacter,
+  type AssistantCharacter,
+} from "@/components/avatar/assistant-character-packs";
 import { usePrefilledInput } from "@/hooks/use-prefilled-input.js";
 import {
   setPendingAssistantName,
@@ -38,7 +44,6 @@ import {
 } from "@/domains/onboarding/prechat-steps";
 import {
   DEFAULT_GROUP_ID,
-  sampleSuggestionNames,
 } from "@/domains/onboarding/prechat-names";
 import { GOOGLE_TOOL_IDS } from "@/domains/onboarding/prechat-tools";
 import { usePreChatConsentGate } from "@/domains/onboarding/use-prechat-consent-gate";
@@ -57,6 +62,7 @@ import {
 } from "@/stores/auth-store.js";
 import { hasLivePlatformSession } from "@/stores/session-status";
 import { lifecycleService } from "@/assistant/lifecycle-service";
+import { avatarQueryKey } from "@/lib/sync/query-tags";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { routes } from "@/utils/routes.js";
 
@@ -72,6 +78,7 @@ function readLocalPlatformAssistantId(): string | null {
 
 export function PreChatFlow() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const isPreview = searchParams.get("preview") === "true";
   const user = useAuthStore.use.user();
@@ -123,10 +130,12 @@ export function PreChatFlow() {
     localMode && !hasPlatformSession ? "" : firstName || lastName,
   );
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [displayedAssistantNames] = useState<string[]>(() =>
-    sampleSuggestionNames(),
+  const [selectedAvatarId, setSelectedAvatarId] = useState<string>(
+    () => WORKLIN_AVATAR_CHOICES[0]?.id ?? "",
   );
-  const [assistantName, setAssistantName] = useState<string>("");
+  const [assistantName, setAssistantName] = useState<string>(
+    () => WORKLIN_AVATAR_CHOICES[0]?.shortName ?? "",
+  );
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleScopes, setGoogleScopes] = useState<string[]>([]);
 
@@ -148,6 +157,10 @@ export function PreChatFlow() {
   const recipe = fetchedRecipe ?? null;
   const googleAssistantId =
     activeAssistant?.id ?? activeAssistantId ?? localPlatformAssistantId;
+  const selectedAvatar =
+    WORKLIN_AVATAR_CHOICES.find((avatar) => avatar.id === selectedAvatarId) ??
+    WORKLIN_AVATAR_CHOICES[0] ??
+    null;
   const platformFunnelAvailable = isPlatformFunnelAvailable({
     localMode,
     platformSession,
@@ -156,7 +169,29 @@ export function PreChatFlow() {
   const canOfferGoogleStep = platformFunnelAvailable;
   const canOfferPriorAssistants = platformFunnelAvailable;
 
+  const handleAssistantAvatarChange = (avatar: AssistantCharacter): void => {
+    setSelectedAvatarId(avatar.id);
+    setAssistantName(avatar.shortName);
+  };
+
+  async function persistSelectedAvatarProfile(): Promise<void> {
+    if (!googleAssistantId || !selectedAvatar) return;
+    const nextProfile = {
+      ...profileFromCharacter(selectedAvatar),
+      assistantName: assistantName.trim() || selectedAvatar.shortName,
+    };
+    const saved = await saveAssistantCharacterProfile(
+      googleAssistantId,
+      nextProfile,
+    );
+    if (!saved) return;
+    void queryClient.invalidateQueries({
+      queryKey: avatarQueryKey(googleAssistantId),
+    });
+  }
+
   const navigateToChatAfterLifecycleRefresh = async () => {
+    await persistSelectedAvatarProfile();
     await lifecycleService.checkAssistant();
     void navigate(`${routes.assistant}?onboarding=1`, { replace: true });
   };
@@ -188,10 +223,10 @@ export function PreChatFlow() {
         showIOSAppStep,
       });
 
-  function completeFlow(args?: {
+  async function completeFlow(args?: {
     connectedScopes?: string[];
     selectedPriorAssistants?: Set<string>;
-  }): void {
+  }): Promise<void> {
     if (isPreview) {
       navigate(-1);
       return;
@@ -219,11 +254,12 @@ export function PreChatFlow() {
     if (trimmedAssistant) setPendingAssistantName(trimmedAssistant);
 
     if (isNative) {
+      await persistSelectedAvatarProfile();
       clearPersistedStep();
       void navigate(routes.onboarding.privacy);
     } else {
       lifecycleService.markExpectingFirstMessage();
-      void navigateToChatAfterLifecycleRefresh();
+      await navigateToChatAfterLifecycleRefresh();
     }
   }
 
@@ -239,7 +275,7 @@ export function PreChatFlow() {
     if (next) {
       setCurrentStep(next);
     } else {
-      completeFlow(finishArgs);
+      void completeFlow(finishArgs);
     }
   };
 
@@ -262,9 +298,10 @@ export function PreChatFlow() {
       <NameStepScreen
         userName={userName}
         assistantName={assistantName}
-        displayedAssistantNames={displayedAssistantNames}
+        selectedAvatarId={selectedAvatarId}
         onUserNameChange={handleUserNameChange}
         onAssistantNameChange={setAssistantName}
+        onAssistantAvatarChange={handleAssistantAvatarChange}
         onContinue={() => advance(activeStep)}
         onSkip={() => advance(activeStep)}
         currentStep={0}
@@ -292,10 +329,11 @@ export function PreChatFlow() {
       <NameExchangeScreen
         userName={userName}
         assistantName={assistantName}
+        selectedAvatarId={selectedAvatarId}
         selectedGroupId={selectedGroupId}
-        displayedAssistantNames={displayedAssistantNames}
         onUserNameChange={handleUserNameChange}
         onAssistantNameChange={setAssistantName}
+        onAssistantAvatarChange={handleAssistantAvatarChange}
         onGroupChange={setSelectedGroupId}
         onComplete={() => advance(activeStep)}
         onSkip={() => advance(activeStep)}
