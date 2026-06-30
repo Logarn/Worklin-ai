@@ -1,4 +1,5 @@
 import { readShareAnalytics } from "@/domains/onboarding/prefs";
+import { resolvePlatformActionUrl } from "@/lib/api-origins";
 import { getClientId } from "@/lib/telemetry/client-identity";
 
 export const ONBOARDING_FUNNEL_VERSION = "onboarding_v3_2026_05";
@@ -168,10 +169,13 @@ export function emitOnboardingFunnelStepCompleted(
     events: [event],
   });
 
-  void fetch("/v1/telemetry/ingest/", {
+  const telemetryUrl = resolvePlatformActionUrl("/v1/telemetry/ingest/");
+
+  void fetch(telemetryUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: payload,
+    credentials: "include",
     keepalive: true,
   }).catch(() => {});
 }

@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
+import { getAssistant, hatchAssistant } from "@/assistant/api";
 import { useIsIOSWeb } from "@/runtime/platform-detection";
+import { setSelectedAssistant } from "@/assistant/selection";
 import { readIOSAppDownloaded } from "@/hooks/use-ios-app-nudge";
 import { fetchOnboardingRecipe } from "@/domains/onboarding/recipe-client.js";
 import {
@@ -57,6 +59,7 @@ import {
 } from "@/stores/auth-store.js";
 import { hasLivePlatformSession } from "@/stores/session-status";
 import { lifecycleService } from "@/assistant/lifecycle-service";
+import { captureError } from "@/lib/sentry/capture-error";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { routes } from "@/utils/routes.js";
 
@@ -157,7 +160,31 @@ export function PreChatFlow() {
   const canOfferPriorAssistants = platformFunnelAvailable;
 
   const navigateToChatAfterLifecycleRefresh = async () => {
-    await lifecycleService.checkAssistant();
+    let handoffAssistantId =
+      activeAssistant?.id ?? activeAssistantId ?? localPlatformAssistantId;
+
+    // Hosted web onboarding must never hand the user off to `/assistant`
+    // without a resolvable assistant. If the hatch step was skipped,
+    // raced, or failed to persist selection, recover here by resolving the
+    // current assistant and, if none exists yet, ensuring one before the
+    // lifecycle refresh.
+    if (!isNative && !localMode && !handoffAssistantId) {
+      try {
+        let resolved = await getAssistant();
+        if (!resolved.ok && resolved.status === 404) {
+          resolved = await hatchAssistant();
+        }
+        if (resolved.ok) {
+          handoffAssistantId = resolved.data.id;
+          useResolvedAssistantsStore.getState().upsertFromApi(resolved.data);
+          await setSelectedAssistant(resolved.data.id);
+        }
+      } catch (err) {
+        captureError(err, { context: "prechat_ensure_assistant" });
+      }
+    }
+
+    await lifecycleService.checkAssistant(handoffAssistantId ?? undefined);
     void navigate(`${routes.assistant}?onboarding=1`, { replace: true });
   };
 

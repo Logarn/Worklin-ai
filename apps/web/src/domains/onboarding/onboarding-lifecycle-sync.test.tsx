@@ -37,12 +37,6 @@ const actualReactQuery = await import(
     import.meta.url,
   ).href,
 );
-const actualButtonModule = await import(
-  new URL(
-    "../../../../../packages/design-library/src/components/button.tsx?actual",
-    import.meta.url,
-  ).href,
-);
 const actualGeneratedApiQueryModule = await import(
   new URL(
     "../../generated/api/@tanstack/react-query.gen.ts?actual",
@@ -55,6 +49,7 @@ const navigateMock = mock(() => {});
 
 let checkAssistantImpl: () => Promise<void> = async () => {};
 const checkAssistantMock = mock(() => checkAssistantImpl());
+const setSelectedAssistantMock = mock(async (_id: string | null) => {});
 
 const hatchAssistantMock = mock(async () => ({
   ok: true,
@@ -190,7 +185,6 @@ mock.module("@/domains/onboarding/components/onboarding-layout", () => ({
 }));
 
 mock.module("@vellumai/design-library/components/button", () => ({
-  ...actualButtonModule,
   Button: ({
     children,
     onClick,
@@ -276,7 +270,7 @@ mock.module("@/runtime/local-mode-host", () => ({
 }));
 
 mock.module("@/assistant/selection", () => ({
-  setSelectedAssistant: async () => {},
+  setSelectedAssistant: setSelectedAssistantMock,
 }));
 
 mock.module("@/stores/resolved-assistants-store", () => ({
@@ -486,6 +480,7 @@ beforeEach(() => {
 
   navigateMock.mockClear();
   checkAssistantMock.mockClear();
+  setSelectedAssistantMock.mockClear();
   hatchAssistantMock.mockClear();
   getAssistantMock.mockClear();
   getAssistantHealthzMock.mockClear();
@@ -637,6 +632,35 @@ describe("onboarding lifecycle sync", () => {
       googleConnected: false,
       initialMessage: DEFAULT_PRECHAT_INITIAL_MESSAGE,
     });
+  });
+
+  test("pre-chat ensures and selects a platform assistant before entering chat", async () => {
+    activeAssistantQueryResult = undefined;
+    getAssistantImpl = async () => ({
+      ok: false,
+      status: 404,
+      error: { detail: "No platform assistant found" },
+    });
+
+    render(<PreChatFlow />);
+
+    fireEvent.click(await screen.findByTestId("name-continue"));
+    fireEvent.click(await screen.findByText("Skip for now"));
+
+    await waitFor(() => expect(getAssistantMock).toHaveBeenCalled());
+    await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(setSelectedAssistantMock).toHaveBeenCalledWith("asst-1"),
+    );
+    await waitFor(() =>
+      expect(checkAssistantMock).toHaveBeenCalledWith("asst-1"),
+    );
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.assistant}?onboarding=1`,
+        { replace: true },
+      ),
+    );
   });
 
   test("activation flow flag selects the activation bootstrap after pre-chat", async () => {

@@ -27,6 +27,27 @@ function canonicalHostedWebOrigin(origin: string): string | null {
   return null;
 }
 
+function resolvePublicAuthBaseUrl(
+  webOrigin: string,
+  fallbackApiOrigin: string,
+): string {
+  const canonicalHosted = canonicalHostedWebOrigin(webOrigin);
+  if (canonicalHosted) return canonicalHosted;
+  try {
+    const parsed = new URL(webOrigin);
+    if (
+      parsed.protocol === "https:" &&
+      parsed.hostname !== "localhost" &&
+      parsed.hostname !== "127.0.0.1"
+    ) {
+      return trimTrailingSlash(parsed.toString());
+    }
+  } catch {
+    // Fall back to the API origin below.
+  }
+  return fallbackApiOrigin;
+}
+
 const configuredWebOrigin = trimTrailingSlash(
   process.env.WORKLIN_WEB_ORIGIN ?? CANONICAL_VERCEL_WEB_ORIGIN,
 );
@@ -35,6 +56,10 @@ const configuredAuth0BaseUrl = trimTrailingSlash(
     process.env.BASE_URL ??
     process.env.WORKLIN_API_ORIGIN ??
     "https://api.worklin.ai",
+);
+const hostedWebBaseUrl = resolvePublicAuthBaseUrl(
+  configuredWebOrigin,
+  configuredAuth0BaseUrl,
 );
 
 const env = {
@@ -49,14 +74,11 @@ const env = {
   auth0IssuerBaseUrl: trimTrailingSlash(
     process.env.AUTH0_ISSUER_BASE_URL ?? process.env.ISSUER_BASE_URL ?? "",
   ),
-  // Keep Auth0's callback and session cookie anchored to the API origin.
-  // Hosted web serves the SPA on Vercel, but the web app currently talks to
-  // the control plane directly via `VITE_*_API_BASE_URL`. If Auth0 finishes on
-  // the Vercel origin, the backend session cookie lands on Vercel while the
-  // authenticated `/v1/*` calls go to Railway, producing live 401s during
-  // hatching and assistant bootstrap. Using the API origin here lets Auth0 set
-  // the cookie on Railway and then redirect back to the SPA's `returnTo` URL.
-  auth0BaseUrl: configuredAuth0BaseUrl,
+  // Hosted production uses the Vercel domain as the single public origin and
+  // proxies `/callback`, `/_allauth/*`, and `/v1/*` back to Railway. Keep the
+  // Auth0 callback on that hosted web origin so the session cookie lands on
+  // the public app domain rather than becoming a third-party backend cookie.
+  auth0BaseUrl: hostedWebBaseUrl,
   auth0ClientId: process.env.AUTH0_CLIENT_ID ?? process.env.CLIENT_ID ?? "",
   auth0ClientSecret: process.env.AUTH0_CLIENT_SECRET ?? process.env.CLIENT_SECRET ?? "",
   auth0Secret: process.env.AUTH0_SECRET ?? process.env.SECRET ?? process.env.WORKLIN_SESSION_SECRET ?? "",
