@@ -73,9 +73,13 @@ function formatChatgptAuthError(message: string): string {
   }
   if (
     lower.includes("store access token") ||
-    lower.includes("store refresh token")
+    lower.includes("store refresh token") ||
+    lower.includes("store chatgpt credentials")
   ) {
     return "Worklin signed in to ChatGPT, but could not save the connection. Try again, or choose an API-key provider from the previous screen for now.";
+  }
+  if (lower.includes("did not return an access token")) {
+    return "ChatGPT finished sign-in but did not send Worklin the subscription access it needs. Start a new ChatGPT sign-in and try again.";
   }
   return "We could not complete ChatGPT sign-in. Start a new sign-in and try again.";
 }

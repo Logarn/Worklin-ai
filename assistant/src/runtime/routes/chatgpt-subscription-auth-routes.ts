@@ -35,7 +35,10 @@ import {
   pollForToken,
   requestDeviceCode,
 } from "../../security/oauth2-device-code.js";
-import { setSecureKeyAsync } from "../../security/secure-keys.js";
+import {
+  bulkSetSecureKeysAsync,
+  getActiveBackendName,
+} from "../../security/secure-keys.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError } from "./errors.js";
@@ -136,30 +139,47 @@ function safeDeviceErrorMessage(error: unknown): string {
 }
 
 async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
-  // Store tokens in CES
-  const accessStored = await setSecureKeyAsync(
-    "credential/chatgpt/access_token",
-    tokens.accessToken,
-  );
-  if (!accessStored) {
-    log.error("Failed to store ChatGPT access token in CES");
-    throw new Error("Failed to store access token");
+  if (!tokens.accessToken || typeof tokens.accessToken !== "string") {
+    log.error("ChatGPT token exchange completed without an access token");
+    throw new Error("ChatGPT did not return an access token");
   }
 
+  const credentials: Array<{ account: string; value: string }> = [
+    {
+      account: "credential/chatgpt/access_token",
+      value: tokens.accessToken,
+    },
+  ];
+
   if (tokens.refreshToken) {
-    const refreshStored = await setSecureKeyAsync(
-      "credential/chatgpt/refresh_token",
-      tokens.refreshToken,
-    );
-    if (!refreshStored) {
-      log.error("Failed to store ChatGPT refresh token in CES");
-      throw new Error("Failed to store refresh token");
-    }
+    credentials.push({
+      account: "credential/chatgpt/refresh_token",
+      value: tokens.refreshToken,
+    });
   }
 
   if (tokens.expiresIn) {
     const expiresAt = Math.floor(Date.now() / 1000 + tokens.expiresIn);
-    await setSecureKeyAsync("credential/chatgpt/expires_at", String(expiresAt));
+    credentials.push({
+      account: "credential/chatgpt/expires_at",
+      value: String(expiresAt),
+    });
+  }
+
+  const results = await bulkSetSecureKeysAsync(credentials);
+  const failed = results.filter((result) => !result.ok);
+  if (failed.length > 0) {
+    const failedAccounts = failed.map((result) => result.account);
+    log.error(
+      {
+        failedAccounts,
+        backend: getActiveBackendName(),
+      },
+      "Failed to store ChatGPT credentials in CES",
+    );
+    throw new Error(
+      `Failed to store ChatGPT credentials (failed: ${failedAccounts.join(", ")}; backend: ${getActiveBackendName()})`,
+    );
   }
 
   // Upsert provider connection

@@ -4,6 +4,7 @@ let exchangedCodeVerifier: string | null = null;
 let requestedDeviceCode = false;
 let polledDeviceCode: string | null = null;
 let secureWrites: Record<string, string> = {};
+let failingSecureAccounts = new Set<string>();
 
 mock.module("../../../security/oauth2.js", () => ({
   exchangeCodeForTokens: async (
@@ -76,10 +77,17 @@ mock.module("../../../security/oauth2-device-code.js", () => {
 });
 
 mock.module("../../../security/secure-keys.js", () => ({
-  setSecureKeyAsync: async (key: string, value: string) => {
-    secureWrites[key] = value;
-    return true;
-  },
+  bulkSetSecureKeysAsync: async (
+    credentials: Array<{ account: string; value: string }>,
+  ) =>
+    credentials.map(({ account, value }) => {
+      if (failingSecureAccounts.has(account)) {
+        return { account, ok: false };
+      }
+      secureWrites[account] = value;
+      return { account, ok: true };
+    }),
+  getActiveBackendName: () => "test-backend",
 }));
 
 mock.module("../../../util/logger.js", () => ({
@@ -109,6 +117,7 @@ beforeEach(() => {
   requestedDeviceCode = false;
   polledDeviceCode = null;
   secureWrites = {};
+  failingSecureAccounts = new Set<string>();
 });
 
 describe("ChatGPT subscription auth routes", () => {
@@ -182,6 +191,22 @@ describe("ChatGPT subscription auth routes", () => {
       type: "oauth_subscription",
       credential: "credential/chatgpt/access_token",
     });
+  });
+
+  test("manual exchange reports backend detail when credential storage fails", async () => {
+    failingSecureAccounts = new Set(["credential/chatgpt/access_token"]);
+
+    await expect(
+      findHandler("inference_chatgpt_subscription_auth_exchange")({
+        body: {
+          code: "oauth-code",
+          state: "state-from-another-instance",
+          code_verifier: "b".repeat(43),
+        },
+      }),
+    ).rejects.toThrow(
+      "Failed to store ChatGPT credentials (failed: credential/chatgpt/access_token; backend: test-backend)",
+    );
   });
 
   test("manual exchange rejects lost state when the browser verifier is missing", async () => {
