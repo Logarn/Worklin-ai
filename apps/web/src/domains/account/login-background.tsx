@@ -11,7 +11,7 @@ import { publicAsset } from "@/utils/public-asset";
 export function LoginBackground() {
   return (
     <>
-      <div className="pointer-events-none absolute top-[120px] left-1/2 z-0 -translate-x-1/2">
+      <div className="pointer-events-none absolute top-14 left-1/2 z-0 -translate-x-1/2 sm:top-[4.5rem]">
         <img
           src={publicAsset("/brand/worklin-logo-header.png")}
           alt="Worklin AI"
@@ -20,7 +20,8 @@ export function LoginBackground() {
         />
       </div>
       <WorklinAvatarRosterArt
-        className="pointer-events-none absolute right-0 bottom-0 left-1/2 z-0 w-full max-w-[1100px] -translate-x-1/2"
+        variant="authHero"
+        className="pointer-events-none absolute top-[7.5rem] left-1/2 z-0 w-full max-w-[980px] -translate-x-1/2 sm:top-[9rem]"
       />
     </>
   );
