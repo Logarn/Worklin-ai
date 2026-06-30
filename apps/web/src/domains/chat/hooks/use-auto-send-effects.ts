@@ -31,6 +31,8 @@ export interface UseAutoSendEffectsOptions {
   reachabilityProbe: (options?: ReachabilityProbeOptions) => void;
   /** Reads the staged pre-chat initial message from sessionStorage. */
   getPendingInitialMessage: () => string | undefined;
+  /** Captures the staged initial message before sendMessage consumes storage. */
+  onInitialMessageCaptured?: (message: string) => void;
 }
 
 export function useAutoSendEffects({
@@ -41,11 +43,22 @@ export function useAutoSendEffects({
   reachabilityPhase,
   reachabilityProbe,
   getPendingInitialMessage,
+  onInitialMessageCaptured,
 }: UseAutoSendEffectsOptions): void {
   const getPendingInitialMessageRef = useRef(getPendingInitialMessage);
   useLayoutEffect(() => {
     getPendingInitialMessageRef.current = getPendingInitialMessage;
   });
+  const onInitialMessageCapturedRef = useRef(onInitialMessageCaptured);
+  useLayoutEffect(() => {
+    onInitialMessageCapturedRef.current = onInitialMessageCaptured;
+  });
+  const capturedInitialMessageRef = useRef<string | null>(null);
+  const captureInitialMessage = (message: string) => {
+    if (capturedInitialMessageRef.current === message) return;
+    capturedInitialMessageRef.current = message;
+    onInitialMessageCapturedRef.current?.(message);
+  };
   // 1. URL ?prompt= auto-send.
   // Keyed by conversationId + prompt so the same text sent to different
   // draft conversations (e.g. repeated quick-input submissions) isn't deduped.
@@ -62,7 +75,9 @@ export function useAutoSendEffects({
   // 2. Pre-chat reachability probe — eagerly start the probe cycle.
   useEffect(() => {
     if (!assistantId) return;
-    if (!getPendingInitialMessageRef.current()) return;
+    const message = getPendingInitialMessageRef.current();
+    if (!message) return;
+    captureInitialMessage(message);
     if (reachabilityPhase === "idle") {
       reachabilityProbe({ mode: "background" });
     }
@@ -75,6 +90,7 @@ export function useAutoSendEffects({
     if (reachabilityPhase !== "ready") return;
     const message = getPendingInitialMessageRef.current();
     if (!message) return;
+    captureInitialMessage(message);
     initialMessageConsumedRef.current = true;
     void sendMessage(message);
   }, [activeConversationId, assistantId, reachabilityPhase, sendMessage]);

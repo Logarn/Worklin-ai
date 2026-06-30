@@ -283,6 +283,15 @@ export function ActiveChatView() {
     refreshConversations,
   });
 
+  // Stash the initial message before the first send consumes it from
+  // sessionStorage, so the retry callback can re-send it.
+  const initialMessageRef = useRef(
+    peekPendingPreChatContext()?.initialMessage ?? null,
+  );
+  const captureInitialMessage = useCallback((message: string) => {
+    initialMessageRef.current ??= message;
+  }, []);
+
   // Auto-send: URL ?prompt=, pre-chat reachability probe, onboarding message.
   useAutoSendEffects({
     assistantId,
@@ -292,6 +301,7 @@ export function ActiveChatView() {
     reachabilityPhase: reachability.state.phase,
     reachabilityProbe: reachability.probe,
     getPendingInitialMessage: () => peekPendingPreChatContext()?.initialMessage ?? undefined,
+    onInitialMessageCaptured: captureInitialMessage,
   });
 
   useEffect(() => {
@@ -310,11 +320,6 @@ export function ActiveChatView() {
     chatError != null,
   );
 
-  // Stash the initial message before the first send consumes it from
-  // sessionStorage, so the retry callback can re-send it.
-  const initialMessageRef = useRef(
-    peekPendingPreChatContext()?.initialMessage ?? null,
-  );
   const handleAutoGreetRetry = useCallback(() => {
     const message = initialMessageRef.current;
     if (!message) {
