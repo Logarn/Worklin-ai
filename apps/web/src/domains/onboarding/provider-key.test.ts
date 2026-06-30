@@ -63,4 +63,34 @@ describe("pending provider key", () => {
       "oauth_subscription",
     );
   });
+
+  test("OpenAI-compatible presets keep provider-specific routing metadata", () => {
+    setPendingProviderKey({
+      provider: "openai-compatible",
+      providerOptionId: "xai",
+      authType: "api_key",
+      key: "xai-test",
+      connectionName: "xai-personal",
+      credentialName: "xai",
+      connectionLabel: "xAI",
+      baseUrl: "https://api.x.ai/v1",
+      models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+      defaultModel: "grok-4.3",
+    });
+
+    const pending = peekPendingProviderKey();
+    expect(pending).toEqual({
+      provider: "openai-compatible",
+      providerOptionId: "xai",
+      authType: "api_key",
+      key: "xai-test",
+      connectionName: "xai-personal",
+      credentialName: "xai",
+      connectionLabel: "xAI",
+      baseUrl: "https://api.x.ai/v1",
+      models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+      defaultModel: "grok-4.3",
+    });
+    expect(pending ? pendingProviderAuthType(pending) : null).toBe("api_key");
+  });
 });

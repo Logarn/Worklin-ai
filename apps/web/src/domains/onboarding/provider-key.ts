@@ -9,6 +9,7 @@ import { getDefaultModelForProvider } from "@/assistant/llm-model-catalog";
 import type {
   OnboardingProviderAuthType,
   OnboardingProviderId,
+  OnboardingProviderOptionId,
 } from "@/domains/onboarding/provider-catalog";
 
 // Model-provider API key collected during onboarding. Held in sessionStorage
@@ -23,9 +24,16 @@ export const CHATGPT_SUBSCRIPTION_MODEL = "gpt-5.4-mini";
 
 export interface PendingProviderKey {
   provider: OnboardingProviderId;
+  providerOptionId?: OnboardingProviderOptionId;
   authType?: OnboardingProviderAuthType;
   /** Empty for keyless providers (e.g. Ollama). */
   key: string;
+  connectionName?: string;
+  credentialName?: string;
+  connectionLabel?: string;
+  baseUrl?: string | null;
+  models?: { id: string; displayName?: string }[] | null;
+  defaultModel?: string;
 }
 
 export function setPendingProviderKey(value: PendingProviderKey | null): void {
@@ -93,12 +101,12 @@ export function pendingProviderRequiresOAuth(
 
 async function writeApiKeySecret(
   assistantId: string,
-  provider: OnboardingProviderId,
+  credentialName: string,
   value: string,
 ): Promise<void> {
   const { response } = await secretsPost({
     path: { assistant_id: assistantId },
-    body: { type: "api_key", name: provider, value },
+    body: { type: "api_key", name: credentialName, value },
     throwOnError: false,
   });
   if (!response?.ok) {
@@ -115,25 +123,40 @@ function connectionNameFor(provider: OnboardingProviderId): string {
 function modelForProvider(
   provider: OnboardingProviderId,
   authType: OnboardingProviderAuthType,
+  defaultModel?: string,
 ): string {
+  if (defaultModel) return defaultModel;
   if (authType === "oauth_subscription") return CHATGPT_SUBSCRIPTION_MODEL;
   return getDefaultModelForProvider(provider) ?? "";
 }
 
+function credentialNameFor(
+  provider: OnboardingProviderId,
+  credentialName?: string,
+): string {
+  return credentialName?.trim() || provider;
+}
+
 async function createOrUpdateProviderConnection(
   assistantId: string,
-  provider: OnboardingProviderId,
-  authType: OnboardingProviderAuthType,
+  pending: PendingProviderKey,
 ): Promise<string> {
+  const { provider } = pending;
+  const authType = pendingProviderAuthType(pending);
+  const credentialName = credentialNameFor(provider, pending.credentialName);
   const connectionName =
     authType === "oauth_subscription"
       ? CHATGPT_SUBSCRIPTION_CONNECTION_NAME
-      : connectionNameFor(provider);
+      : pending.connectionName?.trim() || connectionNameFor(provider);
+  const label =
+    authType === "oauth_subscription"
+      ? "ChatGPT Subscription"
+      : pending.connectionLabel?.trim() || null;
   const auth =
     authType === "api_key"
       ? {
           type: "api_key" as const,
-          credential: `credential/${provider}/api_key`,
+          credential: `credential/${credentialName}/api_key`,
         }
       : authType === "oauth_subscription"
         ? {
@@ -147,9 +170,11 @@ async function createOrUpdateProviderConnection(
       name: connectionName,
       provider,
       auth,
-      ...(authType === "oauth_subscription"
-        ? { label: "ChatGPT Subscription" }
-        : {}),
+      ...(label !== null ? { label } : {}),
+      ...(provider === "openai-compatible" && {
+        base_url: pending.baseUrl ?? null,
+        models: pending.models ?? null,
+      }),
     },
     throwOnError: false,
   });
@@ -159,10 +184,11 @@ async function createOrUpdateProviderConnection(
         path: { assistant_id: assistantId, name: connectionName },
         body: {
           auth,
-          label:
-            authType === "oauth_subscription"
-              ? "ChatGPT Subscription"
-              : null,
+          label,
+          ...(provider === "openai-compatible" && {
+            base_url: pending.baseUrl ?? null,
+            models: pending.models ?? null,
+          }),
         },
         throwOnError: false,
       });
@@ -187,13 +213,15 @@ export async function configureOnboardingProviderProfile(
     provider,
     authType,
     connectionName,
+    defaultModel,
   }: {
     provider: OnboardingProviderId;
     authType: OnboardingProviderAuthType;
     connectionName: string;
+    defaultModel?: string;
   },
 ): Promise<void> {
-  const model = modelForProvider(provider, authType);
+  const model = modelForProvider(provider, authType, defaultModel);
   const profile = {
     source: "user" as const,
     label: "Balanced",
@@ -243,18 +271,19 @@ export async function applyPendingProviderKey(
     throw new Error("ChatGPT subscription sign-in must complete before apply.");
   }
   const trimmed = pending.key.trim();
-  if (authType === "api_key") {
-    await writeApiKeySecret(assistantId, pending.provider, trimmed);
-  }
-  const connectionName = await createOrUpdateProviderConnection(
-    assistantId,
+  const credentialName = credentialNameFor(
     pending.provider,
-    authType,
+    pending.credentialName,
   );
+  if (authType === "api_key") {
+    await writeApiKeySecret(assistantId, credentialName, trimmed);
+  }
+  const connectionName = await createOrUpdateProviderConnection(assistantId, pending);
   await configureOnboardingProviderProfile(assistantId, {
     provider: pending.provider,
     authType,
     connectionName,
+    defaultModel: pending.defaultModel,
   });
 }
 

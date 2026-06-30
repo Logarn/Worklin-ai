@@ -32,6 +32,9 @@ export function ApiKeyScreen() {
       if (pending && pendingProviderAuthType(pending) === "oauth_subscription") {
         return "chatgpt-subscription";
       }
+      if (pending?.providerOptionId && onboardingProvider(pending.providerOptionId)) {
+        return pending.providerOptionId;
+      }
       return (
         ONBOARDING_PROVIDERS.find((p) => p.provider === pending?.provider)?.id ??
         DEFAULT_ONBOARDING_PROVIDER.id
@@ -50,8 +53,15 @@ export function ApiKeyScreen() {
     if (!canContinue) return;
     setPendingProviderKey({
       provider: entry.provider,
+      providerOptionId: entry.id,
       authType: entry.authType,
       key: requiresKey ? apiKey.trim() : "",
+      connectionName: entry.connectionName,
+      credentialName: entry.credentialName,
+      connectionLabel: entry.connectionLabel,
+      baseUrl: entry.baseUrl ?? null,
+      models: entry.models ? [...entry.models] : null,
+      defaultModel: entry.defaultModel,
     });
     if (next === "hatching") {
       const params = new URLSearchParams();

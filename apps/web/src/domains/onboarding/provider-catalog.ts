@@ -16,7 +16,9 @@ export type OnboardingProviderId =
 
 export type OnboardingProviderOptionId =
   | OnboardingProviderId
-  | "chatgpt-subscription";
+  | "chatgpt-subscription"
+  | "kimi"
+  | "xai";
 
 export type OnboardingProviderAuthType =
   | "api_key"
@@ -36,6 +38,18 @@ export interface OnboardingProvider {
   readonly docsUrl: string | null;
   /** Whether an API key is required before the user can continue. */
   readonly requiresKey: boolean;
+  /** Stable connection name to create during hatch. Defaults to provider-personal. */
+  readonly connectionName?: string;
+  /** Credential namespace for API-key storage. Defaults to provider. */
+  readonly credentialName?: string;
+  /** Optional label for the created connection. */
+  readonly connectionLabel?: string;
+  /** OpenAI-compatible base URL preset. */
+  readonly baseUrl?: string;
+  /** OpenAI-compatible model identifiers exposed by this endpoint. */
+  readonly models?: readonly { id: string; displayName?: string }[];
+  /** Default model for the onboarding profile. */
+  readonly defaultModel?: string;
 }
 
 export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
@@ -69,6 +83,41 @@ export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
     apiKeyPlaceholder: "sk-proj-...",
     docsUrl: "https://platform.openai.com/api-keys",
     requiresKey: true,
+  },
+  {
+    id: "xai",
+    provider: "openai-compatible",
+    authType: "api_key",
+    displayName: "xAI",
+    subtitle: "Use Grok with an xAI API key.",
+    apiKeyPlaceholder: "xai-...",
+    docsUrl: "https://console.x.ai/",
+    requiresKey: true,
+    connectionName: "xai-personal",
+    credentialName: "xai",
+    connectionLabel: "xAI",
+    baseUrl: "https://api.x.ai/v1",
+    models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+    defaultModel: "grok-4.3",
+  },
+  {
+    id: "kimi",
+    provider: "openai-compatible",
+    authType: "api_key",
+    displayName: "Kimi",
+    subtitle: "Use Kimi models with a Moonshot API key.",
+    apiKeyPlaceholder: "sk-...",
+    docsUrl: "https://platform.moonshot.ai/console/api-keys",
+    requiresKey: true,
+    connectionName: "kimi-personal",
+    credentialName: "kimi",
+    connectionLabel: "Kimi",
+    baseUrl: "https://api.moonshot.ai/v1",
+    models: [
+      { id: "kimi-k2.6", displayName: "Kimi K2.6" },
+      { id: "kimi-k2.7-code", displayName: "Kimi K2.7 Code" },
+    ],
+    defaultModel: "kimi-k2.6",
   },
   {
     id: "gemini",
