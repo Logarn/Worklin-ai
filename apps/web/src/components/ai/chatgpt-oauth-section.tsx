@@ -11,6 +11,7 @@ import {
     inferenceChatgptsubscriptionAuthStatusGet,
     inferenceProviderconnectionsGet,
 } from "@/generated/daemon/sdk.gen";
+import { extractErrorMessage } from "@/utils/api-errors";
 
 import type { ProviderConnection } from "@/generated/daemon/types.gen";
 
@@ -39,6 +40,40 @@ interface ChatgptOAuthSectionProps {
   onConnected: (connection: ProviderConnection) => void;
 }
 
+interface ChatgptStartAuthResponse {
+  authorize_url: string;
+  state: string;
+  callback_listening: boolean;
+  code_verifier?: string;
+}
+
+interface ChatgptExchangeBody {
+  code: string;
+  state: string;
+  code_verifier?: string;
+}
+
+function formatChatgptAuthError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes("expired") || lower.includes("invalid or expired state")) {
+    return "This ChatGPT sign-in link expired before Worklin could finish it. Create a new ChatGPT sign-in link and try again.";
+  }
+  if (lower.includes("missing required security")) {
+    return "This ChatGPT sign-in link is missing required security details. Create a new ChatGPT sign-in link and try again.";
+  }
+  if (
+    lower.includes("token exchange") ||
+    lower.includes("invalid_grant") ||
+    lower.includes("authorization code")
+  ) {
+    return "ChatGPT did not accept that sign-in response. Create a fresh ChatGPT sign-in link and try again.";
+  }
+  if (lower.includes("store access token") || lower.includes("store refresh token")) {
+    return "Worklin signed in to ChatGPT, but could not save the connection. Try again, or choose an API-key provider from the previous screen for now.";
+  }
+  return "We could not complete ChatGPT sign-in. Create a new sign-in link and try again.";
+}
+
 export function ChatgptOAuthSection({
   assistantId,
   onConnected,
@@ -48,6 +83,7 @@ export function ChatgptOAuthSection({
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [authState, setAuthState] = useState<string | null>(null);
+  const [authCodeVerifier, setAuthCodeVerifier] = useState<string | null>(null);
   const [callbackListening, setCallbackListening] = useState(false);
   const [copiedSignInLink, setCopiedSignInLink] = useState(false);
 
@@ -150,22 +186,33 @@ export function ChatgptOAuthSection({
     setOauthError(null);
     setAuthorizeUrl(null);
     setAuthState(null);
+    setAuthCodeVerifier(null);
     setCallbackListening(false);
     setCopiedSignInLink(false);
     try {
-      const {
-        data: { authorize_url, state, callback_listening },
-      } = await inferenceChatgptsubscriptionAuthPost({
+      const { data } = await inferenceChatgptsubscriptionAuthPost({
         path: { assistant_id: assistantId },
         throwOnError: true,
       });
+      const {
+        authorize_url,
+        state,
+        callback_listening,
+        code_verifier,
+      } = data as ChatgptStartAuthResponse;
       setAuthorizeUrl(authorize_url);
       setAuthState(state);
+      setAuthCodeVerifier(code_verifier ?? null);
       setCallbackListening(callback_listening);
       setOauthState("paste_url");
-    } catch {
+    } catch (error) {
       setOauthState("failed");
-      setOauthError("Failed to start ChatGPT sign-in. Please try again.");
+      const detail = extractErrorMessage(
+        error,
+        undefined,
+        "Failed to start ChatGPT sign-in.",
+      );
+      setOauthError(formatChatgptAuthError(detail));
     }
   }
 
@@ -212,18 +259,33 @@ export function ChatgptOAuthSection({
       );
       return;
     }
+    if (authState && state !== authState) {
+      setOauthError(
+        "This URL belongs to a different ChatGPT sign-in attempt. Create a fresh ChatGPT sign-in link and paste the new URL.",
+      );
+      return;
+    }
     setOauthState("exchanging");
     try {
+      const body: ChatgptExchangeBody = { code, state };
+      if (authCodeVerifier) {
+        body.code_verifier = authCodeVerifier;
+      }
       await inferenceChatgptsubscriptionAuthExchangePost({
         path: { assistant_id: assistantId },
-        body: { code, state },
+        body,
         throwOnError: true,
       });
       setOauthState("completed");
       await notifyConnectedConnection();
-    } catch {
+    } catch (error) {
       setOauthState("failed");
-      setOauthError("Failed to complete sign-in. Please try again.");
+      const detail = extractErrorMessage(
+        error,
+        undefined,
+        "Failed to complete ChatGPT sign-in.",
+      );
+      setOauthError(formatChatgptAuthError(detail));
     }
   }
 
@@ -233,6 +295,7 @@ export function ChatgptOAuthSection({
     setOauthError(null);
     setAuthorizeUrl(null);
     setAuthState(null);
+    setAuthCodeVerifier(null);
     setCallbackListening(false);
     setCopiedSignInLink(false);
   }

@@ -2,7 +2,8 @@
  * Route definitions for ChatGPT subscription OAuth authentication.
  *
  * POST /v1/inference/chatgpt-subscription/auth — generate a PKCE authorize
- *   URL for the user to visit. Returns `{ authorize_url, state }`.
+ *   URL for the user to visit. Returns `{ authorize_url, state,
+ *   code_verifier }`.
  *
  * POST /v1/inference/chatgpt-subscription/auth/exchange — accept the
  *   authorization code + state from the redirect, exchange for tokens,
@@ -159,15 +160,46 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
   }
 }
 
+function isValidCodeVerifier(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9._~-]{43,128}$/.test(value)
+  );
+}
+
+async function exchangeAndPersistTokens(
+  code: string,
+  codeVerifier: string,
+): Promise<{ ok: true }> {
+  const { tokens } = await exchangeCodeForTokens(
+    OPENAI_OAUTH_CONFIG,
+    code,
+    REDIRECT_URI,
+    codeVerifier,
+  );
+
+  await persistChatgptTokens(tokens);
+  return { ok: true };
+}
+
 async function completePendingAuth(
   state: string,
   code: string,
+  clientCodeVerifier?: string,
 ): Promise<{ ok: true }> {
   const pending = pendingAuths.get(state);
   if (!pending) {
-    throw new Error(
-      "Invalid or expired state parameter. Please restart the auth flow.",
+    if (!isValidCodeVerifier(clientCodeVerifier)) {
+      throw new BadRequestError(
+        "This ChatGPT sign-in link expired before Worklin could finish it. Create a new ChatGPT sign-in link and try again.",
+      );
+    }
+
+    const result = await exchangeAndPersistTokens(code, clientCodeVerifier);
+    log.info(
+      "ChatGPT subscription auth flow completed with browser-held verifier",
     );
+    return result;
   }
 
   if (pending.status === "completed") {
@@ -179,13 +211,21 @@ async function completePendingAuth(
   if (pending.status === "failed") {
     throw new Error(pending.error ?? "Auth flow failed. Please try again.");
   }
+  if (!isValidCodeVerifier(pending.codeVerifier)) {
+    closePendingServer(pending);
+    pending.status = "failed";
+    pending.error =
+      "This ChatGPT sign-in link is missing required security details. Create a new ChatGPT sign-in link and try again.";
+    throw new BadRequestError(pending.error);
+  }
 
   // Check TTL
   if (Date.now() - pending.createdAt > PENDING_AUTH_TTL_MS) {
     closePendingServer(pending);
     pending.status = "failed";
-    pending.error = "Auth flow expired. Please restart the auth flow.";
-    throw new Error(pending.error);
+    pending.error =
+      "This ChatGPT sign-in link expired before Worklin could finish it. Create a new ChatGPT sign-in link and try again.";
+    throw new BadRequestError(pending.error);
   }
 
   pending.status = "exchanging";
@@ -193,14 +233,7 @@ async function completePendingAuth(
   closePendingServer(pending);
 
   try {
-    const { tokens } = await exchangeCodeForTokens(
-      OPENAI_OAUTH_CONFIG,
-      code,
-      REDIRECT_URI,
-      pending.codeVerifier,
-    );
-
-    await persistChatgptTokens(tokens);
+    await exchangeAndPersistTokens(code, pending.codeVerifier);
     pending.status = "completed";
     log.info("ChatGPT subscription auth flow completed successfully");
     return { ok: true };
@@ -331,13 +364,21 @@ async function handleStartAuth(_args: RouteHandlerArgs) {
   return {
     authorize_url: authorizeUrl,
     state,
+    // The hosted web app keeps this verifier in memory and sends it back only
+    // for the manual paste path. That avoids production instance affinity for
+    // PKCE state while preserving the existing loopback path for local users.
+    code_verifier: codeVerifier,
     callback_listening: callbackListening,
   };
 }
 
 async function handleExchange(args: RouteHandlerArgs) {
-  const { code, state } = args.body as { code: string; state: string };
-  return await completePendingAuth(state, code);
+  const { code, state, code_verifier } = args.body as {
+    code: string;
+    state: string;
+    code_verifier?: string;
+  };
+  return await completePendingAuth(state, code, code_verifier);
 }
 
 function handleStatus(args: RouteHandlerArgs) {
@@ -381,6 +422,7 @@ export const ROUTES: RouteDefinition[] = [
     responseBody: z.object({
       authorize_url: z.string(),
       state: z.string(),
+      code_verifier: z.string(),
       callback_listening: z.boolean(),
     }),
     handler: handleStartAuth,
@@ -433,6 +475,7 @@ export const ROUTES: RouteDefinition[] = [
     requestBody: z.object({
       code: z.string(),
       state: z.string(),
+      code_verifier: z.string().optional(),
     }),
     responseBody: z.object({
       ok: z.boolean(),
