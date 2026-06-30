@@ -41,7 +41,10 @@ export interface UseBackgroundHatch {
   /** Fire the hatch. Idempotent — only the first call provisions. */
   start: () => void;
   /** Persist the chosen avatar for a freshly created assistant after selection. */
-  seedAvatar: (preferredAvatar?: AssistantCharacter | null) => Promise<void>;
+  seedAvatar: (
+    preferredAvatar?: AssistantCharacter | null,
+    preferredAssistantName?: string | null,
+  ) => Promise<void>;
   /** True only once the assistant has passed a health check. */
   ready: boolean;
   /** The provisioned assistant id, set once the hatch resolves. */
@@ -213,7 +216,10 @@ export function useBackgroundHatch(): UseBackgroundHatch {
   }, [hatchTraits, queryClient, settleError, settleReady]);
 
   const seedAvatar = useCallback(
-    async (preferredAvatar?: AssistantCharacter | null): Promise<void> => {
+    async (
+      preferredAvatar?: AssistantCharacter | null,
+      preferredAssistantName?: string | null,
+    ): Promise<void> => {
       const settled = settledRef.current;
       if (settled?.kind !== "ready") return;
       if (avatarSeededRef.current) return;
@@ -224,6 +230,7 @@ export function useBackgroundHatch(): UseBackgroundHatch {
         hatchTraits,
         queryClient,
         preferredAvatar ?? null,
+        preferredAssistantName,
       );
     },
     [hatchTraits, queryClient],

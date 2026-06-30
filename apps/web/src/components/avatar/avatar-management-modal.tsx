@@ -136,6 +136,28 @@ function labelStyle() {
   return { color: "var(--content-tertiary)" };
 }
 
+function modalShellStyle() {
+  return {
+    backgroundColor: "rgba(11, 11, 10, 0.98)",
+    borderColor: "rgba(255, 255, 255, 0.14)",
+    boxShadow: "0 32px 120px rgba(0, 0, 0, 0.5)",
+  };
+}
+
+function modalPanelStyle() {
+  return {
+    backgroundColor: "rgba(15, 15, 14, 0.95)",
+    borderColor: "rgba(255, 255, 255, 0.12)",
+  };
+}
+
+function modalRaisedPanelStyle() {
+  return {
+    backgroundColor: "rgba(22, 22, 21, 0.98)",
+    borderColor: "rgba(255, 255, 255, 0.12)",
+  };
+}
+
 export function AvatarManagementModal({
   open,
   onClose,
@@ -406,15 +428,14 @@ export function AvatarManagementModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 backdrop-blur-md p-3"
       onKeyDown={handleKeyDown}
       onClick={handleBackdropClick}
     >
       <div
         className="flex w-full max-w-6xl flex-col overflow-hidden rounded-xl border shadow-xl"
         style={{
-          backgroundColor: "var(--surface-lift)",
-          borderColor: "var(--border-base)",
+          ...modalShellStyle(),
           maxHeight: "92vh",
         }}
       >
@@ -494,10 +515,7 @@ export function AvatarManagementModal({
             <div className="grid gap-5 lg:grid-cols-[210px_minmax(0,380px)_minmax(320px,1fr)]">
               <aside
                 className="rounded-xl border p-2"
-                style={{
-                  backgroundColor: "var(--surface-base)",
-                  borderColor: "var(--border-base)",
-                }}
+                style={modalPanelStyle()}
               >
                 <div className="px-2 py-2">
                   <p
@@ -529,8 +547,7 @@ export function AvatarManagementModal({
                         <span
                           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-body-small-default"
                           style={{
-                            borderColor: "var(--border-base)",
-                            backgroundColor: "var(--surface-lift)",
+                            ...modalRaisedPanelStyle(),
                           }}
                         >
                           {category.icon}
@@ -544,10 +561,7 @@ export function AvatarManagementModal({
 
               <section
                 className="rounded-xl border p-4"
-                style={{
-                  backgroundColor: "var(--surface-base)",
-                  borderColor: "var(--border-base)",
-                }}
+                style={modalPanelStyle()}
               >
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
@@ -613,16 +627,10 @@ export function AvatarManagementModal({
 
               <section
                 className="flex flex-col gap-4 rounded-xl border p-5"
-                style={{
-                  backgroundColor: "var(--surface-base)",
-                  borderColor: "var(--border-base)",
-                }}
+                style={modalPanelStyle()}
               >
                 <div className="flex min-h-[340px] items-center justify-center rounded-xl border p-5"
-                  style={{
-                    backgroundColor: "var(--surface-lift)",
-                    borderColor: "var(--border-base)",
-                  }}
+                  style={modalRaisedPanelStyle()}
                 >
                   <FaceBuilderAvatar
                     config={faceBuilderConfig}
@@ -688,10 +696,7 @@ export function AvatarManagementModal({
             <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
               <section
                 className="flex flex-col gap-4 rounded-xl border p-4"
-                style={{
-                  backgroundColor: "var(--surface-base)",
-                  borderColor: "var(--border-base)",
-                }}
+                style={modalPanelStyle()}
               >
                 <div>
                   <p
@@ -746,10 +751,7 @@ export function AvatarManagementModal({
 
                 <div
                   className="rounded-lg border p-3"
-                  style={{
-                    borderColor: "var(--border-base)",
-                    backgroundColor: "var(--surface-lift)",
-                  }}
+                  style={modalRaisedPanelStyle()}
                 >
                   <p
                     className="text-title-small"
@@ -918,10 +920,10 @@ export function AvatarManagementModal({
                         style={{
                           borderColor: selected
                             ? characterItem.visual.accent
-                            : "var(--border-base)",
+                            : "rgba(255, 255, 255, 0.12)",
                           backgroundColor: selected
-                            ? "color-mix(in oklab, var(--surface-active) 72%, var(--surface-lift))"
-                            : "var(--surface-base)",
+                            ? `color-mix(in oklab, ${characterItem.visual.accent} 16%, rgba(18, 18, 17, 0.98))`
+                            : "rgba(18, 18, 17, 0.98)",
                         }}
                       >
                         {characterItem.portraitAssetUrl ? (

@@ -593,13 +593,28 @@ describe("onboarding lifecycle sync", () => {
     expect(screen.getByText("Google Drive")).toBeTruthy();
     fireEvent.click(screen.getByText("Skip for now"));
 
+    await waitFor(() =>
+      expect(saveAssistantCharacterProfileMock).toHaveBeenCalled(),
+    );
+    const saveProfileCall =
+      saveAssistantCharacterProfileMock.mock.calls[0] as unknown as
+        | [string, Record<string, unknown>]
+        | undefined;
+    expect(saveProfileCall?.[0]).toBe("asst-1");
+    expect(saveProfileCall?.[1]).toMatchObject({
+      assistantName: "Spiky Spark",
+      characterPackId: "worklin",
+      characterId: "spiky_spark",
+    });
+
     expect(JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      assistantName: "Spiky Spark",
       tools: [],
       tasks: [],
       tone: "grounded",
       userName: "Alice",
       googleConnected: false,
-      initialMessage: "Hi, I'm Alice. Nice to meet you.",
+      initialMessage: "Hi Spiky Spark, I'm Alice. Nice to meet you.",
     });
 
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
@@ -625,6 +640,7 @@ describe("onboarding lifecycle sync", () => {
 
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
     expect(JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      assistantName: "Spiky Spark",
       tools: [],
       tasks: [],
       tone: "grounded",
@@ -645,7 +661,6 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
-    fireEvent.click(await screen.findByText("Skip for now"));
 
     await waitFor(() => expect(getAssistantMock).toHaveBeenCalled());
     await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
@@ -673,13 +688,14 @@ describe("onboarding lifecycle sync", () => {
 
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
     expect(JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      assistantName: "Spiky Spark",
       tools: [],
       tasks: [],
       tone: "grounded",
       userName: "Alice",
       googleConnected: false,
       cohort: ACTIVATION_FLOW_COHORT,
-      initialMessage: "Hi, I'm Alice. Nice to meet you.",
+      initialMessage: "Hi Spiky Spark, I'm Alice. Nice to meet you.",
       bootstrapTemplate: ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE,
     });
   });
@@ -767,6 +783,7 @@ describe("onboarding lifecycle sync", () => {
     );
 
     expect(JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      assistantName: "Spiky Spark",
       tools: [],
       tasks: recipe.tasks,
       tone: recipe.tone,
