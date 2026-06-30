@@ -32,6 +32,19 @@
       ]
     },
     {
+      "source": "/v1/:path*/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "private, no-store, max-age=0"
+        },
+        {
+          "key": "Pragma",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
       "source": "/callback",
       "headers": [
         {
@@ -64,6 +77,10 @@
     {
       "source": "/v1/:path*",
       "destination": "https://worklin-ai-production.up.railway.app/v1/:path*"
+    },
+    {
+      "source": "/v1/:path*/",
+      "destination": "https://worklin-ai-production.up.railway.app/v1/:path*/"
     },
     {
       "source": "/assistant/:path*",
