@@ -338,16 +338,19 @@ daemonClient.interceptors.error.use(daemonErrorInterceptor);
 //
 // Reference: https://heyapi.dev/openapi-ts/clients/fetch#parser
 daemonClient.setConfig({
+  cache: "no-store",
   parseAs: "json",
   credentials: "include",
   ...(daemonApiBaseUrl ? { baseUrl: daemonApiBaseUrl } : {}),
 });
 platformClient.setConfig({
+  cache: "no-store",
   parseAs: "json",
   credentials: "include",
   ...(platformApiBaseUrl ? { baseUrl: platformApiBaseUrl } : {}),
 });
 authClient.setConfig({
+  cache: "no-store",
   parseAs: "json",
   credentials: "include",
   ...(authApiBaseUrl ? { baseUrl: authApiBaseUrl } : {}),
