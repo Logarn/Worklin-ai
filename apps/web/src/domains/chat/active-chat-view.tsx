@@ -98,6 +98,7 @@ export function ActiveChatView() {
   // Chat session store — reactive selectors for per-conversation state
   // -------------------------------------------------------------------------
   const messages = useChatSessionStore.use.messages();
+  const chatError = useChatSessionStore.use.error();
 
   // -------------------------------------------------------------------------
   // Local state (not store-backed)
@@ -306,6 +307,7 @@ export function ActiveChatView() {
     activeConversationId,
     peekPendingPreChatContext()?.initialMessage != null,
     onboardingConversationId,
+    chatError != null,
   );
 
   // Stash the initial message before the first send consumes it from
@@ -321,7 +323,9 @@ export function ActiveChatView() {
     }
     if (isSending(useTurnStore.getState().phase)) return;
     lifecycleService.markExpectingFirstMessage();
-    void sendMessage(message);
+    void sendMessage(message).finally(() => {
+      lifecycleService.clearExpectingFirstMessage();
+    });
   }, [sendMessage]);
 
   // Deep-link: ?app=<id> auto-opens the app viewer on initial load.

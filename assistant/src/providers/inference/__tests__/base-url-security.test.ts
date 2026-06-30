@@ -185,4 +185,28 @@ describe("resolveAuth defense-in-depth", () => {
       expect(result.resolved.baseUrl).toBeUndefined();
     }
   });
+
+  test("platform auth falls back to the provider env key when managed proxy is unavailable", async () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = " env-anthropic-key ";
+    try {
+      const result = await resolveAuth({ type: "platform" }, "anthropic");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.resolved.kind).toBe("header");
+        if (result.resolved.kind === "header") {
+          expect(result.resolved.headers.Authorization).toBe(
+            "Bearer env-anthropic-key",
+          );
+          expect(result.resolved.baseUrl).toBeUndefined();
+        }
+      }
+    } finally {
+      if (original === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = original;
+      }
+    }
+  });
 });

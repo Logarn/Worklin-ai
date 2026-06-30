@@ -36,6 +36,7 @@ export function useAutoGreetGate(
   activeConversationId: string | null,
   hasPendingPreChatMessage: boolean,
   onboardingDraftConversationId: string | null,
+  hasChatError = false,
 ): AutoGreetGateResult {
   const autoGreetPending =
     useAssistantLifecycleStore.use.expectingFirstMessage();
@@ -58,6 +59,15 @@ export function useAutoGreetGate(
       lifecycleService.clearExpectingFirstMessage();
     }
   }, [autoGreetPending, firstAssistantMessageArrived]);
+
+  // If the first send failed, stop masking the chat surface. ChatMainPanel
+  // owns the real error modal/composer state, and the post-hatch gate should
+  // never trap users behind a generic timeout.
+  useEffect(() => {
+    if (!autoGreetPending || !hasChatError) return;
+    setTimedOut(false);
+    lifecycleService.clearExpectingFirstMessage();
+  }, [autoGreetPending, hasChatError]);
 
   // 3. Safety timer — 30s backstop. Surfaces a retry prompt instead
   // of silently dismissing the overlay.

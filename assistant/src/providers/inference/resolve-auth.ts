@@ -15,6 +15,7 @@ import {
 } from "../../providers/platform-proxy/context.js";
 import { getSecureKeyAsync } from "../../security/secure-keys.js";
 import { getLogger } from "../../util/logger.js";
+import { getLlmProviderEnvVar } from "../provider-env-vars.js";
 import type { Auth, ResolvedAuth } from "./auth.js";
 import { PROVIDERS_REQUIRING_BASE_URL_AND_MODELS } from "./connections.js";
 
@@ -67,6 +68,20 @@ export async function resolveAuth(
     case "platform": {
       const managedBaseUrl = await buildManagedBaseUrl(provider);
       if (!managedBaseUrl) {
+        const providerEnvVar = getLlmProviderEnvVar(provider);
+        const providerEnvKey = providerEnvVar
+          ? process.env[providerEnvVar]?.trim()
+          : undefined;
+        if (providerEnvKey) {
+          return {
+            ok: true,
+            resolved: {
+              kind: "header",
+              headers: { Authorization: `Bearer ${providerEnvKey}` },
+              ...(safeBaseUrl ? { baseUrl: safeBaseUrl } : {}),
+            },
+          };
+        }
         return { ok: false, error: { code: "platform_unavailable" } };
       }
       const ctx = await resolveManagedProxyContext();
