@@ -22,13 +22,18 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 // Self-contained OAuth flow for connecting a ChatGPT subscription.
 // Renders anywhere Worklin needs ChatGPT subscription setup. Manages a
 // state machine:
-//   idle -> starting -> paste_url/waiting -> exchanging -> completed | failed
+//   idle -> starting -> waiting -> exchanging -> completed | failed
 //
 // On successful exchange the component calls `onConnected` with the
 // resulting connection so the parent can persist it.
 
 type ChatgptOAuthState =
-  "idle" | "starting" | "paste_url" | "exchanging" | "completed" | "failed";
+  | "idle"
+  | "starting"
+  | "waiting"
+  | "exchanging"
+  | "completed"
+  | "failed";
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
@@ -80,6 +85,13 @@ function formatChatgptAuthError(message: string): string {
   }
   if (lower.includes("did not return an access token")) {
     return "ChatGPT finished sign-in but did not send Worklin the subscription access it needs. Start a new ChatGPT sign-in and try again.";
+  }
+  if (
+    lower.includes("device code") ||
+    lower.includes("device auth") ||
+    lower.includes("failed to start chatgpt sign-in")
+  ) {
+    return "Worklin could not open the ChatGPT sign-in page. Try again in a moment, or choose an API-key provider from the previous screen for now.";
   }
   return "We could not complete ChatGPT sign-in. Start a new sign-in and try again.";
 }
@@ -134,7 +146,7 @@ export function ChatgptOAuthSection({
   }, [assistantId, onConnected]);
 
   useEffect(() => {
-    if (oauthState !== "paste_url" || !authState) {
+    if (oauthState !== "waiting" || !authState) {
       return;
     }
 
@@ -163,7 +175,10 @@ export function ChatgptOAuthSection({
         if (data.status === "failed" || data.status === "expired") {
           setOauthState("failed");
           setOauthError(
-            data.error ?? "ChatGPT sign-in did not complete. Please try again.",
+            formatChatgptAuthError(
+              data.error ??
+                "ChatGPT sign-in did not complete. Please try again.",
+            ),
           );
           return;
         }
@@ -213,7 +228,7 @@ export function ChatgptOAuthSection({
         verification_uri_complete,
         expires_in,
       } = data as ChatgptStartAuthResponse;
-      const nextMode = mode ?? "loopback";
+      const nextMode = mode ?? "device_code";
       const effectiveAuthorizeUrl =
         authorize_url || verification_uri_complete || verification_uri || null;
       setAuthorizeUrl(effectiveAuthorizeUrl);
@@ -225,7 +240,7 @@ export function ChatgptOAuthSection({
       setExpiresInMinutes(
         expires_in ? Math.max(1, Math.ceil(expires_in / 60)) : null,
       );
-      setOauthState("paste_url");
+      setOauthState("waiting");
 
       if (nextMode === "device_code" && effectiveAuthorizeUrl) {
         window.open(effectiveAuthorizeUrl, "_blank", "noopener,noreferrer");
@@ -354,35 +369,35 @@ export function ChatgptOAuthSection({
         path available.
       </Typography>
 
-      {oauthState === "idle" || oauthState === "paste_url" ? (
+      {oauthState === "idle" || oauthState === "waiting" ? (
         <div className="space-y-3">
           <div className="space-y-1">
             <Typography
               variant="body-small-default"
               as="p"
-              className={
-                oauthState === "paste_url"
-                  ? "text-[var(--content-tertiary)] line-through"
-                  : "text-[var(--content-secondary)]"
-              }
+              className="text-[var(--content-secondary)]"
             >
-              1. Continue to ChatGPT
+              {isDeviceCodeFlow
+                ? "1. Open the ChatGPT sign-in page."
+                : "1. Open the backup ChatGPT sign-in link."}
             </Typography>
             <Typography
               variant="body-small-default"
               as="p"
               className="text-[var(--content-secondary)]"
             >
-              2. Sign in and approve Worklin.
+              {isDeviceCodeFlow
+                ? "2. Enter the code below and approve Worklin."
+                : "2. Sign in and approve Worklin."}
             </Typography>
             <Typography
               variant="body-small-default"
               as="p"
               className="text-[var(--content-secondary)]"
             >
-              {oauthState === "paste_url" && !isDeviceCodeFlow
+              {oauthState === "waiting" && !isDeviceCodeFlow
                 ? "3. If Safari shows a page that cannot load, copy that page address and paste it below."
-                : "3. Return here to finish."}
+                : "3. Leave this screen open while Worklin finishes automatically."}
             </Typography>
           </div>
 
@@ -413,7 +428,7 @@ export function ChatgptOAuthSection({
                     as="p"
                     className="text-[var(--content-tertiary)]"
                   >
-                    If ChatGPT asks for a code, use this one:
+                    Enter this code in ChatGPT:
                   </Typography>
                   <div className="flex flex-wrap items-center gap-2">
                     <code className="rounded border border-[var(--border-base)] px-2 py-1 font-mono text-sm text-[var(--content-primary)]">
@@ -434,7 +449,7 @@ export function ChatgptOAuthSection({
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outlined" size="compact" asChild>
                     <a href={authorizeUrl} target="_blank" rel="noreferrer">
-                      Open ChatGPT Sign-in
+                      Open ChatGPT
                     </a>
                   </Button>
                   <Button
@@ -442,7 +457,7 @@ export function ChatgptOAuthSection({
                     size="compact"
                     onClick={() => void handleCopySignInLink()}
                   >
-                    {copiedSignInLink ? "Copied" : "Copy Link"}
+                    {copiedSignInLink ? "Copied" : "Copy Sign-in Link"}
                   </Button>
                 </div>
               ) : null}
@@ -452,8 +467,8 @@ export function ChatgptOAuthSection({
                 as="p"
                 className="text-[var(--content-tertiary)]"
               >
-                Leave this screen open after approving ChatGPT. Worklin checks
-                for completion automatically
+                No callback URL is needed. Leave this screen open after
+                approving ChatGPT; Worklin checks for completion automatically
                 {expiresInMinutes
                   ? ` for about ${expiresInMinutes} minutes`
                   : ""}
@@ -484,8 +499,8 @@ export function ChatgptOAuthSection({
                 className="text-[var(--content-tertiary)]"
               >
                 {callbackListening
-                  ? "After sign-in, return to this screen. If the browser shows a page that does not load, paste that page URL below."
-                  : "If the browser lands on a page that does not load, paste that page URL below to finish."}
+                  ? "This backup method may need one extra step. After sign-in, return here; if the browser shows a page that does not load, paste that page URL below."
+                  : "This backup method may need one extra step. If the browser lands on a page that does not load, paste that page URL below to finish."}
               </Typography>
               <Input
                 value={pastedUrl}
@@ -493,7 +508,7 @@ export function ChatgptOAuthSection({
                   setPastedUrl(e.target.value);
                   setOauthError(null);
                 }}
-                placeholder="Paste callback URL here..."
+                placeholder="Paste backup callback URL here..."
                 fullWidth
               />
               <div className="flex justify-end">

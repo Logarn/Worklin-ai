@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 let exchangedCodeVerifier: string | null = null;
 let requestedDeviceCode = false;
 let polledDeviceCode: string | null = null;
+let polledUserCode: string | null = null;
 let secureWrites: Record<string, string> = {};
 let failingSecureAccounts = new Set<string>();
 
@@ -47,26 +48,31 @@ mock.module("../../../security/oauth2-device-code.js", () => {
   return {
     DeviceCodeError: MockDeviceCodeError,
     OPENAI_DEVICE_CODE_CONFIG: {
-      deviceCodeUrl: "https://auth.openai.com/oauth/device/code",
-      tokenUrl: "https://auth.openai.com/oauth/token",
+      issuerUrl: "https://auth.openai.com",
+      deviceCodeUrl: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+      tokenUrl: "https://auth.openai.com/api/accounts/deviceauth/token",
+      tokenExchangeUrl: "https://auth.openai.com/oauth/token",
       clientId: "client-id",
       scopes: ["openid", "profile", "email", "offline_access"],
-      audience: "https://chatgpt.com",
+      scopeSeparator: " ",
     },
     requestDeviceCode: async () => {
       requestedDeviceCode = true;
       return {
         deviceCode: "device-code-123",
         userCode: "ABCD-EFGH",
-        verificationUri: "https://auth.openai.com/activate",
-        verificationUriComplete:
-          "https://auth.openai.com/activate?user_code=ABCD-EFGH",
+        verificationUri: "https://auth.openai.com/codex/device",
         expiresIn: 900,
         interval: 1,
       };
     },
-    pollForToken: async (_config: unknown, deviceCode: string) => {
+    pollForToken: async (
+      _config: unknown,
+      deviceCode: string,
+      userCode: string,
+    ) => {
       polledDeviceCode = deviceCode;
+      polledUserCode = userCode;
       return {
         accessToken: "device-access-token",
         refreshToken: "device-refresh-token",
@@ -116,6 +122,7 @@ beforeEach(() => {
   exchangedCodeVerifier = null;
   requestedDeviceCode = false;
   polledDeviceCode = null;
+  polledUserCode = null;
   secureWrites = {};
   failingSecureAccounts = new Set<string>();
 });
@@ -127,19 +134,19 @@ describe("ChatGPT subscription auth routes", () => {
     });
 
     expect(result).toMatchObject({
-      authorize_url: "https://auth.openai.com/activate?user_code=ABCD-EFGH",
+      authorize_url: "https://auth.openai.com/codex/device",
       state: "state-123",
       mode: "device_code",
       callback_listening: false,
       user_code: "ABCD-EFGH",
-      verification_uri: "https://auth.openai.com/activate",
-      verification_uri_complete:
-        "https://auth.openai.com/activate?user_code=ABCD-EFGH",
+      verification_uri: "https://auth.openai.com/codex/device",
+      verification_uri_complete: null,
       expires_in: 900,
       interval: 1,
     });
     expect(requestedDeviceCode).toBe(true);
     expect(polledDeviceCode).toBe("device-code-123");
+    expect(polledUserCode).toBe("ABCD-EFGH");
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 

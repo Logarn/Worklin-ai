@@ -1,17 +1,18 @@
 /**
- * OAuth2 Device Authorization Grant (RFC 8628).
+ * OpenAI ChatGPT subscription device authorization.
  *
- * Implements the device-code flow for environments where a browser redirect
- * is impractical (CLI, headless). The user visits a verification URI and
- * enters a short code; meanwhile, the client polls the token endpoint until
- * authorization completes.
- *
- * This is intentionally separate from the PKCE authorization code flow in
- * oauth2.ts — different grant type, different UX (no localhost server), and
- * different polling lifecycle.
+ * This intentionally follows the Codex ChatGPT device-login flow instead of
+ * the generic RFC 8628 endpoint shape. OpenAI's Codex endpoints first issue a
+ * user code, then return a short-lived authorization code and PKCE verifier
+ * after the user approves the login in ChatGPT.
  */
 
 import { getLogger } from "../util/logger.js";
+import {
+  exchangeCodeForTokens,
+  type OAuth2Config,
+  type OAuth2TokenResult,
+} from "./oauth2.js";
 
 const log = getLogger("oauth2-device-code");
 
@@ -20,11 +21,13 @@ const log = getLogger("oauth2-device-code");
 // ---------------------------------------------------------------------------
 
 export interface DeviceCodeConfig {
+  issuerUrl: string;
   deviceCodeUrl: string;
   tokenUrl: string;
+  tokenExchangeUrl: string;
   clientId: string;
   scopes: string[];
-  audience?: string;
+  scopeSeparator?: string;
 }
 
 export interface DeviceCodeInitResult {
@@ -36,13 +39,7 @@ export interface DeviceCodeInitResult {
   interval: number;
 }
 
-export interface DeviceCodeTokenResult {
-  accessToken: string;
-  refreshToken?: string;
-  expiresIn?: number;
-  tokenType?: string;
-  scope?: string;
-}
+export type DeviceCodeTokenResult = OAuth2TokenResult;
 
 export class DeviceCodeError extends Error {
   constructor(
@@ -63,11 +60,13 @@ export class DeviceCodeError extends Error {
 // ---------------------------------------------------------------------------
 
 export const OPENAI_DEVICE_CODE_CONFIG: DeviceCodeConfig = {
-  deviceCodeUrl: "https://auth.openai.com/oauth/device/code",
-  tokenUrl: "https://auth.openai.com/oauth/token",
+  issuerUrl: "https://auth.openai.com",
+  deviceCodeUrl: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+  tokenUrl: "https://auth.openai.com/api/accounts/deviceauth/token",
+  tokenExchangeUrl: "https://auth.openai.com/oauth/token",
   clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
   scopes: ["openid", "profile", "email", "offline_access"],
-  audience: "https://chatgpt.com",
+  scopeSeparator: " ",
 };
 
 // ---------------------------------------------------------------------------
@@ -77,21 +76,13 @@ export const OPENAI_DEVICE_CODE_CONFIG: DeviceCodeConfig = {
 export async function requestDeviceCode(
   config: DeviceCodeConfig,
 ): Promise<DeviceCodeInitResult> {
-  const body: Record<string, string> = {
-    client_id: config.clientId,
-    scope: config.scopes.join(" "),
-  };
-  if (config.audience) {
-    body.audience = config.audience;
-  }
-
   const resp = await fetch(config.deviceCodeUrl, {
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: new URLSearchParams(body),
+    body: JSON.stringify({ client_id: config.clientId }),
   });
 
   if (!resp.ok) {
@@ -107,16 +98,30 @@ export async function requestDeviceCode(
   }
 
   const data = (await resp.json()) as Record<string, unknown>;
+  const deviceAuthId =
+    stringValue(data.device_auth_id) ?? stringValue(data.device_code);
+  const userCode = stringValue(data.user_code);
+  if (!deviceAuthId || !userCode) {
+    log.error(
+      { keys: Object.keys(data) },
+      "Device code response missing required fields",
+    );
+    throw new DeviceCodeError(
+      "Device code response missing required fields",
+      "request_failed",
+    );
+  }
 
   return {
-    deviceCode: data.device_code as string,
-    userCode: data.user_code as string,
-    verificationUri: data.verification_uri as string,
-    verificationUriComplete: data.verification_uri_complete as
-      | string
-      | undefined,
-    expiresIn: data.expires_in as number,
-    interval: (data.interval as number | undefined) ?? 5,
+    deviceCode: deviceAuthId,
+    userCode,
+    verificationUri:
+      stringValue(data.verification_uri) ??
+      `${trimTrailingSlash(config.issuerUrl)}/codex/device`,
+    verificationUriComplete:
+      stringValue(data.verification_uri_complete) ?? undefined,
+    expiresIn: positiveNumber(data.expires_in) ?? 15 * 60,
+    interval: positiveNumber(data.interval) ?? 5,
   };
 }
 
@@ -125,18 +130,13 @@ export async function requestDeviceCode(
 // ---------------------------------------------------------------------------
 
 /**
- * Poll the token endpoint until the user completes authorization or the
- * device code expires.
- *
- * Handles RFC 8628 error codes:
- * - `authorization_pending` — keep polling
- * - `slow_down` — increase interval by 5 seconds (per spec)
- * - `expired_token` — abort with error
- * - `access_denied` — abort with error
+ * Poll the Codex device-auth token endpoint until OpenAI issues an
+ * authorization code, then exchange it for ChatGPT subscription tokens.
  */
 export async function pollForToken(
   config: DeviceCodeConfig,
   deviceCode: string,
+  userCode: string,
   intervalSeconds: number,
   expiresIn: number,
   signal?: AbortSignal,
@@ -145,23 +145,38 @@ export async function pollForToken(
 ): Promise<DeviceCodeTokenResult> {
   const doSleep = _sleepFn ?? sleep;
   let interval = intervalSeconds;
-  const deadline = Date.now() + expiresIn * 1000;
+  const maxWaitMs = Math.max(0, expiresIn * 1000);
+  const deadline = Date.now() + maxWaitMs;
+  let elapsedSleepMs = 0;
 
-  while (Date.now() < deadline) {
+  const isTimedOut = () =>
+    Date.now() >= deadline || elapsedSleepMs >= maxWaitMs;
+
+  const sleepUntilNextPoll = async (): Promise<boolean> => {
+    if (signal?.aborted) {
+      throw new DeviceCodeError("Device code flow aborted", "aborted");
+    }
+    const remainingMs = Math.min(
+      deadline - Date.now(),
+      maxWaitMs - elapsedSleepMs,
+    );
+    if (remainingMs <= 0) {
+      return false;
+    }
+    const sleepMs = Math.min(interval * 1000, remainingMs);
+    await doSleep(sleepMs, signal);
+    elapsedSleepMs += sleepMs;
+    return true;
+  };
+
+  while (!isTimedOut()) {
     if (signal?.aborted) {
       throw new DeviceCodeError("Device code flow aborted", "aborted");
     }
 
-    await doSleep(interval * 1000, signal);
-
-    if (signal?.aborted) {
-      throw new DeviceCodeError("Device code flow aborted", "aborted");
-    }
-
-    const body = new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      device_code: deviceCode,
-      client_id: config.clientId,
+    const body = JSON.stringify({
+      device_auth_id: deviceCode,
+      user_code: userCode,
     });
 
     let resp: Response;
@@ -169,7 +184,7 @@ export async function pollForToken(
       resp = await fetch(config.tokenUrl, {
         method: "POST",
         headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Type": "application/json",
           Accept: "application/json",
         },
         body,
@@ -180,32 +195,56 @@ export async function pollForToken(
         throw new DeviceCodeError("Device code flow aborted", "aborted");
       }
       log.warn({ err }, "Token poll request failed, will retry");
+      if (!(await sleepUntilNextPoll())) break;
       continue;
     }
 
-    const data = (await resp.json()) as Record<string, unknown>;
-
     if (resp.ok) {
+      const data = (await resp.json()) as Record<string, unknown>;
+      const authorizationCode = stringValue(data.authorization_code);
+      const codeVerifier = stringValue(data.code_verifier);
+      if (!authorizationCode || !codeVerifier) {
+        log.error(
+          { keys: Object.keys(data) },
+          "Device auth poll response missing exchange fields",
+        );
+        throw new DeviceCodeError(
+          "Device auth response missing exchange fields",
+          "request_failed",
+        );
+      }
+
+      const { tokens } = await exchangeCodeForTokens(
+        toOAuth2Config(config),
+        authorizationCode,
+        `${trimTrailingSlash(config.issuerUrl)}/deviceauth/callback`,
+        codeVerifier,
+      );
       log.info("Device code authorization completed");
-      return {
-        accessToken: data.access_token as string,
-        refreshToken: data.refresh_token as string | undefined,
-        expiresIn: data.expires_in as number | undefined,
-        tokenType: data.token_type as string | undefined,
-        scope: data.scope as string | undefined,
-      };
+      return tokens;
     }
 
+    const rawBody = await resp.text().catch(() => "");
+    const data = parseJsonObject(rawBody);
     const errorCode = data.error as string | undefined;
 
-    if (errorCode === "authorization_pending") {
+    if (
+      resp.status === 403 ||
+      resp.status === 404 ||
+      errorCode === "authorization_pending"
+    ) {
       log.debug("Authorization pending, continuing to poll");
+      if (!(await sleepUntilNextPoll())) break;
       continue;
     }
 
     if (errorCode === "slow_down") {
       interval += 5;
-      log.info({ newInterval: interval }, "Received slow_down, increasing poll interval");
+      log.info(
+        { newInterval: interval },
+        "Received slow_down, increasing poll interval",
+      );
+      if (!(await sleepUntilNextPoll())) break;
       continue;
     }
 
@@ -275,6 +314,7 @@ export async function startDeviceCodeFlow(
   const tokens = await pollForToken(
     config,
     init.deviceCode,
+    init.userCode,
     init.interval,
     init.expiresIn,
     signal,
@@ -304,4 +344,47 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       { once: true },
     );
   });
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function parseJsonObject(rawBody: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function toOAuth2Config(config: DeviceCodeConfig): OAuth2Config {
+  const issuerUrl = trimTrailingSlash(config.issuerUrl);
+  return {
+    authorizeUrl: `${issuerUrl}/oauth/authorize`,
+    tokenExchangeUrl: config.tokenExchangeUrl,
+    clientId: config.clientId,
+    scopes: config.scopes,
+    scopeSeparator: config.scopeSeparator ?? " ",
+  };
 }

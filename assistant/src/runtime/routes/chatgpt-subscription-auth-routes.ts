@@ -323,6 +323,7 @@ async function startDeviceCodeAuth(state: string) {
   void pollForToken(
     OPENAI_DEVICE_CODE_CONFIG,
     init.deviceCode,
+    init.userCode,
     init.interval,
     init.expiresIn,
     pollAbort.signal,
@@ -505,15 +506,7 @@ async function handleStartAuth(_args: RouteHandlerArgs) {
     return await startLoopbackAuth(state);
   }
 
-  try {
-    return await startDeviceCodeAuth(state);
-  } catch (error) {
-    log.warn(
-      { err: safeErrorMessage(error) },
-      "ChatGPT subscription device-code start failed; falling back to loopback auth",
-    );
-    return await startLoopbackAuth(state);
-  }
+  return await startDeviceCodeAuth(state);
 }
 
 async function handleExchange(args: RouteHandlerArgs) {
@@ -566,7 +559,7 @@ export const ROUTES: RouteDefinition[] = [
     },
     summary: "Start ChatGPT subscription OAuth PKCE flow",
     description:
-      "Start ChatGPT subscription auth. The hosted web app tries OpenAI's device-code flow first and falls back to loopback PKCE when needed.",
+      "Start ChatGPT subscription auth. The hosted web app uses OpenAI's ChatGPT device-code flow; loopback PKCE remains available only when explicitly requested.",
     tags: ["inference"],
     requestBody: z
       .object({
