@@ -9,6 +9,7 @@
 
 import { client } from "@/generated/daemon/client.gen";
 import type { AssistantEventEnvelope } from "@vellumai/assistant-api";
+import { buildVellumHeaders } from "@/lib/auth/request-headers";
 import { parseAssistantEvent } from "@/lib/streaming/event-parser";
 import { normalizeSSEPayload } from "@/lib/streaming/sse-payload";
 import { toError } from "@/utils/to-error";
@@ -242,10 +243,11 @@ export function subscribeEvents(
           url: "/v1/assistants/{assistant_id}/events/",
           path: { assistant_id: assistantId },
           ...(Object.keys(query).length > 0 ? { query } : {}),
-          headers: {
+          headers: buildVellumHeaders({
             Accept: "text/event-stream, application/json",
             ...getClientRegistrationHeaders(),
-          },
+          }),
+          credentials: "include",
           signal: abortController.signal,
           // All reconnect behavior is owned by this function's
           // reconnect() loop — SDK-level retries would bypass the

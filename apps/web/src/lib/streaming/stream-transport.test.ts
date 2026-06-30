@@ -98,6 +98,49 @@ describe("subscribeEvents idle watchdog", () => {
     }
   });
 
+  test("keeps hosted actor auth on SSE while ingress rewrite is unavailable", async () => {
+    const actorToken = "test-actor-token-before-ingress";
+    const capturedRequests: Request[] = [];
+
+    // During hosted hatch/reconciliation the actor token can be present
+    // before an ingress URL is usable. SSE still has to authenticate so
+    // the platform runtime proxy can forward the stream request.
+    setSelfHostedConnection({ url: null, token: actorToken });
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL) => {
+        if (input instanceof Request) {
+          capturedRequests.push(input);
+        }
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      },
+    ) as unknown as typeof fetch;
+
+    const stream = subscribeEvents(
+      "asst-1",
+      () => {},
+      () => {},
+      { idleTimeoutMs: 5_000, reconnectBaseDelayMs: 10_000 },
+    );
+
+    try {
+      await new Promise((r) => setTimeout(r, 50));
+      expect(capturedRequests).toHaveLength(1);
+      const request = capturedRequests[0]!;
+      expect(request.url).toContain("/v1/assistants/asst-1/events/");
+      expect(request.headers.get("Authorization")).toBe(`Bearer ${actorToken}`);
+      expect(request.credentials).toBe("include");
+    } finally {
+      stream.cancel();
+    }
+  });
+
   test("omits any conversation query param when subscribing to all assistant events", async () => {
     const requestedUrls: string[] = [];
     globalThis.fetch = mock(
