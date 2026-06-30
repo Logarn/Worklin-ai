@@ -50,8 +50,8 @@ import { ProgressBar } from "@vellumai/design-library/components/progress-bar";
 const POLL_INTERVAL_MS = 3000;
 const COMPLETION_NAVIGATE_DELAY_MS = 800;
 const MAX_HATCH_WAIT_MS = 300_000;
-const HATCHING_ROSTER_GIF = publicAsset(
-  "/images/avatars/worklin-hatching-roster.gif",
+const HATCHING_AVATAR_SEQUENCE_GIF = publicAsset(
+  "/images/avatars/worklin-hatching-avatar-sequence.gif",
 );
 
 // Module-level promises so HMR remounts and StrictMode double-mounts
@@ -661,12 +661,12 @@ export function HatchingScreen() {
             </div>
           )}
           <img
-            src={HATCHING_ROSTER_GIF}
+            src={HATCHING_AVATAR_SEQUENCE_GIF}
             alt=""
-            width={288}
+            width={192}
             height={192}
-            data-testid="hatching-roster-gif"
-            className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[288px] rounded-[24px] border border-white/8 shadow-[0_18px_48px_rgba(0,0,0,0.32)] onboarding-avatar-failed`}
+            data-testid="hatching-avatar-sequence-gif"
+            className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[192px] rounded-[28px] border border-white/6 shadow-[0_18px_48px_rgba(0,0,0,0.32)] onboarding-avatar-failed`}
           />
           <div className={`flex w-full flex-col ${electron ? "gap-2.5 max-w-[280px]" : "gap-2 max-w-sm"}`}>
             <Button
@@ -732,12 +732,12 @@ export function HatchingScreen() {
           </p>
         )}
         <img
-          src={HATCHING_ROSTER_GIF}
+          src={HATCHING_AVATAR_SEQUENCE_GIF}
           alt=""
-          width={288}
+          width={192}
           height={192}
-          data-testid="hatching-roster-gif"
-          className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[288px] rounded-[24px] border border-white/8 shadow-[0_18px_48px_rgba(0,0,0,0.32)] ${phase === "ready" ? "onboarding-avatar-awake" : "onboarding-avatar-pulse"}`}
+          data-testid="hatching-avatar-sequence-gif"
+          className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[192px] rounded-[28px] border border-white/6 shadow-[0_18px_48px_rgba(0,0,0,0.32)] ${phase === "ready" ? "onboarding-avatar-awake" : "onboarding-avatar-pulse"}`}
         />
         <ProgressBar
           value={displayProgress}

@@ -207,7 +207,7 @@ body {
     opacity 0.4s ease-out;
 }
 
-/* Failed hatch — keep the roster muted instead of rotating the full panel.
+/* Failed hatch — keep the avatar sequence muted instead of rotating the panel.
  * No `transition`: the error branch mounts a fresh image rather than
  * swapping classes on a persistent node. */
 .onboarding-avatar-failed {
