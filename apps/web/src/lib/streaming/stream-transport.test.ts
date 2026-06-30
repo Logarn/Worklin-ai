@@ -29,6 +29,8 @@ mock.module("@/lib/streaming/reconnect-cursor", () => ({
 }));
 
 import { getLifecycleDiagnosticsEvents } from "@/lib/diagnostics";
+import "@/lib/api-interceptors";
+import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { subscribeEvents, type StreamReconnectCause } from "@/lib/streaming/stream-transport";
 
 describe("subscribeEvents idle watchdog", () => {
@@ -45,11 +47,54 @@ describe("subscribeEvents idle watchdog", () => {
   });
 
   afterEach(() => {
+    setSelfHostedConnection(null);
     globalThis.fetch = originalFetch;
     if (originalDocument === undefined) {
       delete (globalThis as { document?: unknown }).document;
     } else {
       (globalThis as { document?: unknown }).document = originalDocument;
+    }
+  });
+
+  test("routes self-hosted events through the daemon client with actor auth", async () => {
+    const actorToken = "test-actor-token-abc123";
+    const ingress = "https://my-gateway.example";
+    const capturedRequests: Request[] = [];
+
+    setSelfHostedConnection({ url: ingress, token: actorToken });
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL) => {
+        if (input instanceof Request) {
+          capturedRequests.push(input);
+        }
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      },
+    ) as unknown as typeof fetch;
+
+    const stream = subscribeEvents(
+      "asst-1",
+      () => {},
+      () => {},
+      { idleTimeoutMs: 5_000, reconnectBaseDelayMs: 10_000 },
+    );
+
+    try {
+      await new Promise((r) => setTimeout(r, 50));
+      expect(capturedRequests).toHaveLength(1);
+      const request = capturedRequests[0]!;
+      const url = new URL(request.url);
+      expect(url.origin).toBe(ingress);
+      expect(url.pathname).toBe("/v1/assistants/asst-1/events/");
+      expect(request.headers.get("Authorization")).toBe(`Bearer ${actorToken}`);
+    } finally {
+      stream.cancel();
     }
   });
 

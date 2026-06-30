@@ -71,6 +71,16 @@ if [[ -z "${ACTOR_TOKEN_SIGNING_KEY:-}" ]]; then
 fi
 export ACTOR_TOKEN_SIGNING_KEY
 
+ces_service_token_path="${GATEWAY_SECURITY_DIR%/}/ces-service-token"
+if [[ -z "${CES_SERVICE_TOKEN:-}" ]]; then
+  if [[ ! -f "${ces_service_token_path}" ]] || [[ "$(wc -c < "${ces_service_token_path}")" -ne 64 ]]; then
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "${ces_service_token_path}"
+    chmod 600 "${ces_service_token_path}"
+  fi
+  CES_SERVICE_TOKEN="$(tr -d '\n' < "${ces_service_token_path}")"
+fi
+export CES_SERVICE_TOKEN
+
 # Repair ownership on persisted volume contents before handing control to the
 # unprivileged service users. Railway can reuse a volume that contains files
 # written by an older root-run deployment, and directory-only chowns leave the

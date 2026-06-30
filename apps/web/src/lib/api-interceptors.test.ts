@@ -198,7 +198,8 @@ describe("api-interceptors / Electron session-token header", () => {
 // user's gateway.
 //
 // The platform client uses the segment allowlist — only explicitly
-// listed segments (currently `conversations`) are rewritten. Platform-
+// listed segments (currently `conversations` and the SSE `events` stream) are
+// rewritten. Platform-
 // owned routes like `maintenance-mode/`, `system-events/`, `terminal/`,
 // `doctor/` fall through to Django.
 //
@@ -223,6 +224,7 @@ const SELF_HOSTED_ID = "01h1234567890abcdefg";
 const INGRESS = "https://my-gateway.example";
 const ACTOR_TOKEN = "test-actor-token-abc123";
 const RUNTIME_PROXIED_PATH = `/v1/assistants/${SELF_HOSTED_ID}/conversations/`;
+const RUNTIME_EVENTS_PATH = `/v1/assistants/${SELF_HOSTED_ID}/events/`;
 const PUBLIC_ORIGIN = window.location.origin;
 
 describe("api-interceptors / self-hosted rewriting", () => {
@@ -288,6 +290,16 @@ describe("api-interceptors / self-hosted rewriting", () => {
     const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`);
     const output = await requestInterceptor(input);
     expect(output.headers.get("Authorization")).toBe(`Bearer ${ACTOR_TOKEN}`);
+  });
+
+  test("rewrites the SSE events stream with actor auth", async () => {
+    setSelfHostedConnection({ url: INGRESS, token: ACTOR_TOKEN });
+    const input = new Request(`https://platform.test${RUNTIME_EVENTS_PATH}`);
+    const output = await requestInterceptor(input);
+    expect(new URL(output.url).origin).toBe(INGRESS);
+    expect(new URL(output.url).pathname).toBe(RUNTIME_EVENTS_PATH);
+    expect(output.headers.get("Authorization")).toBe(`Bearer ${ACTOR_TOKEN}`);
+    expect(output.headers.get("Vellum-Organization-Id")).toBeNull();
   });
 
   test("omits the Authorization header when the actor token slot is null", async () => {

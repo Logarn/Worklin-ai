@@ -7,7 +7,7 @@
  * connections (notably on iOS WKWebView).
  */
 
-import { client } from "@/generated/api/client.gen";
+import { client } from "@/generated/daemon/client.gen";
 import type { AssistantEventEnvelope } from "@vellumai/assistant-api";
 import { parseAssistantEvent } from "@/lib/streaming/event-parser";
 import { normalizeSSEPayload } from "@/lib/streaming/sse-payload";

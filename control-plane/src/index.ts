@@ -961,6 +961,10 @@ app.use(
       handleFeatureFlags(req, res);
       return;
     }
+    if (url.pathname === "/v1/telemetry/ingest/" && req.method === "POST") {
+      sendJson(req, res, { ok: true }, 202);
+      return;
+    }
 
     const user = requireUser(req, res);
     if (!user) return;

@@ -72,6 +72,27 @@ export interface OnboardingFunnelEvent {
   ab_variant: OnboardingFunnelVariant;
 }
 
+const PLATFORM_MODE_TRUTHY = new Set(["1", "true", "yes"]);
+
+function isHostedPlatformMode(
+  raw = import.meta.env.VITE_PLATFORM_MODE,
+  isProduction = import.meta.env.PROD,
+): boolean {
+  return isProduction && raw
+    ? PLATFORM_MODE_TRUTHY.has(raw.toLowerCase())
+    : false;
+}
+
+export function shouldEmitBrowserOnboardingTelemetry(
+  platformMode = import.meta.env.VITE_PLATFORM_MODE,
+  isProduction = import.meta.env.PROD,
+): boolean {
+  // Hosted Worklin proxies /v1/* to the production control-plane, while the
+  // telemetry ingest endpoint is a daemon-to-platform route. Do not create a
+  // browser-visible 404 for a best-effort event that cannot be ingested there.
+  return !isHostedPlatformMode(platformMode, isProduction);
+}
+
 function stripUndefined(value: object): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
@@ -160,6 +181,7 @@ export function emitOnboardingFunnelStepCompleted(
 ): void {
   if (typeof window === "undefined") return;
   if (!readShareAnalytics()) return;
+  if (!shouldEmitBrowserOnboardingTelemetry()) return;
 
   const event = stripUndefined(buildOnboardingFunnelEvent(screen, options));
 

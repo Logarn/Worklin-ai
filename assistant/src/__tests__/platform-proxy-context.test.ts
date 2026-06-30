@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { credentialKey } from "../security/credential-key.js";
 
@@ -13,6 +13,19 @@ mock.module("../util/logger.js", () => ({
 // Mutable state for env and secure key stubs
 let mockPlatformBaseUrl = "";
 let mockAssistantApiKey: string | null = null;
+const originalAssistantApiKey = process.env.ASSISTANT_API_KEY;
+
+afterAll(() => {
+  if (originalAssistantApiKey === undefined) {
+    delete process.env.ASSISTANT_API_KEY;
+  } else {
+    process.env.ASSISTANT_API_KEY = originalAssistantApiKey;
+  }
+});
+
+beforeEach(() => {
+  delete process.env.ASSISTANT_API_KEY;
+});
 
 mock.module("../config/env.js", () => ({
   getPlatformBaseUrl: () => mockPlatformBaseUrl,
@@ -38,6 +51,7 @@ describe("resolveManagedProxyContext", () => {
   beforeEach(() => {
     mockPlatformBaseUrl = "";
     mockAssistantApiKey = null;
+    delete process.env.ASSISTANT_API_KEY;
   });
 
   test("returns disabled when platform URL is empty", async () => {
@@ -71,6 +85,26 @@ describe("resolveManagedProxyContext", () => {
     expect(ctx.enabled).toBe(true);
     expect(ctx.platformBaseUrl).toBe("https://platform.example.com");
     expect(ctx.assistantApiKey).toBe("sk-test-key");
+  });
+
+  test("uses ASSISTANT_API_KEY env fallback when stored key is missing", async () => {
+    mockPlatformBaseUrl = "https://platform.example.com/";
+    mockAssistantApiKey = null;
+    process.env.ASSISTANT_API_KEY = " env-key ";
+
+    const ctx = await resolveManagedProxyContext();
+    expect(ctx.enabled).toBe(true);
+    expect(ctx.assistantApiKey).toBe("env-key");
+  });
+
+  test("prefers stored key over ASSISTANT_API_KEY env fallback", async () => {
+    mockPlatformBaseUrl = "https://platform.example.com/";
+    mockAssistantApiKey = " stored-key ";
+    process.env.ASSISTANT_API_KEY = "env-key";
+
+    const ctx = await resolveManagedProxyContext();
+    expect(ctx.enabled).toBe(true);
+    expect(ctx.assistantApiKey).toBe("stored-key");
   });
 
   test("strips trailing slashes from platform URL", async () => {

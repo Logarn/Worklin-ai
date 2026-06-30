@@ -10,6 +10,7 @@ import {
   ONBOARDING_FUNNEL_VARIANTS,
   readOnboardingFunnelVariant,
   resolveOnboardingFunnelVariant,
+  shouldEmitBrowserOnboardingTelemetry,
 } from "@/domains/onboarding/funnel-events";
 import { useOnboardingStore } from "@/domains/onboarding/onboarding-store";
 
@@ -158,7 +159,9 @@ describe("onboarding funnel events", () => {
     const firstEvent = firstPayload.events[0];
     const secondEvent = secondPayload.events[0];
 
-    expect(calls[0]?.[0]).toBe("/v1/telemetry/ingest/");
+    expect(new URL(String(calls[0]?.[0]), window.location.origin).pathname).toBe(
+      "/v1/telemetry/ingest/",
+    );
     expect(firstEvent?.session_id).toBeTruthy();
     expect(secondEvent?.session_id).toBe(firstEvent?.session_id);
     expect(secondEvent).toMatchObject({
@@ -169,6 +172,13 @@ describe("onboarding funnel events", () => {
       funnel_version: ONBOARDING_FUNNEL_VERSION,
       ab_variant: "pared_down",
     });
+  });
+
+  test("suppresses browser telemetry in hosted platform mode", () => {
+    expect(shouldEmitBrowserOnboardingTelemetry("", true)).toBe(true);
+    expect(shouldEmitBrowserOnboardingTelemetry("true", false)).toBe(true);
+    expect(shouldEmitBrowserOnboardingTelemetry("true", true)).toBe(false);
+    expect(shouldEmitBrowserOnboardingTelemetry("1", true)).toBe(false);
   });
 
   test("does not emit telemetry until analytics sharing is explicitly opted in", () => {
