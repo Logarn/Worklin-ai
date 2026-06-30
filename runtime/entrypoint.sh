@@ -58,6 +58,16 @@ mkdir -p \
   "${CREDENTIAL_SECURITY_DIR}" \
   "${CES_BOOTSTRAP_SOCKET_DIR}"
 
+signing_key_path="${GATEWAY_SECURITY_DIR%/}/actor-token-signing-key"
+if [[ -z "${ACTOR_TOKEN_SIGNING_KEY:-}" ]]; then
+  if [[ ! -f "${signing_key_path}" ]] || [[ "$(wc -c < "${signing_key_path}")" -ne 32 ]]; then
+    head -c 32 /dev/urandom > "${signing_key_path}"
+    chmod 600 "${signing_key_path}"
+  fi
+  ACTOR_TOKEN_SIGNING_KEY="$(od -An -tx1 -v "${signing_key_path}" | tr -d ' \n')"
+fi
+export ACTOR_TOKEN_SIGNING_KEY
+
 # Repair ownership on persisted volume contents before handing control to the
 # unprivileged service users. Railway can reuse a volume that contains files
 # written by an older root-run deployment, and directory-only chowns leave the
