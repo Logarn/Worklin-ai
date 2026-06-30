@@ -169,7 +169,11 @@ export function PreChatFlow() {
     platformSession,
     hasCachedPlatformAssistant: localPlatformAssistantId !== null,
   });
-  const canOfferGoogleStep = platformFunnelAvailable;
+  // The Google-connect step needs a concrete assistant id to bind the OAuth
+  // connection. If the assistant has not been resolved yet, skip the step
+  // instead of rendering a dead-end null screen.
+  const canOfferGoogleStep =
+    platformFunnelAvailable && googleAssistantId !== undefined && googleAssistantId !== null;
   const canOfferPriorAssistants = platformFunnelAvailable;
 
   const handleAssistantAvatarChange = (avatar: AssistantCharacter): void => {

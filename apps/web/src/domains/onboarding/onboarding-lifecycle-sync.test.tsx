@@ -661,7 +661,6 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
-    fireEvent.click(await screen.findByText("Skip for now"));
 
     await waitFor(() => expect(getAssistantMock).toHaveBeenCalled());
     await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
