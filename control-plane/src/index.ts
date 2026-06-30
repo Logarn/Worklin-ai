@@ -293,6 +293,8 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
 
 function sendJson(req: Request, res: Response, body: unknown, status = 200): void {
   setCorsHeaders(req, res);
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
   res.status(status).type("application/json").send(JSON.stringify(body));
 }
 
