@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { client } from "@/generated/api/client.gen";
+import { assistantsOperationalStatusDetailRead } from "@/generated/api/sdk.gen";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import type { AssistantState } from "@/assistant/types";
 import { useIsOrgReady } from "@/hooks/use-is-org-ready";
@@ -84,14 +84,11 @@ function canPollOperationalStatus({
 export async function fetchAssistantOperationalStatus(
   assistantId: string,
 ): Promise<AssistantOperationalStatus | null> {
-  const { data, error, response } = await client.get<
-    AssistantOperationalStatus,
-    unknown
-  >({
-    url: "/v1/assistants/{assistant_id}/operational/status/",
-    path: { assistant_id: assistantId },
-    throwOnError: false,
-  });
+  const { data, error, response } =
+    await assistantsOperationalStatusDetailRead({
+      path: { id: assistantId },
+      throwOnError: false,
+    });
 
   assertHasResponse(response, error, "Failed to fetch assistant status.");
 
@@ -106,7 +103,7 @@ export async function fetchAssistantOperationalStatus(
     );
   }
 
-  return data ?? null;
+  return (data as AssistantOperationalStatus | undefined) ?? null;
 }
 
 export function useAssistantOperationalStatus(assistantId: string | null) {

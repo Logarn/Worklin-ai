@@ -5,7 +5,7 @@ import { createElement, type ReactNode } from "react";
 
 import type { AssistantState } from "@/assistant/types";
 
-const clientGetMock = mock(async () => ({
+const operationalStatusReadMock = mock(async () => ({
   data: {
     state: "active",
     detail_state: null,
@@ -20,10 +20,8 @@ const isLocalModeMock = mock(() => false);
 const isPlatformDisabledMock = mock(() => false);
 let isOrgReadyMock = true;
 
-mock.module("@/generated/api/client.gen", () => ({
-  client: {
-    get: clientGetMock,
-  },
+mock.module("@/generated/api/sdk.gen", () => ({
+  assistantsOperationalStatusDetailRead: operationalStatusReadMock,
 }));
 
 mock.module("@/lib/local-mode", () => ({
@@ -73,7 +71,7 @@ async function settleQueries() {
 }
 
 beforeEach(() => {
-  clientGetMock.mockClear();
+  operationalStatusReadMock.mockClear();
   isLocalModeMock.mockImplementation(() => false);
   isPlatformDisabledMock.mockImplementation(() => false);
   isOrgReadyMock = true;
@@ -100,7 +98,7 @@ describe("useAssistantOperationalStatus", () => {
     });
     await settleQueries();
 
-    expect(clientGetMock).not.toHaveBeenCalled();
+    expect(operationalStatusReadMock).not.toHaveBeenCalled();
   });
 
   test("fetches for active platform-hosted assistants", async () => {
@@ -111,8 +109,14 @@ describe("useAssistantOperationalStatus", () => {
     });
 
     await waitFor(() => {
-      expect(clientGetMock).toHaveBeenCalledTimes(1);
+      expect(operationalStatusReadMock).toHaveBeenCalledTimes(1);
     });
+    expect(operationalStatusReadMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "assistant-platform" },
+        throwOnError: false,
+      }),
+    );
   });
 
   test("fetches for lifecycle-owned platform operation ids during transitional states", async () => {
@@ -123,8 +127,14 @@ describe("useAssistantOperationalStatus", () => {
     });
 
     await waitFor(() => {
-      expect(clientGetMock).toHaveBeenCalledTimes(1);
+      expect(operationalStatusReadMock).toHaveBeenCalledTimes(1);
     });
+    expect(operationalStatusReadMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "assistant-operation" },
+        throwOnError: false,
+      }),
+    );
   });
 
   test("does not fetch during unresolved loading without a lifecycle operation id", async () => {
@@ -135,6 +145,6 @@ describe("useAssistantOperationalStatus", () => {
     });
     await settleQueries();
 
-    expect(clientGetMock).not.toHaveBeenCalled();
+    expect(operationalStatusReadMock).not.toHaveBeenCalled();
   });
 });
