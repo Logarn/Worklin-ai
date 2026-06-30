@@ -527,6 +527,33 @@ function assistantPayload(row: AssistantRow, user: UserRow) {
   };
 }
 
+function operationalStatusPayload(row: AssistantRow) {
+  const updatedAt = nowIso();
+  return {
+    state: "active",
+    detail_state: null,
+    poll_after_ms: 30_000,
+    updated_at: updatedAt,
+    active_operation: null,
+    assistant: {
+      id: row.id,
+      name: row.name,
+    },
+    pod: {
+      phase: "running",
+      ready: true,
+      restart_count: 0,
+    },
+    runtime: {
+      reachable: true,
+    },
+    detail: {
+      reason: null,
+      message: null,
+    },
+  };
+}
+
 function upsertAuth0User(claims: Auth0Claims): UserRow {
   const sub = stringClaim(claims.sub);
   const email = stringClaim(claims.email) || `${sub.replace(/[^a-zA-Z0-9_-]/g, "") || "user"}@auth0.local`;
@@ -713,6 +740,24 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
     }
     const assistant = getOrCreateAssistant(user);
     sendJson(req, res, assistantPayload(assistant, user), 201);
+    return true;
+  }
+
+  const operationalStatusMatch =
+    /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(
+      url.pathname,
+    );
+  if (operationalStatusMatch && req.method === "GET") {
+    const assistant = db
+      .query<AssistantRow, [string, string]>(
+        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+      )
+      .get(operationalStatusMatch[1]!, user.id);
+    if (!assistant) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    sendJson(req, res, operationalStatusPayload(assistant));
     return true;
   }
 
