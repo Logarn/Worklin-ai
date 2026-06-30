@@ -57,8 +57,8 @@ export function WorklinAvatarRosterArt({
     >
       {authHero ? (
         <>
-          <div className="absolute inset-x-0 top-4 h-28 bg-gradient-to-b from-[rgba(255,255,255,0.06)] to-transparent" />
-          <div className="absolute top-10 left-1/2 h-28 w-[min(86vw,38rem)] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.18),rgba(255,255,255,0))] blur-3xl" />
+          <div className="absolute top-9 left-1/2 h-32 w-[min(82vw,40rem)] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.12),rgba(255,255,255,0.04)_44%,rgba(255,255,255,0)_74%)] blur-3xl opacity-80" />
+          <div className="absolute top-16 left-1/2 h-20 w-[min(62vw,28rem)] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.08),rgba(255,255,255,0)_72%)] blur-2xl opacity-70" />
         </>
       ) : (
         <>
