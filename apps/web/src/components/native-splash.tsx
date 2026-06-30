@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { WorklinAvatarRosterArt } from "@/components/avatar/worklin-avatar-roster-art";
 import { publicAsset } from "@/utils/public-asset";
 
 /**
@@ -8,8 +9,8 @@ import { publicAsset } from "@/utils/public-asset";
  * - Biometric session recovery (while Face ID / Touch ID is prompting)
  * - Session validation (while checking if the user is still logged in)
  *
- * Centers the Worklin wordmark vertically and displays the character
- * illustrations flush at the bottom of the screen.
+ * Centers the Worklin wordmark vertically and displays the Worklin assistant
+ * portraits flush at the bottom of the screen.
  */
 export function NativeSplash({ children }: { children?: ReactNode }) {
   return (
@@ -22,19 +23,9 @@ export function NativeSplash({ children }: { children?: ReactNode }) {
         className="block"
       />
       {children}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 w-full max-w-[900px] -translate-x-1/2"
-        style={{ bottom: 0 }}
-      >
-        <img
-          src={publicAsset("/login-background-characters.svg")}
-          alt=""
-          width={880}
-          height={182}
-          className="h-auto w-full"
-        />
-      </div>
+      <WorklinAvatarRosterArt
+        className="pointer-events-none absolute bottom-0 left-1/2 w-full max-w-[900px] -translate-x-1/2"
+      />
     </div>
   );
 }

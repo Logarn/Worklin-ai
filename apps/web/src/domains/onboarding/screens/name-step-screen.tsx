@@ -1,16 +1,19 @@
 import { ChevronLeft } from "lucide-react";
 
+import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import { StepIndicatorDots } from "@/domains/onboarding/components/step-indicator-dots";
+import { WorklinAssistantPicker } from "@/domains/onboarding/components/worklin-assistant-picker";
 import { Button } from "@vellumai/design-library/components/button";
 import { Input } from "@vellumai/design-library/components/input";
 
 interface NameStepScreenProps {
   userName: string;
   assistantName: string;
-  displayedAssistantNames: string[];
+  selectedAvatarId: string;
   onUserNameChange: (next: string) => void;
   onAssistantNameChange: (next: string) => void;
+  onAssistantAvatarChange: (avatar: AssistantCharacter) => void;
   onBack?: () => void;
   onContinue: () => void;
   onSkip: () => void;
@@ -21,9 +24,10 @@ interface NameStepScreenProps {
 export function NameStepScreen({
   userName,
   assistantName,
-  displayedAssistantNames,
+  selectedAvatarId,
   onUserNameChange,
   onAssistantNameChange,
+  onAssistantAvatarChange,
   onBack,
   onContinue,
   onSkip,
@@ -89,37 +93,15 @@ export function NameStepScreen({
             />
 
             <div className="flex flex-col gap-2">
-              <Input
-                label="What should I go by?"
-                placeholder="Assistant name"
-                value={assistantName}
-                onChange={(e) => onAssistantNameChange(e.target.value)}
-                fullWidth
-              />
-
-              <p className="text-body-small-default text-[var(--content-tertiary)]">
-                A few to try
+              <p className="text-body-small-default text-[var(--content-secondary)]">
+                Choose your assistant
               </p>
-              <div className="flex flex-wrap gap-2">
-                {displayedAssistantNames.map((name) => {
-                  const isActive = name === assistantName;
-                  return (
-                    <button
-                      key={name}
-                      type="button"
-                      onClick={() => onAssistantNameChange(name)}
-                      aria-pressed={isActive}
-                      className={`cursor-pointer rounded-full border px-3 py-1 text-label-small-default transition-colors ${
-                        isActive
-                          ? "border-[var(--primary-base)] bg-[var(--primary-base)] text-[var(--content-inset)]"
-                          : "border-[var(--border-element)] bg-[var(--surface-lift)] text-[var(--content-secondary)] hover:bg-[var(--surface-base)]"
-                      }`}
-                    >
-                      {name}
-                    </button>
-                  );
-                })}
-              </div>
+              <WorklinAssistantPicker
+                selectedAvatarId={selectedAvatarId}
+                assistantName={assistantName}
+                onSelectAvatar={onAssistantAvatarChange}
+                onAssistantNameChange={onAssistantNameChange}
+              />
             </div>
           </div>
         </div>

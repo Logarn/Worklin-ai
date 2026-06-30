@@ -12,7 +12,7 @@ import {
   WORKLIN_AVATAR_CHOICES,
   type AssistantCharacter,
 } from "@/components/avatar/assistant-character-packs";
-import { PortraitAssetAvatar } from "@/components/avatar/portrait-asset-avatar";
+import { WorklinAssistantPicker } from "@/domains/onboarding/components/worklin-assistant-picker";
 import {
   buildCharacter,
   type CastCharacter,
@@ -59,6 +59,9 @@ export function CastStarter({
     WORKLIN_AVATAR_CHOICES[0]?.id ??
     "";
   const [selectedId, setSelectedId] = useState(initialId);
+  const [assistantName, setAssistantName] = useState(
+    resume?.name || WORKLIN_AVATAR_CHOICES[0]?.shortName || "",
+  );
 
   useEffect(() => {
     onCustomizing?.(false);
@@ -76,9 +79,14 @@ export function CastStarter({
     if (!selectedAvatar) return;
     onChoose(
       castCharacterForAvatar(selectedAvatar),
-      selectedAvatar.name,
+      assistantName.trim() || selectedAvatar.shortName,
       selectedAvatar,
     );
+  };
+
+  const handleSelectAvatar = (avatar: AssistantCharacter) => {
+    setSelectedId(avatar.id);
+    setAssistantName(avatar.shortName);
   };
 
   return (
@@ -87,40 +95,17 @@ export function CastStarter({
         <p className="cast-worklin-starter__eyebrow">Choose your assistant</p>
         <h1 className="cast-panel__title">Who should run Worklin with you?</h1>
         <p className="cast-panel__subtitle">
-          Pick one avatar for your retention assistant. You can change it later.
+          Pick one avatar for your assistant, then rename them if you want. You
+          can change it later.
         </p>
       </header>
 
-      <div className="cast-worklin-starter__grid">
-        {WORKLIN_AVATAR_CHOICES.map((avatar) => {
-          const selected = avatar.id === selectedAvatar?.id;
-          return (
-            <button
-              key={avatar.id}
-              type="button"
-              className={`cast-worklin-starter__card${selected ? " is-selected" : ""}`}
-              aria-pressed={selected}
-              aria-label={`Select ${avatar.name}: ${avatar.subtitle}`}
-              onClick={() => setSelectedId(avatar.id)}
-            >
-              <PortraitAssetAvatar
-                src={avatar.portraitAssetUrl!}
-                poster={avatar.portraitPosterUrl}
-                alt={`${avatar.name} assistant avatar`}
-                size={110}
-                animationEnabled
-              />
-              <span className="cast-worklin-starter__name">{avatar.name}</span>
-              <span className="cast-worklin-starter__subtitle">
-                {avatar.subtitle}
-              </span>
-              <span className="cast-worklin-starter__select">
-                {selected ? "Selected" : "Select"}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      <WorklinAssistantPicker
+        selectedAvatarId={selectedAvatar?.id ?? ""}
+        assistantName={assistantName}
+        onSelectAvatar={handleSelectAvatar}
+        onAssistantNameChange={setAssistantName}
+      />
 
       <button
         type="button"
@@ -128,7 +113,7 @@ export function CastStarter({
         disabled={!selectedAvatar}
         onClick={handleContinue}
       >
-        Continue with {selectedAvatar?.name ?? "this avatar"}
+        Continue with {assistantName.trim() || selectedAvatar?.shortName || "this avatar"}
       </button>
     </div>
   );

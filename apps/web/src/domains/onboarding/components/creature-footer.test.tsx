@@ -8,12 +8,12 @@ afterEach(() => {
 });
 
 describe("CreatureFooter", () => {
-  test("renders the decorative image", () => {
+  test("renders the decorative Worklin avatar lineup", () => {
     const { container } = render(<CreatureFooter />);
-    const img = container.querySelector("img");
-    expect(img).not.toBeNull();
-    expect(img?.getAttribute("alt")).toBe("");
-    expect(img?.getAttribute("src")).toMatch(/login-background-characters\.svg$/);
+    const images = Array.from(container.querySelectorAll("img"));
+    expect(images).toHaveLength(6);
+    expect(images.every((img) => img.getAttribute("alt") === "")).toBe(true);
+    expect(images[0]?.getAttribute("src")).toMatch(/spiky-spark-poster\.jpg$/);
   });
 
   test("pins the container to the physical bottom with `fixed` (not `absolute`)", () => {

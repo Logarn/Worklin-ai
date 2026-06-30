@@ -541,7 +541,7 @@ function CastFlowBody({
       );
       return;
     }
-    await seedAvatar(data.assistantAvatar);
+    await seedAvatar(data.assistantAvatar, data.name);
 
     const { context, assistantName } = buildHandoffFromCompletion(data);
     setPendingPreChatContext(context);

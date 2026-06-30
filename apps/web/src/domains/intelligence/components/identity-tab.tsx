@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAssistant } from "@/assistant/api";
 import { fetchAssistantIdentity } from "@/assistant/identity";
 import { AvatarManagementModal } from "@/components/avatar/avatar-management-modal";
+import { resolveAssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import { ChatAvatar } from "@/components/avatar/chat-avatar";
 import { ConstellationView } from "@/domains/intelligence/components/constellation-view/constellation-view";
 import { SkillDetail } from "@/domains/intelligence/components/skills/skill-detail";
@@ -25,6 +26,7 @@ import { Button, ConfirmDialog } from "@vellumai/design-library";
 
 export interface IdentityCardProps {
   assistantName: string;
+  assistantIdentityLabel?: string | null;
   assistantPersonality: string;
   assistantRole: string;
   hatchedDate: string;
@@ -38,6 +40,7 @@ export interface IdentityCardProps {
 
 export function IdentityCard({
   assistantName,
+  assistantIdentityLabel,
   assistantPersonality,
   assistantRole,
   hatchedDate,
@@ -50,9 +53,11 @@ export function IdentityCard({
 }: IdentityCardProps) {
   return (
     <div
-      className="w-full overflow-hidden rounded-xl"
+      className="w-full overflow-hidden rounded-xl border"
       style={{
-        backgroundColor: "var(--surface-lift)",
+        backgroundColor: "rgba(12, 12, 11, 0.96)",
+        borderColor: "rgba(255, 255, 255, 0.12)",
+        boxShadow: "0 24px 72px rgba(0, 0, 0, 0.32)",
       }}
     >
       <div className="relative p-6 pb-0">
@@ -63,6 +68,14 @@ export function IdentityCard({
           >
             {assistantName}
           </h2>
+          {assistantIdentityLabel ? (
+            <p
+              className="mt-1 text-body-small-default"
+              style={{ color: "var(--content-secondary)" }}
+            >
+              {assistantIdentityLabel}
+            </p>
+          ) : null}
         </div>
         <Button
           type="button"
@@ -355,6 +368,12 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
 
   const assistantName =
     characterProfile?.assistantName || identity?.name || "Assistant";
+  const resolvedCharacter = resolveAssistantCharacter(characterProfile);
+  const assistantIdentityLabel = resolvedCharacter
+    ? assistantName === resolvedCharacter.shortName
+      ? resolvedCharacter.subtitle
+      : `${resolvedCharacter.shortName} • ${resolvedCharacter.subtitle}`
+    : null;
   const assistantPersonality =
     characterProfile?.personalityText || identity?.personality || "";
   const assistantRole = characterProfile?.role || identity?.role || "Not set";
@@ -375,6 +394,7 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
       >
         <IdentityCard
           assistantName={assistantName}
+          assistantIdentityLabel={assistantIdentityLabel}
           assistantPersonality={assistantPersonality}
           assistantRole={assistantRole}
           hatchedDate={hatchedDate}
