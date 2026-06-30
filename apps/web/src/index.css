@@ -207,13 +207,13 @@ body {
     opacity 0.4s ease-out;
 }
 
-/* Failed hatch — tilt the creature ~45° and desaturate toward gray.
- * No `transition`: the error branch mounts a fresh MorphAvatar rather than
+/* Failed hatch — keep the roster muted instead of rotating the full panel.
+ * No `transition`: the error branch mounts a fresh image rather than
  * swapping classes on a persistent node. */
 .onboarding-avatar-failed {
-  transform: rotate(45deg);
+  transform: scale(0.98);
   filter: grayscale(1) brightness(0.55);
-  opacity: 1;
+  opacity: 0.9;
 }
 
 /* Billing onboarding modal — pulsing glow behind the loading spinner */
