@@ -23,4 +23,11 @@ describe("WorklinAvatarRosterArt", () => {
     expect(art?.getAttribute("aria-hidden")).toBe("true");
     expect(art?.className).toContain("pointer-events-none");
   });
+
+  test("renders the auth hero variant without dropping avatars", () => {
+    const { container } = render(<WorklinAvatarRosterArt variant="authHero" />);
+    const images = Array.from(container.querySelectorAll("img"));
+    expect(images).toHaveLength(WORKLIN_AVATAR_CHOICES.length);
+    expect(container.firstElementChild?.className).toContain("overflow-visible");
+  });
 });
