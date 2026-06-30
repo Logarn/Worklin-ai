@@ -590,19 +590,21 @@ function invalidApiKeyClassification(
 /**
  * Classification for a genuinely-missing provider credential — vault has
  * no entry for the resolved connection's `auth.credential`, or no
- * provider is registered at all. The macOS chat banner renders this as
- * "API key required" with an "Open Settings" CTA. Distinct from
+ * provider is registered at all. The chat banner renders this as
+ * provider setup guidance with an "Open Settings" CTA. Distinct from
  * `PROVIDER_INVALID_KEY` (where a key exists but was rejected).
  */
 function providerNotConfiguredClassification(
   attribution?: ConversationErrorAttribution,
 ): Omit<ClassifiedConversationError, "debugDetails"> {
   const target = describeAttribution(attribution);
+  const action =
+    "Choose a provider in Settings → Models & Services, then connect ChatGPT or add an API key.";
   return {
     code: "PROVIDER_NOT_CONFIGURED",
     userMessage: target
-      ? `No API key configured${target}. Add one in Settings → Models & Services to start chatting.`
-      : "No API key configured for inference. Add one in Settings → Models & Services to start chatting.",
+      ? `Worklin needs an AI provider${target} before it can answer. ${action}`
+      : `Worklin needs an AI provider before it can answer. ${action}`,
     retryable: true,
     errorCategory: "provider_not_configured",
     ...(attribution?.connectionName

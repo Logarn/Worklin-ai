@@ -19,7 +19,13 @@ import {
     readSelectedVersion,
     writeSelectedVersion,
 } from "@/domains/onboarding/prefs";
-import { applyPendingProviderKey } from "@/domains/onboarding/provider-key";
+import {
+    applyChatgptSubscriptionProvider,
+    applyPendingProviderKey,
+    pendingProviderRequiresOAuth,
+    peekPendingProviderKey,
+} from "@/domains/onboarding/provider-key";
+import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import { getLocalGatewayUrl, getPlatformRuntimeUrl, isLocalMode, loadLockfile, primeLocalGatewayConnection, saveLockfileAssistant } from "@/lib/local-mode";
 import { clearGatewayToken } from "@/lib/auth/gateway-session";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
@@ -51,6 +57,9 @@ let localHatchPromise: Promise<import("@/runtime/local-mode-host").LocalHatchRes
 let platformHatchPromise: Promise<import("@/assistant/api").HatchResult> | null = null;
 
 type HatchPhase = "initializing" | "provisioning" | "connecting" | "ready";
+type ProviderSetupState =
+  | { kind: "idle" }
+  | { kind: "chatgpt"; assistantId: string };
 
 const PHASE_TARGET: Record<HatchPhase, number> = {
   initializing: 0,
@@ -123,6 +132,9 @@ export function HatchingScreen() {
   const [phase, setPhase] = useState<HatchPhase>("initializing");
   const [error, setError] = useState<string | null>(null);
   const [platformHostedDisabled, setPlatformHostedDisabled] = useState(false);
+  const [providerSetup, setProviderSetup] = useState<ProviderSetupState>({
+    kind: "idle",
+  });
   const [attempt, setAttempt] = useState(0);
   const [displayProgress, setDisplayProgress] = useState<number>(0);
   const [animationEpoch, setAnimationEpoch] = useState(0);
@@ -138,6 +150,19 @@ export function HatchingScreen() {
     phaseRef.current = next;
     setPhase(next);
     setAnimationEpoch((n) => n + 1);
+  }, []);
+
+  const finishReadyVisualState = useCallback(() => {
+    try {
+      writeSelectedVersion("");
+    } catch (err) {
+      captureError(err, { context: "onboarding_mark_completed" });
+    }
+    setDisplayProgress(1);
+    displayProgressRef.current = 1;
+    segmentStartRef.current = 1;
+    setPhase("ready");
+    phaseRef.current = "ready";
   }, []);
 
 
@@ -183,16 +208,7 @@ export function HatchingScreen() {
     const pinnedVersion = readSelectedVersion();
 
     const handleHatchReady = () => {
-      try {
-        writeSelectedVersion("");
-      } catch (err) {
-        captureError(err, { context: "onboarding_mark_completed" });
-      }
-      setDisplayProgress(1);
-      displayProgressRef.current = 1;
-      segmentStartRef.current = 1;
-      setPhase("ready");
-      phaseRef.current = "ready";
+      finishReadyVisualState();
       navigateTimer = setTimeout(() => {
         if (cancelled) return;
         void (async () => {
@@ -222,6 +238,22 @@ export function HatchingScreen() {
     const persistHatchAvatar = (assistantId: string): Promise<void> =>
       seedHatchAvatar(assistantId, hatchTraits, queryClient);
 
+    const applyProviderBeforeReady = async (
+      assistantId: string,
+    ): Promise<boolean> => {
+      const pendingProvider = peekPendingProviderKey();
+      if (pendingProviderRequiresOAuth(pendingProvider)) {
+        setProviderSetup({ kind: "chatgpt", assistantId });
+        return false;
+      }
+      try {
+        await applyPendingProviderKey(assistantId);
+      } catch (err) {
+        captureError(err, { context: "onboarding_apply_provider_key" });
+      }
+      return true;
+    };
+
     const startHatch = async () => {
       transitionPhase("provisioning");
 
@@ -250,6 +282,10 @@ export function HatchingScreen() {
                   useOrganizationStore.getState().currentOrganizationId ?? undefined,
               });
             }
+            const providerReady = await applyProviderBeforeReady(
+              existing.data.id,
+            );
+            if (!providerReady) return;
             handleHatchReady();
             return;
           }
@@ -339,11 +375,6 @@ export function HatchingScreen() {
           // freshly hatched assistant. Non-blocking on failure — onboarding
           // proceeds and the user can fix it in Settings.
           if (result.assistantId) {
-            try {
-              await applyPendingProviderKey(result.assistantId);
-            } catch (err) {
-              captureError(err, { context: "onboarding_apply_provider_key" });
-            }
             useResolvedAssistantsStore.getState().upsertFromApi({
               id: result.assistantId,
               name: result.assistantId,
@@ -353,6 +384,10 @@ export function HatchingScreen() {
             } as Assistant);
             void setSelectedAssistant(result.assistantId);
             void persistHatchAvatar(result.assistantId);
+            const providerReady = await applyProviderBeforeReady(
+              result.assistantId,
+            );
+            if (!providerReady) return;
           }
 
           handleHatchReady();
@@ -480,6 +515,9 @@ export function HatchingScreen() {
               pollTimer = null;
             }
             if (cancelled) return;
+
+            const providerReady = await applyProviderBeforeReady(assistantId);
+            if (!providerReady) return;
           }
 
           handleHatchReady();
@@ -515,6 +553,8 @@ export function HatchingScreen() {
     sessionStatus,
     navigate,
     queryClient,
+    finishReadyVisualState,
+    hostingParam,
     transitionPhase,
     useLocalHatch,
   ]);
@@ -541,6 +581,60 @@ export function HatchingScreen() {
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
   }, [animationEpoch]);
+
+  if (providerSetup.kind === "chatgpt") {
+    return (
+      <OnboardingLayout>
+        <div className={`mx-auto flex w-full max-w-xl flex-col items-center ${electron ? "min-h-full px-8 pt-21 pb-28 electron-prechat-type" : "min-h-screen justify-center px-6 pb-40"} text-[var(--content-default)]`}>
+          <div
+            className="w-full"
+            style={{ animation: "fadeInUp 0.4s ease-out both" }}
+          >
+            <h1 className={electron ? "text-title-large text-center" : "text-center text-3xl font-semibold tracking-tight"}>
+              Connect ChatGPT
+            </h1>
+            <p className={`text-center text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}>
+              Sign in so Worklin can use your ChatGPT subscription for this
+              assistant.
+            </p>
+            <div className="mt-8">
+              <ChatgptOAuthSection
+                assistantId={providerSetup.assistantId}
+                onConnected={() => {
+                  void (async () => {
+                    try {
+                      await applyChatgptSubscriptionProvider(
+                        providerSetup.assistantId,
+                      );
+                    } catch (err) {
+                      captureError(err, {
+                        context: "onboarding_apply_chatgpt_subscription",
+                      });
+                    }
+                    setProviderSetup({ kind: "idle" });
+                    finishReadyVisualState();
+                    await lifecycleService.checkAssistant(
+                      providerSetup.assistantId,
+                    );
+                    if (isNativePlatform()) {
+                      lifecycleService.markExpectingFirstMessage();
+                      void navigate(`${routes.assistant}?onboarding=1`, {
+                        replace: true,
+                      });
+                      return;
+                    }
+                    void navigate(routes.onboarding.prechat, {
+                      replace: true,
+                    });
+                  })();
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      </OnboardingLayout>
+    );
+  }
 
   if (error) {
     return (

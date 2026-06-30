@@ -461,7 +461,7 @@ describe("classifyConversationError", () => {
       const result = classifyConversationError(err, baseCtx);
       expect(result.code).toBe("PROVIDER_NOT_CONFIGURED");
       expect(result.userMessage).toBe(
-        "No API key configured for inference. Add one in Settings → Models & Services to start chatting.",
+        "Worklin needs an AI provider before it can answer. Choose a provider in Settings → Models & Services, then connect ChatGPT or add an API key.",
       );
       expect(result.retryable).toBe(true);
       expect(result.errorCategory).toBe("provider_not_configured");

@@ -16,7 +16,7 @@ import {
 } from "@/generated/daemon/sdk.gen";
 
 import { providerSupportsPlatformAuth, PROVIDER_DISPLAY_NAMES } from "@/assistant/llm-model-catalog";
-import { ChatgptOAuthSection } from "@/domains/settings/ai/chatgpt-oauth-section";
+import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import { deriveProviderDefaults } from "@/domains/settings/ai/profile-prefill";
 import type { Auth, ConnectionProvider, InferenceProviderconnectionsPostData, ProviderConnection } from "@/generated/daemon/types.gen";
 import { ProviderEditorApiKeySection } from "@/domains/settings/ai/provider-editor-api-key-section";

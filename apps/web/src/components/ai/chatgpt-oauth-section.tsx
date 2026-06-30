@@ -19,8 +19,8 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 // ---------------------------------------------------------------------------
 //
 // Self-contained OAuth flow for connecting a ChatGPT subscription.
-// Renders inside the provider editor modal when auth type is
-// "oauth_subscription". Manages a 6-state machine:
+// Renders anywhere Worklin needs ChatGPT subscription setup. Manages a
+// 6-state machine:
 //   idle → starting → paste_url → exchanging → completed | failed
 //
 // On successful exchange the component calls `onConnected` with the
@@ -244,8 +244,8 @@ export function ChatgptOAuthSection({
         as="p"
         className="text-[var(--content-tertiary)]"
       >
-        Connect your ChatGPT subscription to use OpenAI models without an API
-        key.
+        Use a ChatGPT subscription instead of an API key. You will sign in in
+        your browser, then return here to finish.
       </Typography>
 
       {oauthState === "idle" || oauthState === "paste_url" ? (
@@ -260,23 +260,22 @@ export function ChatgptOAuthSection({
                   : "text-[var(--content-secondary)]"
               }
             >
-              1. Prepare a ChatGPT sign-in link
+              1. Create a secure ChatGPT sign-in link
             </Typography>
             <Typography
               variant="body-small-default"
               as="p"
               className="text-[var(--content-secondary)]"
             >
-              2. Open it and sign in. Worklin will finish automatically when
-              the local callback returns.
+              2. Open the link and sign in to ChatGPT.
             </Typography>
             <Typography
               variant="body-small-default"
               as="p"
               className="text-[var(--content-secondary)]"
             >
-              3. Worklin will finish automatically after the local callback
-              returns
+              3. Return here. If the browser lands on a page that does not
+              load, paste that page URL below.
             </Typography>
           </div>
 
@@ -286,14 +285,18 @@ export function ChatgptOAuthSection({
               size="compact"
               onClick={() => void handleSignIn()}
             >
-              Prepare ChatGPT Sign-in
+              Create ChatGPT Sign-in Link
             </Button>
           ) : (
             <>
               {authorizeUrl ? (
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outlined" size="compact" asChild>
-                    <a href={authorizeUrl}>
+                    <a
+                      href={authorizeUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
                       Open ChatGPT Sign-in
                     </a>
                   </Button>
@@ -312,8 +315,8 @@ export function ChatgptOAuthSection({
                 className="text-[var(--content-tertiary)]"
               >
                 {callbackListening
-                  ? "The paste box is only a fallback if the browser gets stuck on the local callback page."
-                  : "Automatic callback is unavailable right now, usually because port 1455 is already in use. Paste the callback URL below to finish."}
+                  ? "After sign-in, return to this screen. If the browser shows a page that does not load, paste that page URL below."
+                  : "After sign-in, paste the page URL below to finish."}
               </Typography>
               <Input
                 value={pastedUrl}

@@ -49,7 +49,7 @@ mock.module("@/stores/client-feature-flag-store", () => ({
   useClientFeatureFlagStore: { use: { stringFlags: () => ({}) } },
 }));
 
-// Activation-flow arm — drives the post-consent destination (cast → prechat).
+// Activation-flow arm — Start waits for this to settle before advancing.
 let activationArm = "control";
 let activationSettled = true;
 mock.module("@/hooks/use-client-feature-flag-sync", () => ({
@@ -125,28 +125,42 @@ describe("PrivacyScreen — Start navigation", () => {
     expect(emitFunnelStepCompletedMock).not.toHaveBeenCalled();
   });
 
-  test("normal mode persists consent and advances to hatching", () => {
+  test("normal mode persists consent and advances to provider selection", () => {
     searchParamsValue = new URLSearchParams();
     render(<PrivacyScreen />);
 
     clickStart();
 
     expect(saveConsentMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith(routes.onboarding.hatching);
+    expect(navigateMock).toHaveBeenCalledWith(
+      `${routes.onboarding.provider}?next=hatching`,
+    );
   });
 
-  test("cast arm persists consent and skips hatching for prechat", () => {
+  test("cast arm still advances through provider selection before hatching", () => {
     searchParamsValue = new URLSearchParams();
     activationArm = "personal-page";
     render(<PrivacyScreen />);
 
     clickStart();
 
-    // The cast flow owns its own provisioning, so post-consent goes straight to
-    // prechat (no standalone hatching step).
     expect(saveConsentMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith(routes.onboarding.prechat);
+    expect(navigateMock).toHaveBeenCalledWith(
+      `${routes.onboarding.provider}?next=hatching`,
+    );
     expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.hatching);
+  });
+
+  test("hosting choice keeps the direct hatching route", () => {
+    searchParamsValue = new URLSearchParams("hosting=docker");
+    render(<PrivacyScreen />);
+
+    clickStart();
+
+    expect(saveConsentMock).toHaveBeenCalledTimes(1);
+    expect(navigateMock).toHaveBeenCalledWith(
+      `${routes.onboarding.hatching}?hosting=docker`,
+    );
   });
 
   test("Start is disabled until the activation arm settles", () => {
@@ -155,8 +169,7 @@ describe("PrivacyScreen — Start navigation", () => {
     render(<PrivacyScreen />);
 
     // A provisional arm must not be acted on: holding Start prevents a targeted
-    // personal-page user from being routed down the hatching path on the stale
-    // `control` default before the flag resolves.
+    // personal-page user from being routed before the final arm resolves.
     const start = screen.getByText("Start") as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     clickStart();

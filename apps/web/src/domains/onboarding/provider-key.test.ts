@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
   consumePendingProviderKey,
+  pendingProviderAuthType,
+  pendingProviderRequiresOAuth,
   peekPendingProviderKey,
   setPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
@@ -41,5 +43,24 @@ describe("pending provider key", () => {
   test("keyless providers store an empty key", () => {
     setPendingProviderKey({ provider: "ollama", key: "" });
     expect(consumePendingProviderKey()).toEqual({ provider: "ollama", key: "" });
+  });
+
+  test("ChatGPT subscription stores OAuth intent without an API key", () => {
+    setPendingProviderKey({
+      provider: "openai",
+      authType: "oauth_subscription",
+      key: "",
+    });
+
+    const pending = peekPendingProviderKey();
+    expect(pending).toEqual({
+      provider: "openai",
+      authType: "oauth_subscription",
+      key: "",
+    });
+    expect(pendingProviderRequiresOAuth(pending)).toBe(true);
+    expect(pending ? pendingProviderAuthType(pending) : null).toBe(
+      "oauth_subscription",
+    );
   });
 });

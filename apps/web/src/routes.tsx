@@ -191,6 +191,10 @@ export const routeTree = [
               lazy: { Component: () => import("@/domains/onboarding/pages/privacy-screen").then((m) => m.PrivacyScreen) },
             },
             {
+              path: "onboarding/provider",
+              lazy: { Component: () => import("@/domains/onboarding/pages/api-key-screen").then((m) => m.ApiKeyScreen) },
+            },
+            {
               path: "onboarding/prechat",
               lazy: { Component: () => import("@/domains/onboarding/pages/prechat-route").then((m) => m.PreChatRoute) },
             },

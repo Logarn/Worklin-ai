@@ -4,7 +4,7 @@ import { withErrorHandling } from "../runtime/middleware/error-handler.js";
 import { ConfigError, ProviderNotConfiguredError } from "../util/errors.js";
 
 describe("withErrorHandling – friendly error messages", () => {
-  test("ProviderNotConfiguredError returns actionable message for anthropic", async () => {
+  test("ProviderNotConfiguredError returns provider-neutral setup guidance", async () => {
     const response = await withErrorHandling("test", async () => {
       throw new ProviderNotConfiguredError("anthropic", []);
     });
@@ -14,11 +14,14 @@ describe("withErrorHandling – friendly error messages", () => {
       error: { code: string; message: string };
     };
     expect(body.error.code).toBe("UNPROCESSABLE_ENTITY");
-    expect(body.error.message).toContain("No API key configured");
-    expect(body.error.message).toContain("keys set anthropic");
+    expect(body.error.message).toContain("Worklin needs an AI provider");
+    expect(body.error.message).toContain("connect ChatGPT");
+    expect(body.error.message).toContain("add an API key");
+    expect(body.error.message).not.toContain("keys set");
+    expect(body.error.message).not.toContain("anthropic");
   });
 
-  test("ProviderNotConfiguredError tailors keys set command to requested provider", async () => {
+  test("ProviderNotConfiguredError does not hard-code a single provider", async () => {
     const response = await withErrorHandling("test", async () => {
       throw new ProviderNotConfiguredError("openai", []);
     });
@@ -27,7 +30,8 @@ describe("withErrorHandling – friendly error messages", () => {
     const body = (await response.json()) as {
       error: { code: string; message: string };
     };
-    expect(body.error.message).toContain("keys set openai");
+    expect(body.error.message).toContain("Choose a provider");
+    expect(body.error.message).toContain("Settings → Models & Services");
     expect(body.error.message).not.toContain("keys set anthropic");
   });
 

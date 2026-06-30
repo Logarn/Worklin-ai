@@ -2,10 +2,7 @@
  * Centralized error handling for runtime HTTP request dispatch.
  */
 
-import {
-  ConfigError,
-  ProviderNotConfiguredError,
-} from "../../util/errors.js";
+import { ConfigError, ProviderNotConfiguredError } from "../../util/errors.js";
 import { getLogger } from "../../util/logger.js";
 import { httpError } from "../http-errors.js";
 
@@ -26,7 +23,7 @@ export async function withErrorHandling(
       log.warn({ err, endpoint }, "No LLM provider configured");
       return httpError(
         "UNPROCESSABLE_ENTITY",
-        `No API key configured for ${err.requestedProvider}. Run \`keys set ${err.requestedProvider} <key>\` or configure it from the Settings page under API Keys.`,
+        "Worklin needs an AI provider before it can answer. Choose a provider in Settings → Models & Services, then connect ChatGPT or add an API key.",
         422,
       );
     }

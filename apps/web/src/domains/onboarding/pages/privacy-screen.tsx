@@ -76,16 +76,10 @@ export function PrivacyScreen() {
   const isNative = useIsNativePlatform();
   const preChatExperimentArm =
     useClientFeatureFlagStore.use.stringFlags().preChatOnboardingExperiment20260606 ?? "control";
-  // The cast / personal-page activation arm owns its own provisioning: its
-  // pre-chat flow background-hatches the assistant, so post-consent it skips
-  // the standalone hatching screen and goes straight to prechat. Every other
-  // arm (control / variant-a) keeps the hatching step.
-  // `arm` is provisionally `control` until `settled` — gating Start on
-  // `settled` ensures a targeted personal-page user can't accept consent and
-  // get routed down the non-cast (hatching) path before their arm resolves.
-  const { arm: activationArm, settled: activationSettled } =
-    useActivationFlowArm();
-  const isCastArm = activationArm === "personal-page";
+  // The activation arm is provisionally `control` until `settled`. Gating
+  // Start on `settled` prevents a targeted personal-page user from accepting
+  // consent before the final onboarding branch is known.
+  const { settled: activationSettled } = useActivationFlowArm();
   const preferredFunnelVariant =
     onboardingFunnelVariantFromExperiment(preChatExperimentArm);
   const [shareAnalytics, setShareAnalyticsReal] = useShareAnalytics();
@@ -126,22 +120,18 @@ export function PrivacyScreen() {
       });
     }
 
-    // Cast arm: skip the standalone hatching screen — the prechat flow
-    // background-hatches its own assistant.
-    if (isCastArm) {
-      void navigate(routes.onboarding.prechat);
+    const hostingParam = searchParams.get("hosting");
+    if (!hostingParam) {
+      void navigate(`${routes.onboarding.provider}?next=hatching`);
       return;
     }
-
-    const hostingParam = searchParams.get("hosting");
     const params = new URLSearchParams();
-    if (hostingParam) params.set("hosting", hostingParam);
+    params.set("hosting", hostingParam);
     const qs = params.toString();
     void navigate(`${routes.onboarding.hatching}${qs ? `?${qs}` : ""}`);
   }, [
     aiDataConsent,
     hasPlatformSession,
-    isCastArm,
     isNative,
     isPreview,
     navigate,
@@ -281,9 +271,8 @@ export function PrivacyScreen() {
             disabled={
               !tosAccepted ||
               !aiDataConsent ||
-              // Don't act on a provisional arm: hold Start until the activation
-              // flag settles so the cast-vs-hatching decision is final. Preview
-              // doesn't branch on the arm, so it isn't gated.
+              // Don't act on a provisional activation flag. Preview doesn't
+              // branch on the arm, so it isn't gated.
               (!isPreview && !activationSettled)
             }
             onClick={onStart}
