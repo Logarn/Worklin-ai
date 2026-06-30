@@ -532,6 +532,10 @@ describe("onboarding lifecycle sync", () => {
 
     render(<HatchingScreen />);
 
+    expect(
+      screen.getByTestId("hatching-avatar-sequence-gif").getAttribute("src"),
+    ).toContain("images/avatars/worklin-hatching-avatar-sequence.gif");
+
     await waitFor(() => expect(getAssistantHealthzMock).toHaveBeenCalled(), {
       timeout: 2_000,
     });

@@ -1,7 +1,7 @@
 import { captureError } from "@/lib/sentry/capture-error";
 import * as Sentry from "@sentry/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { getAssistant, getAssistantHealthz, hatchAssistant, type Assistant } from "@/assistant/api";
@@ -39,10 +39,10 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useOrganizationStore } from "@/stores/organization-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import type { CharacterTraits } from "@/types/avatar";
+import { publicAsset } from "@/utils/public-asset";
 import { extractErrorMessage } from "@/utils/api-errors";
 import { BUNDLED_COMPONENTS } from "@/utils/avatar-bundled-components";
 import { randomCharacterTraits } from "@/utils/avatar-random";
-import { composeSvg } from "@/utils/avatar-svg-compositor";
 import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
 import { ProgressBar } from "@vellumai/design-library/components/progress-bar";
@@ -50,6 +50,9 @@ import { ProgressBar } from "@vellumai/design-library/components/progress-bar";
 const POLL_INTERVAL_MS = 3000;
 const COMPLETION_NAVIGATE_DELAY_MS = 800;
 const MAX_HATCH_WAIT_MS = 300_000;
+const HATCHING_AVATAR_SEQUENCE_GIF = publicAsset(
+  "/images/avatars/worklin-hatching-avatar-sequence.gif",
+);
 
 // Module-level promises so HMR remounts and StrictMode double-mounts
 // can await the same in-flight hatch instead of spawning duplicates.
@@ -119,16 +122,6 @@ export function HatchingScreen() {
   const [hatchTraits] = useState<CharacterTraits>(() =>
     randomCharacterTraits(BUNDLED_COMPONENTS),
   );
-  const avatarSvgDataUrl = useMemo(() => {
-    const svg = composeSvg(
-      BUNDLED_COMPONENTS,
-      hatchTraits.bodyShape,
-      hatchTraits.eyeStyle,
-      hatchTraits.color,
-      320,
-    );
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-  }, [hatchTraits]);
   const [phase, setPhase] = useState<HatchPhase>("initializing");
   const [error, setError] = useState<string | null>(null);
   const [platformHostedDisabled, setPlatformHostedDisabled] = useState(false);
@@ -668,11 +661,12 @@ export function HatchingScreen() {
             </div>
           )}
           <img
-            src={avatarSvgDataUrl}
+            src={HATCHING_AVATAR_SEQUENCE_GIF}
             alt=""
-            width={160}
-            height={160}
-            className={`${electron ? "my-auto py-8" : "my-16"} onboarding-avatar-failed`}
+            width={192}
+            height={192}
+            data-testid="hatching-avatar-sequence-gif"
+            className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[192px] rounded-[28px] border border-white/6 shadow-[0_18px_48px_rgba(0,0,0,0.32)] onboarding-avatar-failed`}
           />
           <div className={`flex w-full flex-col ${electron ? "gap-2.5 max-w-[280px]" : "gap-2 max-w-sm"}`}>
             <Button
@@ -738,11 +732,12 @@ export function HatchingScreen() {
           </p>
         )}
         <img
-          src={avatarSvgDataUrl}
+          src={HATCHING_AVATAR_SEQUENCE_GIF}
           alt=""
-          width={160}
-          height={160}
-          className={`${electron ? "my-auto py-8" : "my-16"} ${phase === "ready" ? "onboarding-avatar-awake" : "onboarding-avatar-pulse"}`}
+          width={192}
+          height={192}
+          data-testid="hatching-avatar-sequence-gif"
+          className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[192px] rounded-[28px] border border-white/6 shadow-[0_18px_48px_rgba(0,0,0,0.32)] ${phase === "ready" ? "onboarding-avatar-awake" : "onboarding-avatar-pulse"}`}
         />
         <ProgressBar
           value={displayProgress}
