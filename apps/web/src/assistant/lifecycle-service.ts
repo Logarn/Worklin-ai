@@ -182,6 +182,7 @@ class AssistantLifecycleService {
     if (useResolvedAssistantsStore.getState().activeAssistantId !== null) {
       useResolvedAssistantsStore.getState().setActiveAssistantId(null);
     }
+    setSelfHostedConnection(null);
     this.setOperationalStatusAssistantId(null);
     this.cancelProbeTimer();
     this.probeLoopAssistantId = null;
@@ -226,9 +227,6 @@ class AssistantLifecycleService {
     if (isGatewayAuthMode()) {
       this.applyGatewayAuthShortCircuit();
       return;
-    }
-    if (this.inputs.hasPlatformSession) {
-      setSelfHostedConnection(null);
     }
     if (!this.inputs.isOrgReady) return;
     await this.checkAssistant();
@@ -566,6 +564,7 @@ class AssistantLifecycleService {
       // No assistant found. Don't hatch or redirect — the navigation
       // resolver's requireAssistant step handles routing to the
       // correct onboarding screen. Just leave the current state as-is.
+      setSelfHostedConnection(null);
       return;
     }
 

@@ -290,6 +290,39 @@ describe("lifecycleService — server state projection", () => {
       isLocal: false,
     });
   });
+
+  test("platform-session reconciliation does not clear hosted runtime routing before refresh", async () => {
+    getAssistantMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      data: {
+        id: "asst-hosted-runtime",
+        status: "active",
+        is_local: false,
+        ingress_url: "https://worklin-ai.vercel.app",
+        platform_actor_token: "actor-token-1",
+        maintenance_mode: { enabled: false },
+      },
+    }));
+    lifecycleService.setInputs({
+      ...baseInputs,
+      hasPlatformSession: true,
+      isOrgReady: true,
+      queryClient: makeQueryClient(),
+    });
+
+    await lifecycleService.checkAssistant();
+    setSelfHostedConnectionMock.mockClear();
+    await lifecycleService.respondToInputs();
+
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith({
+      url: "https://worklin-ai.vercel.app",
+      token: "actor-token-1",
+    });
+    expect(
+      setSelfHostedConnectionMock.mock.calls.some((call) => call[0] === null),
+    ).toBe(false);
+  });
 });
 describe("lifecycleService — bootstrap branches", () => {
   test("respondToInputs with an unauthenticated session clears both stores (safety-net for token-expiry-style auth flips that don't call logout())", async () => {
@@ -328,6 +361,7 @@ describe("lifecycleService — bootstrap branches", () => {
     expect(
       useAssistantLifecycleStore.getState().operationalStatusAssistantId,
     ).toBeNull();
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith(null);
     expect(useAssistantLifecycleStore.getState().assistantState).toEqual({
       kind: "loading",
     });
@@ -457,6 +491,7 @@ describe("lifecycleService — 404 (no assistant)", () => {
     expect(useAssistantLifecycleStore.getState().assistantState.kind).toBe(
       "loading",
     );
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith(null);
   });
 
   test("404 does not mark expecting-first-message", async () => {
