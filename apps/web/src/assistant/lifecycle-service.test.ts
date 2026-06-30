@@ -236,7 +236,7 @@ describe("lifecycleService — server state projection", () => {
         status: "active",
         is_local: true,
         ingress_url: "https://gateway.example/path",
-        platform_actor_token: "tok",
+        platform_actor_token: null,
       },
     }));
     lifecycleService.setInputs({
@@ -248,7 +248,7 @@ describe("lifecycleService — server state projection", () => {
 
     expect(setSelfHostedConnectionMock).toHaveBeenCalledWith({
       url: "https://gateway.example/path",
-      token: "tok",
+      token: null,
     });
     expect(
       useResolvedAssistantsStore.getState().activeAssistantId,
@@ -256,6 +256,39 @@ describe("lifecycleService — server state projection", () => {
     expect(useAssistantLifecycleStore.getState().assistantState.kind).toBe(
       "self_hosted",
     );
+  });
+
+  test("platform-managed local-looking result primes runtime routing but stays active", async () => {
+    getAssistantMock.mockImplementationOnce(async () => ({
+      ok: true,
+      status: 200,
+      data: {
+        id: "asst-hosted-proxy",
+        status: "active",
+        is_local: true,
+        ingress_url: "https://worklin-ai.vercel.app",
+        platform_actor_token: "actor-token-1",
+        maintenance_mode: { enabled: false },
+      },
+    }));
+    lifecycleService.setInputs({
+      ...baseInputs,
+      queryClient: makeQueryClient(),
+    });
+
+    await lifecycleService.checkAssistant();
+
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith({
+      url: "https://worklin-ai.vercel.app",
+      token: "actor-token-1",
+    });
+    expect(
+      useResolvedAssistantsStore.getState().activeAssistantId,
+    ).toBe("asst-hosted-proxy");
+    expect(useAssistantLifecycleStore.getState().assistantState).toMatchObject({
+      kind: "active",
+      isLocal: false,
+    });
   });
 });
 describe("lifecycleService — bootstrap branches", () => {

@@ -514,8 +514,8 @@ describe("onboarding lifecycle sync", () => {
       assistantResult(
         ++assistantCalls === 1 ? "initializing" : "active",
         {
-          is_local: true,
-          ingress_url: "https://worklin-ai-production.up.railway.app",
+          is_local: false,
+          ingress_url: "https://worklin-ai.vercel.app",
           platform_actor_token: "actor-token-1",
         },
       );
@@ -524,7 +524,7 @@ describe("onboarding lifecycle sync", () => {
         [{ url?: string | null; token?: string | null }]
       >;
       sawConnectionBeforeHealthz = connectionCalls.some(([connection]) =>
-        connection?.url === "https://worklin-ai-production.up.railway.app" &&
+        connection?.url === "https://worklin-ai.vercel.app" &&
         connection?.token === "actor-token-1"
       );
       return { ok: true, status: 200, data: { status: "ok" } };
@@ -538,11 +538,11 @@ describe("onboarding lifecycle sync", () => {
     expect(sawConnectionBeforeHealthz).toBe(true);
   });
 
-  test("an already-active self-hosted assistant skips rehatching", async () => {
+  test("an already-active hosted assistant skips rehatching", async () => {
     getAssistantImpl = async () =>
       assistantResult("active", {
-        is_local: true,
-        ingress_url: "https://worklin-ai-production.up.railway.app",
+        is_local: false,
+        ingress_url: "https://worklin-ai.vercel.app",
         platform_actor_token: "actor-token-1",
       });
 

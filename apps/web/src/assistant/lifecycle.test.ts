@@ -56,6 +56,36 @@ describe("resolveAssistantLifecycleState — transport-shaped failures (LUM-2402
       resolveAssistantLifecycleState({ ok: false, status: 404, error: {} }),
     ).toEqual({ kind: "auto_hatch" });
   });
+
+  test("platform-managed local-looking active assistants resolve as active", () => {
+    expect(
+      resolveAssistantLifecycleState({
+        ok: true,
+        status: 200,
+        data: {
+          status: "active",
+          is_local: true,
+          ingress_url: "https://worklin-ai-production.up.railway.app",
+          platform_actor_token: "actor-token-1",
+        },
+      } as Parameters<typeof resolveAssistantLifecycleState>[0]),
+    ).toEqual({ kind: "active" });
+  });
+
+  test("local-only active assistants still resolve as self-hosted", () => {
+    expect(
+      resolveAssistantLifecycleState({
+        ok: true,
+        status: 200,
+        data: {
+          status: "active",
+          is_local: true,
+          ingress_url: null,
+          platform_actor_token: null,
+        },
+      } as Parameters<typeof resolveAssistantLifecycleState>[0]),
+    ).toEqual({ kind: "self_hosted" });
+  });
 });
 
 describe("isTransportShapedError", () => {

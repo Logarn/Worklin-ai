@@ -38,6 +38,10 @@ import {
   resolveAssistantLifecycleState,
   TRANSPORT_ERROR_MESSAGE,
 } from "@/assistant/lifecycle";
+import {
+  hostedRuntimeConnection,
+  isPlatformManagedAssistant,
+} from "@/assistant/hosting";
 import { subscribe } from "@/lib/event-bus";
 import {
   ASSISTANT_QUERY_KEY,
@@ -460,9 +464,9 @@ class AssistantLifecycleService {
    * both short-circuit through this; keep them in lockstep.
    */
   /**
-   * Project a managed-active server result. Drops any stale
-   * self-hosted connection (runtime calls belong on the platform
-   * now, and we don't want a leftover token attached), sets the
+   * Project a managed-active server result. Hosted control-plane rows
+   * may still provide a runtime gateway descriptor for assistant-scoped
+   * daemon calls; otherwise drop any stale self-hosted connection. Sets the
    * id BEFORE the kind flips so the conversation list query and
    * the unreachable-bus interceptor have a target on first
    * `kind === "active"` render, then transitions.
@@ -471,14 +475,16 @@ class AssistantLifecycleService {
     result: GetAssistantResult & { ok: true },
   ): void {
     const mm = result.data.maintenance_mode;
-    setSelfHostedConnection(null);
+    setSelfHostedConnection(hostedRuntimeConnection(result.data));
     this.setOperationalStatusAssistantId(result.data.id);
     const store = useResolvedAssistantsStore.getState();
     store.upsertFromApi(result.data);
     store.setActiveAssistantId(result.data.id);
     this.transition({
       kind: "active",
-      isLocal: result.data.is_local ?? false,
+      isLocal:
+        result.data.is_local === true &&
+        !isPlatformManagedAssistant(result.data),
       maintenanceMode: { enabled: mm?.enabled },
     });
     void this.probeReachability(result.data.id);

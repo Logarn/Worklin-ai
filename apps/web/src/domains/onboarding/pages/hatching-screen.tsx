@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { getAssistant, getAssistantHealthz, hatchAssistant, type Assistant } from "@/assistant/api";
+import { hostedRuntimeConnection } from "@/assistant/hosting";
 import { seedHatchAvatar } from "@/assistant/seed-hatch-avatar";
 import {
     isPlatformHostedDisabled,
@@ -68,11 +69,7 @@ const PHASE_LABEL: Record<HatchPhase, string> = {
 };
 
 function primePlatformAssistantConnection(assistant: Assistant): void {
-  if (!assistant.is_local) return;
-  setSelfHostedConnection({
-    url: assistant.ingress_url ?? null,
-    token: assistant.platform_actor_token ?? null,
-  });
+  setSelfHostedConnection(hostedRuntimeConnection(assistant));
 }
 
 export function interpolateSegmentProgress(

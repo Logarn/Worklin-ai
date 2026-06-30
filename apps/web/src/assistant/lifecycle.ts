@@ -1,6 +1,7 @@
 import { extractErrorMessage } from "@/utils/api-errors";
 
 import type { GetAssistantResult } from "@/assistant/api";
+import { isPlatformManagedAssistant } from "@/assistant/hosting";
 
 export type ResolvedAssistantLifecycleState =
   | { kind: "active" }
@@ -49,7 +50,7 @@ export function resolveAssistantLifecycleState(
   if (result.ok) {
     switch (result.data.status) {
       case "active":
-        if (result.data.is_local) {
+        if (result.data.is_local && !isPlatformManagedAssistant(result.data)) {
           return { kind: "self_hosted" };
         }
         return { kind: "active" };

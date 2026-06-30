@@ -520,8 +520,8 @@ function assistantPayload(row: AssistantRow, user: UserRow) {
     machine_size: null,
     provisioned_storage_gib: null,
     maintenance_mode: { enabled: false },
-    is_local: true,
-    ingress_url: env.apiOrigin,
+    is_local: false,
+    ingress_url: publicWebOrigin(),
     platform_actor_token: mintActorToken(row.id, user.id),
     access_consented: false,
   };
@@ -690,7 +690,7 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
     const assistant = getActiveAssistant(user);
     const hosting = url.searchParams.get("hosting");
     const includeAssistant =
-      !!assistant && (hosting === null || hosting === "local" || hosting === "all");
+      !!assistant && (hosting === null || hosting === "platform" || hosting === "all");
     const results = includeAssistant ? [assistantPayload(assistant, user)] : [];
     sendJson(req, res, { count: results.length, next: null, previous: null, results });
     return true;

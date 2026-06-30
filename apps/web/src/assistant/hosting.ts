@@ -38,6 +38,17 @@ export function isHostedAssistant(
   return isPlatformManagedAssistant(assistant);
 }
 
+export function hostedRuntimeConnection(
+  assistant: AssistantHostingShape,
+): { url: string | null; token: string | null } | null {
+  if (!isPlatformManagedAssistant(assistant)) return null;
+  if (!assistant.ingress_url && !assistant.platform_actor_token) return null;
+  return {
+    url: assistant.ingress_url ?? null,
+    token: assistant.platform_actor_token ?? null,
+  };
+}
+
 export function filterHostedAssistants<T extends AssistantHostingShape>(
   assistants: readonly T[],
 ): T[] {

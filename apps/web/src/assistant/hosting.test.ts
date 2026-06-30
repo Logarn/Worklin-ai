@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   filterHostedAssistants,
   firstHostedAssistant,
+  hostedRuntimeConnection,
   isHostedAssistant,
   isPlatformManagedAssistant,
 } from "@/assistant/hosting";
@@ -68,5 +69,20 @@ describe("assistant hosting helpers", () => {
     expect(firstHostedAssistant([{ id: "self-hosted", is_local: true }])).toBe(
       null,
     );
+  });
+
+  test("extracts the runtime connection for platform-managed descriptors", () => {
+    expect(
+      hostedRuntimeConnection({
+        is_local: false,
+        ingress_url: "https://worklin-ai.vercel.app",
+        platform_actor_token: "actor-token-1",
+      }),
+    ).toEqual({
+      url: "https://worklin-ai.vercel.app",
+      token: "actor-token-1",
+    });
+
+    expect(hostedRuntimeConnection({ is_local: true })).toBeNull();
   });
 });

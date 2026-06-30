@@ -71,9 +71,9 @@ export function useAssistantLifecycle({
       : null;
   // Keep only lockfile-only LOCAL assistants off the platform retrieve path:
   // they're gateway-based, never registered on the platform, so getAssistant(id)
-  // 404s. Managed AND platform self-hosted (API `is_local`) assistants ARE valid
-  // there — the lifecycle's projectSelfHosted handles the self-hosted response —
-  // and a pre-hydration unknown id passes through for the 404 net.
+  // 404s. Platform-managed descriptors remain valid even if a transitional API
+  // response still says `is_local`; the lifecycle projects those as active and
+  // primes their runtime connection explicitly.
   const selectedPlatformAssistantId =
     resolvedSelectionId &&
     !getLocalAssistants().some((a) => a.assistantId === resolvedSelectionId)
