@@ -10,8 +10,9 @@
  *   store in CES, and upsert the provider connection.
  */
 
-import { z } from "zod";
 import { createServer, type Server } from "node:http";
+
+import { z } from "zod";
 
 import { getDb } from "../../memory/db-connection.js";
 import {
@@ -19,6 +20,7 @@ import {
   getConnection,
   updateConnection,
 } from "../../providers/inference/connections.js";
+import { renderOAuthCompletionPage } from "../../security/oauth-completion-page.js";
 import type { OAuth2Config } from "../../security/oauth2.js";
 import {
   exchangeCodeForTokens,
@@ -27,7 +29,12 @@ import {
   generateState,
   type OAuth2TokenResult,
 } from "../../security/oauth2.js";
-import { renderOAuthCompletionPage } from "../../security/oauth-completion-page.js";
+import {
+  DeviceCodeError,
+  OPENAI_DEVICE_CODE_CONFIG,
+  pollForToken,
+  requestDeviceCode,
+} from "../../security/oauth2-device-code.js";
 import { setSecureKeyAsync } from "../../security/secure-keys.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
@@ -56,12 +63,21 @@ const CONNECTION_NAME = "chatgpt-subscription";
 // Module-level PKCE state storage
 // ---------------------------------------------------------------------------
 
+type PendingAuthMode = "device_code" | "loopback";
+type PendingAuthStatus = "pending" | "exchanging" | "completed" | "failed";
+
 interface PendingAuth {
-  codeVerifier: string;
+  mode: PendingAuthMode;
+  codeVerifier?: string;
   createdAt: number;
-  status: "pending" | "exchanging" | "completed" | "failed";
+  status: PendingAuthStatus;
   callbackListening: boolean;
   server?: Server;
+  pollAbort?: AbortController;
+  userCode?: string;
+  verificationUri?: string;
+  verificationUriComplete?: string;
+  expiresAt?: number;
   error?: string;
 }
 
@@ -74,7 +90,7 @@ function cleanupExpiredEntries(): void {
   const cutoff = Date.now() - PENDING_AUTH_TTL_MS;
   for (const [key, entry] of pendingAuths) {
     if (entry.createdAt < cutoff) {
-      closePendingServer(entry);
+      closePendingAuth(entry);
       pendingAuths.delete(key);
     }
   }
@@ -91,8 +107,32 @@ function closePendingServer(entry: PendingAuth): void {
   entry.callbackListening = false;
 }
 
+function closePendingAuth(entry: PendingAuth): void {
+  closePendingServer(entry);
+  if (entry.pollAbort) {
+    entry.pollAbort.abort();
+    entry.pollAbort = undefined;
+  }
+}
+
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function safeDeviceErrorMessage(error: unknown): string {
+  if (error instanceof DeviceCodeError) {
+    if (error.code === "expired_token") {
+      return "This ChatGPT sign-in code expired before approval finished. Start a fresh ChatGPT sign-in and try again.";
+    }
+    if (error.code === "access_denied") {
+      return "ChatGPT sign-in was not approved. Start again when you are ready to connect your subscription.";
+    }
+    if (error.code === "aborted") {
+      return "ChatGPT sign-in was cancelled before it finished.";
+    }
+    return "ChatGPT did not start the sign-in flow. Please try again in a moment.";
+  }
+  return safeErrorMessage(error);
 }
 
 async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
@@ -119,10 +159,7 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
 
   if (tokens.expiresIn) {
     const expiresAt = Math.floor(Date.now() / 1000 + tokens.expiresIn);
-    await setSecureKeyAsync(
-      "credential/chatgpt/expires_at",
-      String(expiresAt),
-    );
+    await setSecureKeyAsync("credential/chatgpt/expires_at", String(expiresAt));
   }
 
   // Upsert provider connection
@@ -161,10 +198,7 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
 }
 
 function isValidCodeVerifier(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[A-Za-z0-9._~-]{43,128}$/.test(value)
-  );
+  return typeof value === "string" && /^[A-Za-z0-9._~-]{43,128}$/.test(value);
 }
 
 async function exchangeAndPersistTokens(
@@ -211,8 +245,13 @@ async function completePendingAuth(
   if (pending.status === "failed") {
     throw new Error(pending.error ?? "Auth flow failed. Please try again.");
   }
+  if (pending.mode !== "loopback") {
+    throw new BadRequestError(
+      "This ChatGPT sign-in is waiting for approval in ChatGPT. Finish it in the browser, or start a fresh sign-in.",
+    );
+  }
   if (!isValidCodeVerifier(pending.codeVerifier)) {
-    closePendingServer(pending);
+    closePendingAuth(pending);
     pending.status = "failed";
     pending.error =
       "This ChatGPT sign-in link is missing required security details. Create a new ChatGPT sign-in link and try again.";
@@ -221,7 +260,7 @@ async function completePendingAuth(
 
   // Check TTL
   if (Date.now() - pending.createdAt > PENDING_AUTH_TTL_MS) {
-    closePendingServer(pending);
+    closePendingAuth(pending);
     pending.status = "failed";
     pending.error =
       "This ChatGPT sign-in link expired before Worklin could finish it. Create a new ChatGPT sign-in link and try again.";
@@ -242,6 +281,112 @@ async function completePendingAuth(
     pending.error = safeErrorMessage(error);
     throw error;
   }
+}
+
+async function startDeviceCodeAuth(state: string) {
+  const init = await requestDeviceCode(OPENAI_DEVICE_CODE_CONFIG);
+  const pollAbort = new AbortController();
+  const pending: PendingAuth = {
+    mode: "device_code",
+    createdAt: Date.now(),
+    status: "pending",
+    callbackListening: false,
+    pollAbort,
+    userCode: init.userCode,
+    verificationUri: init.verificationUri,
+    verificationUriComplete: init.verificationUriComplete,
+    expiresAt: Date.now() + init.expiresIn * 1000,
+  };
+
+  pendingAuths.set(state, pending);
+
+  void pollForToken(
+    OPENAI_DEVICE_CODE_CONFIG,
+    init.deviceCode,
+    init.interval,
+    init.expiresIn,
+    pollAbort.signal,
+  )
+    .then(async (tokens) => {
+      const current = pendingAuths.get(state);
+      if (!current || current !== pending || current.status === "failed") {
+        return;
+      }
+
+      current.status = "exchanging";
+      current.error = undefined;
+      await persistChatgptTokens(tokens);
+      current.status = "completed";
+      current.pollAbort = undefined;
+      log.info("ChatGPT subscription device-code auth completed successfully");
+    })
+    .catch((error) => {
+      const current = pendingAuths.get(state);
+      if (!current || current !== pending) return;
+
+      current.pollAbort = undefined;
+      if (error instanceof DeviceCodeError && error.code === "aborted") {
+        return;
+      }
+
+      current.status = "failed";
+      current.error = safeDeviceErrorMessage(error);
+      log.warn(
+        { err: safeErrorMessage(error) },
+        "ChatGPT subscription device-code auth failed",
+      );
+    });
+
+  return {
+    authorize_url: init.verificationUriComplete ?? init.verificationUri,
+    state,
+    mode: "device_code" as const,
+    callback_listening: false,
+    user_code: init.userCode,
+    verification_uri: init.verificationUri,
+    verification_uri_complete: init.verificationUriComplete ?? null,
+    expires_in: init.expiresIn,
+    interval: init.interval,
+  };
+}
+
+async function startLoopbackAuth(state: string) {
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+
+  pendingAuths.set(state, {
+    mode: "loopback",
+    codeVerifier,
+    createdAt: Date.now(),
+    status: "pending",
+    callbackListening: false,
+  });
+
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: OPENAI_OAUTH_CONFIG.clientId,
+    redirect_uri: REDIRECT_URI,
+    scope: OPENAI_OAUTH_CONFIG.scopes.join(OPENAI_OAUTH_CONFIG.scopeSeparator),
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    ...OPENAI_OAUTH_CONFIG.authorizeParams,
+  });
+
+  const authorizeUrl = `${OPENAI_OAUTH_CONFIG.authorizeUrl}?${params.toString()}`;
+
+  const callbackListening = await startLoopbackCallbackServer(state);
+
+  return {
+    authorize_url: authorizeUrl,
+    state,
+    mode: "loopback" as const,
+    // The hosted web app keeps this verifier in memory and sends it back only
+    // for the manual paste path. That avoids production instance affinity for
+    // PKCE state while preserving the existing loopback path for local users.
+    code_verifier: codeVerifier,
+    callback_listening: callbackListening,
+  };
 }
 
 async function startLoopbackCallbackServer(state: string): Promise<boolean> {
@@ -333,43 +478,22 @@ async function startLoopbackCallbackServer(state: string): Promise<boolean> {
 async function handleStartAuth(_args: RouteHandlerArgs) {
   cleanupExpiredEntries();
 
-  const codeVerifier = generateCodeVerifier();
-  const codeChallenge = generateCodeChallenge(codeVerifier);
   const state = generateState();
+  const body = _args.body as { transport?: string } | undefined;
 
-  pendingAuths.set(state, {
-    codeVerifier,
-    createdAt: Date.now(),
-    status: "pending",
-    callbackListening: false,
-  });
+  if (body?.transport === "loopback") {
+    return await startLoopbackAuth(state);
+  }
 
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: OPENAI_OAUTH_CONFIG.clientId,
-    redirect_uri: REDIRECT_URI,
-    scope: OPENAI_OAUTH_CONFIG.scopes.join(
-      OPENAI_OAUTH_CONFIG.scopeSeparator,
-    ),
-    state,
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    ...OPENAI_OAUTH_CONFIG.authorizeParams,
-  });
-
-  const authorizeUrl = `${OPENAI_OAUTH_CONFIG.authorizeUrl}?${params.toString()}`;
-
-  const callbackListening = await startLoopbackCallbackServer(state);
-
-  return {
-    authorize_url: authorizeUrl,
-    state,
-    // The hosted web app keeps this verifier in memory and sends it back only
-    // for the manual paste path. That avoids production instance affinity for
-    // PKCE state while preserving the existing loopback path for local users.
-    code_verifier: codeVerifier,
-    callback_listening: callbackListening,
-  };
+  try {
+    return await startDeviceCodeAuth(state);
+  } catch (error) {
+    log.warn(
+      { err: safeErrorMessage(error) },
+      "ChatGPT subscription device-code start failed; falling back to loopback auth",
+    );
+    return await startLoopbackAuth(state);
+  }
 }
 
 async function handleExchange(args: RouteHandlerArgs) {
@@ -396,9 +520,14 @@ function handleStatus(args: RouteHandlerArgs) {
   }
 
   return {
+    mode: pending.mode,
     status: pending.status,
     callback_listening: pending.callbackListening,
     error: pending.error,
+    user_code: pending.userCode,
+    verification_uri: pending.verificationUri,
+    verification_uri_complete: pending.verificationUriComplete ?? null,
+    expires_at: pending.expiresAt,
   };
 }
 
@@ -417,13 +546,24 @@ export const ROUTES: RouteDefinition[] = [
     },
     summary: "Start ChatGPT subscription OAuth PKCE flow",
     description:
-      "Generate a PKCE authorize URL for ChatGPT subscription auth. Returns the URL and state for the client to open in a browser.",
+      "Start ChatGPT subscription auth. The hosted web app tries OpenAI's device-code flow first and falls back to loopback PKCE when needed.",
     tags: ["inference"],
+    requestBody: z
+      .object({
+        transport: z.enum(["device_code", "loopback"]).optional(),
+      })
+      .optional(),
     responseBody: z.object({
       authorize_url: z.string(),
       state: z.string(),
-      code_verifier: z.string(),
+      mode: z.enum(["device_code", "loopback"]),
+      code_verifier: z.string().optional(),
       callback_listening: z.boolean(),
+      user_code: z.string().optional(),
+      verification_uri: z.string().optional(),
+      verification_uri_complete: z.string().nullable().optional(),
+      expires_in: z.number().optional(),
+      interval: z.number().optional(),
     }),
     handler: handleStartAuth,
   },
@@ -448,6 +588,7 @@ export const ROUTES: RouteDefinition[] = [
       },
     ],
     responseBody: z.object({
+      mode: z.enum(["device_code", "loopback"]).optional(),
       status: z.enum([
         "pending",
         "exchanging",
@@ -457,6 +598,10 @@ export const ROUTES: RouteDefinition[] = [
       ]),
       callback_listening: z.boolean(),
       error: z.string().optional(),
+      user_code: z.string().optional(),
+      verification_uri: z.string().optional(),
+      verification_uri_complete: z.string().nullable().optional(),
+      expires_at: z.number().optional(),
     }),
     handler: handleStatus,
   },

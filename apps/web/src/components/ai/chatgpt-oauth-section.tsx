@@ -6,10 +6,10 @@ import { Typography } from "@vellumai/design-library/components/typography";
 import { Loader2 } from "lucide-react";
 
 import {
-    inferenceChatgptsubscriptionAuthExchangePost,
-    inferenceChatgptsubscriptionAuthPost,
-    inferenceChatgptsubscriptionAuthStatusGet,
-    inferenceProviderconnectionsGet,
+  inferenceChatgptsubscriptionAuthExchangePost,
+  inferenceChatgptsubscriptionAuthPost,
+  inferenceChatgptsubscriptionAuthStatusGet,
+  inferenceProviderconnectionsGet,
 } from "@/generated/daemon/sdk.gen";
 import { extractErrorMessage } from "@/utils/api-errors";
 
@@ -21,19 +21,14 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 //
 // Self-contained OAuth flow for connecting a ChatGPT subscription.
 // Renders anywhere Worklin needs ChatGPT subscription setup. Manages a
-// 6-state machine:
-//   idle → starting → paste_url → exchanging → completed | failed
+// state machine:
+//   idle -> starting -> paste_url/waiting -> exchanging -> completed | failed
 //
 // On successful exchange the component calls `onConnected` with the
 // resulting connection so the parent can persist it.
 
 type ChatgptOAuthState =
-  | "idle"
-  | "starting"
-  | "paste_url"
-  | "exchanging"
-  | "completed"
-  | "failed";
+  "idle" | "starting" | "paste_url" | "exchanging" | "completed" | "failed";
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
@@ -43,8 +38,13 @@ interface ChatgptOAuthSectionProps {
 interface ChatgptStartAuthResponse {
   authorize_url: string;
   state: string;
+  mode?: "device_code" | "loopback";
   callback_listening: boolean;
   code_verifier?: string;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string | null;
+  expires_in?: number;
 }
 
 interface ChatgptExchangeBody {
@@ -56,22 +56,28 @@ interface ChatgptExchangeBody {
 function formatChatgptAuthError(message: string): string {
   const lower = message.toLowerCase();
   if (lower.includes("expired") || lower.includes("invalid or expired state")) {
-    return "This ChatGPT sign-in link expired before Worklin could finish it. Create a new ChatGPT sign-in link and try again.";
+    return "This ChatGPT sign-in expired before Worklin could finish it. Start a new ChatGPT sign-in and try again.";
   }
   if (lower.includes("missing required security")) {
-    return "This ChatGPT sign-in link is missing required security details. Create a new ChatGPT sign-in link and try again.";
+    return "This ChatGPT sign-in is missing required security details. Start a new ChatGPT sign-in and try again.";
+  }
+  if (lower.includes("denied") || lower.includes("not approved")) {
+    return "ChatGPT sign-in was not approved. Start again when you are ready to connect your subscription.";
   }
   if (
     lower.includes("token exchange") ||
     lower.includes("invalid_grant") ||
     lower.includes("authorization code")
   ) {
-    return "ChatGPT did not accept that sign-in response. Create a fresh ChatGPT sign-in link and try again.";
+    return "ChatGPT did not accept that sign-in response. Start a fresh ChatGPT sign-in and try again.";
   }
-  if (lower.includes("store access token") || lower.includes("store refresh token")) {
+  if (
+    lower.includes("store access token") ||
+    lower.includes("store refresh token")
+  ) {
     return "Worklin signed in to ChatGPT, but could not save the connection. Try again, or choose an API-key provider from the previous screen for now.";
   }
-  return "We could not complete ChatGPT sign-in. Create a new sign-in link and try again.";
+  return "We could not complete ChatGPT sign-in. Start a new sign-in and try again.";
 }
 
 export function ChatgptOAuthSection({
@@ -83,9 +89,15 @@ export function ChatgptOAuthSection({
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [authState, setAuthState] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<"device_code" | "loopback">(
+    "device_code",
+  );
   const [authCodeVerifier, setAuthCodeVerifier] = useState<string | null>(null);
   const [callbackListening, setCallbackListening] = useState(false);
+  const [userCode, setUserCode] = useState<string | null>(null);
+  const [expiresInMinutes, setExpiresInMinutes] = useState<number | null>(null);
   const [copiedSignInLink, setCopiedSignInLink] = useState(false);
+  const [copiedUserCode, setCopiedUserCode] = useState(false);
 
   const notifyConnectedConnection = useCallback(async () => {
     const { data } = await inferenceProviderconnectionsGet({
@@ -95,8 +107,7 @@ export function ChatgptOAuthSection({
     });
     const conns = data.connections;
     const chatgptConn = conns.find(
-      (c) =>
-        c.name === "chatgpt-subscription" || c.name === "openai-chatgpt",
+      (c) => c.name === "chatgpt-subscription" || c.name === "openai-chatgpt",
     );
     if (chatgptConn) {
       onConnected(chatgptConn);
@@ -119,11 +130,7 @@ export function ChatgptOAuthSection({
   }, [assistantId, onConnected]);
 
   useEffect(() => {
-    if (
-      oauthState !== "paste_url" ||
-      !authState ||
-      !callbackListening
-    ) {
+    if (oauthState !== "paste_url" || !authState) {
       return;
     }
 
@@ -152,8 +159,7 @@ export function ChatgptOAuthSection({
         if (data.status === "failed" || data.status === "expired") {
           setOauthState("failed");
           setOauthError(
-            data.error ??
-              "ChatGPT sign-in did not complete. Please try again.",
+            data.error ?? "ChatGPT sign-in did not complete. Please try again.",
           );
           return;
         }
@@ -173,22 +179,20 @@ export function ChatgptOAuthSection({
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [
-    assistantId,
-    authState,
-    callbackListening,
-    notifyConnectedConnection,
-    oauthState,
-  ]);
+  }, [assistantId, authState, notifyConnectedConnection, oauthState]);
 
   async function handleSignIn() {
     setOauthState("starting");
     setOauthError(null);
     setAuthorizeUrl(null);
     setAuthState(null);
+    setAuthMode("device_code");
     setAuthCodeVerifier(null);
     setCallbackListening(false);
+    setUserCode(null);
+    setExpiresInMinutes(null);
     setCopiedSignInLink(false);
+    setCopiedUserCode(false);
     try {
       const { data } = await inferenceChatgptsubscriptionAuthPost({
         path: { assistant_id: assistantId },
@@ -197,14 +201,31 @@ export function ChatgptOAuthSection({
       const {
         authorize_url,
         state,
+        mode,
         callback_listening,
         code_verifier,
+        user_code,
+        verification_uri,
+        verification_uri_complete,
+        expires_in,
       } = data as ChatgptStartAuthResponse;
-      setAuthorizeUrl(authorize_url);
+      const nextMode = mode ?? "loopback";
+      const effectiveAuthorizeUrl =
+        authorize_url || verification_uri_complete || verification_uri || null;
+      setAuthorizeUrl(effectiveAuthorizeUrl);
       setAuthState(state);
+      setAuthMode(nextMode);
       setAuthCodeVerifier(code_verifier ?? null);
       setCallbackListening(callback_listening);
+      setUserCode(user_code ?? null);
+      setExpiresInMinutes(
+        expires_in ? Math.max(1, Math.ceil(expires_in / 60)) : null,
+      );
       setOauthState("paste_url");
+
+      if (nextMode === "device_code" && effectiveAuthorizeUrl) {
+        window.open(effectiveAuthorizeUrl, "_blank", "noopener,noreferrer");
+      }
     } catch (error) {
       setOauthState("failed");
       const detail = extractErrorMessage(
@@ -213,6 +234,17 @@ export function ChatgptOAuthSection({
         "Failed to start ChatGPT sign-in.",
       );
       setOauthError(formatChatgptAuthError(detail));
+    }
+  }
+
+  async function handleCopyUserCode() {
+    if (!userCode) return;
+    setOauthError(null);
+    try {
+      await navigator.clipboard.writeText(userCode);
+      setCopiedUserCode(true);
+    } catch {
+      setOauthError("Could not copy the code. You can type it manually.");
     }
   }
 
@@ -295,10 +327,16 @@ export function ChatgptOAuthSection({
     setOauthError(null);
     setAuthorizeUrl(null);
     setAuthState(null);
+    setAuthMode("device_code");
     setAuthCodeVerifier(null);
     setCallbackListening(false);
+    setUserCode(null);
+    setExpiresInMinutes(null);
     setCopiedSignInLink(false);
+    setCopiedUserCode(false);
   }
+
+  const isDeviceCodeFlow = authMode === "device_code";
 
   return (
     <div className="space-y-3 rounded-lg border border-[var(--border-base)] p-4">
@@ -307,8 +345,9 @@ export function ChatgptOAuthSection({
         as="p"
         className="text-[var(--content-tertiary)]"
       >
-        Use a ChatGPT subscription instead of an API key. You will sign in in
-        your browser, then return here to finish.
+        Use a ChatGPT subscription instead of an API key. Worklin will open a
+        secure ChatGPT sign-in page and guide you through the shortest sign-in
+        path available.
       </Typography>
 
       {oauthState === "idle" || oauthState === "paste_url" ? (
@@ -323,22 +362,23 @@ export function ChatgptOAuthSection({
                   : "text-[var(--content-secondary)]"
               }
             >
-              1. Create a secure ChatGPT sign-in link
+              1. Continue to ChatGPT
             </Typography>
             <Typography
               variant="body-small-default"
               as="p"
               className="text-[var(--content-secondary)]"
             >
-              2. Open the link and sign in to ChatGPT.
+              2. Sign in and approve Worklin.
             </Typography>
             <Typography
               variant="body-small-default"
               as="p"
               className="text-[var(--content-secondary)]"
             >
-              3. Return here. If the browser lands on a page that does not
-              load, paste that page URL below.
+              {oauthState === "paste_url" && !isDeviceCodeFlow
+                ? "3. If Safari shows a page that cannot load, copy that page address and paste it below."
+                : "3. Return here to finish."}
             </Typography>
           </div>
 
@@ -348,18 +388,80 @@ export function ChatgptOAuthSection({
               size="compact"
               onClick={() => void handleSignIn()}
             >
-              Create ChatGPT Sign-in Link
+              Continue with ChatGPT
             </Button>
+          ) : isDeviceCodeFlow ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--content-tertiary)]" />
+                <Typography
+                  variant="body-small-default"
+                  className="text-[var(--content-tertiary)]"
+                >
+                  Waiting for ChatGPT approval...
+                </Typography>
+              </div>
+
+              {userCode ? (
+                <div className="space-y-2 rounded-md border border-[var(--border-base)] p-3">
+                  <Typography
+                    variant="body-small-default"
+                    as="p"
+                    className="text-[var(--content-tertiary)]"
+                  >
+                    If ChatGPT asks for a code, use this one:
+                  </Typography>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="rounded border border-[var(--border-base)] px-2 py-1 font-mono text-sm text-[var(--content-primary)]">
+                      {userCode}
+                    </code>
+                    <Button
+                      variant="ghost"
+                      size="compact"
+                      onClick={() => void handleCopyUserCode()}
+                    >
+                      {copiedUserCode ? "Copied" : "Copy Code"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {authorizeUrl ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outlined" size="compact" asChild>
+                    <a href={authorizeUrl} target="_blank" rel="noreferrer">
+                      Open ChatGPT Sign-in
+                    </a>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    onClick={() => void handleCopySignInLink()}
+                  >
+                    {copiedSignInLink ? "Copied" : "Copy Link"}
+                  </Button>
+                </div>
+              ) : null}
+
+              <Typography
+                variant="body-small-default"
+                as="p"
+                className="text-[var(--content-tertiary)]"
+              >
+                Leave this screen open after approving ChatGPT. Worklin checks
+                for completion automatically
+                {expiresInMinutes
+                  ? ` for about ${expiresInMinutes} minutes`
+                  : ""}
+                .
+              </Typography>
+            </div>
           ) : (
             <>
               {authorizeUrl ? (
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outlined" size="compact" asChild>
-                    <a
-                      href={authorizeUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
+                    <a href={authorizeUrl} target="_blank" rel="noreferrer">
                       Open ChatGPT Sign-in
                     </a>
                   </Button>
@@ -379,7 +481,7 @@ export function ChatgptOAuthSection({
               >
                 {callbackListening
                   ? "After sign-in, return to this screen. If the browser shows a page that does not load, paste that page URL below."
-                  : "After sign-in, paste the page URL below to finish."}
+                  : "If the browser lands on a page that does not load, paste that page URL below to finish."}
               </Typography>
               <Input
                 value={pastedUrl}
