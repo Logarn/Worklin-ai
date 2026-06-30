@@ -23,6 +23,9 @@ set -euo pipefail
 : "${IS_CONTAINERIZED:=true}"
 : "${CES_MODE:=managed}"
 
+workspace_data_dir="${VELLUM_WORKSPACE_DIR%/}/data"
+workspace_credentials_dir="${workspace_data_dir}/credentials"
+
 # runtime/Dockerfile is the combined single-container deploy. The gateway is
 # co-located with the public control-plane, so service-to-service traffic must
 # stay on loopback even if a stale split-service/docker-compose env var exists.
@@ -55,6 +58,8 @@ export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 mkdir -p \
   "${WORKLIN_RUNTIME_ROOT}" \
   "${VELLUM_WORKSPACE_DIR}" \
+  "${workspace_data_dir}" \
+  "${workspace_credentials_dir}" \
   "${GATEWAY_SECURITY_DIR}" \
   "${CES_DATA_DIR}" \
   "${CREDENTIAL_SECURITY_DIR}" \
@@ -90,7 +95,11 @@ chown -R assistant:vellum "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
 chown -R gateway:gateway "${GATEWAY_SECURITY_DIR}"
 chown -R gateway:vellum "${GATEWAY_IPC_SOCKET_DIR}"
 chown -R ces:ces "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
-chmod 2775 "${WORKLIN_RUNTIME_ROOT}" "${VELLUM_WORKSPACE_DIR}"
+chmod 2775 \
+  "${WORKLIN_RUNTIME_ROOT}" \
+  "${VELLUM_WORKSPACE_DIR}" \
+  "${workspace_data_dir}" \
+  "${workspace_credentials_dir}"
 chmod 700 "${GATEWAY_SECURITY_DIR}" "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 777 "${CES_BOOTSTRAP_SOCKET_DIR}"
 chmod 2770 "${GATEWAY_IPC_SOCKET_DIR}"
