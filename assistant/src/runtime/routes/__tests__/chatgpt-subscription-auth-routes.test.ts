@@ -1,11 +1,15 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 let exchangedCodeVerifier: string | null = null;
 let requestedDeviceCode = false;
 let polledDeviceCode: string | null = null;
 let polledUserCode: string | null = null;
+let devicePollError: Error | null = null;
+let devicePollMode: "success" | "pending" = "success";
+let deviceExpiresIn = 900;
 let secureWrites: Record<string, string> = {};
 let failingSecureAccounts = new Set<string>();
+const realDateNow = Date.now;
 
 mock.module("../../../security/oauth2.js", () => ({
   exchangeCodeForTokens: async (
@@ -62,7 +66,7 @@ mock.module("../../../security/oauth2-device-code.js", () => {
         deviceCode: "device-code-123",
         userCode: "ABCD-EFGH",
         verificationUri: "https://auth.openai.com/codex/device",
-        expiresIn: 900,
+        expiresIn: deviceExpiresIn,
         interval: 1,
       };
     },
@@ -73,6 +77,12 @@ mock.module("../../../security/oauth2-device-code.js", () => {
     ) => {
       polledDeviceCode = deviceCode;
       polledUserCode = userCode;
+      if (devicePollError) {
+        throw devicePollError;
+      }
+      if (devicePollMode === "pending") {
+        return await new Promise<never>(() => {});
+      }
       return {
         accessToken: "device-access-token",
         refreshToken: "device-refresh-token",
@@ -123,8 +133,16 @@ beforeEach(() => {
   requestedDeviceCode = false;
   polledDeviceCode = null;
   polledUserCode = null;
+  devicePollError = null;
+  devicePollMode = "success";
+  deviceExpiresIn = 900;
   secureWrites = {};
   failingSecureAccounts = new Set<string>();
+  Date.now = realDateNow;
+});
+
+afterEach(() => {
+  Date.now = realDateNow;
 });
 
 describe("ChatGPT subscription auth routes", () => {
@@ -168,6 +186,84 @@ describe("ChatGPT subscription auth routes", () => {
     expect(connection?.auth).toEqual({
       type: "oauth_subscription",
       credential: "credential/chatgpt/access_token",
+    });
+  });
+
+  test("device-code status reports provider poll failure details", async () => {
+    const { DeviceCodeError } =
+      await import("../../../security/oauth2-device-code.js");
+    devicePollError = new DeviceCodeError(
+      "Token poll failed: invalid_request (User code was not approved)",
+      "request_failed",
+    );
+
+    await findHandler("inference_chatgpt_subscription_auth")({
+      body: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const status = await findHandler(
+      "inference_chatgpt_subscription_auth_status",
+    )({
+      queryParams: { state: "state-123" },
+    });
+
+    expect(status).toMatchObject({
+      mode: "device_code",
+      status: "failed",
+      callback_listening: false,
+      error: "Token poll failed: invalid_request (User code was not approved)",
+    });
+  });
+
+  test("keeps pending device-code auth until the provider expiry", async () => {
+    const startedAt = realDateNow();
+    Date.now = () => startedAt;
+    deviceExpiresIn = 15 * 60;
+    devicePollMode = "pending";
+
+    await findHandler("inference_chatgpt_subscription_auth")({
+      body: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    Date.now = () => startedAt + 11 * 60 * 1000;
+    const status = await findHandler(
+      "inference_chatgpt_subscription_auth_status",
+    )({
+      queryParams: { state: "state-123" },
+    });
+
+    expect(status).toMatchObject({
+      mode: "device_code",
+      status: "pending",
+      callback_listening: false,
+    });
+  });
+
+  test("expired device-code status includes a useful error message", async () => {
+    const startedAt = realDateNow();
+    Date.now = () => startedAt;
+    deviceExpiresIn = 15 * 60;
+    devicePollMode = "pending";
+
+    await findHandler("inference_chatgpt_subscription_auth")({
+      body: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    Date.now = () => startedAt + 16 * 60 * 1000;
+    const status = await findHandler(
+      "inference_chatgpt_subscription_auth_status",
+    )({
+      queryParams: { state: "state-123" },
+    });
+
+    expect(status).toMatchObject({
+      status: "expired",
+      callback_listening: false,
+      error:
+        "This ChatGPT sign-in expired before Worklin could finish it. Start a fresh ChatGPT sign-in and try again.",
     });
   });
 

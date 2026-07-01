@@ -86,13 +86,19 @@ interface PendingAuth {
 
 const pendingAuths = new Map<string, PendingAuth>();
 
-const PENDING_AUTH_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const LOOPBACK_AUTH_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const EXPIRED_AUTH_MESSAGE =
+  "This ChatGPT sign-in expired before Worklin could finish it. Start a fresh ChatGPT sign-in and try again.";
 
-/** Remove entries older than 10 minutes. */
+function pendingAuthExpiresAt(entry: PendingAuth): number {
+  return entry.expiresAt ?? entry.createdAt + LOOPBACK_AUTH_TTL_MS;
+}
+
+/** Remove entries after the flow-specific expiry window. */
 function cleanupExpiredEntries(): void {
-  const cutoff = Date.now() - PENDING_AUTH_TTL_MS;
+  const now = Date.now();
   for (const [key, entry] of pendingAuths) {
-    if (entry.createdAt < cutoff) {
+    if (pendingAuthExpiresAt(entry) < now) {
       closePendingAuth(entry);
       pendingAuths.delete(key);
     }
@@ -132,6 +138,9 @@ function safeDeviceErrorMessage(error: unknown): string {
     }
     if (error.code === "aborted") {
       return "ChatGPT sign-in was cancelled before it finished.";
+    }
+    if (error.code === "request_failed") {
+      return safeErrorMessage(error);
     }
     return "ChatGPT did not start the sign-in flow. Please try again in a moment.";
   }
@@ -279,11 +288,10 @@ async function completePendingAuth(
   }
 
   // Check TTL
-  if (Date.now() - pending.createdAt > PENDING_AUTH_TTL_MS) {
+  if (Date.now() - pending.createdAt > LOOPBACK_AUTH_TTL_MS) {
     closePendingAuth(pending);
     pending.status = "failed";
-    pending.error =
-      "This ChatGPT sign-in link expired before Worklin could finish it. Create a new ChatGPT sign-in link and try again.";
+    pending.error = EXPIRED_AUTH_MESSAGE;
     throw new BadRequestError(pending.error);
   }
 
@@ -529,6 +537,7 @@ function handleStatus(args: RouteHandlerArgs) {
     return {
       status: "expired" as const,
       callback_listening: false,
+      error: EXPIRED_AUTH_MESSAGE,
     };
   }
 

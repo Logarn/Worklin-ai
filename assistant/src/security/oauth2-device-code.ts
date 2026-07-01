@@ -120,7 +120,10 @@ export async function requestDeviceCode(
       `${trimTrailingSlash(config.issuerUrl)}/codex/device`,
     verificationUriComplete:
       stringValue(data.verification_uri_complete) ?? undefined,
-    expiresIn: positiveNumber(data.expires_in) ?? 15 * 60,
+    expiresIn:
+      positiveNumber(data.expires_in) ??
+      secondsUntil(data.expires_at) ??
+      15 * 60,
     interval: positiveNumber(data.interval) ?? 5,
   };
 }
@@ -226,7 +229,14 @@ export async function pollForToken(
 
     const rawBody = await resp.text().catch(() => "");
     const data = parseJsonObject(rawBody);
-    const errorCode = data.error as string | undefined;
+    const errorCode =
+      stringValue(data.error) ??
+      stringValue(data.error_code) ??
+      stringValue(data.code);
+    const errorDescription =
+      stringValue(data.error_description) ??
+      stringValue(data.message) ??
+      stringValue(data.detail);
 
     if (
       resp.status === 403 ||
@@ -263,11 +273,13 @@ export async function pollForToken(
     }
 
     log.error(
-      { status: resp.status, error: errorCode },
+      { status: resp.status, error: errorCode, errorDescription },
       "Unexpected token poll error",
     );
     throw new DeviceCodeError(
-      `Token poll failed: ${errorCode ?? `HTTP ${resp.status}`}`,
+      `Token poll failed: ${errorCode ?? `HTTP ${resp.status}`}${
+        errorDescription ? ` (${errorDescription})` : ""
+      }`,
       "request_failed",
     );
   }
@@ -365,6 +377,15 @@ function positiveNumber(value: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+function secondsUntil(value: unknown): number | undefined {
+  const raw = stringValue(value);
+  if (!raw) return undefined;
+  const expiresAt = Date.parse(raw);
+  if (!Number.isFinite(expiresAt)) return undefined;
+  const seconds = Math.ceil((expiresAt - Date.now()) / 1000);
+  return seconds > 0 ? seconds : undefined;
 }
 
 function parseJsonObject(rawBody: string): Record<string, unknown> {

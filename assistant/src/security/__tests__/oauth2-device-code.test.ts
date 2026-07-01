@@ -185,6 +185,24 @@ describe("oauth2-device-code", () => {
       expect(result.interval).toBe(7);
     });
 
+    test("accepts OpenAI expires_at and string interval response shape", async () => {
+      const expiresAt = new Date(Date.now() + 4 * 60 * 1000).toISOString();
+
+      mockFetch(async () =>
+        jsonResponse({
+          device_auth_id: "dev-auth-123",
+          user_code: "ABCD-1234",
+          expires_at: expiresAt,
+          interval: "5",
+        }),
+      );
+
+      const result = await requestDeviceCode(TEST_CONFIG);
+      expect(result.expiresIn).toBeGreaterThan(200);
+      expect(result.expiresIn).toBeLessThanOrEqual(240);
+      expect(result.interval).toBe(5);
+    });
+
     test("throws DeviceCodeError on non-OK response", async () => {
       mockFetch(async () => jsonResponse({ error: "invalid_client" }, 400));
 
@@ -396,6 +414,24 @@ describe("oauth2-device-code", () => {
         expect(err).toBeInstanceOf(DeviceCodeError);
         expect((err as DeviceCodeError).code).toBe("request_failed");
       }
+    });
+
+    test("includes provider error description on unexpected poll error", async () => {
+      mockFetch(async () =>
+        jsonResponse(
+          {
+            error: "invalid_request",
+            error_description: "User code was not approved",
+          },
+          400,
+        ),
+      );
+
+      await expect(
+        pollForToken(TEST_CONFIG, "dev-auth-123", "ABCD-1234", 1, 30),
+      ).rejects.toThrow(
+        "Token poll failed: invalid_request (User code was not approved)",
+      );
     });
 
     test("retries on network error then succeeds", async () => {

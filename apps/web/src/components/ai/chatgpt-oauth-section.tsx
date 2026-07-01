@@ -28,12 +28,7 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 // resulting connection so the parent can persist it.
 
 type ChatgptOAuthState =
-  | "idle"
-  | "starting"
-  | "waiting"
-  | "exchanging"
-  | "completed"
-  | "failed";
+  "idle" | "starting" | "waiting" | "exchanging" | "completed" | "failed";
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
@@ -71,15 +66,19 @@ function formatChatgptAuthError(message: string): string {
   }
   if (
     lower.includes("token exchange") ||
+    lower.includes("token poll failed") ||
     lower.includes("invalid_grant") ||
-    lower.includes("authorization code")
+    lower.includes("authorization code") ||
+    lower.includes("invalid_request")
   ) {
-    return "ChatGPT did not accept that sign-in response. Start a fresh ChatGPT sign-in and try again.";
+    return "ChatGPT did not confirm that code with Worklin. Start a fresh ChatGPT sign-in, enter the new code on the ChatGPT page, and leave this Worklin screen open until it finishes.";
   }
   if (
     lower.includes("store access token") ||
     lower.includes("store refresh token") ||
-    lower.includes("store chatgpt credentials")
+    lower.includes("store chatgpt credentials") ||
+    lower.includes("failed to create connection") ||
+    lower.includes("failed to update connection")
   ) {
     return "Worklin signed in to ChatGPT, but could not save the connection. Try again, or choose an API-key provider from the previous screen for now.";
   }
@@ -89,7 +88,8 @@ function formatChatgptAuthError(message: string): string {
   if (
     lower.includes("device code") ||
     lower.includes("device auth") ||
-    lower.includes("failed to start chatgpt sign-in")
+    lower.includes("failed to start chatgpt sign-in") ||
+    lower.includes("chatgpt did not start")
   ) {
     return "Worklin could not open the ChatGPT sign-in page. Try again in a moment, or choose an API-key provider from the previous screen for now.";
   }
