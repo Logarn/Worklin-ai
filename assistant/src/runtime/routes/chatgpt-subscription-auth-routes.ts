@@ -33,6 +33,7 @@ import {
   DeviceCodeError,
   OPENAI_DEVICE_CODE_CONFIG,
   pollForToken,
+  pollForTokenOnce,
   requestDeviceCode,
 } from "../../security/oauth2-device-code.js";
 import {
@@ -77,6 +78,7 @@ interface PendingAuth {
   callbackListening: boolean;
   server?: Server;
   pollAbort?: AbortController;
+  deviceCode?: string;
   userCode?: string;
   verificationUri?: string;
   verificationUriComplete?: string;
@@ -145,6 +147,19 @@ function safeDeviceErrorMessage(error: unknown): string {
     return "ChatGPT did not start the sign-in flow. Please try again in a moment.";
   }
   return safeErrorMessage(error);
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return undefined;
 }
 
 async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
@@ -314,16 +329,18 @@ async function completePendingAuth(
 async function startDeviceCodeAuth(state: string) {
   const init = await requestDeviceCode(OPENAI_DEVICE_CODE_CONFIG);
   const pollAbort = new AbortController();
+  const expiresAt = Date.now() + init.expiresIn * 1000;
   const pending: PendingAuth = {
     mode: "device_code",
     createdAt: Date.now(),
     status: "pending",
     callbackListening: false,
     pollAbort,
+    deviceCode: init.deviceCode,
     userCode: init.userCode,
     verificationUri: init.verificationUri,
     verificationUriComplete: init.verificationUriComplete,
-    expiresAt: Date.now() + init.expiresIn * 1000,
+    expiresAt,
   };
 
   pendingAuths.set(state, pending);
@@ -371,9 +388,11 @@ async function startDeviceCodeAuth(state: string) {
     state,
     mode: "device_code" as const,
     callback_listening: false,
+    device_code: init.deviceCode,
     user_code: init.userCode,
     verification_uri: init.verificationUri,
     verification_uri_complete: init.verificationUriComplete ?? null,
+    expires_at: expiresAt,
     expires_in: init.expiresIn,
     interval: init.interval,
   };
@@ -526,14 +545,18 @@ async function handleExchange(args: RouteHandlerArgs) {
   return await completePendingAuth(state, code, code_verifier);
 }
 
-function handleStatus(args: RouteHandlerArgs) {
-  cleanupExpiredEntries();
-  const state = args.queryParams?.state;
-  if (!state) {
-    throw new BadRequestError("state query parameter is required");
-  }
-  const pending = pendingAuths.get(state);
-  if (!pending) {
+async function handleBrowserHeldDeviceStatus(args: RouteHandlerArgs) {
+  const query = args.queryParams ?? {};
+  const deviceCode = query.device_code;
+  const userCode = query.user_code;
+  const expiresAt = positiveNumber(query.expires_at);
+
+  if (
+    typeof deviceCode !== "string" ||
+    !deviceCode ||
+    typeof userCode !== "string" ||
+    !userCode
+  ) {
     return {
       status: "expired" as const,
       callback_listening: false,
@@ -541,11 +564,74 @@ function handleStatus(args: RouteHandlerArgs) {
     };
   }
 
+  if (expiresAt && expiresAt < Date.now()) {
+    return {
+      mode: "device_code" as const,
+      status: "expired" as const,
+      callback_listening: false,
+      error: EXPIRED_AUTH_MESSAGE,
+      user_code: userCode,
+      expires_at: expiresAt,
+    };
+  }
+
+  try {
+    const result = await pollForTokenOnce(
+      OPENAI_DEVICE_CODE_CONFIG,
+      deviceCode,
+      userCode,
+    );
+
+    if (result.status === "pending") {
+      return {
+        mode: "device_code" as const,
+        status: "pending" as const,
+        callback_listening: false,
+        user_code: userCode,
+        expires_at: expiresAt,
+      };
+    }
+
+    await persistChatgptTokens(result.tokens);
+    log.info(
+      "ChatGPT subscription device-code auth completed via browser-held status",
+    );
+    return {
+      mode: "device_code" as const,
+      status: "completed" as const,
+      callback_listening: false,
+      user_code: userCode,
+      expires_at: expiresAt,
+    };
+  } catch (error) {
+    return {
+      mode: "device_code" as const,
+      status: "failed" as const,
+      callback_listening: false,
+      error: safeDeviceErrorMessage(error),
+      user_code: userCode,
+      expires_at: expiresAt,
+    };
+  }
+}
+
+async function handleStatus(args: RouteHandlerArgs) {
+  cleanupExpiredEntries();
+  const state = args.queryParams?.state;
+  if (!state) {
+    throw new BadRequestError("state query parameter is required");
+  }
+  const pending = pendingAuths.get(state);
+  if (!pending) {
+    return await handleBrowserHeldDeviceStatus(args);
+  }
+
   return {
     mode: pending.mode,
     status: pending.status,
     callback_listening: pending.callbackListening,
     error: pending.error,
+    device_code: pending.deviceCode,
     user_code: pending.userCode,
     verification_uri: pending.verificationUri,
     verification_uri_complete: pending.verificationUriComplete ?? null,
@@ -581,9 +667,11 @@ export const ROUTES: RouteDefinition[] = [
       mode: z.enum(["device_code", "loopback"]),
       code_verifier: z.string().optional(),
       callback_listening: z.boolean(),
+      device_code: z.string().optional(),
       user_code: z.string().optional(),
       verification_uri: z.string().optional(),
       verification_uri_complete: z.string().nullable().optional(),
+      expires_at: z.number().optional(),
       expires_in: z.number().optional(),
       interval: z.number().optional(),
     }),
@@ -608,6 +696,27 @@ export const ROUTES: RouteDefinition[] = [
         required: true,
         description: "OAuth state returned by the start auth route.",
       },
+      {
+        name: "device_code",
+        type: "string",
+        required: false,
+        description:
+          "Opaque OpenAI device authorization id returned by the start route. Hosted web clients send this so any backend worker can complete the flow.",
+      },
+      {
+        name: "user_code",
+        type: "string",
+        required: false,
+        description:
+          "OpenAI user code returned by the start route. Used with device_code for hosted web status polling.",
+      },
+      {
+        name: "expires_at",
+        type: "number",
+        required: false,
+        description:
+          "Device-flow expiry timestamp in milliseconds since epoch returned by the start route.",
+      },
     ],
     responseBody: z.object({
       mode: z.enum(["device_code", "loopback"]).optional(),
@@ -620,6 +729,7 @@ export const ROUTES: RouteDefinition[] = [
       ]),
       callback_listening: z.boolean(),
       error: z.string().optional(),
+      device_code: z.string().optional(),
       user_code: z.string().optional(),
       verification_uri: z.string().optional(),
       verification_uri_complete: z.string().nullable().optional(),

@@ -41,6 +41,10 @@ export interface DeviceCodeInitResult {
 
 export type DeviceCodeTokenResult = OAuth2TokenResult;
 
+export type DeviceCodePollOnceResult =
+  | { status: "pending" }
+  | { status: "token"; tokens: DeviceCodeTokenResult };
+
 export class DeviceCodeError extends Error {
   constructor(
     message: string,
@@ -287,6 +291,112 @@ export async function pollForToken(
   throw new DeviceCodeError(
     "Device code expired before user completed authorization",
     "expired_token",
+  );
+}
+
+/**
+ * Poll the Codex device-auth token endpoint once.
+ *
+ * This is used by hosted web status requests so the browser can carry the
+ * opaque device authorization id between horizontally-scaled backend workers.
+ */
+export async function pollForTokenOnce(
+  config: DeviceCodeConfig,
+  deviceCode: string,
+  userCode: string,
+  signal?: AbortSignal,
+): Promise<DeviceCodePollOnceResult> {
+  let resp: Response;
+  try {
+    resp = await fetch(config.tokenUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        device_auth_id: deviceCode,
+        user_code: userCode,
+      }),
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted) {
+      throw new DeviceCodeError("Device code flow aborted", "aborted");
+    }
+    log.warn({ err }, "Single token poll request failed");
+    throw new DeviceCodeError("Token poll request failed", "request_failed");
+  }
+
+  if (resp.ok) {
+    const data = (await resp.json()) as Record<string, unknown>;
+    const authorizationCode = stringValue(data.authorization_code);
+    const codeVerifier = stringValue(data.code_verifier);
+    if (!authorizationCode || !codeVerifier) {
+      log.error(
+        { keys: Object.keys(data) },
+        "Device auth poll response missing exchange fields",
+      );
+      throw new DeviceCodeError(
+        "Device auth response missing exchange fields",
+        "request_failed",
+      );
+    }
+
+    const { tokens } = await exchangeCodeForTokens(
+      toOAuth2Config(config),
+      authorizationCode,
+      `${trimTrailingSlash(config.issuerUrl)}/deviceauth/callback`,
+      codeVerifier,
+    );
+    log.info("Device code authorization completed");
+    return { status: "token", tokens };
+  }
+
+  const rawBody = await resp.text().catch(() => "");
+  const data = parseJsonObject(rawBody);
+  const errorCode =
+    stringValue(data.error) ??
+    stringValue(data.error_code) ??
+    stringValue(data.code);
+  const errorDescription =
+    stringValue(data.error_description) ??
+    stringValue(data.message) ??
+    stringValue(data.detail);
+
+  if (
+    resp.status === 403 ||
+    resp.status === 404 ||
+    errorCode === "authorization_pending" ||
+    errorCode === "slow_down"
+  ) {
+    log.debug("Authorization pending on single token poll");
+    return { status: "pending" };
+  }
+
+  if (errorCode === "expired_token") {
+    throw new DeviceCodeError(
+      "Device code expired before user completed authorization",
+      "expired_token",
+    );
+  }
+
+  if (errorCode === "access_denied") {
+    throw new DeviceCodeError(
+      "User denied the authorization request",
+      "access_denied",
+    );
+  }
+
+  log.error(
+    { status: resp.status, error: errorCode, errorDescription },
+    "Unexpected single token poll error",
+  );
+  throw new DeviceCodeError(
+    `Token poll failed: ${errorCode ?? `HTTP ${resp.status}`}${
+      errorDescription ? ` (${errorDescription})` : ""
+    }`,
+    "request_failed",
   );
 }
 

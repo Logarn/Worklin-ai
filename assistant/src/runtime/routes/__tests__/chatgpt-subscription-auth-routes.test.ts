@@ -89,6 +89,28 @@ mock.module("../../../security/oauth2-device-code.js", () => {
         expiresIn: 3600,
       };
     },
+    pollForTokenOnce: async (
+      _config: unknown,
+      deviceCode: string,
+      userCode: string,
+    ) => {
+      polledDeviceCode = deviceCode;
+      polledUserCode = userCode;
+      if (devicePollError) {
+        throw devicePollError;
+      }
+      if (devicePollMode === "pending") {
+        return { status: "pending" };
+      }
+      return {
+        status: "token",
+        tokens: {
+          accessToken: "device-access-token",
+          refreshToken: "device-refresh-token",
+          expiresIn: 3600,
+        },
+      };
+    },
   };
 });
 
@@ -147,15 +169,17 @@ afterEach(() => {
 
 describe("ChatGPT subscription auth routes", () => {
   test("starts hosted web auth with a device code and completes after approval", async () => {
-    const result = await findHandler("inference_chatgpt_subscription_auth")({
+    const result = (await findHandler("inference_chatgpt_subscription_auth")({
       body: {},
-    });
+    })) as Record<string, unknown>;
 
+    expect(typeof result.expires_at).toBe("number");
     expect(result).toMatchObject({
       authorize_url: "https://auth.openai.com/codex/device",
       state: "state-123",
       mode: "device_code",
       callback_listening: false,
+      device_code: "device-code-123",
       user_code: "ABCD-EFGH",
       verification_uri: "https://auth.openai.com/codex/device",
       verification_uri_complete: null,
@@ -178,6 +202,40 @@ describe("ChatGPT subscription auth routes", () => {
       status: "completed",
       callback_listening: false,
     });
+    expect(secureWrites["credential/chatgpt/access_token"]).toBe(
+      "device-access-token",
+    );
+
+    const connection = getConnection(getDb(), "chatgpt-subscription");
+    expect(connection?.auth).toEqual({
+      type: "oauth_subscription",
+      credential: "credential/chatgpt/access_token",
+    });
+  });
+
+  test("device-code status can complete when server state lives on another worker", async () => {
+    const startedAt = realDateNow();
+    Date.now = () => startedAt;
+
+    const status = await findHandler(
+      "inference_chatgpt_subscription_auth_status",
+    )({
+      queryParams: {
+        state: "state-from-another-worker",
+        device_code: "device-code-123",
+        user_code: "ABCD-EFGH",
+        expires_at: String(startedAt + 15 * 60 * 1000),
+      },
+    });
+
+    expect(status).toMatchObject({
+      mode: "device_code",
+      status: "completed",
+      callback_listening: false,
+      user_code: "ABCD-EFGH",
+    });
+    expect(polledDeviceCode).toBe("device-code-123");
+    expect(polledUserCode).toBe("ABCD-EFGH");
     expect(secureWrites["credential/chatgpt/access_token"]).toBe(
       "device-access-token",
     );
@@ -341,7 +399,9 @@ describe("ChatGPT subscription auth routes", () => {
 
     expect(startShape?.mode).toBeDefined();
     expect(startShape?.code_verifier).toBeDefined();
+    expect(startShape?.device_code).toBeDefined();
     expect(startShape?.user_code).toBeDefined();
+    expect(startShape?.expires_at).toBeDefined();
     expect(startShape?.verification_uri_complete).toBeDefined();
     expect(exchangeShape?.code_verifier).toBeDefined();
   });

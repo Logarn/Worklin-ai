@@ -28,7 +28,12 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 // resulting connection so the parent can persist it.
 
 type ChatgptOAuthState =
-  "idle" | "starting" | "waiting" | "exchanging" | "completed" | "failed";
+  | "idle"
+  | "starting"
+  | "waiting"
+  | "exchanging"
+  | "completed"
+  | "failed";
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
@@ -41,9 +46,11 @@ interface ChatgptStartAuthResponse {
   mode?: "device_code" | "loopback";
   callback_listening: boolean;
   code_verifier?: string;
+  device_code?: string;
   user_code?: string;
   verification_uri?: string;
   verification_uri_complete?: string | null;
+  expires_at?: number;
   expires_in?: number;
 }
 
@@ -110,7 +117,9 @@ export function ChatgptOAuthSection({
   );
   const [authCodeVerifier, setAuthCodeVerifier] = useState<string | null>(null);
   const [callbackListening, setCallbackListening] = useState(false);
+  const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [userCode, setUserCode] = useState<string | null>(null);
+  const [deviceExpiresAt, setDeviceExpiresAt] = useState<number | null>(null);
   const [expiresInMinutes, setExpiresInMinutes] = useState<number | null>(null);
   const [copiedSignInLink, setCopiedSignInLink] = useState(false);
   const [copiedUserCode, setCopiedUserCode] = useState(false);
@@ -155,9 +164,23 @@ export function ChatgptOAuthSection({
 
     const poll = async () => {
       try {
+        const query: {
+          state: string;
+          device_code?: string;
+          user_code?: string;
+          expires_at?: number;
+        } = { state: authState };
+        if (authMode === "device_code" && deviceCode && userCode) {
+          query.device_code = deviceCode;
+          query.user_code = userCode;
+          if (deviceExpiresAt) {
+            query.expires_at = deviceExpiresAt;
+          }
+        }
+
         const { data } = await inferenceChatgptsubscriptionAuthStatusGet({
           path: { assistant_id: assistantId },
-          query: { state: authState },
+          query,
           throwOnError: true,
         });
 
@@ -198,7 +221,16 @@ export function ChatgptOAuthSection({
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [assistantId, authState, notifyConnectedConnection, oauthState]);
+  }, [
+    assistantId,
+    authMode,
+    authState,
+    deviceCode,
+    deviceExpiresAt,
+    notifyConnectedConnection,
+    oauthState,
+    userCode,
+  ]);
 
   async function handleSignIn() {
     setOauthState("starting");
@@ -208,7 +240,9 @@ export function ChatgptOAuthSection({
     setAuthMode("device_code");
     setAuthCodeVerifier(null);
     setCallbackListening(false);
+    setDeviceCode(null);
     setUserCode(null);
+    setDeviceExpiresAt(null);
     setExpiresInMinutes(null);
     setCopiedSignInLink(false);
     setCopiedUserCode(false);
@@ -223,9 +257,11 @@ export function ChatgptOAuthSection({
         mode,
         callback_listening,
         code_verifier,
+        device_code,
         user_code,
         verification_uri,
         verification_uri_complete,
+        expires_at,
         expires_in,
       } = data as ChatgptStartAuthResponse;
       const nextMode = mode ?? "device_code";
@@ -236,7 +272,11 @@ export function ChatgptOAuthSection({
       setAuthMode(nextMode);
       setAuthCodeVerifier(code_verifier ?? null);
       setCallbackListening(callback_listening);
+      setDeviceCode(device_code ?? null);
       setUserCode(user_code ?? null);
+      setDeviceExpiresAt(
+        expires_at ?? (expires_in ? Date.now() + expires_in * 1000 : null),
+      );
       setExpiresInMinutes(
         expires_in ? Math.max(1, Math.ceil(expires_in / 60)) : null,
       );
@@ -349,7 +389,9 @@ export function ChatgptOAuthSection({
     setAuthMode("device_code");
     setAuthCodeVerifier(null);
     setCallbackListening(false);
+    setDeviceCode(null);
     setUserCode(null);
+    setDeviceExpiresAt(null);
     setExpiresInMinutes(null);
     setCopiedSignInLink(false);
     setCopiedUserCode(false);

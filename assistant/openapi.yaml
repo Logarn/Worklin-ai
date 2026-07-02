@@ -13066,8 +13066,8 @@ paths:
       operationId: inference_chatgptsubscription_auth_post
       summary: Start ChatGPT subscription OAuth PKCE flow
       description:
-        Generate a PKCE authorize URL for ChatGPT subscription auth. Returns the URL and state for the client to
-        open in a browser.
+        Start ChatGPT subscription auth. The hosted web app uses OpenAI's ChatGPT device-code flow; loopback
+        PKCE remains available only when explicitly requested.
       tags:
         - inference
       responses:
@@ -13082,11 +13082,34 @@ paths:
                     type: string
                   state:
                     type: string
+                  mode:
+                    type: string
+                    enum:
+                      - device_code
+                      - loopback
+                  code_verifier:
+                    type: string
                   callback_listening:
                     type: boolean
+                  device_code:
+                    type: string
+                  user_code:
+                    type: string
+                  verification_uri:
+                    type: string
+                  verification_uri_complete:
+                    type: string
+                    nullable: true
+                  expires_at:
+                    type: number
+                  expires_in:
+                    type: number
+                  interval:
+                    type: number
                 required:
                   - authorize_url
                   - state
+                  - mode
                   - callback_listening
                 additionalProperties: false
   /v1/inference/chatgpt-subscription/auth/exchange:
@@ -13108,6 +13131,8 @@ paths:
                 code:
                   type: string
                 state:
+                  type: string
+                code_verifier:
                   type: string
               required:
                 - code
@@ -13139,6 +13164,26 @@ paths:
           schema:
             type: string
           description: OAuth state returned by the start auth route.
+        - name: device_code
+          in: query
+          required: false
+          schema:
+            type: string
+          description:
+            Opaque OpenAI device authorization id returned by the start route. Hosted web clients send this so any
+            backend worker can complete the flow.
+        - name: user_code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: OpenAI user code returned by the start route. Used with device_code for hosted web status polling.
+        - name: expires_at
+          in: query
+          required: false
+          schema:
+            type: number
+          description: Device-flow expiry timestamp in milliseconds since epoch returned by the start route.
       responses:
         "200":
           description: Successful response
@@ -13147,6 +13192,11 @@ paths:
               schema:
                 type: object
                 properties:
+                  mode:
+                    type: string
+                    enum:
+                      - device_code
+                      - loopback
                   status:
                     type: string
                     enum:
@@ -13159,6 +13209,17 @@ paths:
                     type: boolean
                   error:
                     type: string
+                  device_code:
+                    type: string
+                  user_code:
+                    type: string
+                  verification_uri:
+                    type: string
+                  verification_uri_complete:
+                    type: string
+                    nullable: true
+                  expires_at:
+                    type: number
                 required:
                   - status
                   - callback_listening
