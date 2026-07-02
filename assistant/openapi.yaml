@@ -13066,12 +13066,12 @@ paths:
       operationId: inference_chatgptsubscription_auth_post
       summary: Start ChatGPT subscription OAuth PKCE flow
       description:
-        Start ChatGPT subscription auth. The hosted web app uses OpenAI's ChatGPT device-code flow; loopback
-        PKCE remains available only when explicitly requested.
+        Start ChatGPT subscription auth. The hosted web app uses OpenAI's ChatGPT device-code flow; loopback PKCE
+        remains available only when explicitly requested.
       tags:
         - inference
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -13082,7 +13082,6 @@ paths:
                   enum:
                     - device_code
                     - loopback
-              additionalProperties: false
       responses:
         "200":
           description: Successful response
@@ -13111,8 +13110,9 @@ paths:
                   verification_uri:
                     type: string
                   verification_uri_complete:
-                    type: string
-                    nullable: true
+                    anyOf:
+                      - type: string
+                      - type: "null"
                   expires_at:
                     type: number
                   expires_in:
@@ -13237,8 +13237,9 @@ paths:
                   verification_uri:
                     type: string
                   verification_uri_complete:
-                    type: string
-                    nullable: true
+                    anyOf:
+                      - type: string
+                      - type: "null"
                   expires_at:
                     type: number
                   started_at:
@@ -13274,7 +13275,6 @@ paths:
                   type: number
               required:
                 - state
-              additionalProperties: false
       responses:
         "200":
           description: Successful response
@@ -13307,8 +13307,9 @@ paths:
                   verification_uri:
                     type: string
                   verification_uri_complete:
-                    type: string
-                    nullable: true
+                    anyOf:
+                      - type: string
+                      - type: "null"
                   expires_at:
                     type: number
                   started_at:
