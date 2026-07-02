@@ -13070,6 +13070,19 @@ paths:
         PKCE remains available only when explicitly requested.
       tags:
         - inference
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transport:
+                  type: string
+                  enum:
+                    - device_code
+                    - loopback
+              additionalProperties: false
       responses:
         "200":
           description: Successful response
@@ -13103,6 +13116,8 @@ paths:
                   expires_at:
                     type: number
                   expires_in:
+                    type: number
+                  started_at:
                     type: number
                   interval:
                     type: number
@@ -13184,6 +13199,12 @@ paths:
           schema:
             type: number
           description: Device-flow expiry timestamp in milliseconds since epoch returned by the start route.
+        - name: started_at
+          in: query
+          required: false
+          schema:
+            type: number
+          description: Device-flow start timestamp in milliseconds since epoch returned by the start route.
       responses:
         "200":
           description: Successful response
@@ -13219,6 +13240,78 @@ paths:
                     type: string
                     nullable: true
                   expires_at:
+                    type: number
+                  started_at:
+                    type: number
+                required:
+                  - status
+                  - callback_listening
+                additionalProperties: false
+    post:
+      operationId: inference_chatgptsubscription_auth_status_post
+      summary: Check ChatGPT subscription OAuth status
+      description:
+        Return the pending, exchanging, completed, failed, or expired state for a ChatGPT subscription auth flow.
+        Hosted web clients use POST so device-code fields stay out of query strings.
+      tags:
+        - inference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state:
+                  type: string
+                device_code:
+                  type: string
+                user_code:
+                  type: string
+                expires_at:
+                  type: number
+                started_at:
+                  type: number
+              required:
+                - state
+              additionalProperties: false
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode:
+                    type: string
+                    enum:
+                      - device_code
+                      - loopback
+                  status:
+                    type: string
+                    enum:
+                      - pending
+                      - exchanging
+                      - completed
+                      - failed
+                      - expired
+                  callback_listening:
+                    type: boolean
+                  error:
+                    type: string
+                  device_code:
+                    type: string
+                  user_code:
+                    type: string
+                  verification_uri:
+                    type: string
+                  verification_uri_complete:
+                    type: string
+                    nullable: true
+                  expires_at:
+                    type: number
+                  started_at:
                     type: number
                 required:
                   - status

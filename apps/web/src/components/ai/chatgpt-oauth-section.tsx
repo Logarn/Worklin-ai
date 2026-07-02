@@ -8,9 +8,9 @@ import { Loader2 } from "lucide-react";
 import {
   inferenceChatgptsubscriptionAuthExchangePost,
   inferenceChatgptsubscriptionAuthPost,
-  inferenceChatgptsubscriptionAuthStatusGet,
   inferenceProviderconnectionsGet,
 } from "@/generated/daemon/sdk.gen";
+import { client as daemonClient } from "@/generated/daemon/client.gen";
 import { extractErrorMessage } from "@/utils/api-errors";
 
 import type { ProviderConnection } from "@/generated/daemon/types.gen";
@@ -52,12 +52,33 @@ interface ChatgptStartAuthResponse {
   verification_uri_complete?: string | null;
   expires_at?: number;
   expires_in?: number;
+  started_at?: number;
+  interval?: number;
 }
 
 interface ChatgptExchangeBody {
   code: string;
   state: string;
   code_verifier?: string;
+}
+
+interface ChatgptStatusBody {
+  state: string;
+  device_code?: string;
+  user_code?: string;
+  expires_at?: number;
+  started_at?: number;
+}
+
+interface ChatgptStatusResponse {
+  mode?: "device_code" | "loopback";
+  status: "pending" | "exchanging" | "completed" | "failed" | "expired";
+  callback_listening: boolean;
+  error?: string;
+  user_code?: string;
+  expires_at?: number;
+  started_at?: number;
+  interval?: number;
 }
 
 function formatChatgptAuthError(message: string): string {
@@ -120,6 +141,8 @@ export function ChatgptOAuthSection({
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [userCode, setUserCode] = useState<string | null>(null);
   const [deviceExpiresAt, setDeviceExpiresAt] = useState<number | null>(null);
+  const [deviceStartedAt, setDeviceStartedAt] = useState<number | null>(null);
+  const [pollIntervalSeconds, setPollIntervalSeconds] = useState(5);
   const [expiresInMinutes, setExpiresInMinutes] = useState<number | null>(null);
   const [copiedSignInLink, setCopiedSignInLink] = useState(false);
   const [copiedUserCode, setCopiedUserCode] = useState(false);
@@ -164,25 +187,36 @@ export function ChatgptOAuthSection({
 
     const poll = async () => {
       try {
-        const query: {
-          state: string;
-          device_code?: string;
-          user_code?: string;
-          expires_at?: number;
-        } = { state: authState };
+        const body: ChatgptStatusBody = { state: authState };
         if (authMode === "device_code" && deviceCode && userCode) {
-          query.device_code = deviceCode;
-          query.user_code = userCode;
+          body.device_code = deviceCode;
+          body.user_code = userCode;
           if (deviceExpiresAt) {
-            query.expires_at = deviceExpiresAt;
+            body.expires_at = deviceExpiresAt;
+          }
+          if (deviceStartedAt) {
+            body.started_at = deviceStartedAt;
           }
         }
 
-        const { data } = await inferenceChatgptsubscriptionAuthStatusGet({
+        const { data, error, response } = await daemonClient.post<
+          ChatgptStatusResponse,
+          unknown
+        >({
+          url: "/v1/assistants/{assistant_id}/inference/chatgpt-subscription/auth/status",
           path: { assistant_id: assistantId },
-          query,
-          throwOnError: true,
+          body,
+          throwOnError: false,
         });
+        if (!response?.ok || !data) {
+          throw new Error(
+            extractErrorMessage(
+              error,
+              response,
+              "Failed to check ChatGPT sign-in status.",
+            ),
+          );
+        }
 
         if (cancelled) return;
 
@@ -206,7 +240,14 @@ export function ChatgptOAuthSection({
           return;
         }
 
-        const delay = data.status === "exchanging" ? 750 : 1500;
+        if (typeof data.interval === "number" && data.interval > 0) {
+          setPollIntervalSeconds(data.interval);
+        }
+
+        const delay =
+          data.status === "exchanging"
+            ? 750
+            : Math.max(1000, pollIntervalSeconds * 1000);
         timeoutId = setTimeout(() => void poll(), delay);
       } catch {
         if (!cancelled) {
@@ -227,8 +268,10 @@ export function ChatgptOAuthSection({
     authState,
     deviceCode,
     deviceExpiresAt,
+    deviceStartedAt,
     notifyConnectedConnection,
     oauthState,
+    pollIntervalSeconds,
     userCode,
   ]);
 
@@ -243,6 +286,8 @@ export function ChatgptOAuthSection({
     setDeviceCode(null);
     setUserCode(null);
     setDeviceExpiresAt(null);
+    setDeviceStartedAt(null);
+    setPollIntervalSeconds(5);
     setExpiresInMinutes(null);
     setCopiedSignInLink(false);
     setCopiedUserCode(false);
@@ -263,6 +308,8 @@ export function ChatgptOAuthSection({
         verification_uri_complete,
         expires_at,
         expires_in,
+        started_at,
+        interval,
       } = data as ChatgptStartAuthResponse;
       const nextMode = mode ?? "device_code";
       const effectiveAuthorizeUrl =
@@ -277,6 +324,8 @@ export function ChatgptOAuthSection({
       setDeviceExpiresAt(
         expires_at ?? (expires_in ? Date.now() + expires_in * 1000 : null),
       );
+      setDeviceStartedAt(started_at ?? Date.now());
+      setPollIntervalSeconds(Math.max(1, interval ?? 5));
       setExpiresInMinutes(
         expires_in ? Math.max(1, Math.ceil(expires_in / 60)) : null,
       );
@@ -392,6 +441,8 @@ export function ChatgptOAuthSection({
     setDeviceCode(null);
     setUserCode(null);
     setDeviceExpiresAt(null);
+    setDeviceStartedAt(null);
+    setPollIntervalSeconds(5);
     setExpiresInMinutes(null);
     setCopiedSignInLink(false);
     setCopiedUserCode(false);

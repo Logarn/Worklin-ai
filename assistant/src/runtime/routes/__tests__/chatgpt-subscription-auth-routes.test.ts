@@ -174,6 +174,7 @@ describe("ChatGPT subscription auth routes", () => {
     })) as Record<string, unknown>;
 
     expect(typeof result.expires_at).toBe("number");
+    expect(typeof result.started_at).toBe("number");
     expect(result).toMatchObject({
       authorize_url: "https://auth.openai.com/codex/device",
       state: "state-123",
@@ -187,8 +188,8 @@ describe("ChatGPT subscription auth routes", () => {
       interval: 1,
     });
     expect(requestedDeviceCode).toBe(true);
-    expect(polledDeviceCode).toBe("device-code-123");
-    expect(polledUserCode).toBe("ABCD-EFGH");
+    expect(polledDeviceCode).toBe(null);
+    expect(polledUserCode).toBe(null);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -202,6 +203,8 @@ describe("ChatGPT subscription auth routes", () => {
       status: "completed",
       callback_listening: false,
     });
+    expect(polledDeviceCode).toBe("device-code-123");
+    expect(polledUserCode).toBe("ABCD-EFGH");
     expect(secureWrites["credential/chatgpt/access_token"]).toBe(
       "device-access-token",
     );
@@ -210,6 +213,95 @@ describe("ChatGPT subscription auth routes", () => {
     expect(connection?.auth).toEqual({
       type: "oauth_subscription",
       credential: "credential/chatgpt/access_token",
+    });
+  });
+
+  test("device-code status stays completed after a duplicate redemption response", async () => {
+    const startedAt = realDateNow();
+    Date.now = () => startedAt;
+
+    await findHandler("inference_chatgpt_subscription_auth_status")({
+      queryParams: {
+        state: "state-from-another-worker",
+        device_code: "device-code-123",
+        user_code: "ABCD-EFGH",
+        expires_at: String(startedAt + 15 * 60 * 1000),
+        started_at: String(startedAt),
+      },
+    });
+
+    const { DeviceCodeError } =
+      await import("../../../security/oauth2-device-code.js");
+    devicePollError = new DeviceCodeError(
+      "Token poll failed: invalid_grant (Device code already redeemed)",
+      "request_failed",
+    );
+
+    const duplicateStatus = await findHandler(
+      "inference_chatgpt_subscription_auth_status",
+    )({
+      queryParams: {
+        state: "state-from-another-worker",
+        device_code: "device-code-123",
+        user_code: "ABCD-EFGH",
+        expires_at: String(startedAt + 15 * 60 * 1000),
+        started_at: String(startedAt),
+      },
+    });
+
+    expect(duplicateStatus).toMatchObject({
+      mode: "device_code",
+      status: "completed",
+      callback_listening: false,
+    });
+  });
+
+  test("device-code duplicate fallback ignores stale persisted connections", async () => {
+    const startedAt = realDateNow() + 60_000;
+    const staleConnectionAt = startedAt - 10_000;
+    getDb()
+      .insert(providerConnections)
+      .values({
+        name: "chatgpt-subscription",
+        provider: "openai",
+        auth: JSON.stringify({
+          type: "oauth_subscription",
+          credential: "credential/chatgpt/access_token",
+        }),
+        label: "ChatGPT subscription",
+        baseUrl: null,
+        models: null,
+        createdAt: staleConnectionAt,
+        updatedAt: staleConnectionAt,
+      })
+      .run();
+
+    Date.now = () => startedAt;
+
+    const { DeviceCodeError } =
+      await import("../../../security/oauth2-device-code.js");
+    devicePollError = new DeviceCodeError(
+      "Token poll failed: invalid_grant (Device code already redeemed)",
+      "request_failed",
+    );
+
+    const status = await findHandler(
+      "inference_chatgpt_subscription_auth_status",
+    )({
+      queryParams: {
+        state: "state-from-another-worker",
+        device_code: "device-code-123",
+        user_code: "ABCD-EFGH",
+        expires_at: String(startedAt + 15 * 60 * 1000),
+        started_at: String(startedAt),
+      },
+    });
+
+    expect(status).toMatchObject({
+      mode: "device_code",
+      status: "failed",
+      callback_listening: false,
+      error: "Token poll failed: invalid_grant (Device code already redeemed)",
     });
   });
 
@@ -225,6 +317,7 @@ describe("ChatGPT subscription auth routes", () => {
         device_code: "device-code-123",
         user_code: "ABCD-EFGH",
         expires_at: String(startedAt + 15 * 60 * 1000),
+        started_at: String(startedAt),
       },
     });
 
@@ -385,6 +478,10 @@ describe("ChatGPT subscription auth routes", () => {
     const startRoute = ROUTES.find(
       (route) => route.operationId === "inference_chatgpt_subscription_auth",
     );
+    const statusPostRoute = ROUTES.find(
+      (route) =>
+        route.operationId === "inference_chatgpt_subscription_auth_status_post",
+    );
     const exchangeRoute = ROUTES.find(
       (route) =>
         route.operationId === "inference_chatgpt_subscription_auth_exchange",
@@ -396,13 +493,19 @@ describe("ChatGPT subscription auth routes", () => {
     const exchangeShape = (
       exchangeRoute?.requestBody as { shape?: Record<string, unknown> }
     )?.shape;
+    const statusPostShape = (
+      statusPostRoute?.requestBody as { shape?: Record<string, unknown> }
+    )?.shape;
 
     expect(startShape?.mode).toBeDefined();
     expect(startShape?.code_verifier).toBeDefined();
     expect(startShape?.device_code).toBeDefined();
     expect(startShape?.user_code).toBeDefined();
     expect(startShape?.expires_at).toBeDefined();
+    expect(startShape?.started_at).toBeDefined();
     expect(startShape?.verification_uri_complete).toBeDefined();
+    expect(statusPostShape?.device_code).toBeDefined();
+    expect(statusPostShape?.started_at).toBeDefined();
     expect(exchangeShape?.code_verifier).toBeDefined();
   });
 });

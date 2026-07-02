@@ -32,7 +32,6 @@ import {
 import {
   DeviceCodeError,
   OPENAI_DEVICE_CODE_CONFIG,
-  pollForToken,
   pollForTokenOnce,
   requestDeviceCode,
 } from "../../security/oauth2-device-code.js";
@@ -91,6 +90,7 @@ const pendingAuths = new Map<string, PendingAuth>();
 const LOOPBACK_AUTH_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const EXPIRED_AUTH_MESSAGE =
   "This ChatGPT sign-in expired before Worklin could finish it. Start a fresh ChatGPT sign-in and try again.";
+const CONNECTION_COMPLETION_CLOCK_SKEW_MS = 5_000;
 
 function pendingAuthExpiresAt(entry: PendingAuth): number {
   return entry.expiresAt ?? entry.createdAt + LOOPBACK_AUTH_TTL_MS;
@@ -328,14 +328,13 @@ async function completePendingAuth(
 
 async function startDeviceCodeAuth(state: string) {
   const init = await requestDeviceCode(OPENAI_DEVICE_CODE_CONFIG);
-  const pollAbort = new AbortController();
-  const expiresAt = Date.now() + init.expiresIn * 1000;
+  const startedAt = Date.now();
+  const expiresAt = startedAt + init.expiresIn * 1000;
   const pending: PendingAuth = {
     mode: "device_code",
-    createdAt: Date.now(),
+    createdAt: startedAt,
     status: "pending",
     callbackListening: false,
-    pollAbort,
     deviceCode: init.deviceCode,
     userCode: init.userCode,
     verificationUri: init.verificationUri,
@@ -344,44 +343,6 @@ async function startDeviceCodeAuth(state: string) {
   };
 
   pendingAuths.set(state, pending);
-
-  void pollForToken(
-    OPENAI_DEVICE_CODE_CONFIG,
-    init.deviceCode,
-    init.userCode,
-    init.interval,
-    init.expiresIn,
-    pollAbort.signal,
-  )
-    .then(async (tokens) => {
-      const current = pendingAuths.get(state);
-      if (!current || current !== pending || current.status === "failed") {
-        return;
-      }
-
-      current.status = "exchanging";
-      current.error = undefined;
-      await persistChatgptTokens(tokens);
-      current.status = "completed";
-      current.pollAbort = undefined;
-      log.info("ChatGPT subscription device-code auth completed successfully");
-    })
-    .catch((error) => {
-      const current = pendingAuths.get(state);
-      if (!current || current !== pending) return;
-
-      current.pollAbort = undefined;
-      if (error instanceof DeviceCodeError && error.code === "aborted") {
-        return;
-      }
-
-      current.status = "failed";
-      current.error = safeDeviceErrorMessage(error);
-      log.warn(
-        { err: safeErrorMessage(error) },
-        "ChatGPT subscription device-code auth failed",
-      );
-    });
 
   return {
     authorize_url: init.verificationUriComplete ?? init.verificationUri,
@@ -394,6 +355,7 @@ async function startDeviceCodeAuth(state: string) {
     verification_uri_complete: init.verificationUriComplete ?? null,
     expires_at: expiresAt,
     expires_in: init.expiresIn,
+    started_at: startedAt,
     interval: init.interval,
   };
 }
@@ -545,26 +507,62 @@ async function handleExchange(args: RouteHandlerArgs) {
   return await completePendingAuth(state, code, code_verifier);
 }
 
-async function handleBrowserHeldDeviceStatus(args: RouteHandlerArgs) {
-  const query = args.queryParams ?? {};
-  const deviceCode = query.device_code;
-  const userCode = query.user_code;
-  const expiresAt = positiveNumber(query.expires_at);
-
-  if (
-    typeof deviceCode !== "string" ||
-    !deviceCode ||
-    typeof userCode !== "string" ||
-    !userCode
-  ) {
-    return {
-      status: "expired" as const,
-      callback_listening: false,
-      error: EXPIRED_AUTH_MESSAGE,
-    };
+function statusParams(args: RouteHandlerArgs): Record<string, unknown> {
+  if (args.body && typeof args.body === "object") {
+    return args.body as Record<string, unknown>;
   }
+  return (args.queryParams ?? {}) as Record<string, unknown>;
+}
+
+function completedDeviceStatus(
+  userCode?: string,
+  expiresAt?: number,
+  startedAt?: number,
+) {
+  return {
+    mode: "device_code" as const,
+    status: "completed" as const,
+    callback_listening: false,
+    user_code: userCode,
+    expires_at: expiresAt,
+    started_at: startedAt,
+  };
+}
+
+function hasPersistedChatgptConnectionSince(startedAt?: number): boolean {
+  if (!startedAt) return false;
+  const connection = getConnection(getDb(), CONNECTION_NAME);
+  if (!connection) return false;
+  return (
+    connection.updatedAt >= startedAt - CONNECTION_COMPLETION_CLOCK_SKEW_MS
+  );
+}
+
+function isDuplicateDeviceRedemptionError(error: unknown): boolean {
+  if (!(error instanceof DeviceCodeError) || error.code !== "request_failed") {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    (message.includes("already") && message.includes("redeem")) ||
+    message.includes("invalid_grant")
+  );
+}
+
+async function pollAndPersistDeviceStatus(args: {
+  deviceCode: string;
+  userCode: string;
+  expiresAt?: number;
+  startedAt?: number;
+  pending?: PendingAuth;
+}) {
+  const { deviceCode, userCode, expiresAt, startedAt, pending } = args;
 
   if (expiresAt && expiresAt < Date.now()) {
+    if (pending) {
+      pending.status = "failed";
+      pending.error = EXPIRED_AUTH_MESSAGE;
+    }
     return {
       mode: "device_code" as const,
       status: "expired" as const,
@@ -572,6 +570,7 @@ async function handleBrowserHeldDeviceStatus(args: RouteHandlerArgs) {
       error: EXPIRED_AUTH_MESSAGE,
       user_code: userCode,
       expires_at: expiresAt,
+      started_at: startedAt,
     };
   }
 
@@ -589,41 +588,113 @@ async function handleBrowserHeldDeviceStatus(args: RouteHandlerArgs) {
         callback_listening: false,
         user_code: userCode,
         expires_at: expiresAt,
+        started_at: startedAt,
       };
     }
 
+    if (pending) {
+      pending.status = "exchanging";
+      pending.error = undefined;
+    }
     await persistChatgptTokens(result.tokens);
-    log.info(
-      "ChatGPT subscription device-code auth completed via browser-held status",
-    );
-    return {
-      mode: "device_code" as const,
-      status: "completed" as const,
-      callback_listening: false,
-      user_code: userCode,
-      expires_at: expiresAt,
-    };
+    if (pending) {
+      pending.status = "completed";
+    }
+    log.info("ChatGPT subscription device-code auth completed successfully");
+    return completedDeviceStatus(userCode, expiresAt, startedAt);
   } catch (error) {
+    if (
+      isDuplicateDeviceRedemptionError(error) &&
+      hasPersistedChatgptConnectionSince(startedAt)
+    ) {
+      if (pending) {
+        pending.status = "completed";
+        pending.error = undefined;
+      }
+      return completedDeviceStatus(userCode, expiresAt, startedAt);
+    }
+
+    const message = safeDeviceErrorMessage(error);
+    if (pending) {
+      pending.status = "failed";
+      pending.error = message;
+    }
+    log.warn(
+      { err: safeErrorMessage(error) },
+      "ChatGPT subscription device-code auth failed",
+    );
     return {
       mode: "device_code" as const,
       status: "failed" as const,
       callback_listening: false,
-      error: safeDeviceErrorMessage(error),
+      error: message,
       user_code: userCode,
       expires_at: expiresAt,
+      started_at: startedAt,
     };
   }
 }
 
+async function handleBrowserHeldDeviceStatus(args: RouteHandlerArgs) {
+  const params = statusParams(args);
+  const deviceCode = params.device_code;
+  const userCode = params.user_code;
+  const expiresAt = positiveNumber(params.expires_at);
+  const startedAt = positiveNumber(params.started_at);
+
+  if (
+    typeof deviceCode !== "string" ||
+    !deviceCode ||
+    typeof userCode !== "string" ||
+    !userCode
+  ) {
+    return {
+      status: "expired" as const,
+      callback_listening: false,
+      error: EXPIRED_AUTH_MESSAGE,
+    };
+  }
+
+  return await pollAndPersistDeviceStatus({
+    deviceCode,
+    userCode,
+    expiresAt,
+    startedAt,
+  });
+}
+
 async function handleStatus(args: RouteHandlerArgs) {
   cleanupExpiredEntries();
-  const state = args.queryParams?.state;
-  if (!state) {
-    throw new BadRequestError("state query parameter is required");
+  const params = statusParams(args);
+  const state = params.state;
+  if (typeof state !== "string" || !state) {
+    throw new BadRequestError("state parameter is required");
   }
   const pending = pendingAuths.get(state);
   if (!pending) {
     return await handleBrowserHeldDeviceStatus(args);
+  }
+
+  if (pending.mode === "device_code" && pending.status === "pending") {
+    if (!pending.deviceCode || !pending.userCode) {
+      pending.status = "failed";
+      pending.error =
+        "This ChatGPT sign-in is missing required device details. Start a fresh ChatGPT sign-in and try again.";
+      return {
+        mode: "device_code" as const,
+        status: "failed" as const,
+        callback_listening: false,
+        error: pending.error,
+      };
+    }
+
+    return await pollAndPersistDeviceStatus({
+      deviceCode: pending.deviceCode,
+      userCode: pending.userCode,
+      expiresAt: pending.expiresAt,
+      startedAt: pending.createdAt,
+      pending,
+    });
   }
 
   return {
@@ -636,6 +707,7 @@ async function handleStatus(args: RouteHandlerArgs) {
     verification_uri: pending.verificationUri,
     verification_uri_complete: pending.verificationUriComplete ?? null,
     expires_at: pending.expiresAt,
+    started_at: pending.createdAt,
   };
 }
 
@@ -673,6 +745,7 @@ export const ROUTES: RouteDefinition[] = [
       verification_uri_complete: z.string().nullable().optional(),
       expires_at: z.number().optional(),
       expires_in: z.number().optional(),
+      started_at: z.number().optional(),
       interval: z.number().optional(),
     }),
     handler: handleStartAuth,
@@ -717,6 +790,13 @@ export const ROUTES: RouteDefinition[] = [
         description:
           "Device-flow expiry timestamp in milliseconds since epoch returned by the start route.",
       },
+      {
+        name: "started_at",
+        type: "number",
+        required: false,
+        description:
+          "Device-flow start timestamp in milliseconds since epoch returned by the start route.",
+      },
     ],
     responseBody: z.object({
       mode: z.enum(["device_code", "loopback"]).optional(),
@@ -734,6 +814,46 @@ export const ROUTES: RouteDefinition[] = [
       verification_uri: z.string().optional(),
       verification_uri_complete: z.string().nullable().optional(),
       expires_at: z.number().optional(),
+      started_at: z.number().optional(),
+    }),
+    handler: handleStatus,
+  },
+  {
+    operationId: "inference_chatgpt_subscription_auth_status_post",
+    endpoint: "inference/chatgpt-subscription/auth/status",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Check ChatGPT subscription OAuth status",
+    description:
+      "Return the pending, exchanging, completed, failed, or expired state for a ChatGPT subscription auth flow. Hosted web clients use POST so device-code fields stay out of query strings.",
+    tags: ["inference"],
+    requestBody: z.object({
+      state: z.string(),
+      device_code: z.string().optional(),
+      user_code: z.string().optional(),
+      expires_at: z.number().optional(),
+      started_at: z.number().optional(),
+    }),
+    responseBody: z.object({
+      mode: z.enum(["device_code", "loopback"]).optional(),
+      status: z.enum([
+        "pending",
+        "exchanging",
+        "completed",
+        "failed",
+        "expired",
+      ]),
+      callback_listening: z.boolean(),
+      error: z.string().optional(),
+      device_code: z.string().optional(),
+      user_code: z.string().optional(),
+      verification_uri: z.string().optional(),
+      verification_uri_complete: z.string().nullable().optional(),
+      expires_at: z.number().optional(),
+      started_at: z.number().optional(),
     }),
     handler: handleStatus,
   },
