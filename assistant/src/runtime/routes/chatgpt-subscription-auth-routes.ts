@@ -38,6 +38,7 @@ import {
 import {
   bulkSetSecureKeysAsync,
   getActiveBackendName,
+  setSecureKeyAsync,
 } from "../../security/secure-keys.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
@@ -191,7 +192,25 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
   }
 
   const results = await bulkSetSecureKeysAsync(credentials);
-  const failed = results.filter((result) => !result.ok);
+  const retryResults = await Promise.all(
+    results
+      .filter((result) => !result.ok)
+      .map(async (result) => ({
+        account: result.account,
+        ok: await setSecureKeyAsync(
+          result.account,
+          credentials.find(
+            (credential) => credential.account === result.account,
+          )?.value ?? "",
+        ),
+      })),
+  );
+  const retryByAccount = new Map(
+    retryResults.map((result) => [result.account, result.ok]),
+  );
+  const failed = results.filter(
+    (result) => !result.ok && retryByAccount.get(result.account) !== true,
+  );
   if (failed.length > 0) {
     const failedAccounts = failed.map((result) => result.account);
     log.error(

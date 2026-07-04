@@ -9,6 +9,7 @@ let devicePollMode: "success" | "pending" = "success";
 let deviceExpiresIn = 900;
 let secureWrites: Record<string, string> = {};
 let failingSecureAccounts = new Set<string>();
+let bulkOnlyFailingSecureAccounts = new Set<string>();
 const realDateNow = Date.now;
 
 mock.module("../../../security/oauth2.js", () => ({
@@ -119,12 +120,22 @@ mock.module("../../../security/secure-keys.js", () => ({
     credentials: Array<{ account: string; value: string }>,
   ) =>
     credentials.map(({ account, value }) => {
-      if (failingSecureAccounts.has(account)) {
+      if (
+        failingSecureAccounts.has(account) ||
+        bulkOnlyFailingSecureAccounts.has(account)
+      ) {
         return { account, ok: false };
       }
       secureWrites[account] = value;
       return { account, ok: true };
     }),
+  setSecureKeyAsync: async (account: string, value: string) => {
+    if (failingSecureAccounts.has(account)) {
+      return false;
+    }
+    secureWrites[account] = value;
+    return true;
+  },
   getActiveBackendName: () => "test-backend",
 }));
 
@@ -160,6 +171,7 @@ beforeEach(() => {
   deviceExpiresIn = 900;
   secureWrites = {};
   failingSecureAccounts = new Set<string>();
+  bulkOnlyFailingSecureAccounts = new Set<string>();
   Date.now = realDateNow;
 });
 
@@ -433,6 +445,38 @@ describe("ChatGPT subscription auth routes", () => {
 
     expect(result).toEqual({ ok: true });
     expect(exchangedCodeVerifier).toBe(verifier);
+    expect(secureWrites["credential/chatgpt/access_token"]).toBe(
+      "access-token",
+    );
+    expect(secureWrites["credential/chatgpt/refresh_token"]).toBe(
+      "refresh-token",
+    );
+
+    const connection = getConnection(getDb(), "chatgpt-subscription");
+    expect(connection?.auth).toEqual({
+      type: "oauth_subscription",
+      credential: "credential/chatgpt/access_token",
+    });
+  });
+
+  test("manual exchange retries individual credential writes when bulk storage fails", async () => {
+    bulkOnlyFailingSecureAccounts = new Set([
+      "credential/chatgpt/access_token",
+      "credential/chatgpt/refresh_token",
+      "credential/chatgpt/expires_at",
+    ]);
+
+    const result = await findHandler(
+      "inference_chatgpt_subscription_auth_exchange",
+    )({
+      body: {
+        code: "oauth-code",
+        state: "state-from-another-instance",
+        code_verifier: "b".repeat(43),
+      },
+    });
+
+    expect(result).toEqual({ ok: true });
     expect(secureWrites["credential/chatgpt/access_token"]).toBe(
       "access-token",
     );
