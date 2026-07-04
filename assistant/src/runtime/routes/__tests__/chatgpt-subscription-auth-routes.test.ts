@@ -491,6 +491,45 @@ describe("ChatGPT subscription auth routes", () => {
     });
   });
 
+  test("manual exchange repairs a stale malformed provider connection row", async () => {
+    getDb()
+      .insert(providerConnections)
+      .values({
+        name: "chatgpt-subscription",
+        provider: "openai",
+        auth: JSON.stringify({
+          type: "chatgpt_subscription",
+          credential: "credential/chatgpt/access_token",
+        }),
+        label: "Old ChatGPT row",
+        baseUrl: null,
+        models: null,
+        createdAt: 100,
+        updatedAt: 100,
+      })
+      .run();
+
+    const result = await findHandler(
+      "inference_chatgpt_subscription_auth_exchange",
+    )({
+      body: {
+        code: "oauth-code",
+        state: "state-from-another-instance",
+        code_verifier: "b".repeat(43),
+      },
+    });
+
+    expect(result).toEqual({ ok: true });
+    const connection = getConnection(getDb(), "chatgpt-subscription");
+    expect(connection?.auth).toEqual({
+      type: "oauth_subscription",
+      credential: "credential/chatgpt/access_token",
+    });
+    expect(connection?.label).toBe("ChatGPT Subscription");
+    expect(connection?.createdAt).toBe(100);
+    expect(connection?.updatedAt).toBeGreaterThan(100);
+  });
+
   test("manual exchange reports backend detail when credential storage fails", async () => {
     failingSecureAccounts = new Set(["credential/chatgpt/access_token"]);
 

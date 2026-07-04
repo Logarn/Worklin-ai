@@ -269,6 +269,87 @@ export function updateConnection(
   };
 }
 
+export function upsertConnection(
+  db: DrizzleDb,
+  input: CreateConnectionInput,
+):
+  | { ok: true; connection: ProviderConnection }
+  | { ok: false; error: ConnectionCreateError } {
+  if (!VALID_CONNECTION_PROVIDERS.includes(input.provider as never)) {
+    return {
+      ok: false,
+      error: { code: "invalid_provider", provider: input.provider },
+    };
+  }
+  const provider = input.provider as ConnectionProvider;
+
+  const authResult = AuthSchema.safeParse(input.auth);
+  if (!authResult.success) {
+    return { ok: false, error: { code: "invalid_auth" } };
+  }
+
+  const label = input.label ?? null;
+  const baseUrl = input.baseUrl ?? null;
+  const models = input.models ?? null;
+
+  if (PROVIDERS_REQUIRING_BASE_URL_AND_MODELS.has(provider)) {
+    if (!baseUrl) return { ok: false, error: { code: "base_url_required" } };
+    if (!models || models.length === 0) {
+      return { ok: false, error: { code: "models_required" } };
+    }
+  }
+
+  const now = Date.now();
+  const existing = db
+    .select({ createdAt: providerConnections.createdAt })
+    .from(providerConnections)
+    .where(eq(providerConnections.name, input.name))
+    .get();
+  const createdAt = existing?.createdAt ?? now;
+  const serializedModels = models === null ? null : JSON.stringify(models);
+
+  db.insert(providerConnections)
+    .values({
+      name: input.name,
+      provider,
+      auth: JSON.stringify(authResult.data),
+      label,
+      baseUrl,
+      models: serializedModels,
+      createdAt,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: providerConnections.name,
+      set: {
+        provider,
+        auth: JSON.stringify(authResult.data),
+        label,
+        baseUrl,
+        models: serializedModels,
+        updatedAt: now,
+      },
+    })
+    .run();
+
+  clearConnectionProviderCache();
+
+  return {
+    ok: true,
+    connection: {
+      name: input.name,
+      provider,
+      auth: authResult.data,
+      label,
+      baseUrl,
+      models,
+      createdAt,
+      updatedAt: now,
+      isManaged: MANAGED_CONNECTION_NAMES.has(input.name),
+    },
+  };
+}
+
 /**
  * Delete a connection.
  *
@@ -415,4 +496,3 @@ export function seedCanonicalConnections(db: DrizzleDb): void {
       .run();
   }
 }
-

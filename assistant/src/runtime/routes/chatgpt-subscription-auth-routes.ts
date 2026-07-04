@@ -16,9 +16,8 @@ import { z } from "zod";
 
 import { getDb } from "../../memory/db-connection.js";
 import {
-  createConnection,
   getConnection,
-  updateConnection,
+  upsertConnection,
 } from "../../providers/inference/connections.js";
 import { renderOAuthCompletionPage } from "../../security/oauth-completion-page.js";
 import type { OAuth2Config } from "../../security/oauth2.js";
@@ -232,31 +231,20 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
     credential: "credential/chatgpt/access_token",
   };
 
-  const existing = getConnection(db, CONNECTION_NAME);
-  if (existing) {
-    const updateResult = updateConnection(db, CONNECTION_NAME, {
-      auth: authInput,
-    });
-    if (!updateResult.ok) {
-      log.error(
-        { error: updateResult.error },
-        "Failed to update chatgpt-subscription connection",
-      );
-      throw new Error("Failed to update connection");
-    }
-  } else {
-    const createResult = createConnection(db, {
-      name: CONNECTION_NAME,
-      provider: "openai",
-      auth: authInput,
-    });
-    if (!createResult.ok) {
-      log.error(
-        { error: createResult.error },
-        "Failed to create chatgpt-subscription connection",
-      );
-      throw new Error("Failed to create connection");
-    }
+  const upsertResult = upsertConnection(db, {
+    name: CONNECTION_NAME,
+    provider: "openai",
+    auth: authInput,
+    label: "ChatGPT Subscription",
+    baseUrl: null,
+    models: null,
+  });
+  if (!upsertResult.ok) {
+    log.error(
+      { error: upsertResult.error },
+      "Failed to save chatgpt-subscription connection",
+    );
+    throw new Error(`Failed to save connection (${upsertResult.error.code})`);
   }
 }
 

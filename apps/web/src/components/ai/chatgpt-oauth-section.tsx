@@ -105,6 +105,7 @@ function formatChatgptAuthError(message: string): string {
     lower.includes("store access token") ||
     lower.includes("store refresh token") ||
     lower.includes("store chatgpt credentials") ||
+    lower.includes("failed to save connection") ||
     lower.includes("failed to create connection") ||
     lower.includes("failed to update connection")
   ) {
@@ -294,6 +295,7 @@ export function ChatgptOAuthSection({
     try {
       const { data } = await inferenceChatgptsubscriptionAuthPost({
         path: { assistant_id: assistantId },
+        body: {},
         throwOnError: true,
       });
       const {
