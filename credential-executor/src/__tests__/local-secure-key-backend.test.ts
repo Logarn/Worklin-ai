@@ -7,7 +7,15 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -19,7 +27,10 @@ import { createLocalSecureKeyBackend } from "../materializers/local-secure-key-b
 // ---------------------------------------------------------------------------
 
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `ces-backend-test-${randomBytes(8).toString("hex")}`);
+  const dir = join(
+    tmpdir(),
+    `ces-backend-test-${randomBytes(8).toString("hex")}`,
+  );
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -97,7 +108,9 @@ describe("createLocalSecureKeyBackend — filesystem", () => {
     expect(Buffer.compare(keyAfterFirst, keyAfterSecond)).toBe(0);
 
     // keys.enc has exactly 2 entries
-    const store = JSON.parse(readFileSync(join(securityDir, "keys.enc"), "utf-8"));
+    const store = JSON.parse(
+      readFileSync(join(securityDir, "keys.enc"), "utf-8"),
+    );
     expect(Object.keys(store.entries).length).toBe(2);
 
     // Both values round-trip
@@ -111,16 +124,22 @@ describe("createLocalSecureKeyBackend — filesystem", () => {
     // Manually write a v1 store
     const salt = randomBytes(32).toString("hex");
     const v1Store = { version: 1, salt, entries: {} };
-    writeFileSync(join(securityDir, "keys.enc"), JSON.stringify(v1Store, null, 2), {
-      mode: 0o600,
-    });
+    writeFileSync(
+      join(securityDir, "keys.enc"),
+      JSON.stringify(v1Store, null, 2),
+      {
+        mode: 0o600,
+      },
+    );
 
     const backend = createLocalSecureKeyBackend(vellumRoot);
     const result = await backend.set("v1-key", "v1-value");
     expect(result).toBe(true);
 
     // Read back and verify format preserved
-    const storeAfter = JSON.parse(readFileSync(join(securityDir, "keys.enc"), "utf-8"));
+    const storeAfter = JSON.parse(
+      readFileSync(join(securityDir, "keys.enc"), "utf-8"),
+    );
     expect(storeAfter.version).toBe(1);
     expect(storeAfter.salt).toBe(salt);
     expect(Object.keys(storeAfter.entries)).toContain("v1-key");
@@ -131,6 +150,29 @@ describe("createLocalSecureKeyBackend — filesystem", () => {
     // Round-trip
     const value = await backend.get("v1-key");
     expect(value).toBe("v1-value");
+  });
+
+  test("set() recovers from an unusable v2 store with a missing store.key", async () => {
+    const { securityDir, vellumRoot } = setup();
+
+    writeFileSync(
+      join(securityDir, "keys.enc"),
+      JSON.stringify({ version: 2, entries: { stale: {} } }, null, 2),
+      { mode: 0o600 },
+    );
+
+    const backend = createLocalSecureKeyBackend(vellumRoot);
+    const result = await backend.set("recovered-key", "recovered-value");
+    expect(result).toBe(true);
+
+    expect(existsSync(join(securityDir, "store.key"))).toBe(true);
+    expect(readFileSync(join(securityDir, "store.key")).length).toBe(32);
+    expect(await backend.get("recovered-key")).toBe("recovered-value");
+
+    const quarantined = readdirSync(securityDir).filter((name) =>
+      name.startsWith("keys.enc.unusable-"),
+    );
+    expect(quarantined.length).toBe(1);
   });
 
   test("get() returns undefined when no store exists", async () => {

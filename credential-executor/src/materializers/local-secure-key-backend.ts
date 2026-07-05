@@ -38,7 +38,14 @@ import {
   pbkdf2Sync,
   randomBytes,
 } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -46,6 +53,7 @@ import type {
   SecureKeyBackend,
   SecureKeyDeleteResult,
 } from "@vellumai/credential-storage";
+import { getLogger } from "../logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants (must match assistant/src/security/encrypted-store.ts)
@@ -55,8 +63,7 @@ const ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32; // bytes (256 bits)
 const IV_LENGTH = 16; // bytes (128 bits)
 const AUTH_TAG_LENGTH = 16; // bytes
-const PBKDF2_ITERATIONS =
-  process.env.BUN_TEST === "1" ? 1 : 100_000;
+const PBKDF2_ITERATIONS = process.env.BUN_TEST === "1" ? 1 : 100_000;
 
 // ---------------------------------------------------------------------------
 // On-disk format (must match assistant/src/security/encrypted-store.ts)
@@ -87,6 +94,17 @@ type StoreFile = StoreFileV1 | StoreFileV2;
 
 const STORE_KEY_FILENAME = "store.key";
 const KEYS_ENC_FILENAME = "keys.enc";
+const log = getLogger("local-secure-key-backend");
+
+class UnusableV2StoreError extends Error {
+  constructor(
+    message: string,
+    readonly storePath: string,
+  ) {
+    super(message);
+    this.name = "UnusableV2StoreError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Security directory resolution
@@ -166,7 +184,10 @@ function getOrCreateStore(
     }
     const storeKey = readStoreKey(vellumRoot);
     if (!storeKey) {
-      throw new Error("v2 store exists but store.key is missing or corrupt");
+      throw new UnusableV2StoreError(
+        "v2 store exists but store.key is missing or corrupt",
+        storePath,
+      );
     }
     return { store: existing, aesKey: storeKey };
   }
@@ -176,6 +197,28 @@ function getOrCreateStore(
   const store: StoreFileV2 = { version: 2, entries: {} };
   writeStore(store, storePath);
   return { store, aesKey };
+}
+
+function quarantineUnusableV2Store(
+  storePath: string,
+  vellumRoot: string,
+): void {
+  const securityDir = resolveSecurityDir(vellumRoot);
+  const suffix = `.unusable-${Date.now()}-${process.pid}`;
+  const storeKeyPath = join(securityDir, STORE_KEY_FILENAME);
+
+  if (existsSync(storePath)) {
+    renameSync(storePath, `${storePath}${suffix}`);
+  }
+
+  if (existsSync(storeKeyPath)) {
+    renameSync(storeKeyPath, `${storeKeyPath}${suffix}`);
+  }
+
+  log.warn(
+    { storePath, storeKeyPath },
+    "Quarantined unusable v2 credential store before creating a fresh store",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +345,10 @@ function readStore(storePath: string): StoreFile | null {
  */
 export function createLocalSecureKeyBackend(
   vellumRoot: string,
-  options?: { entropyOverride?: string; entropyGetter?: () => string | undefined },
+  options?: {
+    entropyOverride?: string;
+    entropyGetter?: () => string | undefined;
+  },
 ): SecureKeyBackend {
   const storePath = join(resolveSecurityDir(vellumRoot), KEYS_ENC_FILENAME);
   const staticEntropy = options?.entropyOverride;
@@ -349,24 +395,40 @@ export function createLocalSecureKeyBackend(
           const result = getOrCreateStore(storePath, vellumRoot);
           store = result.store;
           aesKey = result.aesKey;
-        } catch {
-          // Fallback: v1 store or other error — try legacy PBKDF2 path
-          const existing = readStore(storePath);
-          if (!existing) return false;
-          store = existing;
-          if (store.version === 1) {
-            const entropy = entropyGetter?.() ?? staticEntropy;
-            const salt = Buffer.from(store.salt, "hex");
-            aesKey = deriveKey(salt, entropy);
+        } catch (err) {
+          if (err instanceof UnusableV2StoreError) {
+            try {
+              quarantineUnusableV2Store(storePath, vellumRoot);
+              const result = getOrCreateStore(storePath, vellumRoot);
+              store = result.store;
+              aesKey = result.aesKey;
+            } catch (recoveryErr) {
+              log.warn(
+                { err: recoveryErr, storePath },
+                "Failed to recover unusable v2 credential store",
+              );
+              return false;
+            }
           } else {
-            return false;
+            // Fallback: v1 store or other error — try legacy PBKDF2 path
+            const existing = readStore(storePath);
+            if (!existing) return false;
+            store = existing;
+            if (store.version === 1) {
+              const entropy = entropyGetter?.() ?? staticEntropy;
+              const salt = Buffer.from(store.salt, "hex");
+              aesKey = deriveKey(salt, entropy);
+            } else {
+              return false;
+            }
           }
         }
 
         store.entries[key] = encrypt(value, aesKey);
         writeStore(store, storePath);
         return true;
-      } catch {
+      } catch (err) {
+        log.warn({ err, storePath }, "Secure key backend set failed");
         return false;
       }
     },
