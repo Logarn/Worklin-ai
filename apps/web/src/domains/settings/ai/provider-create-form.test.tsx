@@ -25,7 +25,6 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createElement, useState, type ReactNode } from "react";
 
 import type { ProviderConnection } from "@/generated/daemon/types.gen";
-import * as sdkGen from "@/generated/daemon/sdk.gen";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -178,19 +177,31 @@ mock.module("@vellumai/design-library/components/typography", () => ({
   }) => createElement(as ?? "span", { className }, children),
 }));
 
+mock.module("@/components/ai/chatgpt-oauth-section", () => ({
+  ChatgptOAuthSection: () => null,
+}));
+
 mock.module("@/generated/daemon/sdk.gen", () => ({
-  ...sdkGen,
   configGet: (opts: ConfigGetCall) => {
     configGetCalls.push(opts);
-    return Promise.resolve({ data: configGetData, response: { ok: true } });
+    return Promise.resolve({
+      data: configGetData,
+      response: { ok: true, status: 200 },
+    });
   },
   configPatch: (opts: ConfigPatchCall) => {
     configPatchCalls.push(opts);
-    return Promise.resolve({ data: configGetData, response: { ok: true } });
+    return Promise.resolve({
+      data: configGetData,
+      response: { ok: true, status: 200 },
+    });
   },
   secretsPost: (opts: SecretsPostCall) => {
     secretsPostCalls.push(opts);
-    return Promise.resolve({ data: undefined, response: { ok: true } });
+    return Promise.resolve({
+      data: undefined,
+      response: { ok: true, status: 200 },
+    });
   },
   inferenceProviderconnectionsPost: (opts: CreateConnectionCall) => {
     createConnectionCalls.push(opts);
@@ -199,6 +210,16 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       response: { ok: createResponseOk, status: createResponseStatus },
     });
   },
+  inferenceProviderconnectionsGet: () =>
+    Promise.resolve({
+      data: { connections: [] },
+      response: { ok: true, status: 200 },
+    }),
+}));
+
+mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
+  configGetQueryKey: (options: unknown) => ["configGet", options],
+  secretsGetQueryKey: (options: unknown) => ["secretsGet", options],
 }));
 
 // Stub the credential hooks so render doesn't issue real daemon queries.

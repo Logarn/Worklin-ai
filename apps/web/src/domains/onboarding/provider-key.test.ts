@@ -1,16 +1,66 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-import {
+interface SdkCall {
+  path: { assistant_id: string };
+  body?: Record<string, unknown>;
+}
+
+let secretsPostCalls: SdkCall[] = [];
+let connectionPostCalls: SdkCall[] = [];
+let configPatchCalls: SdkCall[] = [];
+let secretsPostOk = true;
+let secretsPostStatus = 200;
+let connectionPostStatus = 200;
+
+mock.module("@/generated/daemon/sdk.gen", () => ({
+  configGet: (_opts: SdkCall) =>
+    Promise.resolve({
+      data: { llm: { activeProfile: null, profileOrder: [], profiles: {} } },
+      response: { ok: true, status: 200 },
+    }),
+  configPatch: (opts: SdkCall) => {
+    configPatchCalls.push(opts);
+    return Promise.resolve({ data: undefined, response: { ok: true, status: 200 } });
+  },
+  inferenceProviderconnectionsByNamePatch: (_opts: SdkCall) =>
+    Promise.resolve({ data: undefined, response: { ok: true, status: 200 } }),
+  inferenceProviderconnectionsPost: (opts: SdkCall) => {
+    connectionPostCalls.push(opts);
+    return Promise.resolve({
+      data: undefined,
+      response: {
+        ok: connectionPostStatus >= 200 && connectionPostStatus < 300,
+        status: connectionPostStatus,
+      },
+    });
+  },
+  secretsPost: (opts: SdkCall) => {
+    secretsPostCalls.push(opts);
+    return Promise.resolve({
+      data: undefined,
+      response: { ok: secretsPostOk, status: secretsPostStatus },
+    });
+  },
+}));
+
+const {
+  applyPendingProviderKey,
   consumePendingProviderKey,
   pendingProviderAuthType,
   pendingProviderRequiresOAuth,
   peekPendingProviderKey,
   providerApiKeySecretBody,
   setPendingProviderKey,
-} from "@/domains/onboarding/provider-key";
+} = await import("@/domains/onboarding/provider-key");
 
 beforeEach(() => {
   sessionStorage.clear();
+  secretsPostCalls = [];
+  connectionPostCalls = [];
+  configPatchCalls = [];
+  secretsPostOk = true;
+  secretsPostStatus = 200;
+  connectionPostStatus = 200;
 });
 
 describe("pending provider key", () => {
@@ -113,6 +163,72 @@ describe("pending provider key", () => {
       type: "credential",
       name: "xai:api_key",
       value: "xai-test",
+    });
+  });
+
+  test("provider apply keeps the pending key when secret storage fails", async () => {
+    secretsPostOk = false;
+    secretsPostStatus = 401;
+    setPendingProviderKey({ provider: "kimi", key: "provider-key-value" });
+
+    let thrown: unknown = null;
+    try {
+      await applyPendingProviderKey("asst-1");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as { status?: number }).status).toBe(401);
+    expect(peekPendingProviderKey()).toMatchObject({
+      provider: "kimi",
+      key: "provider-key-value",
+    });
+    expect(connectionPostCalls.length).toBe(0);
+    expect(configPatchCalls.length).toBe(0);
+  });
+
+  test("provider apply clears the pending key after connection and profile setup succeed", async () => {
+    setPendingProviderKey({
+      provider: "kimi",
+      providerOptionId: "kimi",
+      key: "provider-key-value",
+      defaultModel: "kimi-k2.6",
+    });
+
+    await applyPendingProviderKey("asst-1");
+
+    expect(peekPendingProviderKey()).toBeNull();
+    expect(secretsPostCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        type: "api_key",
+        name: "kimi",
+        value: "provider-key-value",
+      },
+    });
+    expect(connectionPostCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        name: "kimi-personal",
+        provider: "kimi",
+        auth: { type: "api_key", credential: "credential/kimi/api_key" },
+      },
+    });
+    expect(configPatchCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        llm: {
+          activeProfile: "custom-balanced",
+          profiles: {
+            "custom-balanced": {
+              provider: "kimi",
+              provider_connection: "kimi-personal",
+              model: "kimi-k2.6",
+            },
+          },
+        },
+      },
     });
   });
 });

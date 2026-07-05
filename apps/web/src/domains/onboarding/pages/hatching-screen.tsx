@@ -80,6 +80,26 @@ const PHASE_LABEL: Record<HatchPhase, string> = {
   ready: "Ready",
 };
 
+function providerSetupErrorMessage(err: unknown): string {
+  const status =
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    typeof (err as { status?: unknown }).status === "number"
+      ? (err as { status: number }).status
+      : undefined;
+
+  if (status === 401 || status === 403) {
+    return "Worklin started your assistant, but could not get permission to save the AI provider yet. Please try again.";
+  }
+
+  if (status === 429) {
+    return "Worklin started your assistant, but the AI provider setup was rate limited. Please wait a moment, then try again.";
+  }
+
+  return "Worklin started your assistant, but could not save the AI provider. Please try again.";
+}
+
 function primePlatformAssistantConnection(assistant: Assistant): void {
   setSelfHostedConnection(hostedRuntimeConnection(assistant));
 }
@@ -243,6 +263,8 @@ export function HatchingScreen() {
         await applyPendingProviderKey(assistantId);
       } catch (err) {
         captureError(err, { context: "onboarding_apply_provider_key" });
+        setError(providerSetupErrorMessage(err));
+        return false;
       }
       return true;
     };

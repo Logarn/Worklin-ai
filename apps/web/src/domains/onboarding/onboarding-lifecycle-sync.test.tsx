@@ -50,6 +50,15 @@ const navigateMock = mock(() => {});
 let checkAssistantImpl: () => Promise<void> = async () => {};
 const checkAssistantMock = mock(() => checkAssistantImpl());
 const setSelectedAssistantMock = mock(async (_id: string | null) => {});
+let pendingProviderKey: unknown = null;
+let applyPendingProviderKeyImpl: (assistantId: string) => Promise<void> =
+  async () => {};
+const applyPendingProviderKeyMock = mock((assistantId: string) =>
+  applyPendingProviderKeyImpl(assistantId),
+);
+const applyChatgptSubscriptionProviderMock = mock(
+  async (_assistantId: string) => {},
+);
 
 const hatchAssistantMock = mock(async () => ({
   ok: true,
@@ -225,6 +234,13 @@ mock.module("@/domains/onboarding/prefs", () => ({
 
 mock.module("@/domains/onboarding/recipe-client.js", () => ({
   fetchOnboardingRecipe: fetchOnboardingRecipeMock,
+}));
+
+mock.module("@/domains/onboarding/provider-key", () => ({
+  applyChatgptSubscriptionProvider: applyChatgptSubscriptionProviderMock,
+  applyPendingProviderKey: applyPendingProviderKeyMock,
+  pendingProviderRequiresOAuth: () => false,
+  peekPendingProviderKey: () => pendingProviderKey,
 }));
 
 mock.module("@/lib/navigation/navigation-resolver", () => ({
@@ -477,10 +493,14 @@ beforeEach(() => {
   randomSpy = spyOn(Math, "random").mockReturnValue(0);
   sessionStorage.clear();
   localStorage.clear();
+  pendingProviderKey = null;
+  applyPendingProviderKeyImpl = async () => {};
 
   navigateMock.mockClear();
   checkAssistantMock.mockClear();
   setSelectedAssistantMock.mockClear();
+  applyPendingProviderKeyMock.mockClear();
+  applyChatgptSubscriptionProviderMock.mockClear();
   hatchAssistantMock.mockClear();
   getAssistantMock.mockClear();
   getAssistantHealthzMock.mockClear();
@@ -556,6 +576,28 @@ describe("onboarding lifecycle sync", () => {
       timeout: 2_000,
     });
     expect(hatchAssistantMock).not.toHaveBeenCalled();
+  });
+
+  test("provider setup failure stops hatching before onboarding navigation", async () => {
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
+    applyPendingProviderKeyImpl = async () => {
+      throw Object.assign(new Error("provider setup failed"), { status: 401 });
+    };
+
+    render(<HatchingScreen />);
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Worklin started your assistant, but could not get permission to save the AI provider yet. Please try again.",
+      ),
+    ).toBeTruthy();
+    expect(applyPendingProviderKeyMock).toHaveBeenCalledWith("asst-1");
+    expect(checkAssistantMock).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalledWith(
+      routes.onboarding.prechat,
+      { replace: true },
+    );
   });
 
   test("hatching refreshes the root assistant lifecycle before leaving onboarding", async () => {

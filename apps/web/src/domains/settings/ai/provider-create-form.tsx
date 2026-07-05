@@ -164,8 +164,8 @@ export function ProviderCreateForm({
 
         if (trimmedKey) {
           setIsSavingKey(true);
+          const parsed = parseCredentialRef(effectiveCredential);
           try {
-            const parsed = parseCredentialRef(effectiveCredential);
             await secretsPost({
               path: { assistant_id: assistantId },
               body: providerApiKeySecretBody(
@@ -175,8 +175,17 @@ export function ProviderCreateForm({
               ),
               throwOnError: true,
             });
-            // Optimistically mark credential as present and invalidate
-            // the credentials list so TQ caches stay in sync.
+          } catch {
+            setError(
+              "Worklin could not save this API key. Check that it belongs to the selected provider, then try again.",
+            );
+            return;
+          } finally {
+            setIsSavingKey(false);
+          }
+          try {
+            // Cache updates should not block creating the provider connection
+            // after the daemon has already accepted the secret.
             const presenceKey = credentialPresenceQueryKey(
               assistantId,
               "credential",
@@ -187,12 +196,7 @@ export function ProviderCreateForm({
               queryKey: secretsGetQueryKey({ path: { assistant_id: assistantId } }),
             });
           } catch {
-            setError(
-              "Worklin could not save this API key. Check that it belongs to the selected provider, then try again.",
-            );
-            return;
-          } finally {
-            setIsSavingKey(false);
+            // Non-critical cache refresh failure; the next query will refetch.
           }
         } else if (!hasStoredCredential) {
           setError("Enter an API key or select an existing credential.");

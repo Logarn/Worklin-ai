@@ -276,13 +276,13 @@ export async function configureOnboardingProviderProfile(
 /**
  * Apply the API key collected during onboarding to the freshly hatched local
  * assistant: store the secret (when a key was entered) and create the provider
- * connection so the daemon can use it. Consumes the pending key; no-op when
- * nothing was collected (e.g. Worklin Cloud, which skips the API-key step).
+ * connection so the daemon can use it. The pending key is only cleared after
+ * all writes succeed so a transient gateway/auth error can be retried.
  */
 export async function applyPendingProviderKey(
   assistantId: string,
 ): Promise<void> {
-  const pending = consumePendingProviderKey();
+  const pending = peekPendingProviderKey();
   if (!pending) return;
   const authType = pendingProviderAuthType(pending);
   if (authType === "oauth_subscription") {
@@ -311,12 +311,13 @@ export async function applyPendingProviderKey(
     connectionName,
     defaultModel: pending.defaultModel,
   });
+  setPendingProviderKey(null);
 }
 
 export async function applyChatgptSubscriptionProvider(
   assistantId: string,
 ): Promise<void> {
-  const pending = consumePendingProviderKey();
+  const pending = peekPendingProviderKey();
   if (!pending || pendingProviderAuthType(pending) !== "oauth_subscription") {
     return;
   }
@@ -325,4 +326,5 @@ export async function applyChatgptSubscriptionProvider(
     authType: "oauth_subscription",
     connectionName: CHATGPT_SUBSCRIPTION_CONNECTION_NAME,
   });
+  setPendingProviderKey(null);
 }
