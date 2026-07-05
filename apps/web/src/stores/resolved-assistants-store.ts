@@ -114,27 +114,26 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
         organizationId: a.organizationId,
       }));
       set({ assistants, assistantsHydrated: true });
-      // The lockfile carries every org's entries, so an id absent from it is
-      // genuinely gone — safe to prune. (The API list is org-scoped, so
-      // `setFromApi` deliberately does NOT reconcile; a cross-org selection
-      // there is filtered out on read, not deleted.)
-      reconcileSelection(get, set);
+      reconcileHydratedIds(get, set);
     },
 
     // The platform `Assistant` API carries no org field, so API-sourced
     // entries intentionally leave `organizationId` undefined (unlike
     // `setFromLockfile`). Don't "fix" this by inventing an org here.
-    setFromApi: (assistants) =>
+    setFromApi: (assistants) => {
+      const next = assistants.map((a) => ({
+        id: a.id,
+        name: a.name,
+        hatchedAt: a.created,
+        isLocal: a.is_local,
+        isPlatformHosted: isPlatformManagedAssistant(a),
+      }));
       set({
         assistantsHydrated: true,
-        assistants: assistants.map((a) => ({
-          id: a.id,
-          name: a.name,
-          hatchedAt: a.created,
-          isLocal: a.is_local,
-          isPlatformHosted: isPlatformManagedAssistant(a),
-        })),
-      }),
+        assistants: next,
+      });
+      reconcileHydratedIds(get, set);
+    },
 
     upsertFromApi: (assistant) =>
       set((state) => {
@@ -196,20 +195,33 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
 );
 
 /**
- * Drop the selected id once it's provably a ghost: hydrated AND not present in
- * the resolved list. Only `setFromLockfile` calls this (the lockfile is the
- * cross-org universe); the org-scoped API list must not delete a valid
- * cross-org selection.
+ * Drop ids once they're provably ghosts: hydrated AND not present in the
+ * resolved list. This keeps provider/chat routes from posting to retired
+ * platform assistants after the server has returned a fresh current list.
  */
-function reconcileSelection(
+function reconcileHydratedIds(
   get: () => ResolvedAssistantsStore,
   set: (partial: Partial<ResolvedAssistantsState>) => void,
 ): void {
-  const { assistants, selectedAssistantId, assistantsHydrated } = get();
-  if (!assistantsHydrated || selectedAssistantId == null) return;
-  if (assistants.some((a) => a.id === selectedAssistantId)) return;
-  clearSelectedAssistantId();
-  set({ selectedAssistantId: null });
+  const { assistants, selectedAssistantId, activeAssistantId, assistantsHydrated } =
+    get();
+  if (!assistantsHydrated) return;
+
+  const knownIds = new Set(assistants.map((a) => a.id));
+  const patch: Partial<ResolvedAssistantsState> = {};
+
+  if (selectedAssistantId !== null && !knownIds.has(selectedAssistantId)) {
+    clearSelectedAssistantId();
+    patch.selectedAssistantId = null;
+  }
+
+  if (activeAssistantId !== null && !knownIds.has(activeAssistantId)) {
+    patch.activeAssistantId = null;
+  }
+
+  if (Object.keys(patch).length > 0) {
+    set(patch);
+  }
 }
 
 export const useResolvedAssistantsStore = createSelectors(
