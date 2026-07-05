@@ -5,7 +5,7 @@ set -euo pipefail
 : "${VELLUM_WORKSPACE_DIR:=${WORKLIN_RUNTIME_ROOT}/workspace}"
 : "${GATEWAY_SECURITY_DIR:=${WORKLIN_RUNTIME_ROOT}/gateway-security}"
 : "${CES_DATA_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-data}"
-: "${CREDENTIAL_SECURITY_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-security}"
+: "${CREDENTIAL_SECURITY_DIR:=${CES_DATA_DIR%/}/security}"
 : "${CES_BOOTSTRAP_SOCKET_DIR:=/run/ces-bootstrap}"
 : "${GATEWAY_IPC_SOCKET_DIR:=/run/gateway-ipc}"
 : "${DEBUG_STDOUT_LOGS:=1}"
@@ -62,9 +62,16 @@ mkdir -p \
   "${workspace_credentials_dir}" \
   "${GATEWAY_SECURITY_DIR}" \
   "${CES_DATA_DIR}" \
-  "${CREDENTIAL_SECURITY_DIR}" \
   "${CES_BOOTSTRAP_SOCKET_DIR}" \
   "${GATEWAY_IPC_SOCKET_DIR}"
+
+fallback_credential_security_dir="${CES_DATA_DIR%/}/security"
+if ! mkdir -p "${CREDENTIAL_SECURITY_DIR}"; then
+  echo "Unable to create CREDENTIAL_SECURITY_DIR=${CREDENTIAL_SECURITY_DIR}; falling back to ${fallback_credential_security_dir}" >&2
+  CREDENTIAL_SECURITY_DIR="${fallback_credential_security_dir}"
+  export CREDENTIAL_SECURITY_DIR
+  mkdir -p "${CREDENTIAL_SECURITY_DIR}"
+fi
 
 signing_key_path="${GATEWAY_SECURITY_DIR%/}/actor-token-signing-key"
 if [[ -z "${ACTOR_TOKEN_SIGNING_KEY:-}" ]]; then
@@ -103,6 +110,22 @@ chmod 2775 \
 chmod 700 "${GATEWAY_SECURITY_DIR}" "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 777 "${CES_BOOTSTRAP_SOCKET_DIR}"
 chmod 2770 "${GATEWAY_IPC_SOCKET_DIR}"
+
+if ! runuser -u ces -g ces -G vellum -- test -w "${CREDENTIAL_SECURITY_DIR}"; then
+  if [[ "${CREDENTIAL_SECURITY_DIR}" != "${fallback_credential_security_dir}" ]]; then
+    echo "CREDENTIAL_SECURITY_DIR=${CREDENTIAL_SECURITY_DIR} is not writable by ces; falling back to ${fallback_credential_security_dir}" >&2
+    CREDENTIAL_SECURITY_DIR="${fallback_credential_security_dir}"
+    export CREDENTIAL_SECURITY_DIR
+    mkdir -p "${CREDENTIAL_SECURITY_DIR}"
+    chown -R ces:ces "${CREDENTIAL_SECURITY_DIR}"
+    chmod 700 "${CREDENTIAL_SECURITY_DIR}"
+  fi
+fi
+
+if ! runuser -u ces -g ces -G vellum -- test -w "${CREDENTIAL_SECURITY_DIR}"; then
+  echo "CREDENTIAL_SECURITY_DIR=${CREDENTIAL_SECURITY_DIR} is not writable by the ces user" >&2
+  exit 1
+fi
 
 # The gateway watches assistant-written credential metadata under the
 # workspace. Make the shared credential directory inherit the vellum group and

@@ -187,7 +187,7 @@ ENV WORKLIN_RUNTIME_ROOT=/data
 ENV VELLUM_WORKSPACE_DIR=/data/workspace
 ENV GATEWAY_SECURITY_DIR=/data/gateway-security
 ENV CES_DATA_DIR=/data/ces-data
-ENV CREDENTIAL_SECURITY_DIR=/data/ces-security
+ENV CREDENTIAL_SECURITY_DIR=/data/ces-data/security
 ENV CES_BOOTSTRAP_SOCKET_DIR=/run/ces-bootstrap
 
 CMD ["/app/runtime/entrypoint.sh"]
