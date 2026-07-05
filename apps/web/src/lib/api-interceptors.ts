@@ -81,6 +81,14 @@ const RUNTIME_PROXIED_FIRST_SEGMENTS = new Set<string>([
 const ASSISTANT_PATH_RE =
   /^\/v1\/assistants\/[^/]+\/([^/?#]+)(?:\/.*)?$/;
 
+function shouldBufferRewrittenBody(
+  request: Request,
+  usesPublicControlPlaneProxy: boolean,
+): boolean {
+  if (!request.body) return false;
+  return isLocalMode() || usesPublicControlPlaneProxy;
+}
+
 /**
  * Rewrites a request bound for `/v1/assistants/{id}/{runtime-segment}/...`
  * to the registered self-hosted ingress, swapping platform session/CSRF
@@ -168,11 +176,18 @@ export async function rewriteForSelfHostedIngress(
 
   // In local mode the gateway proxy runs over plain HTTP, and Chrome
   // refuses to send a streaming (duplex: "half") body without TLS
-  // (ERR_ALPN_NEGOTIATION_FAILED). Buffer the body as an ArrayBuffer so
-  // the Request carries a finite-length payload. Platform self-hosted
-  // uses TLS, so keep the streaming body to avoid buffering large uploads.
-  const body = isLocalMode()
-    ? (request.body ? await request.arrayBuffer() : null)
+  // (ERR_ALPN_NEGOTIATION_FAILED). In hosted Worklin production the
+  // "self-hosted" ingress can also resolve back through the public
+  // control-plane origin; Safari rejects streamed upload bodies on that
+  // same-origin proxy path before the POST reaches the backend. Buffer
+  // those proxied bodies as finite payloads. Direct HTTPS gateway traffic
+  // keeps streaming to avoid buffering large uploads.
+  const shouldBufferBody = shouldBufferRewrittenBody(
+    request,
+    usesPublicControlPlaneProxy,
+  );
+  const body = shouldBufferBody
+    ? await request.arrayBuffer()
     : request.body;
 
   const init: RequestInit = {
@@ -190,7 +205,7 @@ export async function rewriteForSelfHostedIngress(
     redirect: request.redirect,
     signal: request.signal,
   };
-  if (!isLocalMode() && request.body) {
+  if (!shouldBufferBody && request.body) {
     (init as RequestInit & { duplex: "half" }).duplex = "half";
   }
   return new Request(rewrittenUrl.toString(), init);

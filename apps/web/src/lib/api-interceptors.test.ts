@@ -49,6 +49,7 @@ import {
   daemonRequestInterceptor,
   platformFeaturesGate,
   requestInterceptor,
+  rewriteForSelfHostedIngress,
 } from "@/lib/api-interceptors";
 import { ApiError } from "@/utils/api-errors";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
@@ -378,6 +379,50 @@ describe("api-interceptors / self-hosted rewriting", () => {
     const output = await requestInterceptor(input);
     expect(output.credentials).toBe("include");
     expect(output.headers.get("X-Vellum-User-Id")).toBe(TEST_USER_ID);
+  });
+
+  test("buffers same-origin public proxy request bodies for Safari-compatible uploads", async () => {
+    setSelfHostedConnection({
+      url: PUBLIC_ORIGIN,
+      token: ACTOR_TOKEN,
+    });
+    const payload = JSON.stringify({ message: "hello" });
+    const input = new Request(`${PUBLIC_ORIGIN}${RUNTIME_PROXIED_PATH}`, {
+      method: "POST",
+      body: payload,
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+    });
+    const originalArrayBuffer = input.arrayBuffer.bind(input);
+    const arrayBufferSpy = mock(() => originalArrayBuffer());
+    Object.defineProperty(input, "arrayBuffer", { value: arrayBufferSpy });
+
+    const output = await rewriteForSelfHostedIngress(input);
+
+    expect(output).not.toBeNull();
+    expect(arrayBufferSpy).toHaveBeenCalledTimes(1);
+    expect(output?.credentials).toBe("include");
+    expect(await output?.text()).toBe(payload);
+  });
+
+  test("keeps direct HTTPS gateway request bodies streaming", async () => {
+    setSelfHostedConnection({ url: INGRESS, token: ACTOR_TOKEN });
+    const payload = JSON.stringify({ message: "hello" });
+    const input = new Request(`https://platform.test${RUNTIME_PROXIED_PATH}`, {
+      method: "POST",
+      body: payload,
+      headers: { "Content-Type": "application/json" },
+    });
+    const originalArrayBuffer = input.arrayBuffer.bind(input);
+    const arrayBufferSpy = mock(() => originalArrayBuffer());
+    Object.defineProperty(input, "arrayBuffer", { value: arrayBufferSpy });
+
+    const output = await rewriteForSelfHostedIngress(input);
+
+    expect(output).not.toBeNull();
+    expect(arrayBufferSpy).toHaveBeenCalledTimes(0);
+    expect(output?.credentials).toBe("omit");
+    expect(await output?.text()).toBe(payload);
   });
 
   test("does NOT rewrite when no connection is set", async () => {
