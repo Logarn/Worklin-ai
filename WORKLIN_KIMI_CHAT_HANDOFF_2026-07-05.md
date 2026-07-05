@@ -4,8 +4,8 @@
 
 - Repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
 - Branch: `main`
-- Latest pushed commit: `4d1154c Route invalid provider keys to settings`
-- Production deploy status for `4d1154c`: Vercel success, Railway success
+- Latest pushed provider-code commit: `b539150 Select runnable profiles for all user providers`
+- Production deploy status for `b539150`: Vercel success, Railway success
 - Runtime health: `https://worklin-ai-production.up.railway.app/readyz` returned `{"ok":true,"gatewayStatus":200}`
 - Current in-app browser route after live QA: `https://worklin-ai.vercel.app/assistant/conversations/11af09ec-06f9-4bb2-ae27-195560cf7053`
 - The Codex in-app browser session is authenticated and usable.
@@ -25,7 +25,7 @@
    - Banner copy now distinguishes `API key required` from `API key rejected`.
    - Regression added in `apps/web/src/domains/chat/utils/error-classification.test.ts`.
 
-3. Local provider-parity patch after live Kimi verification:
+3. Provider-parity patch after live Kimi verification, committed as `b539150 Select runnable profiles for all user providers`:
    - Provider profile repair is no longer Kimi-special. It now selects the only user-owned runnable connection, or the most recently changed user-owned runnable connection, and still stays ambiguous on true ties.
    - ChatGPT Subscription uses `gpt-5.4-mini` when Worklin auto-creates/selects a profile.
    - Keyless Ollama uses the daemon default `llama3.2` when Worklin auto-creates/selects a profile.
@@ -33,7 +33,7 @@
    - Existing user-owned provider edits now run the same provider-profile repair/selection path after saving.
    - Ollama onboarding now carries `defaultModel: llama3.2`.
    - Regression coverage was added for provider repair, ChatGPT OAuth completion, onboarding provider-key application across Anthropic/OpenAI/Gemini/Fireworks/OpenRouter/MiniMax/xAI/Ollama/ChatGPT, provider creation parity, and provider edit repair.
-   - This patch is local until committed, pushed, and deployment statuses are verified.
+   - `b539150` was pushed and both Vercel and Railway reported success.
 
 ## Verification Performed
 
@@ -103,14 +103,13 @@ Still useful if more confidence is needed:
 
 1. Send one or two normal follow-up messages in the same in-app browser session.
 2. Confirm they do not get stuck behind the retention/Klaviyo form processing lock.
-3. After committing/pushing the local provider-parity patch, verify Vercel/Railway deployment statuses and re-check `/readyz`.
-4. If a future failure appears, capture exact browser network/error events and Railway logs before patching.
+3. If a future failure appears, capture exact browser network/error events and Railway logs before patching.
 
 ## Paste-Ready Prompt For A Fresh Codex Chat
 
 Continue Worklin production chat verification from `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`.
 
-Read `WORKLIN_KIMI_CHAT_HANDOFF_2026-07-05.md` first. Latest pushed commit is `4d1154c Route invalid provider keys to settings`; Vercel and Railway are green and `/readyz` returned `{"ok":true,"gatewayStatus":200}`.
+Read `WORKLIN_KIMI_CHAT_HANDOFF_2026-07-05.md` first. Latest pushed provider-code commit is `b539150 Select runnable profiles for all user providers`; Vercel and Railway are green and `/readyz` returned `{"ok":true,"gatewayStatus":200}`.
 
 Do not use the old Kimi key. It was tested directly against both `api.moonshot.ai` and `api.moonshot.cn` and returned HTTP 401 `Invalid Authentication`.
 
@@ -118,4 +117,4 @@ Freshest browser context: the Codex in-app browser is authenticated on `https://
 
 Live Kimi chat verification already succeeded after the key was replaced/saved in Worklin: the provider-check user message was accepted, `/messages` returned HTTP 202, follow-up reads returned HTTP 200, and the assistant replied `I can respond.` Continue with a couple of normal follow-up messages if more confidence is needed. If chat fails later, capture exact browser network/error events and Railway logs before patching.
 
-There is also a local provider-parity patch ready to carry forward if it has not been committed/deployed yet: provider-profile repair no longer special-cases Kimi, ChatGPT Subscription auth now selects a runnable `gpt-5.4-mini` profile after OAuth, user-owned provider edits run profile repair, and Ollama defaults to `llama3.2`. The focused provider suite passed with 48 tests, `apps/web` typecheck passed, and targeted ESLint passed. Commit/push it, then verify Vercel/Railway and `/readyz`.
+Provider parity is now included in `b539150`: provider-profile repair no longer special-cases Kimi, ChatGPT Subscription auth selects a runnable `gpt-5.4-mini` profile after OAuth, user-owned provider edits run profile repair, and Ollama defaults to `llama3.2`. The focused provider suite passed with 48 tests, `apps/web` typecheck passed, targeted ESLint passed, Vercel/Railway reported success, and `/readyz` returned `{"ok":true,"gatewayStatus":200}`.
