@@ -74,8 +74,10 @@ export interface ComposerNoticesProps {
    */
   billingBannerSlot?: ReactNode;
 
-  /** True when the assistant returned `PROVIDER_NOT_CONFIGURED` or `MANAGED_KEY_INVALID`. */
+  /** True when the assistant returned a provider credential setup/update error. */
   showMissingApiKeyBanner: boolean;
+  /** Copy variant for the provider credential banner. */
+  apiKeyBannerKind?: "missing" | "invalid";
   /** Handler invoked when the user clicks "Open settings" on the missing-API-key banner. */
   onOpenAiSettings: () => void;
   /** Handler invoked when the user dismisses the missing-API-key banner. */
@@ -111,6 +113,7 @@ export function ComposerNotices({
   diskPressureBanner,
   billingBannerSlot,
   showMissingApiKeyBanner,
+  apiKeyBannerKind = "missing",
   onOpenAiSettings,
   onDismissApiKeyError,
   compactionCircuitOpenUntil,
@@ -180,6 +183,7 @@ export function ComposerNotices({
       {showMissingApiKeyBanner && (
         <div className="mb-2">
           <MissingApiKeyBanner
+            kind={apiKeyBannerKind}
             onOpenSettings={onOpenAiSettings}
             onDismiss={onDismissApiKeyError}
           />

@@ -714,6 +714,14 @@ export function ChatMainPanel({
     renderOnboardingChoice,
   };
 
+  const providerCredentialErrorKind: "missing" | "invalid" | null =
+    error?.code === "PROVIDER_INVALID_KEY"
+      ? "invalid"
+      : error?.code === "PROVIDER_NOT_CONFIGURED" ||
+          error?.code === "MANAGED_KEY_INVALID"
+        ? "missing"
+        : null;
+
   const sharedComposerNoticeProps = {
     billingBannerSlot: billingBannerDecision === "managed_credits"
       ? <CreditsExhaustedBanner onAddFunds={() => setShowAddCreditsModal(true)} />
@@ -721,9 +729,8 @@ export function ChatMainPanel({
       ? <ProviderBillingBanner onOpenSettings={pushToAiSettings} />
       : null,
     diskPressureBanner: diskPressureBannerSlot,
-    showMissingApiKeyBanner:
-      error?.code === "PROVIDER_NOT_CONFIGURED" ||
-      error?.code === "MANAGED_KEY_INVALID",
+    showMissingApiKeyBanner: providerCredentialErrorKind !== null,
+    apiKeyBannerKind: providerCredentialErrorKind ?? "missing",
     onOpenAiSettings: pushToAiSettings,
     onDismissApiKeyError: handleDismissApiKeyError,
     compactionCircuitOpenUntil,
