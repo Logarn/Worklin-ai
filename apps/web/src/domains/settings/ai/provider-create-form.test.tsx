@@ -21,8 +21,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { Modal } from "@vellumai/design-library/components/modal";
-import { createElement, type ReactNode } from "react";
+import { createElement, useState, type ReactNode } from "react";
 
 import type { ProviderConnection } from "@/generated/daemon/types.gen";
 import * as sdkGen from "@/generated/daemon/sdk.gen";
@@ -39,13 +38,23 @@ interface CreateConnectionCall {
   path: { assistant_id: string };
   body: Record<string, unknown>;
 }
+interface ConfigGetCall {
+  path: { assistant_id: string };
+}
+interface ConfigPatchCall {
+  path: { assistant_id: string };
+  body: Record<string, unknown>;
+}
 
 let secretsPostCalls: SecretsPostCall[] = [];
 let createConnectionCalls: CreateConnectionCall[] = [];
+let configGetCalls: ConfigGetCall[] = [];
+let configPatchCalls: ConfigPatchCall[] = [];
 let createdConnection: ProviderConnection;
 let createResponseOk = true;
 let createResponseStatus = 200;
 let toastSuccessCalls: string[] = [];
+let configGetData: Record<string, unknown>;
 
 mock.module("@vellumai/design-library/components/toast", () => ({
   toast: {
@@ -58,8 +67,130 @@ mock.module("@vellumai/design-library/components/toast", () => ({
   ToastContent: () => null,
 }));
 
+mock.module("@vellumai/design-library/components/modal", () => {
+  const passthrough = ({ children }: { children?: ReactNode }) =>
+    createElement("div", null, children);
+  return {
+    Modal: {
+      Root: passthrough,
+      Content: passthrough,
+      Header: passthrough,
+      Title: passthrough,
+      Description: passthrough,
+      Body: passthrough,
+      Footer: passthrough,
+    },
+  };
+});
+
+mock.module("@vellumai/design-library/components/button", () => ({
+  Button: ({
+    children,
+    disabled,
+    iconOnly,
+    onClick,
+    type = "button",
+  }: {
+    children?: ReactNode;
+    disabled?: boolean;
+    iconOnly?: ReactNode;
+    onClick?: () => void;
+    type?: "button" | "submit";
+  }) =>
+    createElement(
+      "button",
+      { disabled, onClick, type },
+      children ?? iconOnly,
+    ),
+}));
+
+mock.module("@vellumai/design-library/components/dropdown", () => ({
+  Dropdown: ({
+    "aria-label": ariaLabel,
+    "aria-labelledby": ariaLabelledBy,
+    disabled,
+    onChange,
+    options,
+    placeholder,
+    value,
+  }: {
+    "aria-label"?: string;
+    "aria-labelledby"?: string;
+    disabled?: boolean;
+    onChange: (value: string) => void;
+    options: Array<{ value: string; label: string }>;
+    placeholder?: string;
+    value?: string;
+  }) => {
+    const [open, setOpen] = useState(false);
+    const selected = options.find((option) => option.value === value);
+    return createElement(
+      "div",
+      null,
+      createElement(
+        "button",
+        {
+          "aria-label": ariaLabel,
+          "aria-labelledby": ariaLabelledBy,
+          disabled,
+          onClick: () => setOpen((current) => !current),
+          role: "combobox",
+          type: "button",
+        },
+        selected?.label ?? placeholder ?? "",
+      ),
+      open
+        ? createElement(
+            "div",
+            { role: "listbox" },
+            options.map((option) =>
+              createElement(
+                "button",
+                {
+                  key: option.value,
+                  onClick: () => {
+                    onChange(option.value);
+                    setOpen(false);
+                  },
+                  role: "option",
+                  type: "button",
+                },
+                option.label,
+              ),
+            ),
+          )
+        : null,
+    );
+  },
+}));
+
+mock.module("@vellumai/design-library/components/input", () => ({
+  Input: ({ fullWidth: _fullWidth, ...props }: Record<string, unknown>) =>
+    createElement("input", props),
+}));
+
+mock.module("@vellumai/design-library/components/typography", () => ({
+  Typography: ({
+    as,
+    children,
+    className,
+  }: {
+    as?: string;
+    children?: ReactNode;
+    className?: string;
+  }) => createElement(as ?? "span", { className }, children),
+}));
+
 mock.module("@/generated/daemon/sdk.gen", () => ({
   ...sdkGen,
+  configGet: (opts: ConfigGetCall) => {
+    configGetCalls.push(opts);
+    return Promise.resolve({ data: configGetData, response: { ok: true } });
+  },
+  configPatch: (opts: ConfigPatchCall) => {
+    configPatchCalls.push(opts);
+    return Promise.resolve({ data: configGetData, response: { ok: true } });
+  },
   secretsPost: (opts: SecretsPostCall) => {
     secretsPostCalls.push(opts);
     return Promise.resolve({ data: undefined, response: { ok: true } });
@@ -101,12 +232,15 @@ const { ProviderCreateForm } = await import(
 
 const ASSISTANT_ID = "asst-1";
 
-function makeConnection(name: string): ProviderConnection {
+function makeConnection(
+  name: string,
+  provider: ProviderConnection["provider"] = "anthropic",
+): ProviderConnection {
   return {
     name,
     label: null,
-    provider: "anthropic",
-    auth: { type: "api_key", credential: "credential/anthropic/api_key" },
+    provider,
+    auth: { type: "api_key", credential: `credential/${provider}/api_key` },
     models: null,
   } as unknown as ProviderConnection;
 }
@@ -125,11 +259,7 @@ function Wrapper({ children }: { children: ReactNode }) {
  * portal mounts.
  */
 function ModalWrapper({ children }: { children: ReactNode }) {
-  return (
-    <Wrapper>
-      <Modal.Root open>{children}</Modal.Root>
-    </Wrapper>
-  );
+  return <Wrapper>{children}</Wrapper>;
 }
 
 function getInputByPlaceholder(placeholder: string): HTMLInputElement {
@@ -189,10 +319,24 @@ function selectDropdownOption(ariaLabel: string, optionLabel: string): void {
 beforeEach(() => {
   secretsPostCalls = [];
   createConnectionCalls = [];
+  configGetCalls = [];
+  configPatchCalls = [];
   createdConnection = makeConnection("anthropic-personal");
   createResponseOk = true;
   createResponseStatus = 200;
   toastSuccessCalls = [];
+  configGetData = {
+    llm: {
+      activeProfile: "balanced",
+      profileOrder: ["balanced"],
+      profiles: {
+        balanced: {
+          provider: "anthropic",
+          model: "claude-opus-4-8",
+        },
+      },
+    },
+  };
 });
 
 afterEach(() => {
@@ -387,6 +531,58 @@ describe("ProviderCreateForm submit sequence", () => {
     await waitFor(() => {
       expect(toastSuccessCalls).toEqual(["Provider connected"]);
     });
+  });
+
+  test("creating Kimi on an assistant with no active profile selects a runnable default profile", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: null,
+        profileOrder: [],
+        profiles: {},
+      },
+    };
+    createdConnection = makeConnection("kimi", "kimi");
+
+    render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="kimi"
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+      target: { value: "moonshot-test-key" },
+    });
+
+    fireEvent.click(getButton("Create"));
+
+    await waitFor(() => {
+      expect(configPatchCalls.length).toBe(1);
+    });
+
+    expect(configGetCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
+    expect(configPatchCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profileOrder: ["custom-balanced"],
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            label: "Balanced",
+            provider: "kimi",
+            provider_connection: "kimi",
+            model: "kimi-k2.6",
+          },
+        },
+      },
+    });
+    expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
   });
 
   test("a connection failure renders inline, keeps the form open, and does NOT toast", async () => {

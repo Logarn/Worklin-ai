@@ -8,14 +8,14 @@ import { Modal } from "@vellumai/design-library/components/modal";
 import { toast } from "@vellumai/design-library/components/toast";
 import { Typography } from "@vellumai/design-library/components/typography";
 
+import { providerSupportsPlatformAuth, PROVIDER_DISPLAY_NAMES } from "@/assistant/llm-model-catalog";
 import { credentialPresenceQueryKey, useStoredCredentialPresence } from "@/domains/settings/ai/use-stored-credential-presence";
-import { secretsGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
+import { configGetQueryKey, secretsGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
     inferenceProviderconnectionsPost,
     secretsPost,
 } from "@/generated/daemon/sdk.gen";
 
-import { providerSupportsPlatformAuth, PROVIDER_DISPLAY_NAMES } from "@/assistant/llm-model-catalog";
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import { deriveProviderDefaults } from "@/domains/settings/ai/profile-prefill";
 import type { Auth, ConnectionProvider, InferenceProviderconnectionsPostData, ProviderConnection } from "@/generated/daemon/types.gen";
@@ -30,6 +30,7 @@ import {
 import { secretPlaceholder } from "@/domains/settings/ai/secret-placeholder";
 import { useLabelKeySync } from "@/domains/settings/ai/use-label-key-sync";
 import { useProviderCredentialsList } from "@/domains/settings/ai/use-provider-credentials-list";
+import { ensureRunnableProfileForConnection } from "@/assistant/provider-profile-repair";
 
 // ---------------------------------------------------------------------------
 // ProviderCreateForm
@@ -245,9 +246,33 @@ export function ProviderCreateForm({
         setError("Server returned an empty response. Please try again.");
         return;
       }
+      let selectedAsDefault = false;
+      try {
+        const profileResult = await ensureRunnableProfileForConnection(
+          assistantId,
+          created,
+        );
+        selectedAsDefault = profileResult.repaired;
+        if (selectedAsDefault) {
+          void queryClient.invalidateQueries({
+            queryKey: configGetQueryKey({
+              path: { assistant_id: assistantId },
+            }),
+          });
+        }
+      } catch {
+        setError(
+          "Provider connected, but Worklin could not select it as the active model. Open Profiles and choose it, or try again.",
+        );
+        return;
+      }
       // Single success confirmation for both the standalone and inline
       // surfaces; failures above already surface inline via `error` (no toast).
-      toast.success("Provider connected");
+      toast.success(
+        selectedAsDefault
+          ? "Provider connected and selected"
+          : "Provider connected",
+      );
       onCreated(created);
     } catch {
       setError("Failed to save connection. Please try again.");

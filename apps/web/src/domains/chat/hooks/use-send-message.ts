@@ -68,6 +68,7 @@ import {
 import { useComposerStore } from "@/domains/chat/composer-store";
 import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
+import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { Conversation } from "@/types/conversation-types";
 import { getPendingInteractions } from "@/domains/chat/api/interactions";
 import {
@@ -83,6 +84,9 @@ import {
   ConversationNotFoundError,
   fetchConversationDetail,
 } from "@/utils/fetch-conversation-detail";
+import { ensureRunnableProfileFromStoredConnection } from "@/assistant/provider-profile-repair";
+
+const PROVIDER_NOT_CONFIGURED_CODE = "PROVIDER_NOT_CONFIGURED";
 
 // ---------------------------------------------------------------------------
 // Stream send result
@@ -211,6 +215,26 @@ export function useSendMessage({
     },
     [],
   );
+
+  const repairMissingProviderProfile = useCallback(async (): Promise<ChatError | null> => {
+    if (!assistantId) return null;
+    try {
+      const repair = await ensureRunnableProfileFromStoredConnection(assistantId);
+      if (!repair.repaired) return null;
+
+      void queryClient.invalidateQueries({
+        queryKey: configGetQueryKey({ path: { assistant_id: assistantId } }),
+      });
+
+      return {
+        message: `${repair.providerLabel ?? "Your AI provider"} is connected now. Send your message again.`,
+        code: "PROVIDER_PROFILE_REPAIRED",
+      };
+    } catch (err) {
+      captureError(err, { context: "repair_missing_provider_profile" });
+      return null;
+    }
+  }, [assistantId, queryClient]);
 
   const surfaceConversationAfterUserSend = useCallback(
     async (conversationId: string) => {
@@ -634,6 +658,14 @@ export function useSendMessage({
           );
           if (!postResult.ok) {
             revertQueuedMessage(userMessage.id);
+            if (postResult.error.code === PROVIDER_NOT_CONFIGURED_CODE) {
+              const repaired = await repairMissingProviderProfile();
+              if (repaired) {
+                useComposerStore.getState().setInput(content);
+                setError(repaired);
+                return;
+              }
+            }
             const detail = resolvePostError(
               postResult.error.code,
               postResult.error.detail,
@@ -736,8 +768,20 @@ export function useSendMessage({
           useConversationStore
             .getState()
             .removeProcessingConversationId(activeConversationId);
+          const repaired =
+            result.error.code === PROVIDER_NOT_CONFIGURED_CODE
+              ? await repairMissingProviderProfile()
+              : null;
           if (isDraft) {
             removeConversation(queryClient, assistantId, activeConversationId);
+            if (repaired) {
+              setError({
+                ...repaired,
+                displayAs: "modal",
+                restoreContent: content,
+              });
+              return;
+            }
             setError({
               message: result.error.message,
               ...(result.error.code ? { code: result.error.code } : {}),
@@ -746,6 +790,10 @@ export function useSendMessage({
             });
           } else {
             useComposerStore.getState().setInput(content);
+            if (repaired) {
+              setError(repaired);
+              return;
+            }
             setError(result.error);
           }
           return;
@@ -819,6 +867,7 @@ export function useSendMessage({
       refreshConversations,
       revertQueuedMessage,
       persistDismissedSurfaces,
+      repairMissingProviderProfile,
       queryClient,
       surfaceConversationAfterUserSend,
     ],
