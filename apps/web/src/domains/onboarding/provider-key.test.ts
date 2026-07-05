@@ -44,6 +44,7 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
 }));
 
 const {
+  applyChatgptSubscriptionProvider,
   applyPendingProviderKey,
   consumePendingProviderKey,
   pendingProviderAuthType,
@@ -225,6 +226,214 @@ describe("pending provider key", () => {
               provider: "kimi",
               provider_connection: "kimi-personal",
               model: "kimi-k2.6",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  test.each([
+    {
+      provider: "anthropic",
+      key: "sk-ant-test",
+      connectionName: "anthropic-personal",
+      credential: "credential/anthropic/api_key",
+      model: "claude-opus-4-8",
+    },
+    {
+      provider: "openai",
+      key: "sk-proj-test",
+      connectionName: "openai-personal",
+      credential: "credential/openai/api_key",
+      model: "gpt-5.5",
+    },
+    {
+      provider: "gemini",
+      key: "AIza-test",
+      connectionName: "gemini-personal",
+      credential: "credential/gemini/api_key",
+      model: "gemini-2.5-flash",
+    },
+    {
+      provider: "fireworks",
+      key: "fw_test",
+      connectionName: "fireworks-personal",
+      credential: "credential/fireworks/api_key",
+      model: "accounts/fireworks/models/kimi-k2p5",
+    },
+    {
+      provider: "openrouter",
+      key: "sk-or-v1-test",
+      connectionName: "openrouter-personal",
+      credential: "credential/openrouter/api_key",
+      model: "x-ai/grok-4.20-beta",
+    },
+    {
+      provider: "minimax",
+      key: "sk-cp-test",
+      connectionName: "minimax-personal",
+      credential: "credential/minimax/api_key",
+      model: "MiniMax-M2.7",
+    },
+  ] as const)(
+    "provider apply creates and selects a runnable $provider profile",
+    async ({ provider, key, connectionName, credential, model }) => {
+      setPendingProviderKey({
+        provider,
+        providerOptionId: provider,
+        authType: "api_key",
+        key,
+      });
+
+      await applyPendingProviderKey("asst-1");
+
+      expect(peekPendingProviderKey()).toBeNull();
+      expect(secretsPostCalls[0]).toMatchObject({
+        path: { assistant_id: "asst-1" },
+        body: {
+          type: "api_key",
+          name: provider,
+          value: key,
+        },
+      });
+      expect(connectionPostCalls[0]).toMatchObject({
+        path: { assistant_id: "asst-1" },
+        body: {
+          name: connectionName,
+          provider,
+          auth: { type: "api_key", credential },
+        },
+      });
+      expect(configPatchCalls[0]).toMatchObject({
+        path: { assistant_id: "asst-1" },
+        body: {
+          llm: {
+            activeProfile: "custom-balanced",
+            profiles: {
+              "custom-balanced": {
+                provider,
+                provider_connection: connectionName,
+                model,
+              },
+            },
+          },
+        },
+      });
+    },
+  );
+
+  test("provider apply preserves xAI OpenAI-compatible routing metadata", async () => {
+    setPendingProviderKey({
+      provider: "openai-compatible",
+      providerOptionId: "xai",
+      authType: "api_key",
+      key: "xai-test",
+      connectionName: "xai-personal",
+      credentialName: "xai",
+      connectionLabel: "xAI",
+      baseUrl: "https://api.x.ai/v1",
+      models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+      defaultModel: "grok-4.3",
+    });
+
+    await applyPendingProviderKey("asst-1");
+
+    expect(peekPendingProviderKey()).toBeNull();
+    expect(secretsPostCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        type: "credential",
+        name: "xai:api_key",
+        value: "xai-test",
+      },
+    });
+    expect(connectionPostCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        name: "xai-personal",
+        provider: "openai-compatible",
+        auth: { type: "api_key", credential: "credential/xai/api_key" },
+        label: "xAI",
+        base_url: "https://api.x.ai/v1",
+        models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+      },
+    });
+    expect(configPatchCalls[0]).toMatchObject({
+      body: {
+        llm: {
+          activeProfile: "custom-balanced",
+          profiles: {
+            "custom-balanced": {
+              provider: "openai-compatible",
+              provider_connection: "xai-personal",
+              model: "grok-4.3",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  test("provider apply creates a runnable Ollama profile without storing a key", async () => {
+    setPendingProviderKey({
+      provider: "ollama",
+      providerOptionId: "ollama",
+      authType: "none",
+      key: "",
+      defaultModel: "llama3.2",
+    });
+
+    await applyPendingProviderKey("asst-1");
+
+    expect(peekPendingProviderKey()).toBeNull();
+    expect(secretsPostCalls).toHaveLength(0);
+    expect(connectionPostCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        name: "ollama-local",
+        provider: "ollama",
+        auth: { type: "none" },
+      },
+    });
+    expect(configPatchCalls[0]).toMatchObject({
+      body: {
+        llm: {
+          activeProfile: "custom-balanced",
+          profiles: {
+            "custom-balanced": {
+              provider: "ollama",
+              provider_connection: "ollama-local",
+              model: "llama3.2",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  test("ChatGPT subscription apply selects the subscription connection and model", async () => {
+    setPendingProviderKey({
+      provider: "openai",
+      authType: "oauth_subscription",
+      key: "",
+    });
+
+    await applyChatgptSubscriptionProvider("asst-1");
+
+    expect(peekPendingProviderKey()).toBeNull();
+    expect(secretsPostCalls).toHaveLength(0);
+    expect(connectionPostCalls).toHaveLength(0);
+    expect(configPatchCalls[0]).toMatchObject({
+      path: { assistant_id: "asst-1" },
+      body: {
+        llm: {
+          activeProfile: "custom-balanced",
+          profiles: {
+            "custom-balanced": {
+              provider: "openai",
+              provider_connection: "chatgpt-subscription",
+              model: "gpt-5.4-mini",
             },
           },
         },

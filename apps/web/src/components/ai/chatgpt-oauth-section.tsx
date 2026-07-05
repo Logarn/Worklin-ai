@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@vellumai/design-library/components/button";
 import { Input } from "@vellumai/design-library/components/input";
 import { Typography } from "@vellumai/design-library/components/typography";
 import { Loader2 } from "lucide-react";
 
+import { ensureRunnableProfileForConnection } from "@/assistant/provider-profile-repair";
+import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
   inferenceChatgptsubscriptionAuthExchangePost,
   inferenceChatgptsubscriptionAuthPost,
@@ -147,6 +150,7 @@ export function ChatgptOAuthSection({
   const [expiresInMinutes, setExpiresInMinutes] = useState<number | null>(null);
   const [copiedSignInLink, setCopiedSignInLink] = useState(false);
   const [copiedUserCode, setCopiedUserCode] = useState(false);
+  const queryClient = useQueryClient();
 
   const notifyConnectedConnection = useCallback(async () => {
     const { data } = await inferenceProviderconnectionsGet({
@@ -158,10 +162,9 @@ export function ChatgptOAuthSection({
     const chatgptConn = conns.find(
       (c) => c.name === "chatgpt-subscription" || c.name === "openai-chatgpt",
     );
-    if (chatgptConn) {
-      onConnected(chatgptConn);
-    } else {
-      onConnected({
+    const connection =
+      chatgptConn ??
+      ({
         name: "chatgpt-subscription",
         provider: "openai",
         auth: {
@@ -174,9 +177,28 @@ export function ChatgptOAuthSection({
         baseUrl: null,
         models: null,
         isManaged: false,
-      });
+      } satisfies ProviderConnection);
+
+    try {
+      const repair = await ensureRunnableProfileForConnection(
+        assistantId,
+        connection,
+      );
+      if (repair.repaired) {
+        void queryClient.invalidateQueries({
+          queryKey: configGetQueryKey({
+            path: { assistant_id: assistantId },
+          }),
+        });
+      }
+    } catch {
+      setOauthError(
+        "ChatGPT is connected, but Worklin could not select it as the active provider. Open Profiles and choose ChatGPT Subscription, or try again.",
+      );
     }
-  }, [assistantId, onConnected]);
+
+    onConnected(connection);
+  }, [assistantId, onConnected, queryClient]);
 
   useEffect(() => {
     if (oauthState !== "waiting" || !authState) {

@@ -13,8 +13,10 @@ import {
     inferenceProviderconnectionsByNamePatch,
     secretsPost,
 } from "@/generated/daemon/sdk.gen";
+import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 
 import { providerSupportsPlatformAuth, PROVIDER_DISPLAY_NAMES } from "@/assistant/llm-model-catalog";
+import { ensureRunnableProfileForConnection } from "@/assistant/provider-profile-repair";
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import type { Auth, ConnectionProvider, InferenceProviderconnectionsByNamePatchData, ProviderConnection } from "@/generated/daemon/types.gen";
 import { ProviderCreateForm } from "@/domains/settings/ai/provider-create-form";
@@ -313,6 +315,26 @@ export function ProviderEditorContent({
       if (!updated) {
         setError("Server returned an empty response. Please try again.");
         return;
+      }
+      if (updated.auth.type !== "platform" && !updated.isManaged) {
+        try {
+          const profileResult = await ensureRunnableProfileForConnection(
+            assistantId,
+            updated,
+          );
+          if (profileResult.repaired) {
+            void queryClient.invalidateQueries({
+              queryKey: configGetQueryKey({
+                path: { assistant_id: assistantId },
+              }),
+            });
+          }
+        } catch {
+          setError(
+            "Provider saved, but Worklin could not select it as the active model. Open Profiles and choose it, or try again.",
+          );
+          return;
+        }
       }
       onSave(updated);
     } catch {

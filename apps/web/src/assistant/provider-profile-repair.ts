@@ -13,6 +13,10 @@ import type {
 } from "@/generated/daemon/types.gen";
 
 const AUTO_PROFILE_NAME = "custom-balanced";
+const CHATGPT_SUBSCRIPTION_MODEL = "gpt-5.4-mini";
+const FALLBACK_DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
+  ollama: "llama3.2",
+};
 
 export interface ProviderProfileRepairResult {
   repaired: boolean;
@@ -76,8 +80,15 @@ function nextProfileName(
 }
 
 function defaultModelForConnection(connection: ProviderConnection): string {
+  if (
+    connection.provider === "openai" &&
+    connection.auth.type === "oauth_subscription"
+  ) {
+    return CHATGPT_SUBSCRIPTION_MODEL;
+  }
   return (
     getDefaultModelForProvider(connection.provider) ??
+    FALLBACK_DEFAULT_MODEL_BY_PROVIDER[connection.provider] ??
     connection.models?.[0]?.id ??
     ""
   );
@@ -91,6 +102,10 @@ function isUserOwnedConnection(connection: ProviderConnection): boolean {
   return connection.auth.type !== "platform" && !connection.isManaged;
 }
 
+function connectionLastChangedAt(connection: ProviderConnection): number {
+  return Math.max(connection.updatedAt, connection.createdAt);
+}
+
 function selectRepairConnection(
   connections: readonly ProviderConnection[],
 ): ProviderConnection | null {
@@ -101,10 +116,17 @@ function selectRepairConnection(
   );
   if (runnable.length === 1) return runnable[0];
 
-  const kimiConnections = runnable.filter(
-    (connection) => connection.provider === "kimi",
+  const byMostRecent = [...runnable].sort(
+    (a, b) => connectionLastChangedAt(b) - connectionLastChangedAt(a),
   );
-  if (kimiConnections.length === 1) return kimiConnections[0];
+  const [candidate, runnerUp] = byMostRecent;
+  if (
+    candidate &&
+    runnerUp &&
+    connectionLastChangedAt(candidate) > connectionLastChangedAt(runnerUp)
+  ) {
+    return candidate;
+  }
 
   return null;
 }

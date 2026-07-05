@@ -156,6 +156,7 @@ export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
     apiKeyPlaceholder: null,
     docsUrl: "https://ollama.com/download",
     requiresKey: false,
+    defaultModel: "llama3.2",
   },
 ];
 

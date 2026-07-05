@@ -24,7 +24,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createElement, useState, type ReactNode } from "react";
 
-import type { ProviderConnection } from "@/generated/daemon/types.gen";
+import type {
+  ConnectionProvider,
+  ProviderConnection,
+} from "@/generated/daemon/types.gen";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -254,7 +257,7 @@ const ASSISTANT_ID = "asst-1";
 
 function makeConnection(
   name: string,
-  provider: ProviderConnection["provider"] = "anthropic",
+  provider: ConnectionProvider = "anthropic",
 ): ProviderConnection {
   return {
     name,
@@ -670,6 +673,137 @@ describe("ProviderCreateForm submit sequence", () => {
     });
     expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
   });
+
+  test.each([
+    {
+      provider: "anthropic",
+      label: "Anthropic",
+      name: "anthropic",
+      key: "sk-ant-test",
+      model: "claude-opus-4-8",
+    },
+    {
+      provider: "openai",
+      label: "OpenAI",
+      name: "openai",
+      key: "sk-proj-test",
+      model: "gpt-5.5",
+    },
+    {
+      provider: "gemini",
+      label: "Google Gemini",
+      name: "gemini",
+      key: "AIza-test",
+      model: "gemini-2.5-flash",
+    },
+    {
+      provider: "fireworks",
+      label: "Fireworks",
+      name: "fireworks",
+      key: "fw_test",
+      model: "accounts/fireworks/models/kimi-k2p5",
+    },
+    {
+      provider: "openrouter",
+      label: "OpenRouter",
+      name: "openrouter",
+      key: "sk-or-v1-test",
+      model: "x-ai/grok-4.20-beta",
+    },
+    {
+      provider: "minimax",
+      label: "MiniMax",
+      name: "minimax",
+      key: "sk-cp-test",
+      model: "MiniMax-M2.7",
+    },
+    {
+      provider: "ollama",
+      label: "Ollama",
+      name: "ollama",
+      key: "",
+      model: "llama3.2",
+    },
+  ] satisfies Array<{
+    provider: ConnectionProvider;
+    label: string;
+    name: string;
+    key: string;
+    model: string;
+  }>)(
+    "creating $label while Managed is active selects a runnable default profile",
+    async ({ provider, label, name, key, model }) => {
+      configGetData = {
+        llm: {
+          activeProfile: "balanced",
+          profileOrder: ["balanced"],
+          profiles: {
+            balanced: {
+              source: "managed",
+              label: "Balanced",
+              provider: "anthropic",
+              model: "claude-opus-4-8",
+            },
+          },
+        },
+      };
+      createdConnection =
+        provider === "ollama"
+          ? {
+              ...makeConnection(name, provider),
+              auth: { type: "none" },
+            }
+          : makeConnection(name, provider);
+
+      render(
+        <ModalWrapper>
+          <ProviderCreateForm
+            assistantId={ASSISTANT_ID}
+            existingNames={[]}
+            defaultProviderType={provider}
+            onCreated={() => {}}
+            onCancel={() => {}}
+          />
+        </ModalWrapper>,
+      );
+
+      if (
+        label === "Anthropic" ||
+        label === "OpenAI" ||
+        label === "Google Gemini" ||
+        label === "Fireworks"
+      ) {
+        selectDropdownOption("Auth type", "API Key");
+      }
+      if (provider !== "ollama") {
+        fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+          target: { value: key },
+        });
+      }
+
+      fireEvent.click(getButton("Create"));
+
+      await waitFor(() => {
+        expect(configPatchCalls.length).toBe(1);
+      });
+
+      expect(configPatchCalls[0].body).toMatchObject({
+        llm: {
+          activeProfile: "custom-balanced",
+          profiles: {
+            "custom-balanced": {
+              source: "user",
+              label: "Balanced",
+              provider,
+              provider_connection: name,
+              model,
+            },
+          },
+        },
+      });
+      expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
+    },
+  );
 
   test("a connection failure renders inline, keeps the form open, and does NOT toast", async () => {
     createResponseOk = false;

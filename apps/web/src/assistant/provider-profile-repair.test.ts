@@ -55,11 +55,15 @@ function makeConnection({
   provider,
   auth,
   isManaged = false,
+  createdAt = 0,
+  updatedAt = 0,
 }: {
   name: string;
   provider: ProviderConnection["provider"];
   auth: ProviderConnection["auth"];
   isManaged?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
 }): ProviderConnection {
   return {
     name,
@@ -68,8 +72,8 @@ function makeConnection({
     label: null,
     baseUrl: null,
     models: null,
-    createdAt: 0,
-    updatedAt: 0,
+    createdAt,
+    updatedAt,
     isManaged,
   };
 }
@@ -89,11 +93,27 @@ function platformConnection(
 function apiKeyConnection(
   name: string,
   provider: ProviderConnection["provider"],
+  timestamps: { createdAt?: number; updatedAt?: number } = {},
 ): ProviderConnection {
   return makeConnection({
     name,
     provider,
     auth: { type: "api_key", credential: `credential/${provider}/api_key` },
+    ...timestamps,
+  });
+}
+
+function oauthSubscriptionConnection(
+  timestamps: { createdAt?: number; updatedAt?: number } = {},
+): ProviderConnection {
+  return makeConnection({
+    name: "chatgpt-subscription",
+    provider: "openai",
+    auth: {
+      type: "oauth_subscription",
+      credential: "credential/chatgpt/access_token",
+    },
+    ...timestamps,
   });
 }
 
@@ -150,11 +170,17 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
     });
   });
 
-  test("prefers the only Kimi API-key connection over other user API-key providers", async () => {
+  test("prefers the most recently changed user provider over older user providers", async () => {
     connections = [
       platformConnection("anthropic-managed", "anthropic"),
-      apiKeyConnection("openai-personal", "openai"),
-      apiKeyConnection("kimi-personal", "kimi"),
+      apiKeyConnection("openai-personal", "openai", {
+        createdAt: 10,
+        updatedAt: 10,
+      }),
+      apiKeyConnection("gemini-personal", "gemini", {
+        createdAt: 20,
+        updatedAt: 30,
+      }),
     ];
 
     const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
@@ -168,9 +194,72 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
           "custom-balanced": {
             source: "user",
             label: "Balanced",
-            provider: "kimi",
-            provider_connection: "kimi-personal",
-            model: "kimi-k2.6",
+            provider: "gemini",
+            provider_connection: "gemini-personal",
+            model: "gemini-2.5-flash",
+          },
+        },
+      },
+    });
+  });
+
+  test("uses a ChatGPT subscription model when activating OAuth subscription auth", async () => {
+    connections = [
+      platformConnection("openai-managed", "openai"),
+      apiKeyConnection("openai-personal", "openai", {
+        createdAt: 10,
+        updatedAt: 10,
+      }),
+      oauthSubscriptionConnection({
+        createdAt: 20,
+        updatedAt: 30,
+      }),
+    ];
+
+    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+
+    expect(result.repaired).toBe(true);
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            label: "Balanced",
+            provider: "openai",
+            provider_connection: "chatgpt-subscription",
+            model: "gpt-5.4-mini",
+          },
+        },
+      },
+    });
+  });
+
+  test("uses the daemon default model when activating a keyless Ollama connection", async () => {
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      makeConnection({
+        name: "ollama-local",
+        provider: "ollama",
+        auth: { type: "none" },
+      }),
+    ];
+
+    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+
+    expect(result.repaired).toBe(true);
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            label: "Balanced",
+            provider: "ollama",
+            provider_connection: "ollama-local",
+            model: "llama3.2",
           },
         },
       },
