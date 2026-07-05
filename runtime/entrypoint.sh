@@ -104,12 +104,20 @@ chmod 700 "${GATEWAY_SECURITY_DIR}" "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR
 chmod 777 "${CES_BOOTSTRAP_SOCKET_DIR}"
 chmod 2770 "${GATEWAY_IPC_SOCKET_DIR}"
 
+# The gateway watches assistant-written credential metadata under the
+# workspace. Make the shared credential directory inherit the vellum group and
+# repair stale file modes from earlier deployments so both unprivileged
+# processes can read/write it after runuser drops privileges.
+chown -R assistant:vellum "${workspace_credentials_dir}"
+find "${workspace_credentials_dir}" -type d -exec chmod 2770 {} +
+find "${workspace_credentials_dir}" -type f -exec chmod 660 {} +
+
 declare -a pids=()
 
 start_as() {
   local user="$1"
   shift
-  runuser -u "${user}" -- "$@" &
+  runuser -u "${user}" -g "${user}" -G vellum -- "$@" &
   pids+=("$!")
 }
 
