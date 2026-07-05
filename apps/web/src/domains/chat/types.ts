@@ -6,9 +6,13 @@
  * inlined in a single consumer.
  */
 
-
 import type { AssistantState } from "@/assistant/types";
-import type { AllowlistOption, DirectoryScopeOption, QuestionEntry, ScopeOption } from "@/types/interaction-ui-types";
+import type {
+  AllowlistOption,
+  DirectoryScopeOption,
+  QuestionEntry,
+  ScopeOption,
+} from "@/types/interaction-ui-types";
 
 // ---------------------------------------------------------------------------
 // Assistant state
@@ -24,6 +28,7 @@ export type AssistantStateKind = AssistantState["kind"];
 export interface ChatError {
   message: string;
   code?: string;
+  status?: number;
   errorCategory?: string;
   /**
    * How the UI should surface this error.

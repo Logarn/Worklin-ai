@@ -97,11 +97,7 @@ mock.module("@vellumai/design-library/components/button", () => ({
     onClick?: () => void;
     type?: "button" | "submit";
   }) =>
-    createElement(
-      "button",
-      { disabled, onClick, type },
-      children ?? iconOnly,
-    ),
+    createElement("button", { disabled, onClick, type }, children ?? iconOnly),
 }));
 
 mock.module("@vellumai/design-library/components/dropdown", () => ({
@@ -207,8 +203,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
 // Stub the credential hooks so render doesn't issue real daemon queries.
 // `hasStoredCredential: false` matches the empty create-mode state.
 mock.module("@/domains/settings/ai/use-stored-credential-presence", () => ({
-  credentialPresenceQueryKey: (assistantId: string, kind: string, name: string) =>
-    ["credentialPresence", assistantId, kind, name] as const,
+  credentialPresenceQueryKey: (
+    assistantId: string,
+    kind: string,
+    name: string,
+  ) => ["credentialPresence", assistantId, kind, name] as const,
   useStoredCredentialPresence: () => ({
     hasStoredCredential: false,
     isLoading: false,
@@ -222,9 +221,8 @@ mock.module("@/domains/settings/ai/use-provider-credentials-list", () => ({
   }),
 }));
 
-const { ProviderCreateForm } = await import(
-  "@/domains/settings/ai/provider-create-form"
-);
+const { ProviderCreateForm } =
+  await import("@/domains/settings/ai/provider-create-form");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -571,6 +569,63 @@ describe("ProviderCreateForm submit sequence", () => {
       llm: {
         activeProfile: "custom-balanced",
         profileOrder: ["custom-balanced"],
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            label: "Balanced",
+            provider: "kimi",
+            provider_connection: "kimi",
+            model: "kimi-k2.6",
+          },
+        },
+      },
+    });
+    expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
+  });
+
+  test("creating Kimi while Managed is active switches the assistant to Kimi", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "balanced",
+        profileOrder: ["balanced"],
+        profiles: {
+          balanced: {
+            source: "managed",
+            label: "Balanced",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+          },
+        },
+      },
+    };
+    createdConnection = makeConnection("kimi", "kimi");
+
+    render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="kimi"
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+      target: { value: "moonshot-test-key" },
+    });
+
+    fireEvent.click(getButton("Create"));
+
+    await waitFor(() => {
+      expect(configPatchCalls.length).toBe(1);
+    });
+
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profileOrder: ["balanced", "custom-balanced"],
         profiles: {
           "custom-balanced": {
             source: "user",

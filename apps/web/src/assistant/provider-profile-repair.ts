@@ -35,6 +35,33 @@ function profileHasRunnableModel(
   );
 }
 
+function profileUsesManagedProvider(
+  profile:
+    | NonNullable<NonNullable<ConfigGetResponse["llm"]>["profiles"]>[string]
+    | undefined,
+): boolean {
+  return profile?.source === "managed";
+}
+
+function findExistingProfileForConnection(
+  profiles: NonNullable<ConfigGetResponse["llm"]>["profiles"] | undefined,
+  connection: ProviderConnection,
+  model: string,
+): string | null {
+  if (!profiles) return null;
+  for (const [name, profile] of Object.entries(profiles)) {
+    if (
+      profileHasRunnableModel(profile) &&
+      profile.provider === connection.provider &&
+      profile.provider_connection === connection.name &&
+      profile.model === model
+    ) {
+      return name;
+    }
+  }
+  return null;
+}
+
 function nextProfileName(
   profiles: NonNullable<ConfigGetResponse["llm"]>["profiles"] | undefined,
 ): string {
@@ -97,8 +124,15 @@ export async function ensureRunnableProfileForConnection(
   const profiles = llm?.profiles ?? {};
   const activeProfile =
     typeof llm?.activeProfile === "string" ? llm.activeProfile : null;
+  const currentActiveProfile = activeProfile
+    ? profiles[activeProfile]
+    : undefined;
 
-  if (activeProfile && profileHasRunnableModel(profiles[activeProfile])) {
+  if (
+    activeProfile &&
+    profileHasRunnableModel(currentActiveProfile) &&
+    !profileUsesManagedProvider(currentActiveProfile)
+  ) {
     return {
       repaired: false,
       providerLabel: providerLabel(connection.provider),
@@ -106,19 +140,22 @@ export async function ensureRunnableProfileForConnection(
     };
   }
 
-  const profileName = nextProfileName(profiles);
+  const existingProfileName = findExistingProfileForConnection(
+    profiles,
+    connection,
+    model,
+  );
+  const profileName = existingProfileName ?? nextProfileName(profiles);
   const currentOrder = llm?.profileOrder ?? [];
   const profileOrder = currentOrder.includes(profileName)
     ? currentOrder
     : [...currentOrder, profileName];
-
-  await configPatch({
-    path: { assistant_id: assistantId },
-    body: {
-      llm: {
+  const profilePatch = existingProfileName
+    ? {}
+    : {
         profiles: {
           [profileName]: {
-            source: "user",
+            source: "user" as const,
             label: "Balanced",
             description: "Default provider profile",
             provider: connection.provider,
@@ -126,6 +163,13 @@ export async function ensureRunnableProfileForConnection(
             model,
           },
         },
+      };
+
+  await configPatch({
+    path: { assistant_id: assistantId },
+    body: {
+      llm: {
+        ...profilePatch,
         profileOrder,
         activeProfile: profileName,
       },
