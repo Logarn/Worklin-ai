@@ -87,11 +87,17 @@ function providerLabel(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 }
 
+function isUserOwnedConnection(connection: ProviderConnection): boolean {
+  return connection.auth.type !== "platform" && !connection.isManaged;
+}
+
 function selectRepairConnection(
   connections: readonly ProviderConnection[],
 ): ProviderConnection | null {
-  const runnable = connections.filter((connection) =>
-    Boolean(defaultModelForConnection(connection)),
+  const runnable = connections.filter(
+    (connection) =>
+      isUserOwnedConnection(connection) &&
+      Boolean(defaultModelForConnection(connection)),
   );
   if (runnable.length === 1) return runnable[0];
 
