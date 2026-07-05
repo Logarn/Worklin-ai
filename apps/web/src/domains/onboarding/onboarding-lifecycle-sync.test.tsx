@@ -600,6 +600,21 @@ describe("onboarding lifecycle sync", () => {
     );
   });
 
+  test("fresh platform hatch redirects to provider selection when pending provider state is missing", async () => {
+    getAssistantImpl = async () => ({ ok: false, status: 404, error: {} });
+
+    render(<HatchingScreen />);
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.provider}?next=hatching`,
+        { replace: true },
+      ),
+    );
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
+    expect(applyPendingProviderKeyMock).not.toHaveBeenCalled();
+  });
+
   test("hatching refreshes the root assistant lifecycle before leaving onboarding", async () => {
     let resolveLifecycle!: () => void;
     checkAssistantImpl = () =>
@@ -970,10 +985,11 @@ describe("onboarding lifecycle sync", () => {
 
   test("a fresh hatch is still seeded when the hatch response is lost (pre-flight saw no assistant)", async () => {
     // Pre-flight resolves auto_hatch (HTTP 404 = no assistant existed), so the
-    // user is provably new. hatchAssistant then throws (POST accepted, response
-    // lost), so createdFreshAssistant never gets set — but the poll discovers
-    // the freshly-created assistant, which must still be seeded rather than
-    // landing on the default avatar.
+    // user is provably new and already picked a provider. hatchAssistant then
+    // throws (POST accepted, response lost), so createdFreshAssistant never
+    // gets set — but the poll discovers the freshly-created assistant, which
+    // must still be seeded rather than landing on the default avatar.
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
     let assistantCalls = 0;
     getAssistantImpl = async () => {
       assistantCalls += 1;

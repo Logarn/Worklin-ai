@@ -314,6 +314,12 @@ export function HatchingScreen() {
           // Fall through to normal hatch
         }
         if (cancelled) return;
+        if (preflightFoundNoAssistant && !peekPendingProviderKey()) {
+          void navigate(`${routes.onboarding.provider}?next=hatching`, {
+            replace: true,
+          });
+          return;
+        }
       }
 
       // Local/Docker hatch lifecycle:
