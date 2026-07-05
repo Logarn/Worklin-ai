@@ -106,6 +106,26 @@ class UnusableV2StoreError extends Error {
   }
 }
 
+class UnreadableStoreFileError extends Error {
+  constructor(
+    message: string,
+    readonly storePath: string,
+  ) {
+    super(message);
+    this.name = "UnreadableStoreFileError";
+  }
+}
+
+class LegacyV1StoreError extends Error {
+  constructor(
+    readonly store: StoreFileV1,
+    readonly storePath: string,
+  ) {
+    super("v1 store cannot be auto-initialized");
+    this.name = "LegacyV1StoreError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Security directory resolution
 // ---------------------------------------------------------------------------
@@ -180,7 +200,7 @@ function getOrCreateStore(
   const existing = readStore(storePath);
   if (existing) {
     if (existing.version === 1) {
-      throw new Error("v1 store cannot be auto-initialized");
+      throw new LegacyV1StoreError(existing, storePath);
     }
     const storeKey = readStoreKey(vellumRoot);
     if (!storeKey) {
@@ -192,11 +212,31 @@ function getOrCreateStore(
     return { store: existing, aesKey: storeKey };
   }
 
+  if (existsSync(storePath)) {
+    throw new UnreadableStoreFileError(
+      "credential store exists but could not be read",
+      storePath,
+    );
+  }
+
   // No store exists — create a new empty v2 store
   const aesKey = getOrReadStoreKey(vellumRoot);
   const store: StoreFileV2 = { version: 2, entries: {} };
   writeStore(store, storePath);
   return { store, aesKey };
+}
+
+function quarantineUnreadableStore(storePath: string): void {
+  const suffix = `.unreadable-${Date.now()}-${process.pid}`;
+
+  if (existsSync(storePath)) {
+    renameSync(storePath, `${storePath}${suffix}`);
+  }
+
+  log.warn(
+    { storePath },
+    "Quarantined unreadable credential store before creating a fresh store",
+  );
 }
 
 function quarantineUnusableV2Store(
@@ -409,18 +449,30 @@ export function createLocalSecureKeyBackend(
               );
               return false;
             }
-          } else {
-            // Fallback: v1 store or other error — try legacy PBKDF2 path
-            const existing = readStore(storePath);
-            if (!existing) return false;
-            store = existing;
-            if (store.version === 1) {
-              const entropy = entropyGetter?.() ?? staticEntropy;
-              const salt = Buffer.from(store.salt, "hex");
-              aesKey = deriveKey(salt, entropy);
-            } else {
+          } else if (err instanceof UnreadableStoreFileError) {
+            try {
+              quarantineUnreadableStore(storePath);
+              const result = getOrCreateStore(storePath, vellumRoot);
+              store = result.store;
+              aesKey = result.aesKey;
+            } catch (recoveryErr) {
+              log.warn(
+                { err: recoveryErr, storePath },
+                "Failed to recover unreadable credential store",
+              );
               return false;
             }
+          } else if (err instanceof LegacyV1StoreError) {
+            store = err.store;
+            const entropy = entropyGetter?.() ?? staticEntropy;
+            const salt = Buffer.from(store.salt, "hex");
+            aesKey = deriveKey(salt, entropy);
+          } else {
+            log.warn(
+              { err, storePath },
+              "Secure key backend could not open credential store for writing",
+            );
+            return false;
           }
         }
 

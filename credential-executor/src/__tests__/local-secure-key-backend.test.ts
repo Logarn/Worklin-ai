@@ -175,6 +175,30 @@ describe("createLocalSecureKeyBackend — filesystem", () => {
     expect(quarantined.length).toBe(1);
   });
 
+  test("set() recovers from an unreadable existing store", async () => {
+    const { securityDir, vellumRoot } = setup();
+
+    writeFileSync(join(securityDir, "keys.enc"), "not json", {
+      mode: 0o600,
+    });
+
+    const backend = createLocalSecureKeyBackend(vellumRoot);
+    const result = await backend.set("recovered-key", "recovered-value");
+    expect(result).toBe(true);
+
+    expect(await backend.get("recovered-key")).toBe("recovered-value");
+
+    const storeAfter = JSON.parse(
+      readFileSync(join(securityDir, "keys.enc"), "utf-8"),
+    );
+    expect(storeAfter.version).toBe(2);
+
+    const quarantined = readdirSync(securityDir).filter((name) =>
+      name.startsWith("keys.enc.unreadable-"),
+    );
+    expect(quarantined.length).toBe(1);
+  });
+
   test("get() returns undefined when no store exists", async () => {
     const { vellumRoot } = setup();
     const backend = createLocalSecureKeyBackend(vellumRoot);
