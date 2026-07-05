@@ -821,7 +821,39 @@ function handleBilling(req: Request, res: Response): void {
   });
 }
 
-async function proxyToGateway(req: Request, res: Response, url: URL): Promise<void> {
+function assistantIdFromProxyPath(pathname: string): string | null {
+  const match = /^\/v1\/assistants\/([^/]+)\//.exec(pathname);
+  return match?.[1] ?? null;
+}
+
+function requestHasAuthorization(req: Request): boolean {
+  return Object.keys(req.headers).some(
+    (name) => name.toLowerCase() === "authorization",
+  );
+}
+
+async function proxyToGateway(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<void> {
+  const assistantId = assistantIdFromProxyPath(url.pathname);
+  if (!assistantId) {
+    sendJson(req, res, { detail: "Assistant not found." }, 404);
+    return;
+  }
+
+  const assistant = db
+    .query<AssistantRow, [string, string]>(
+      "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+    )
+    .get(assistantId, user.id);
+  if (!assistant) {
+    sendJson(req, res, { detail: "Assistant not found." }, 404);
+    return;
+  }
+
   const target = new URL(env.gatewayUrl);
   target.pathname = url.pathname;
   target.search = url.search;
@@ -836,6 +868,12 @@ async function proxyToGateway(req: Request, res: Response, url: URL): Promise<vo
     } else {
       headers.set(key, value);
     }
+  }
+  if (!requestHasAuthorization(req)) {
+    headers.set(
+      "Authorization",
+      `Bearer ${mintActorToken(assistant.id, user.id)}`,
+    );
   }
 
   const bodyBuffer =
@@ -985,7 +1023,7 @@ app.use(
     if (url.pathname.startsWith("/v1/assistants/")) {
       const handled = await handleAssistants(req, res, url, user);
       if (handled) return;
-      await proxyToGateway(req, res, url);
+      await proxyToGateway(req, res, url, user);
       return;
     }
 
