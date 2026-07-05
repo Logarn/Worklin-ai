@@ -1,10 +1,13 @@
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { SEEDS } from "@vellumai/environments";
 
-import { getWorkspaceDirOverride } from "../config/env-registry.js";
+import {
+  getIsContainerized,
+  getWorkspaceDirOverride,
+} from "../config/env-registry.js";
 
 /**
  * The daemon's root data directory (`~/.vellum`).
@@ -423,6 +426,15 @@ export function getBundledBunPath(): string | undefined {
   return undefined;
 }
 
+function isSharedContainerRuntimeRoot(root: string): boolean {
+  const runtimeRoot = process.env["WORKLIN_RUNTIME_ROOT"]?.trim();
+  return (
+    getIsContainerized() &&
+    runtimeRoot !== undefined &&
+    resolve(runtimeRoot) === resolve(root)
+  );
+}
+
 export function ensureDataDir(): void {
   const root = vellumRoot();
   const workspace = getWorkspaceDir();
@@ -456,11 +468,13 @@ export function ensureDataDir(): void {
       mkdirSync(dir, { recursive: true });
     }
   }
-  // Lock down the root directory so only the owner can traverse it.
-  // Runtime files (socket, session token, PID) live directly under root.
-  try {
-    chmodSync(root, 0o700);
-  } catch {
-    // Non-fatal: some filesystems don't support Unix permissions
+  if (!isSharedContainerRuntimeRoot(root)) {
+    // Lock down the root directory so only the owner can traverse it.
+    // Runtime files (socket, session token, PID) live directly under root.
+    try {
+      chmodSync(root, 0o700);
+    } catch {
+      // Non-fatal: some filesystems don't support Unix permissions
+    }
   }
 }

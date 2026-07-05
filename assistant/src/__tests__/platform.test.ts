@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -25,6 +25,8 @@ import {
 const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
 const originalVellumEnvironment = process.env.VELLUM_ENVIRONMENT;
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+const originalIsContainerized = process.env.IS_CONTAINERIZED;
+const originalWorklinRuntimeRoot = process.env.WORKLIN_RUNTIME_ROOT;
 
 afterEach(() => {
   if (originalWorkspaceDir == null) {
@@ -41,6 +43,16 @@ afterEach(() => {
     delete process.env.XDG_CONFIG_HOME;
   } else {
     process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+  }
+  if (originalIsContainerized == null) {
+    delete process.env.IS_CONTAINERIZED;
+  } else {
+    process.env.IS_CONTAINERIZED = originalIsContainerized;
+  }
+  if (originalWorklinRuntimeRoot == null) {
+    delete process.env.WORKLIN_RUNTIME_ROOT;
+  } else {
+    process.env.WORKLIN_RUNTIME_ROOT = originalWorklinRuntimeRoot;
   }
 });
 
@@ -117,6 +129,23 @@ describe("path characterization", () => {
     expect(existsSync(join(data, "apps"))).toBe(true);
 
     rmSync(wsDir, { recursive: true, force: true });
+  });
+
+  test("ensureDataDir does not chmod the shared container runtime root", () => {
+    const runtimeRoot = mkdtempSync(join(tmpdir(), "platform-runtime-root-"));
+    chmodSync(runtimeRoot, 0o755);
+    process.env.VELLUM_WORKSPACE_DIR = join(runtimeRoot, "workspace");
+    process.env.WORKLIN_RUNTIME_ROOT = runtimeRoot;
+    process.env.IS_CONTAINERIZED = "true";
+
+    try {
+      ensureDataDir();
+
+      expect(statSync(runtimeRoot).mode & 0o777).toBe(0o755);
+      expect(existsSync(join(runtimeRoot, "workspace", "data"))).toBe(true);
+    } finally {
+      rmSync(runtimeRoot, { recursive: true, force: true });
+    }
   });
 });
 
