@@ -669,6 +669,74 @@
       ]
     },
     {
+      "id": "kimi",
+      "displayName": "Kimi",
+      "subtitle": "Kimi models from Moonshot AI. Requires a Moonshot API key.",
+      "setupMode": "api-key",
+      "setupHint": "Enter your Moonshot API key to enable Kimi.",
+      "envVar": "MOONSHOT_API_KEY",
+      "apiKeyPlaceholder": "sk-...",
+      "credentialsGuide": {
+        "description": "Sign in to the Kimi Open Platform console and create an API key.",
+        "url": "https://platform.kimi.ai/console/api-keys",
+        "linkLabel": "Open Kimi Console"
+      },
+      "supportsPlatformAuth": false,
+      "defaultModel": "kimi-k2.6",
+      "models": [
+        {
+          "id": "kimi-k2.6",
+          "displayName": "Kimi K2.6",
+          "contextWindowTokens": 262144,
+          "maxOutputTokens": 32768,
+          "defaultContextWindowTokens": 200000,
+          "longContextMode": "native-model",
+          "supportsThinking": true,
+          "supportsCaching": true,
+          "supportsVision": true,
+          "supportsToolUse": true
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "displayName": "Kimi K2.7 Code",
+          "contextWindowTokens": 262144,
+          "maxOutputTokens": 32768,
+          "defaultContextWindowTokens": 200000,
+          "longContextMode": "native-model",
+          "supportsThinking": true,
+          "adaptiveThinkingOnly": true,
+          "supportsCaching": true,
+          "supportsVision": true,
+          "supportsToolUse": true
+        },
+        {
+          "id": "kimi-k2.7-code-highspeed",
+          "displayName": "Kimi K2.7 Code Highspeed",
+          "contextWindowTokens": 262144,
+          "maxOutputTokens": 32768,
+          "defaultContextWindowTokens": 200000,
+          "longContextMode": "native-model",
+          "supportsThinking": true,
+          "adaptiveThinkingOnly": true,
+          "supportsCaching": true,
+          "supportsVision": true,
+          "supportsToolUse": true
+        },
+        {
+          "id": "kimi-k2.5",
+          "displayName": "Kimi K2.5",
+          "contextWindowTokens": 262144,
+          "maxOutputTokens": 32768,
+          "defaultContextWindowTokens": 200000,
+          "longContextMode": "native-model",
+          "supportsThinking": true,
+          "supportsCaching": true,
+          "supportsVision": true,
+          "supportsToolUse": true
+        }
+      ]
+    },
+    {
       "id": "openrouter",
       "displayName": "OpenRouter",
       "subtitle": "Route to many LLM providers via a single OpenRouter API key.",

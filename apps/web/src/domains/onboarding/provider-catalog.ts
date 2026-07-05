@@ -10,20 +10,16 @@ export type OnboardingProviderId =
   | "gemini"
   | "ollama"
   | "fireworks"
+  | "kimi"
   | "openrouter"
   | "minimax"
   | "openai-compatible";
 
 export type OnboardingProviderOptionId =
-  | OnboardingProviderId
-  | "chatgpt-subscription"
-  | "kimi"
-  | "xai";
+  OnboardingProviderId | "chatgpt-subscription" | "xai";
 
 export type OnboardingProviderAuthType =
-  | "api_key"
-  | "none"
-  | "oauth_subscription";
+  "api_key" | "none" | "oauth_subscription";
 
 export interface OnboardingProvider {
   readonly id: OnboardingProviderOptionId;
@@ -102,21 +98,13 @@ export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
   },
   {
     id: "kimi",
-    provider: "openai-compatible",
+    provider: "kimi",
     authType: "api_key",
     displayName: "Kimi",
     subtitle: "Use Kimi models with a Moonshot API key.",
     apiKeyPlaceholder: "sk-...",
-    docsUrl: "https://platform.moonshot.ai/console/api-keys",
+    docsUrl: "https://platform.kimi.ai/console/api-keys",
     requiresKey: true,
-    connectionName: "kimi-personal",
-    credentialName: "kimi",
-    connectionLabel: "Kimi",
-    baseUrl: "https://api.moonshot.ai/v1",
-    models: [
-      { id: "kimi-k2.6", displayName: "Kimi K2.6" },
-      { id: "kimi-k2.7-code", displayName: "Kimi K2.7 Code" },
-    ],
     defaultModel: "kimi-k2.6",
   },
   {
@@ -173,8 +161,6 @@ export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
 
 export const DEFAULT_ONBOARDING_PROVIDER = ONBOARDING_PROVIDERS[0];
 
-export function onboardingProvider(
-  id: string,
-): OnboardingProvider | undefined {
+export function onboardingProvider(id: string): OnboardingProvider | undefined {
   return ONBOARDING_PROVIDERS.find((p) => p.id === id);
 }

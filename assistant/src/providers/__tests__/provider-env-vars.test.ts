@@ -23,6 +23,10 @@ describe("getLlmProviderEnvVar", () => {
     expect(getLlmProviderEnvVar("fireworks")).toBe("FIREWORKS_API_KEY");
   });
 
+  test("returns MOONSHOT_API_KEY for kimi", () => {
+    expect(getLlmProviderEnvVar("kimi")).toBe("MOONSHOT_API_KEY");
+  });
+
   test("returns OPENROUTER_API_KEY for openrouter", () => {
     expect(getLlmProviderEnvVar("openrouter")).toBe("OPENROUTER_API_KEY");
   });
@@ -69,6 +73,7 @@ describe("getAnyProviderEnvVar", () => {
   test("returns LLM env var for LLM providers", () => {
     expect(getAnyProviderEnvVar("anthropic")).toBe("ANTHROPIC_API_KEY");
     expect(getAnyProviderEnvVar("openai")).toBe("OPENAI_API_KEY");
+    expect(getAnyProviderEnvVar("kimi")).toBe("MOONSHOT_API_KEY");
   });
 
   test("returns search env var for search providers", () => {

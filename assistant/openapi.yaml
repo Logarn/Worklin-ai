@@ -13332,8 +13332,8 @@ paths:
           schema:
             type: string
           description:
-            "Filter by provider. One of: anthropic, openai, gemini, ollama, fireworks, openrouter, openai-compatible,
-            minimax"
+            "Filter by provider. One of: anthropic, openai, gemini, ollama, fireworks, kimi, openrouter,
+            openai-compatible, minimax"
       responses:
         "200":
           description: Successful response
@@ -28159,6 +28159,7 @@ components:
         - gemini
         - ollama
         - fireworks
+        - kimi
         - openrouter
         - openai-compatible
         - minimax
@@ -28516,6 +28517,7 @@ components:
         - gemini
         - ollama
         - fireworks
+        - kimi
         - openrouter
         - openai-compatible
         - minimax

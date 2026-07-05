@@ -5,6 +5,7 @@ import {
   pendingProviderAuthType,
   pendingProviderRequiresOAuth,
   peekPendingProviderKey,
+  providerApiKeySecretBody,
   setPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
 
@@ -42,7 +43,10 @@ describe("pending provider key", () => {
 
   test("keyless providers store an empty key", () => {
     setPendingProviderKey({ provider: "ollama", key: "" });
-    expect(consumePendingProviderKey()).toEqual({ provider: "ollama", key: "" });
+    expect(consumePendingProviderKey()).toEqual({
+      provider: "ollama",
+      key: "",
+    });
   });
 
   test("ChatGPT subscription stores OAuth intent without an API key", () => {
@@ -92,5 +96,23 @@ describe("pending provider key", () => {
       defaultModel: "grok-4.3",
     });
     expect(pending ? pendingProviderAuthType(pending) : null).toBe("api_key");
+  });
+
+  test("first-class providers use the daemon api_key secret route", () => {
+    expect(providerApiKeySecretBody("kimi", "kimi", "sk-test")).toEqual({
+      type: "api_key",
+      name: "kimi",
+      value: "sk-test",
+    });
+  });
+
+  test("OpenAI-compatible presets store their custom credential namespace", () => {
+    expect(
+      providerApiKeySecretBody("openai-compatible", "xai", "xai-test"),
+    ).toEqual({
+      type: "credential",
+      name: "xai:api_key",
+      value: "xai-test",
+    });
   });
 });

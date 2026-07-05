@@ -93,7 +93,9 @@ export function pendingProviderAuthType(
 export function pendingProviderRequiresOAuth(
   value: PendingProviderKey | null,
 ): boolean {
-  return value ? pendingProviderAuthType(value) === "oauth_subscription" : false;
+  return value
+    ? pendingProviderAuthType(value) === "oauth_subscription"
+    : false;
 }
 
 // Daemon wrappers via the generated SDK. Duplicated minimally here because
@@ -101,12 +103,14 @@ export function pendingProviderRequiresOAuth(
 
 async function writeApiKeySecret(
   assistantId: string,
+  provider: OnboardingProviderId,
   credentialName: string,
   value: string,
 ): Promise<void> {
+  const body = providerApiKeySecretBody(provider, credentialName, value);
   const { response } = await secretsPost({
     path: { assistant_id: assistantId },
-    body: { type: "api_key", name: credentialName, value },
+    body,
     throwOnError: false,
   });
   if (!response?.ok) {
@@ -114,6 +118,20 @@ async function writeApiKeySecret(
       status: response?.status,
     });
   }
+}
+
+type ApiKeySecretBody =
+  | { type: "api_key"; name: string; value: string }
+  | { type: "credential"; name: string; value: string };
+
+export function providerApiKeySecretBody(
+  provider: OnboardingProviderId,
+  credentialName: string,
+  value: string,
+): ApiKeySecretBody {
+  return credentialName === provider
+    ? { type: "api_key", name: credentialName, value }
+    : { type: "credential", name: `${credentialName}:api_key`, value };
 }
 
 function connectionNameFor(provider: OnboardingProviderId): string {
@@ -276,9 +294,17 @@ export async function applyPendingProviderKey(
     pending.credentialName,
   );
   if (authType === "api_key") {
-    await writeApiKeySecret(assistantId, credentialName, trimmed);
+    await writeApiKeySecret(
+      assistantId,
+      pending.provider,
+      credentialName,
+      trimmed,
+    );
   }
-  const connectionName = await createOrUpdateProviderConnection(assistantId, pending);
+  const connectionName = await createOrUpdateProviderConnection(
+    assistantId,
+    pending,
+  );
   await configureOnboardingProviderProfile(assistantId, {
     provider: pending.provider,
     authType,

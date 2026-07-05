@@ -23,6 +23,7 @@ export const CONNECTION_PROVIDERS: ConnectionProvider[] = [
   "gemini",
   "ollama",
   "fireworks",
+  "kimi",
   "openrouter",
   "minimax",
   "openai-compatible",
@@ -40,7 +41,9 @@ export const AUTH_TYPE_DISPLAY_NAMES: Record<AuthType, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function parseCredentialRef(credRef: string): { service: string; field: string } | null {
+export function parseCredentialRef(
+  credRef: string,
+): { service: string; field: string } | null {
   const parts = credRef.split("/");
   if (parts.length < 3 || parts[0] !== "credential") return null;
   return { service: parts[1], field: parts.slice(2).join("/") };

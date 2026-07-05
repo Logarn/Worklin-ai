@@ -19,6 +19,16 @@ describe("openai-compatible adapter factory", () => {
     expect(adapter).toBeInstanceOf(OpenAIChatCompletionsProvider);
   });
 
+  test("buildProviderAdapter registers Kimi on the chat-completions adapter", () => {
+    const adapter = buildProviderAdapter("kimi", {
+      apiKey: "test-key",
+      model: "kimi-k2.6",
+      streamTimeoutMs: 60_000,
+      useNativeWebSearch: false,
+    });
+    expect(adapter).toBeInstanceOf(OpenAIChatCompletionsProvider);
+  });
+
   test("createAdapterFromConnection wires baseURL from ResolvedAuth", () => {
     const connection: ProviderConnection = {
       name: "my-vllm",

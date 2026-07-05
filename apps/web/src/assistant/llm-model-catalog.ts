@@ -269,6 +269,42 @@ export const MODELS_BY_PROVIDER = {
       supportsThinking: true,
     },
   ],
+  kimi: [
+    {
+      id: "kimi-k2.6",
+      displayName: "Kimi K2.6",
+      contextWindowTokens: 262_144,
+      defaultContextWindowTokens: 200_000,
+      maxOutputTokens: 32_768,
+      supportsThinking: true,
+    },
+    {
+      id: "kimi-k2.7-code",
+      displayName: "Kimi K2.7 Code",
+      contextWindowTokens: 262_144,
+      defaultContextWindowTokens: 200_000,
+      maxOutputTokens: 32_768,
+      supportsThinking: true,
+      adaptiveThinkingOnly: true,
+    },
+    {
+      id: "kimi-k2.7-code-highspeed",
+      displayName: "Kimi K2.7 Code Highspeed",
+      contextWindowTokens: 262_144,
+      defaultContextWindowTokens: 200_000,
+      maxOutputTokens: 32_768,
+      supportsThinking: true,
+      adaptiveThinkingOnly: true,
+    },
+    {
+      id: "kimi-k2.5",
+      displayName: "Kimi K2.5",
+      contextWindowTokens: 262_144,
+      defaultContextWindowTokens: 200_000,
+      maxOutputTokens: 32_768,
+      supportsThinking: true,
+    },
+  ],
   openrouter: [
     {
       id: "anthropic/claude-fable-5",
@@ -578,8 +614,7 @@ export const MODELS_BY_PROVIDER = {
       supportsThinking: true,
     },
   ],
-  "openai-compatible": [
-  ],
+  "openai-compatible": [],
 } as const satisfies Record<string, readonly LlmCatalogModel[]>;
 
 export type LlmProviderId = keyof typeof MODELS_BY_PROVIDER;
@@ -589,6 +624,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<LlmProviderId, string> = {
   openai: "gpt-5.5",
   gemini: "gemini-2.5-flash",
   fireworks: "accounts/fireworks/models/kimi-k2p5",
+  kimi: "kimi-k2.6",
   openrouter: "x-ai/grok-4.20-beta",
   minimax: "MiniMax-M2.7",
   "openai-compatible": "",
@@ -606,6 +642,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   gemini: "Google Gemini",
   ollama: "Ollama",
   fireworks: "Fireworks",
+  kimi: "Kimi",
   openrouter: "OpenRouter",
   "openai-compatible": "OpenAI-compatible",
   minimax: "MiniMax",
@@ -624,6 +661,7 @@ export const PROVIDER_SUPPORTS_PLATFORM_AUTH: Record<string, boolean> = {
   gemini: true,
   ollama: false,
   fireworks: true,
+  kimi: false,
   openrouter: false,
   "openai-compatible": false,
   minimax: false,

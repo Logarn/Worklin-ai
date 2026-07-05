@@ -21,6 +21,7 @@
 import { AnthropicProvider } from "../anthropic/client.js";
 import { FireworksProvider } from "../fireworks/client.js";
 import { GeminiProvider } from "../gemini/client.js";
+import { KimiProvider } from "../kimi/client.js";
 import { MinimaxProvider } from "../minimax/client.js";
 import { PROVIDER_CATALOG } from "../model-catalog.js";
 import { OllamaProvider } from "../ollama/client.js";
@@ -97,6 +98,11 @@ const ADAPTER_FACTORIES: Record<string, AdapterFactory> = {
     }),
   fireworks: ({ apiKey, model, streamTimeoutMs, baseURL }) =>
     new FireworksProvider(apiKey, model, {
+      streamTimeoutMs,
+      ...(baseURL ? { baseURL } : {}),
+    }),
+  kimi: ({ apiKey, model, streamTimeoutMs, baseURL }) =>
+    new KimiProvider(apiKey, model, {
       streamTimeoutMs,
       ...(baseURL ? { baseURL } : {}),
     }),

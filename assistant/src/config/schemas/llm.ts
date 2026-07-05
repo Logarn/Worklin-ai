@@ -20,6 +20,7 @@ export const LLMProvider = z
     "gemini",
     "ollama",
     "fireworks",
+    "kimi",
     "openrouter",
     "openai-compatible",
     "minimax",
