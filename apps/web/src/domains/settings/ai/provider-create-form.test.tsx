@@ -4,7 +4,8 @@
  *
  * The component owns the two-step create submit sequence:
  *   1. `secretsPost` — persist the entered API key under
- *      `credential/<service>/<field>` (sent as `<service>:<field>`).
+ *      the daemon's first-class `api_key` route when the credential belongs
+ *      to the selected provider.
  *   2. `inferenceProviderconnectionsPost` — create the connection with the
  *      assembled `CreateConnectionInput`, then hand the returned connection
  *      back to the consumer via `onCreated`.
@@ -380,13 +381,12 @@ describe("ProviderCreateForm submit sequence", () => {
       expect(createConnectionCalls.length).toBe(1);
     });
 
-    // secretsPost fired first with credential/<service>/<field> mapped to
-    // `<service>:<field>`.
+    // secretsPost fired first via the daemon's first-class api_key route.
     expect(secretsPostCalls.length).toBe(1);
     expect(secretsPostCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
     expect(secretsPostCalls[0].body).toEqual({
-      type: "credential",
-      name: "anthropic:api_key",
+      type: "api_key",
+      name: "anthropic",
       value: "sk-test-123",
     });
 
@@ -563,6 +563,11 @@ describe("ProviderCreateForm submit sequence", () => {
       expect(configPatchCalls.length).toBe(1);
     });
 
+    expect(secretsPostCalls[0].body).toEqual({
+      type: "api_key",
+      name: "kimi",
+      value: "moonshot-test-key",
+    });
     expect(configGetCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
     expect(configPatchCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
     expect(configPatchCalls[0].body).toMatchObject({
@@ -622,6 +627,11 @@ describe("ProviderCreateForm submit sequence", () => {
       expect(configPatchCalls.length).toBe(1);
     });
 
+    expect(secretsPostCalls[0].body).toEqual({
+      type: "api_key",
+      name: "kimi",
+      value: "moonshot-test-key",
+    });
     expect(configPatchCalls[0].body).toMatchObject({
       llm: {
         activeProfile: "custom-balanced",

@@ -26,6 +26,7 @@ import {
     connectionSaveErrorMessage,
     parseCredentialRef,
 } from "@/domains/settings/ai/provider-editor-constants";
+import { providerApiKeySecretBody } from "@/domains/settings/ai/provider-secret-body";
 import { secretPlaceholder } from "@/domains/settings/ai/secret-placeholder";
 import { useLabelKeySync } from "@/domains/settings/ai/use-label-key-sync";
 import { useProviderCredentialsList } from "@/domains/settings/ai/use-provider-credentials-list";
@@ -230,17 +231,11 @@ export function ProviderEditorContent({
             const parsed = parseCredentialRef(effectiveCredential);
             await secretsPost({
               path: { assistant_id: assistantId },
-              body: parsed
-                ? {
-                    type: "credential",
-                    name: `${parsed.service}:${parsed.field}`,
-                    value: trimmedKey,
-                  }
-                : {
-                    type: "api_key",
-                    name: provider,
-                    value: trimmedKey,
-                  },
+              body: providerApiKeySecretBody(
+                provider,
+                effectiveCredential,
+                trimmedKey,
+              ),
               throwOnError: true,
             });
             // Optimistically mark credential as present and invalidate
@@ -255,7 +250,9 @@ export function ProviderEditorContent({
               queryKey: secretsGetQueryKey({ path: { assistant_id: assistantId } }),
             });
           } catch {
-            setError("Failed to save API key. Please try again.");
+            setError(
+              "Worklin could not save this API key. Check that it belongs to the selected provider, then try again.",
+            );
             return;
           } finally {
             setIsSavingKey(false);

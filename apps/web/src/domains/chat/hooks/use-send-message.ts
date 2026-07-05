@@ -87,25 +87,7 @@ import {
   fetchConversationDetail,
 } from "@/utils/fetch-conversation-detail";
 import { ensureRunnableProfileFromStoredConnection } from "@/assistant/provider-profile-repair";
-
-const PROVIDER_NOT_CONFIGURED_CODE = "PROVIDER_NOT_CONFIGURED";
-const PROVIDER_BILLING_CODE = "PROVIDER_BILLING";
-const RATE_LIMIT_STATUS = 429;
-const PAYMENT_REQUIRED_STATUS = 402;
-
-function shouldAttemptProviderProfileRepair(error: {
-  code?: string | null;
-  errorCategory?: string | null;
-  status?: number | null;
-}): boolean {
-  return (
-    error.code === PROVIDER_NOT_CONFIGURED_CODE ||
-    error.code === PROVIDER_BILLING_CODE ||
-    error.errorCategory?.endsWith("provider_billing") ||
-    error.status === RATE_LIMIT_STATUS ||
-    error.status === PAYMENT_REQUIRED_STATUS
-  );
-}
+import { shouldAttemptProviderProfileRepair } from "@/domains/chat/utils/provider-profile-repair-trigger";
 
 // ---------------------------------------------------------------------------
 // Stream send result
@@ -726,6 +708,7 @@ export function useSendMessage({
             if (
               shouldAttemptProviderProfileRepair({
                 code: postResult.error.code,
+                detail: postResult.error.detail,
                 status: postResult.status,
               })
             ) {
