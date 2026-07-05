@@ -54,6 +54,9 @@ export class CesRpcCredentialBackend implements CredentialBackend {
         account,
         value,
       });
+      if (!result.ok) {
+        log.warn({ account }, "CES RPC credential set returned not stored");
+      }
       return result.ok;
     } catch (err) {
       log.warn({ err, account }, "CES RPC credential set failed");

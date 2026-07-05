@@ -347,18 +347,45 @@ function readStore(storePath: string): StoreFile | null {
   try {
     const raw = readFileSync(storePath, "utf-8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed.entries !== "object") return null;
+    const entries = parseEntriesRecord(parsed.entries);
+    if (!entries) return null;
 
     if (parsed.version === 1 && typeof parsed.salt === "string") {
-      return parsed as StoreFileV1;
+      return { version: 1, salt: parsed.salt, entries };
     }
     if (parsed.version === 2) {
-      return parsed as StoreFileV2;
+      return { version: 2, entries };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+function parseEntriesRecord(
+  value: unknown,
+): Record<string, EncryptedEntry> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const entries = value as Record<string, unknown>;
+  for (const entry of Object.values(entries)) {
+    if (!isEncryptedEntry(entry)) return null;
+  }
+  return entries as Record<string, EncryptedEntry>;
+}
+
+function isEncryptedEntry(value: unknown): value is EncryptedEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.iv === "string" &&
+    typeof entry.tag === "string" &&
+    typeof entry.data === "string"
+  );
 }
 
 // ---------------------------------------------------------------------------

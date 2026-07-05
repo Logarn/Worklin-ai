@@ -157,7 +157,14 @@ describe("createLocalSecureKeyBackend — filesystem", () => {
 
     writeFileSync(
       join(securityDir, "keys.enc"),
-      JSON.stringify({ version: 2, entries: { stale: {} } }, null, 2),
+      JSON.stringify(
+        {
+          version: 2,
+          entries: { stale: { iv: "00", tag: "00", data: "00" } },
+        },
+        null,
+        2,
+      ),
       { mode: 0o600 },
     );
 
@@ -186,6 +193,31 @@ describe("createLocalSecureKeyBackend — filesystem", () => {
     const result = await backend.set("recovered-key", "recovered-value");
     expect(result).toBe(true);
 
+    expect(await backend.get("recovered-key")).toBe("recovered-value");
+
+    const storeAfter = JSON.parse(
+      readFileSync(join(securityDir, "keys.enc"), "utf-8"),
+    );
+    expect(storeAfter.version).toBe(2);
+
+    const quarantined = readdirSync(securityDir).filter((name) =>
+      name.startsWith("keys.enc.unreadable-"),
+    );
+    expect(quarantined.length).toBe(1);
+  });
+
+  test("set() recovers from a store with malformed entries", async () => {
+    const { securityDir, vellumRoot } = setup();
+
+    writeFileSync(
+      join(securityDir, "keys.enc"),
+      JSON.stringify({ version: 2, entries: null }, null, 2),
+      { mode: 0o600 },
+    );
+
+    const backend = createLocalSecureKeyBackend(vellumRoot);
+    const result = await backend.set("recovered-key", "recovered-value");
+    expect(result).toBe(true);
     expect(await backend.get("recovered-key")).toBe("recovered-value");
 
     const storeAfter = JSON.parse(

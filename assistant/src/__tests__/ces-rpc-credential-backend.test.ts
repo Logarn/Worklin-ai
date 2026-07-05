@@ -139,6 +139,14 @@ describe("CesRpcCredentialBackend", () => {
 
       expect(result).toBe(false);
     });
+
+    test("returns false when RPC set returns ok false", async () => {
+      callFn.mockResolvedValue({ ok: false });
+
+      const result = await backend.set("test-account", "new-secret");
+
+      expect(result).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------

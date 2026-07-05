@@ -251,6 +251,43 @@ function tryFailoverToCesHttpBackend(
   return cesHttp;
 }
 
+async function tryCesHttpSetFallback(
+  backend: CredentialBackend,
+  account: string,
+  value: string,
+): Promise<boolean | undefined> {
+  if (backend.name !== "ces-rpc") return undefined;
+  if (!getIsContainerized() || !process.env.CES_CREDENTIAL_URL) {
+    return undefined;
+  }
+
+  const cesHttp = createCesCredentialBackend();
+  if (!cesHttp.isAvailable()) return undefined;
+
+  log.warn(
+    { account, previousBackend: backend.name, fallbackBackend: cesHttp.name },
+    "CES RPC credential set failed — retrying through CES HTTP backend",
+  );
+
+  const ok = await cesHttp.set(account, value);
+  updateCesHttpReachability(cesHttp, !ok);
+  if (!ok) {
+    log.warn(
+      { account, backend: cesHttp.name },
+      "CES HTTP credential set fallback failed",
+    );
+    return false;
+  }
+
+  _resolvedBackend = cesHttp;
+  _resolvePromise = undefined;
+  log.info(
+    { account, backend: cesHttp.name, previousBackend: backend.name },
+    "Credential stored via CES HTTP fallback",
+  );
+  return true;
+}
+
 /**
  * Try to re-establish a CES connection when the current transport has died.
  * Returns true if reconnection succeeded (setCesClient was called with a
@@ -455,13 +492,22 @@ export async function setSecureKeyAsync(
   return withCredentialTimeout(async () => {
     const backend = await resolveBackendAsync();
     const ok = await backend.set(account, value);
+    if (ok) {
+      log.info({ account, backend: backend.name }, "Credential stored");
+      updateCesHttpReachability(backend, false);
+      return true;
+    }
+
+    const fallbackOk = await tryCesHttpSetFallback(backend, account, value);
+    if (fallbackOk === true) {
+      return true;
+    }
+
     if (!ok) {
       log.warn(
         { account, backend: backend.name },
         "Credential backend set failed",
       );
-    } else {
-      log.info({ account, backend: backend.name }, "Credential stored");
     }
     updateCesHttpReachability(backend, !ok);
     return ok;
@@ -617,31 +663,34 @@ export type BackendInfo =
  * visible.
  */
 export function getActiveBackendInfoAsync(): Promise<BackendInfo> {
-  return withCredentialTimeout(async () => {
-    const backend = await resolveBackendAsync();
-    if (backend.name === "encrypted-store") {
-      const protectedDir = getProtectedDir();
-      const storePath = join(protectedDir, "keys.enc");
-      const storeKeyPath = join(protectedDir, "store.key");
-      return {
-        backend: "encrypted-store" as const,
-        storePath,
-        storeKeyPath,
-        storeExists: existsSync(storePath),
-        storeKeyExists: existsSync(storeKeyPath),
-      };
-    }
-    if (backend.name === "ces-rpc") {
-      return { backend: "ces-rpc" as const, ready: backend.isAvailable() };
-    }
-    if (backend.name === "ces-http") {
-      return {
-        backend: "ces-http" as const,
-        url: process.env.CES_CREDENTIAL_URL ?? "",
-      };
-    }
-    return { backend: "none" as const };
-  }, { backend: "none" as const });
+  return withCredentialTimeout(
+    async () => {
+      const backend = await resolveBackendAsync();
+      if (backend.name === "encrypted-store") {
+        const protectedDir = getProtectedDir();
+        const storePath = join(protectedDir, "keys.enc");
+        const storeKeyPath = join(protectedDir, "store.key");
+        return {
+          backend: "encrypted-store" as const,
+          storePath,
+          storeKeyPath,
+          storeExists: existsSync(storePath),
+          storeKeyExists: existsSync(storeKeyPath),
+        };
+      }
+      if (backend.name === "ces-rpc") {
+        return { backend: "ces-rpc" as const, ready: backend.isAvailable() };
+      }
+      if (backend.name === "ces-http") {
+        return {
+          backend: "ces-http" as const,
+          url: process.env.CES_CREDENTIAL_URL ?? "",
+        };
+      }
+      return { backend: "none" as const };
+    },
+    { backend: "none" as const },
+  );
 }
 
 /** @internal Test-only: reset the cached backends so they're re-created. */
