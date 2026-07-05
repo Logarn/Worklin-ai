@@ -37,11 +37,7 @@ function makeDeps(): { deps: CredentialRouteDeps; store: Map<string, string> } {
   return { deps: { backend, serviceToken: SERVICE_TOKEN }, store };
 }
 
-function makeRequest(
-  method: string,
-  path: string,
-  body?: unknown,
-): Request {
+function makeRequest(method: string, path: string, body?: unknown): Request {
   const url = `http://localhost:8090${path}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -76,7 +72,9 @@ describe("credential route key normalization", () => {
     expect(body.account).toBe("credential/vellum/platform_organization_id");
 
     // Verify it was stored under the normalized key
-    expect(store.get("credential/vellum/platform_organization_id")).toBe("org-uuid-123");
+    expect(store.get("credential/vellum/platform_organization_id")).toBe(
+      "org-uuid-123",
+    );
     expect(store.has("vellum:platform_organization_id")).toBe(false);
   });
 
@@ -84,10 +82,7 @@ describe("credential route key normalization", () => {
     const { deps, store } = makeDeps();
     store.set("credential/vellum/platform_user_id", "user-uuid-456");
 
-    const req = makeRequest(
-      "GET",
-      "/v1/credentials/vellum%3Aplatform_user_id",
-    );
+    const req = makeRequest("GET", "/v1/credentials/vellum%3Aplatform_user_id");
     const res = await handleCredentialRoute(req, deps);
 
     expect(res).not.toBeNull();
@@ -100,10 +95,7 @@ describe("credential route key normalization", () => {
     const { deps, store } = makeDeps();
     store.set("credential/vellum/temp_cred", "temp-value");
 
-    const req = makeRequest(
-      "DELETE",
-      "/v1/credentials/vellum%3Atemp_cred",
-    );
+    const req = makeRequest("DELETE", "/v1/credentials/vellum%3Atemp_cred");
     const res = await handleCredentialRoute(req, deps);
 
     expect(res).not.toBeNull();
@@ -123,7 +115,9 @@ describe("credential route key normalization", () => {
 
     expect(res).not.toBeNull();
     expect(res!.status).toBe(200);
-    expect(store.get("credential/vellum/assistant_api_key")).toBe("api-key-789");
+    expect(store.get("credential/vellum/assistant_api_key")).toBe(
+      "api-key-789",
+    );
   });
 
   it("passes through oauth/ prefixed keys", async () => {
@@ -158,11 +152,15 @@ describe("credential route key normalization", () => {
     const body = await res!.json();
 
     expect(body.results).toHaveLength(3);
-    expect(body.results[0].account).toBe("credential/vellum/platform_organization_id");
+    expect(body.results[0].account).toBe(
+      "credential/vellum/platform_organization_id",
+    );
     expect(body.results[1].account).toBe("credential/vellum/platform_user_id");
     expect(body.results[2].account).toBe("credential/vellum/assistant_api_key");
 
-    expect(store.get("credential/vellum/platform_organization_id")).toBe("org-1");
+    expect(store.get("credential/vellum/platform_organization_id")).toBe(
+      "org-1",
+    );
     expect(store.get("credential/vellum/platform_user_id")).toBe("user-1");
     expect(store.get("credential/vellum/assistant_api_key")).toBe("key-1");
   });
@@ -183,7 +181,9 @@ describe("credential route key normalization", () => {
     // "integration:google:access_token" splits at last colon →
     // service="integration:google", field="access_token"
     expect(body.account).toBe("credential/integration:google/access_token");
-    expect(store.get("credential/integration:google/access_token")).toBe("google-token");
+    expect(store.get("credential/integration:google/access_token")).toBe(
+      "google-token",
+    );
   });
 
   it("returns normalized key in response body", async () => {
@@ -198,5 +198,41 @@ describe("credential route key normalization", () => {
 
     const body = await res!.json();
     expect(body.account).toBe("credential/slack_channel/bot_token");
+  });
+
+  it("returns safe diagnostics when set fails", async () => {
+    const backend: SecureKeyBackend = {
+      get: async () => undefined,
+      set: async () => false,
+      delete: async () => "error",
+      list: async () => [],
+    };
+    const deps: CredentialRouteDeps = {
+      backend,
+      serviceToken: SERVICE_TOKEN,
+      diagnose: () => ({
+        securityDirWritable: false,
+        probeWriteOk: false,
+        storeShape: "missing",
+      }),
+    };
+
+    const req = makeRequest("POST", "/v1/credentials/kimi%3Aapi_key", {
+      value: "fake-test-key",
+    });
+    const res = await handleCredentialRoute(req, deps);
+
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(500);
+    const body = await res!.json();
+    expect(body).toEqual({
+      error: "Failed to set credential",
+      account: "credential/kimi/api_key",
+      detail: {
+        securityDirWritable: false,
+        probeWriteOk: false,
+        storeShape: "missing",
+      },
+    });
   });
 });

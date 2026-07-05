@@ -39,11 +39,15 @@ import {
   randomBytes,
 } from "node:crypto";
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname, userInfo } from "node:os";
@@ -96,6 +100,31 @@ const STORE_KEY_FILENAME = "store.key";
 const KEYS_ENC_FILENAME = "keys.enc";
 const log = getLogger("local-secure-key-backend");
 
+export interface LocalSecureKeyStorageDiagnostics {
+  securityDir: string;
+  storePath: string;
+  storeKeyPath: string;
+  securityDirExists: boolean;
+  securityDirWritable: boolean;
+  securityDirError?: string;
+  probeWriteOk: boolean;
+  probeWriteError?: string;
+  storeExists: boolean;
+  storeReadable: boolean;
+  storeShape:
+    | "missing"
+    | "invalid-json"
+    | "invalid-entries"
+    | "v1"
+    | "v2"
+    | "unknown-version";
+  storeError?: string;
+  storeKeyExists: boolean;
+  storeKeyReadable: boolean;
+  storeKeyBytes?: number;
+  storeKeyError?: string;
+}
+
 class UnusableV2StoreError extends Error {
   constructor(
     message: string,
@@ -142,6 +171,96 @@ class LegacyV1StoreError extends Error {
  */
 function resolveSecurityDir(vellumRoot: string): string {
   return process.env.CREDENTIAL_SECURITY_DIR || join(vellumRoot, "protected");
+}
+
+export function diagnoseLocalSecureKeyStorage(
+  vellumRoot: string,
+): LocalSecureKeyStorageDiagnostics {
+  const securityDir = resolveSecurityDir(vellumRoot);
+  const storePath = join(securityDir, KEYS_ENC_FILENAME);
+  const storeKeyPath = join(securityDir, STORE_KEY_FILENAME);
+  const diagnostics: LocalSecureKeyStorageDiagnostics = {
+    securityDir,
+    storePath,
+    storeKeyPath,
+    securityDirExists: existsSync(securityDir),
+    securityDirWritable: false,
+    probeWriteOk: false,
+    storeExists: existsSync(storePath),
+    storeReadable: false,
+    storeShape: "missing",
+    storeKeyExists: existsSync(storeKeyPath),
+    storeKeyReadable: false,
+  };
+
+  try {
+    accessSync(securityDir, constants.W_OK);
+    diagnostics.securityDirWritable = true;
+  } catch (err) {
+    diagnostics.securityDirError = describeError(err);
+  }
+
+  try {
+    mkdirSync(securityDir, { recursive: true });
+    const probePath = join(
+      securityDir,
+      `.write-probe-${process.pid}-${Date.now()}`,
+    );
+    writeFileSync(probePath, "ok", { mode: 0o600 });
+    unlinkSync(probePath);
+    diagnostics.probeWriteOk = true;
+  } catch (err) {
+    diagnostics.probeWriteError = describeError(err);
+  }
+
+  if (diagnostics.storeExists) {
+    try {
+      const raw = readFileSync(storePath, "utf-8");
+      diagnostics.storeReadable = true;
+      try {
+        const parsed = JSON.parse(raw);
+        const entries = parseEntriesRecord(parsed.entries);
+        if (!entries) {
+          diagnostics.storeShape = "invalid-entries";
+        } else if (parsed.version === 1 && typeof parsed.salt === "string") {
+          diagnostics.storeShape = "v1";
+        } else if (parsed.version === 2) {
+          diagnostics.storeShape = "v2";
+        } else {
+          diagnostics.storeShape = "unknown-version";
+        }
+      } catch (err) {
+        diagnostics.storeShape = "invalid-json";
+        diagnostics.storeError = describeError(err);
+      }
+    } catch (err) {
+      diagnostics.storeError = describeError(err);
+    }
+  }
+
+  if (diagnostics.storeKeyExists) {
+    try {
+      const stat = statSync(storeKeyPath);
+      const key = readFileSync(storeKeyPath);
+      diagnostics.storeKeyReadable = true;
+      diagnostics.storeKeyBytes = stat.isFile() ? key.length : undefined;
+    } catch (err) {
+      diagnostics.storeKeyError = describeError(err);
+    }
+  }
+
+  return diagnostics;
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    const code =
+      typeof (err as NodeJS.ErrnoException).code === "string"
+        ? ` ${(err as NodeJS.ErrnoException).code}`
+        : "";
+    return `${err.name}${code}: ${err.message}`;
+  }
+  return String(err);
 }
 
 /**

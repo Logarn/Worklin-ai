@@ -79,7 +79,10 @@ import {
 } from "./managed-lazy-getters.js";
 import { MANAGED_LOCAL_STATIC_REJECTION_ERROR } from "./managed-errors.js";
 import type { SecureKeyBackend } from "@vellumai/credential-storage";
-import { createLocalSecureKeyBackend } from "./materializers/local-secure-key-backend.js";
+import {
+  createLocalSecureKeyBackend,
+  diagnoseLocalSecureKeyStorage,
+} from "./materializers/local-secure-key-backend.js";
 import type { LocalMaterialiser } from "./materializers/local.js";
 import type { LocalSubjectResolverDeps } from "./subjects/local.js";
 import {
@@ -124,6 +127,7 @@ function buildHandlers(
   apiKeyRef: ApiKeyRef,
   assistantIdRef: AssistantIdRef,
   secureKeyBackend: SecureKeyBackend,
+  diagnoseCredentialStorage: () => unknown,
 ): { handlers: RpcHandlerRegistry; temporaryGrantStore: TemporaryGrantStore } {
   // -- Grant stores ----------------------------------------------------------
   const persistentGrantStore = new PersistentGrantStore(
@@ -389,6 +393,12 @@ function buildHandlers(
     value: string;
   }) => {
     const ok = await secureKeyBackend.set(req.account, req.value);
+    if (!ok) {
+      log.warn(
+        { account: req.account, diagnostics: diagnoseCredentialStorage() },
+        "CES RPC credential set returned false",
+      );
+    }
     return { ok };
   }) as (typeof handlers)[string];
 
@@ -642,6 +652,8 @@ async function main(): Promise<void> {
     process.env["CES_ASSISTANT_DATA_MOUNT"] ?? "/assistant-data-ro";
   const vellumRoot = join(assistantDataMount, ".vellum");
   const secureKeyBackend = createLocalSecureKeyBackend(vellumRoot);
+  const diagnoseCredentialStorage = () =>
+    diagnoseLocalSecureKeyStorage(vellumRoot);
 
   // Run one-time credential store migrations before accepting connections.
   await runCesMigrations(
@@ -658,7 +670,11 @@ async function main(): Promise<void> {
   let credentialDeps: CredentialRouteDeps | null = null;
 
   if (serviceToken) {
-    credentialDeps = { backend: secureKeyBackend, serviceToken };
+    credentialDeps = {
+      backend: secureKeyBackend,
+      serviceToken,
+      diagnose: diagnoseCredentialStorage,
+    };
     log.info("Credential CRUD routes enabled (CES_SERVICE_TOKEN configured)");
   } else {
     log.warn(
@@ -699,6 +715,7 @@ async function main(): Promise<void> {
     apiKeyRef,
     assistantIdRef,
     secureKeyBackend,
+    diagnoseCredentialStorage,
   );
 
   // Serve loop. CES is a long-lived sidecar that must outlive any single
