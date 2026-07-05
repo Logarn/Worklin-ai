@@ -1,5 +1,5 @@
 import { useCallback, type ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import {
@@ -21,7 +21,6 @@ const CONSENT_CHECKBOX_CLASS =
   "[&_button[data-state=checked]]:bg-[var(--primary-base)] [&_svg]:text-[var(--content-inset)]";
 
 export function ReviewTermsScreen() {
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const userId = useAuthStore.use.user()?.id ?? null;
   const logout = useAuthStore.use.logout();
@@ -37,11 +36,10 @@ export function ReviewTermsScreen() {
     saveConsent({ userId, tos: tosAccepted, ai: aiDataConsent, shareAnalytics, shareDiagnostics, hasPlatformSession });
 
     const destination = sanitizeReturnTo(searchParams.get("returnTo"), routes.assistant);
-    void navigate(destination, { replace: true });
+    hardNavigate(destination);
   }, [
     aiDataConsent,
     hasPlatformSession,
-    navigate,
     searchParams,
     shareAnalytics,
     shareDiagnostics,

@@ -229,6 +229,10 @@ mock.module("@/domains/onboarding/prefs", () => ({
   readSelectedVersion: () => null,
   readShareAnalytics: () => true,
   readTosAccepted: () => true,
+  useAiDataConsent: () => [true, () => {}],
+  useShareAnalytics: () => [true, () => {}],
+  useShareDiagnostics: () => [false, () => {}],
+  useTosAccepted: () => [true, () => {}],
   writeSelectedVersion: writeSelectedVersionMock,
 }));
 
@@ -332,6 +336,7 @@ mock.module("@/stores/auth-store", () => ({
       platformSession: () => platformSessionValue,
     },
   },
+  useHasPlatformSession: () => platformSessionValue === "present",
   useIsAuthenticated: () => true,
   useIsSessionInitializing: () => false,
 }));
