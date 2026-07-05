@@ -6,6 +6,11 @@
  * used by conversation-history.ts.
  */
 
+import {
+  type BrandBrainContext,
+  getRetentionBrandBrain,
+} from "@vellumai/retention-domain";
+
 import { enrichMessageWithSourcePaths } from "../agent/attachments.js";
 import {
   createAssistantMessage,
@@ -29,26 +34,22 @@ import {
 import { extractPreferences } from "../notifications/preference-extractor.js";
 import { createPreference } from "../notifications/preferences-store.js";
 import type { ContextWindowResult } from "../plugins/defaults/compaction/window-manager.js";
-import {
-  getRetentionBrandBrain,
-  type BrandBrainContext,
-} from "@vellumai/retention-domain";
-import { executeRetentionDeepAudit } from "../tools/retention/worklin-retention.js";
-import {
-  type StoredKlaviyoConnection,
-  listUsableStoredKlaviyoConnections,
-  validateAndStoreKlaviyoApiKey,
-} from "../tools/retention/klaviyo-connection.js";
-import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
 import { routeGuardianReply } from "../runtime/guardian-reply-router.js";
 import {
   publishConversationMessagesChanged,
   publishConversationTitleChanged,
 } from "../runtime/sync/resource-sync-events.js";
+import {
+  listUsableStoredKlaviyoConnections,
+  type StoredKlaviyoConnection,
+  validateAndStoreKlaviyoApiKey,
+} from "../tools/retention/klaviyo-connection.js";
+import { executeRetentionDeepAudit } from "../tools/retention/worklin-retention.js";
+import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
 import { getLogger } from "../util/logger.js";
 import type { CleanResult, Conversation } from "./conversation.js";
-import { buildPersistedAssistantContent } from "./conversation-agent-loop-handlers.js";
 import type { AssistantSurface } from "./conversation-agent-loop.js";
+import { buildPersistedAssistantContent } from "./conversation-agent-loop-handlers.js";
 import {
   persistQueuedMessageBody,
   serializePersistedUserMessageContent,
@@ -58,18 +59,12 @@ import type {
   QueueDrainReason,
 } from "./conversation-queue-manager.js";
 import {
-  isDirectRetentionAuditIntent,
-  isRetentionKlaviyoConnectionIntent,
-  isRetentionOnboardingIntent,
-  isRetentionAuditSubagentNotification,
-} from "./retention-audit-intent.js";
-import { showStandaloneSurface } from "./conversation-surfaces.js";
-import {
   buildSlashContextForContent,
   classifySlash,
   resolveSlash,
   type SlashContext,
 } from "./conversation-slash.js";
+import { showStandaloneSurface } from "./conversation-surfaces.js";
 import { getModelInfo } from "./handlers/config-model.js";
 import { preactivateHostProxySkills } from "./host-proxy-preactivation.js";
 import type {
@@ -77,6 +72,12 @@ import type {
   UiSurfaceShow,
   UserMessageAttachment,
 } from "./message-protocol.js";
+import {
+  isDirectRetentionAuditIntent,
+  isRetentionAuditSubagentNotification,
+  isRetentionKlaviyoConnectionIntent,
+  isRetentionOnboardingIntent,
+} from "./retention-audit-intent.js";
 import { buildTransportHints } from "./transport-hints.js";
 import { resolveTrustClass } from "./trust-context.js";
 import { resolveVerificationSessionIntent } from "./verification-session-intent.js";
@@ -706,7 +707,7 @@ async function showRetentionKlaviyoConnectionCard(
     },
   );
 
-  const result = await showStandaloneSurface(
+  void showStandaloneSurface(
     conversation,
     {
       conversationId: conversation.conversationId,
@@ -716,113 +717,134 @@ async function showRetentionKlaviyoConnectionCard(
       timeoutMs: 15 * 60 * 1000,
     },
     surface.surfaceId,
-  );
+  )
+    .then(async (result) => {
+      if (result.status !== "submitted") {
+        await persistRetentionOnboardingMessage(
+          conversation,
+          "No problem. Klaviyo is not connected yet. When you are ready, choose “connect Klaviyo” again and I’ll reopen the secure card.",
+          {
+            requestId: params.requestId,
+            status: "choice_response",
+            onEvent: params.onEvent,
+          },
+        );
+        return;
+      }
 
-  if (result.status !== "submitted") {
-    await persistRetentionOnboardingMessage(
-      conversation,
-      "No problem. Klaviyo is not connected yet. When you are ready, choose “connect Klaviyo” again and I’ll reopen the secure card.",
-      {
+      const apiKey = submittedString(result.submittedData?.api_key);
+      const accountLabel =
+        submittedString(result.submittedData?.account_label) ??
+        params.brandName;
+
+      if (!apiKey) {
+        await persistRetentionOnboardingMessage(
+          conversation,
+          "I did not receive a Klaviyo key from the card, so nothing was saved. Choose “connect Klaviyo” again when you’re ready.",
+          {
+            requestId: params.requestId,
+            status: "choice_response",
+            onEvent: params.onEvent,
+          },
+        );
+        return;
+      }
+
+      conversation.emitActivityState("tool_running", "tool_use_start", {
         requestId: params.requestId,
-        status: "choice_response",
-        onEvent: params.onEvent,
-      },
-    );
-    return;
-  }
+        statusText: "Validating the read-only Klaviyo key.",
+      });
 
-  const apiKey = submittedString(result.submittedData?.api_key);
-  const accountLabel =
-    submittedString(result.submittedData?.account_label) ?? params.brandName;
+      const connectResult = await validateAndStoreKlaviyoApiKey({
+        apiKey,
+        accountLabel,
+      });
+      const parsed = parseKlaviyoConnectionResult(connectResult.content);
 
-  if (!apiKey) {
-    await persistRetentionOnboardingMessage(
-      conversation,
-      "I did not receive a Klaviyo key from the card, so nothing was saved. Choose “connect Klaviyo” again when you’re ready.",
-      {
-        requestId: params.requestId,
-        status: "choice_response",
-        onEvent: params.onEvent,
-      },
-    );
-    return;
-  }
+      if (connectResult.isError) {
+        const retrySurface = buildRetentionOnboardingChoiceSurface({
+          title: "Klaviyo connection",
+          description:
+            "Worklin could not validate that key. Do you want to try again?",
+          options: [
+            {
+              id: "retry_klaviyo",
+              title: "Try another key",
+              description: "Open the read-only Klaviyo key card again.",
+              recommended: true,
+            },
+            {
+              id: "skip_connections",
+              title: "Not now",
+              description: "Keep setup moving without Klaviyo.",
+            },
+          ],
+        });
+        await persistRetentionOnboardingMessage(
+          conversation,
+          [
+            "I could not connect Klaviyo with that key.",
+            "",
+            parsed.error
+              ? `Reason: ${parsed.error}`
+              : "Reason: Klaviyo validation failed.",
+            "",
+            "No key was saved.",
+          ].join("\n"),
+          {
+            requestId: params.requestId,
+            status: "choice_response",
+            onEvent: params.onEvent,
+            surfaces: [retrySurface],
+          },
+        );
+        showRetentionOnboardingChoices(conversation, {
+          requestId: params.requestId,
+          onEvent: params.onEvent,
+          surface: retrySurface,
+          responseByChoice: {
+            skip_connections:
+              "No problem. We can continue with brand setup and connect Klaviyo later.",
+          },
+          onChoice: {
+            retry_klaviyo: () =>
+              showRetentionKlaviyoConnectionCard(conversation, params),
+          },
+        });
+        return;
+      }
 
-  conversation.emitActivityState("tool_running", "tool_use_start", {
-    requestId: params.requestId,
-    statusText: "Validating the read-only Klaviyo key.",
-  });
-
-  const connectResult = await validateAndStoreKlaviyoApiKey({
-    apiKey,
-    accountLabel,
-  });
-  const parsed = parseKlaviyoConnectionResult(connectResult.content);
-
-  if (connectResult.isError) {
-    const retrySurface = buildRetentionOnboardingChoiceSurface({
-      title: "Klaviyo connection",
-      description:
-        "Worklin could not validate that key. Do you want to try again?",
-      options: [
+      const snapshot = parsed.snapshot;
+      await showRetentionFirstAuditChoiceCard(conversation, {
+        ...params,
+        introText: [
+          `Klaviyo is connected for ${parsed.accountLabel ?? accountLabel}.`,
+          "",
+          snapshot
+            ? `I can see ${snapshot.campaigns ?? 0} campaigns, ${snapshot.flows ?? 0} flows, ${snapshot.lists ?? 0} lists, ${snapshot.segments ?? 0} segments, and ${snapshot.metrics ?? 0} metrics from the read-only inventory check.`
+            : "The key was validated and saved securely.",
+        ].join("\n"),
+      });
+    })
+    .catch((err) => {
+      log.warn(
         {
-          id: "retry_klaviyo",
-          title: "Try another key",
-          description: "Open the read-only Klaviyo key card again.",
-          recommended: true,
+          err,
+          conversationId: conversation.conversationId,
+          surfaceId: surface.surfaceId,
         },
-        {
-          id: "skip_connections",
-          title: "Not now",
-          description: "Keep setup moving without Klaviyo.",
-        },
-      ],
-    });
-    await persistRetentionOnboardingMessage(
-      conversation,
-      [
-        "I could not connect Klaviyo with that key.",
-        "",
-        parsed.error
-          ? `Reason: ${parsed.error}`
-          : "Reason: Klaviyo validation failed.",
-        "",
-        "No key was saved.",
-      ].join("\n"),
-      {
+        "Retention Klaviyo connection card failed",
+      );
+      params.onEvent({
+        type: "error",
+        conversationId: conversation.conversationId,
         requestId: params.requestId,
-        status: "choice_response",
-        onEvent: params.onEvent,
-        surfaces: [retrySurface],
-      },
-    );
-    showRetentionOnboardingChoices(conversation, {
-      requestId: params.requestId,
-      onEvent: params.onEvent,
-      surface: retrySurface,
-      responseByChoice: {
-        skip_connections:
-          "No problem. We can continue with brand setup and connect Klaviyo later.",
-      },
-      onChoice: {
-        retry_klaviyo: () =>
-          showRetentionKlaviyoConnectionCard(conversation, params),
-      },
+        message:
+          err instanceof Error
+            ? err.message
+            : "Klaviyo connection card failed.",
+      });
     });
-    return;
-  }
-
-  const snapshot = parsed.snapshot;
-  await showRetentionFirstAuditChoiceCard(conversation, {
-    ...params,
-    introText: [
-      `Klaviyo is connected for ${parsed.accountLabel ?? accountLabel}.`,
-      "",
-      snapshot
-        ? `I can see ${snapshot.campaigns ?? 0} campaigns, ${snapshot.flows ?? 0} flows, ${snapshot.lists ?? 0} lists, ${snapshot.segments ?? 0} segments, and ${snapshot.metrics ?? 0} metrics from the read-only inventory check.`
-        : "The key was validated and saved securely.",
-    ].join("\n"),
-  });
 }
 
 export async function runRetentionKlaviyoConnectionTurn(
