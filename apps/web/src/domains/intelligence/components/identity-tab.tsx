@@ -369,11 +369,14 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
   const assistantName =
     characterProfile?.assistantName || identity?.name || "Assistant";
   const resolvedCharacter = resolveAssistantCharacter(characterProfile);
-  const assistantIdentityLabel = resolvedCharacter
-    ? assistantName === resolvedCharacter.shortName
-      ? resolvedCharacter.subtitle
-      : `${resolvedCharacter.shortName} • ${resolvedCharacter.subtitle}`
-    : null;
+  const assistantIdentityLabel =
+    characterProfile?.avatarStyle === "abstract"
+      ? "Classic avatar"
+      : resolvedCharacter
+        ? assistantName === resolvedCharacter.shortName
+          ? resolvedCharacter.subtitle
+          : `${resolvedCharacter.shortName} • ${resolvedCharacter.subtitle}`
+        : null;
   const assistantPersonality =
     characterProfile?.personalityText || identity?.personality || "";
   const assistantRole = characterProfile?.role || identity?.role || "Not set";

@@ -4,7 +4,6 @@ import {
   fetchAssistantCharacterProfile,
   fetchCharacterTraits,
   saveAssistantCharacterProfile,
-  saveCharacterTraits,
 } from "@/assistant/avatar-api";
 import {
   WORKLIN_AVATAR_CHOICES,
@@ -23,20 +22,20 @@ import type { CharacterTraits } from "@/types/avatar";
  * as the user lands in the app. The avatar query holds results with
  * `staleTime: Infinity` and is disabled until the assistant activates, so its
  * first fetch can beat the save and cache an avatar-less result; the post-save
- * invalidate forces a refetch that picks up the persisted traits, so the icons
- * self-correct within a beat rather than sticking on the bundled mark.
+ * invalidate forces a refetch that picks up the persisted profile, so the
+ * icons self-correct within a beat rather than sticking on the bundled mark.
  *
  * Only call this for a freshly hatched assistant, never for an already-active
  * one: a returning user may have an uploaded/AI image avatar, which deletes the
- * character-traits sidecar, so a "no traits" read would wrongly seed random
- * traits over their image.
+ * character-traits sidecar, so a "no traits" read would wrongly seed a new
+ * avatar over their image.
  *
  * Shared by the standalone hatching screen and the cast flow's background
  * hatch so a cast-hatched assistant lands with a seeded avatar too.
  */
 export async function seedHatchAvatar(
   assistantId: string,
-  traits: CharacterTraits,
+  _traits: CharacterTraits,
   queryClient: QueryClient,
   preferredAvatar?: AssistantCharacter | null,
   preferredAssistantName?: string | null,
@@ -53,15 +52,11 @@ export async function seedHatchAvatar(
           Math.floor(Math.random() * WORKLIN_AVATAR_CHOICES.length)
         ];
       const preferredName = preferredAssistantName?.trim();
-      const savedProfile = defaultAvatar
-        ? await saveAssistantCharacterProfile(assistantId, {
-            ...profileFromCharacter(defaultAvatar),
-            assistantName:
-              preferredName || defaultAvatar.shortName,
-          })
-        : false;
-      if (!savedProfile) {
-        await saveCharacterTraits(assistantId, traits);
+      if (defaultAvatar) {
+        await saveAssistantCharacterProfile(assistantId, {
+          ...profileFromCharacter(defaultAvatar),
+          assistantName: preferredName || defaultAvatar.shortName,
+        });
       }
     }
     void queryClient.invalidateQueries({

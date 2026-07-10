@@ -8,7 +8,7 @@ import { AvatarRenderer } from "@/components/avatar-renderer";
 export interface AvatarCustomizationPanelProps {
   assistantId: string;
   initialTraits?: CharacterTraits | null;
-  onSave?: (traits: CharacterTraits) => void;
+  onSave?: (traits: CharacterTraits) => void | Promise<void>;
   onCancel?: () => void;
 }
 
@@ -90,8 +90,11 @@ export function AvatarCustomizationPanel({
 
     setIsSaving(true);
     try {
-      await saveCharacterTraits(assistantId, traits);
-      onSave?.(traits);
+      if (onSave) {
+        await onSave(traits);
+      } else {
+        await saveCharacterTraits(assistantId, traits);
+      }
     } finally {
       setIsSaving(false);
     }

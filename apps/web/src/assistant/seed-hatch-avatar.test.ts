@@ -4,7 +4,7 @@
  *
  * Pins:
  *   - Saves a Worklin avatar profile + invalidates the avatar query when no avatar exists yet.
- *   - Falls back to saving traits if profile persistence fails.
+ *   - Does not fall back to legacy traits if profile persistence fails.
  *   - Skips the save (but still invalidates) when an avatar already exists, so
  *     a returning user's uploaded/AI image is never clobbered.
  *   - Swallows transport failures (fire-and-forget).
@@ -104,15 +104,14 @@ describe("seedHatchAvatar", () => {
     expect(qc.invalidateQueries).toHaveBeenCalledTimes(1);
   });
 
-  test("falls back to traits when the profile save fails", async () => {
+  test("does not seed legacy traits when the profile save fails", async () => {
     saveAssistantCharacterProfileMock.mockResolvedValueOnce(false);
     const qc = makeQueryClient();
 
     await seedHatchAvatar("ast-1", TRAITS, qc as never);
 
     expect(saveAssistantCharacterProfileMock).toHaveBeenCalledTimes(1);
-    expect(saveCharacterTraitsMock).toHaveBeenCalledTimes(1);
-    expect(saveCharacterTraitsMock.mock.calls[0]?.[0]).toBe("ast-1");
+    expect(saveCharacterTraitsMock).not.toHaveBeenCalled();
     expect(qc.invalidateQueries).toHaveBeenCalledTimes(1);
   });
 

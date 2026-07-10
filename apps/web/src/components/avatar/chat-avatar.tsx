@@ -58,11 +58,13 @@ function AvatarStreamingRing({ size }: { size: number }) {
  * Displays the assistant's avatar in chat messages.
  *
  * Priority:
- * 1. Saved Worklin avatar identity profile
- * 2. Animated character avatar from saved traits
- * 3. Custom uploaded image
- * 4. Default animated character avatar from first component of each type
- * 5. Worklin "W" fallback
+ * 1. Explicit classic-avatar mode from the saved identity profile
+ * 2. Saved Worklin portrait asset from the identity profile
+ * 3. Saved character-rendered avatar from the identity profile
+ * 4. Animated character avatar from saved traits
+ * 5. Custom uploaded image
+ * 6. Default animated character avatar from first component of each type
+ * 7. Worklin "W" fallback
  *
  * Animation:
  *   - Mount plays an entrance spring (scale 0.6 → 1, opacity 0 → 1).
@@ -129,10 +131,56 @@ function ChatAvatarComponent({
     : { scale: 0.6, opacity: 0 };
   const animate = { scale: isPoking ? 1.15 : 1, opacity: 1 };
 
-  if (
-    characterProfile?.avatarStyle === "portrait_asset" &&
-    characterProfile.portraitAssetUrl
-  ) {
+  if (characterProfile?.avatarStyle === "abstract" && preferCharacter) {
+    return (
+      <motion.div
+        className={className}
+        style={wrapperStyle}
+        onClick={handleClick}
+        initial={initial}
+        animate={animate}
+        transition={transition}
+      >
+        <AnimatedAvatar
+          components={components}
+          traits={effectiveTraits}
+          size={size}
+          isStreaming={isStreaming}
+        />
+      </motion.div>
+    );
+  }
+
+  if (customImageUrl) {
+    return (
+      <motion.div
+        onClick={handleClick}
+        initial={initial}
+        animate={animate}
+        transition={transition}
+        style={{
+          cursor: interactive ? "pointer" : undefined,
+          transformOrigin: "center",
+          position: "relative",
+          width: size,
+          height: size,
+          flexShrink: 0,
+        }}
+      >
+        <img
+          src={customImageUrl}
+          alt="Assistant avatar"
+          width={size}
+          height={size}
+          className={`rounded-full object-cover ${className ?? ""}`}
+          style={{ width: size, height: size, flexShrink: 0 }}
+        />
+        {(isStreaming || isProcessing) && <AvatarStreamingRing size={size} />}
+      </motion.div>
+    );
+  }
+
+  if (characterProfile?.portraitAssetUrl) {
     return (
       <motion.div
         onClick={handleClick}
@@ -218,35 +266,6 @@ function ChatAvatarComponent({
           size={size}
           isStreaming={isStreaming}
         />
-      </motion.div>
-    );
-  }
-
-  if (customImageUrl) {
-    return (
-      <motion.div
-        onClick={handleClick}
-        initial={initial}
-        animate={animate}
-        transition={transition}
-        style={{
-          cursor: interactive ? "pointer" : undefined,
-          transformOrigin: "center",
-          position: "relative",
-          width: size,
-          height: size,
-          flexShrink: 0,
-        }}
-      >
-        <img
-          src={customImageUrl}
-          alt="Assistant avatar"
-          width={size}
-          height={size}
-          className={`rounded-full object-cover ${className ?? ""}`}
-          style={{ width: size, height: size, flexShrink: 0 }}
-        />
-        {(isStreaming || isProcessing) && <AvatarStreamingRing size={size} />}
       </motion.div>
     );
   }
