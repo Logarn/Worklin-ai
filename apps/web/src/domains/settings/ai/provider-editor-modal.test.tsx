@@ -128,10 +128,19 @@ mock.module("@/domains/settings/ai/use-provider-credentials-list", () => ({
 
 mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
   configGetQueryKey: (options: unknown) => ["configGet", options],
+  inferenceProviderconnectionsGetQueryKey: (options: unknown) => [
+    "inferenceProviderconnectionsGet",
+    options,
+  ],
   secretsGetQueryKey: (options: unknown) => ["secretsGet", options],
 }));
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
+  inferenceProviderconnectionsGet: () =>
+    Promise.resolve({
+      data: { connections: [] },
+      response: { ok: true, status: 200 },
+    }),
   inferenceProviderconnectionsByNamePatch: (opts: PatchConnectionCall) => {
     patchConnectionCalls.push(opts);
     return Promise.resolve({
