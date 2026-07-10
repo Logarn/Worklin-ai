@@ -51,6 +51,11 @@ import { useProviderCredentialsList } from "@/domains/settings/ai/use-provider-c
 // `Modal.Root` for the master/detail flow — list view and editor view swap
 // inside a single modal frame rather than stacking a second modal.
 
+export interface ProviderEditorCreateSeed {
+  provider: ConnectionProvider;
+  authType?: AuthType;
+}
+
 export interface ProviderEditorContentProps {
   // "managed-edit" is used for connections seeded + write-protected by the
   // daemon (anthropic-managed / openai-managed / gemini-managed). Only the
@@ -59,6 +64,7 @@ export interface ProviderEditorContentProps {
   // the PATCH fields the daemon allows on managed rows.
   mode: "create" | "edit" | "managed-edit";
   connection?: ProviderConnection;
+  createSeed?: ProviderEditorCreateSeed;
   assistantId: string;
   existingNames: string[];
   onSave: (connection: ProviderConnection) => void;
@@ -68,6 +74,7 @@ export interface ProviderEditorContentProps {
 export function ProviderEditorContent({
   mode,
   connection,
+  createSeed,
   assistantId,
   existingNames,
   onSave,
@@ -94,18 +101,19 @@ export function ProviderEditorContent({
   // the Save As New transition out of managed-edit also unlocks auth.
   const isAuthLocked = effectiveMode === "managed-edit";
 
+  const initialProvider = connection?.provider ?? createSeed?.provider ?? "anthropic";
   const [label, setLabel] = useState(connection?.label ?? "");
   const [name, setName] = useState(connection?.name ?? "");
-  const [provider, setProvider] = useState<ConnectionProvider>(
-    connection?.provider ?? "anthropic",
-  );
+  const [provider, setProvider] = useState<ConnectionProvider>(initialProvider);
   const [authType, setAuthType] = useState<AuthType>(() => {
-    if (!connection) return "platform";
+    if (!connection) return createSeed?.authType ?? "platform";
     return connection.auth.type;
   });
   const [credential, setCredential] = useState(() => {
     if (connection?.auth.type === "api_key") return connection.auth.credential;
-    if (!connection) return `credential/anthropic/api_key`;
+    if (!connection) {
+      return initialProvider === "ollama" ? "" : `credential/${initialProvider}/api_key`;
+    }
     return "";
   });
   const [baseUrl, setBaseUrl] = useState(connection?.baseUrl ?? "");
@@ -168,15 +176,22 @@ export function ProviderEditorContent({
   // `mode` prop, and any Save as New transition is automatically discarded
   // when the user returns to the list and re-opens.
   useEffect(() => {
-    const effectiveProvider = connection?.provider ?? "anthropic";
+    const effectiveProvider =
+      connection?.provider ?? createSeed?.provider ?? "anthropic";
     setLabel(connection?.label ?? "");
     setName(connection?.name ?? "");
     setProvider(effectiveProvider);
-    setAuthType(connection ? connection.auth.type : "platform");
+    setAuthType(
+      connection ? connection.auth.type : createSeed?.authType ?? "platform",
+    );
     if (connection?.auth.type === "api_key") {
       setCredential(connection.auth.credential);
     } else if (!connection) {
-      setCredential(`credential/${effectiveProvider}/api_key`);
+      setCredential(
+        effectiveProvider === "ollama"
+          ? ""
+          : `credential/${effectiveProvider}/api_key`,
+      );
     } else {
       setCredential("");
     }
@@ -196,7 +211,7 @@ export function ProviderEditorContent({
     // newCredentialName) resets automatically on unmount/remount.
     setApiKeyValue("");
     setIsSavingKey(false);
-  }, [connection, resetDirty]);
+  }, [connection, createSeed, resetDirty]);
 
   // Save as New: clone the currently-displayed connection into a fresh
   // "create" mode session. The user keeps the provider + label as a
@@ -382,7 +397,7 @@ export function ProviderEditorContent({
         assistantId={assistantId}
         existingNames={existingNames}
         defaultProviderType={provider}
-        defaultAuthType={createAuthTypeSeed}
+        defaultAuthType={createAuthTypeSeed ?? createSeed?.authType}
         onCreated={onSave}
         onCancel={onCancel}
       />
@@ -395,16 +410,15 @@ export function ProviderEditorContent({
         <Modal.Title>Edit Connection</Modal.Title>
         <Modal.Description>
           {isAuthLocked
-            ? `Managed by Worklin — auth is locked, but you can rename "${connection?.name}".`
+            ? `Uses Worklin credits — auth is locked, but you can rename "${connection?.name}".`
             : `Editing "${connection?.name}".`}
         </Modal.Description>
       </Modal.Header>
 
       <Modal.Body className="space-y-4">
-        {/* Display Name */}
         <div className="space-y-1">
           <label className="block text-body-small-default text-[var(--content-tertiary)]">
-            Display Name{" "}
+            Name{" "}
             <span className="text-[var(--content-disabled)]">(optional)</span>
           </label>
           <Input
@@ -415,10 +429,9 @@ export function ProviderEditorContent({
           />
         </div>
 
-        {/* Key — fixed once a connection exists; edit / managed-edit only. */}
         <div className="space-y-1">
           <label className="block text-body-small-default text-[var(--content-tertiary)]">
-            Key
+            Internal name
           </label>
           <Input
             value={name}
@@ -483,10 +496,9 @@ export function ProviderEditorContent({
           </>
         )}
 
-        {/* Auth type */}
         <div className="space-y-1">
           <label className="block text-body-small-default text-[var(--content-tertiary)]">
-            Auth Type
+            Connection method
           </label>
           <Dropdown
             aria-label="Auth type"

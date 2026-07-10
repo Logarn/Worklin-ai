@@ -550,10 +550,10 @@ function ProfileEditorModalInner({
 
   const modalTitle =
     effectiveMode === "create"
-      ? "New Profile"
+      ? "New saved setup"
       : effectiveMode === "edit"
-        ? "Edit Profile"
-        : (initialValues?.label ?? profileName ?? "Profile");
+        ? "Edit saved setup"
+        : (initialValues?.label ?? profileName ?? "Saved setup");
 
   // Create mode uses the provider-first layout (Provider -> Model -> Name ->
   // Key -> Description -> collapsed Advanced) with pre-fill. Edit and view
@@ -730,7 +730,7 @@ function ProfileEditorModalInner({
             as="p"
             className="text-[var(--content-tertiary)]"
           >
-            New provider connection will show up in the Providers section.
+            New service will show up in API keys & services.
           </Typography>
         ) : null}
       </div>
@@ -741,6 +741,7 @@ function ProfileEditorModalInner({
           assistantId={assistantId}
           existingNames={effectiveConnections.map((c) => c.name)}
           defaultProviderType={provider || undefined}
+          defaultAuthType="api_key"
           onCreated={handleProviderCreated}
           onCancel={() => setCreatingProvider(false)}
         />
@@ -791,7 +792,7 @@ function ProfileEditorModalInner({
         {effectiveMode === "view" ? (
           <div className="flex items-center gap-2">
             <Modal.Title>{modalTitle}</Modal.Title>
-            <Tag tone="positive">Platform</Tag>
+              <Tag tone="positive">Worklin credits</Tag>
           </div>
         ) : (
           <Modal.Title>{modalTitle}</Modal.Title>

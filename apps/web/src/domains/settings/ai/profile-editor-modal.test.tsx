@@ -50,6 +50,30 @@ mock.module("@vellumai/design-library/components/toast", () => ({
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
   ...sdkGen,
+  configGet: () =>
+    Promise.resolve({
+      data: {
+        llm: {
+          activeProfile: null,
+          profileOrder: [],
+          profiles: {},
+          callSites: {},
+        },
+      },
+      response: { ok: true, status: 200 },
+    }),
+  configPatch: () =>
+    Promise.resolve({
+      data: {
+        llm: {
+          activeProfile: "custom-balanced",
+          profileOrder: ["custom-balanced"],
+          profiles: {},
+          callSites: {},
+        },
+      },
+      response: { ok: true, status: 200 },
+    }),
   secretsPost: () =>
     Promise.resolve({ data: undefined, response: { ok: true } }),
   inferenceProviderconnectionsPost: () =>
@@ -58,7 +82,6 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       response: { ok: true, status: 200 },
     }),
 }));
-
 
 // Stub the credential hooks so the inline ProviderCreateForm renders without
 // issuing real daemon queries.
@@ -342,9 +365,11 @@ describe("ProfileEditorModal create mode — provider-first", () => {
     const inlineKey = getInputByPlaceholder("e.g. anthropic-personal");
     expect(inlineKey).toBeDefined();
 
-    // Fill the inline form and create (anthropic defaults to platform auth,
-    // so no API key entry is required).
+    // Fill the inline form and create through the API-key path.
     fireEvent.change(inlineKey, { target: { value: "anthropic-personal" } });
+    fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+      target: { value: "test-api-key" },
+    });
     fireEvent.click(getButton("Create"));
 
     // After create, the sub-form collapses and the provider is selected.
@@ -352,7 +377,7 @@ describe("ProfileEditorModal create mode — provider-first", () => {
       expect(
         document.body.textContent,
       ).toContain(
-        "New provider connection will show up in the Providers section.",
+        "New service will show up in API keys & services.",
       );
     });
 
@@ -387,11 +412,14 @@ describe("ProfileEditorModal create mode — provider-first", () => {
     fireEvent.change(getInputByPlaceholder("e.g. anthropic-personal"), {
       target: { value: "anthropic-personal" },
     });
+    fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+      target: { value: "test-api-key" },
+    });
     fireEvent.click(getButton("Create"));
 
     await waitFor(() => {
       expect(document.body.textContent).toContain(
-        "New provider connection will show up in the Providers section.",
+        "New service will show up in API keys & services.",
       );
     });
 

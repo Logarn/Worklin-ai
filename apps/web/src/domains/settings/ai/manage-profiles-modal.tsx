@@ -408,10 +408,10 @@ function ManageProfilesModalInner({
     <>
       <Modal.Content size="md">
         <Modal.Header>
-          <Modal.Title>Model Profiles</Modal.Title>
-          <Modal.Description>
-            Bundle a provider and model into a named profile. Assign profiles to specific actions or swap between them when chatting.
-          </Modal.Description>
+        <Modal.Title>Saved model setups</Modal.Title>
+        <Modal.Description>
+            Save reusable provider and model choices for your assistant.
+        </Modal.Description>
         </Modal.Header>
 
         <Modal.Body>
@@ -421,7 +421,7 @@ function ManageProfilesModalInner({
               as="p"
               className="py-4 text-center text-(--content-tertiary)"
             >
-              No profiles yet. Create one to get started.
+              No saved setups yet. Create one to get started.
             </Typography>
           ) : (
             <div className="space-y-1">
@@ -504,7 +504,7 @@ function ManageProfilesModalInner({
 
         <Modal.Footer className="justify-between">
           <Button variant="outlined" size="compact" onClick={onNewClick}>
-            + New Profile
+            + New setup
           </Button>
           <Button variant="outlined" size="compact" onClick={onClose}>
             Done

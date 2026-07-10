@@ -300,10 +300,9 @@ export function ProviderCreateForm({
 
   const body = (
     <div className="space-y-4">
-      {/* Display Name */}
       <div className="space-y-1">
         <label className="block text-body-small-default text-[var(--content-tertiary)]">
-          Display Name{" "}
+          Name{" "}
           <span className="text-[var(--content-disabled)]">(optional)</span>
         </label>
         <Input
@@ -314,10 +313,9 @@ export function ProviderCreateForm({
         />
       </div>
 
-      {/* Key — editable on create, auto-derived from label */}
       <div className="space-y-1">
         <label className="block text-body-small-default text-[var(--content-tertiary)]">
-          Key
+          Internal name
         </label>
         <Input
           value={name}
@@ -430,10 +428,9 @@ export function ProviderCreateForm({
         </>
       )}
 
-      {/* Auth type */}
       <div className="space-y-1">
         <label className="block text-body-small-default text-[var(--content-tertiary)]">
-          Auth Type
+          Connection method
         </label>
         <Dropdown
           aria-label="Auth type"
@@ -532,9 +529,9 @@ export function ProviderCreateForm({
   return (
     <Modal.Content size="md">
       <Modal.Header>
-        <Modal.Title>New Provider Connection</Modal.Title>
+        <Modal.Title>Add model service</Modal.Title>
         <Modal.Description>
-          Define a provider and auth configuration for inference routing.
+          Choose a provider and how Worklin should connect to it.
         </Modal.Description>
       </Modal.Header>
 

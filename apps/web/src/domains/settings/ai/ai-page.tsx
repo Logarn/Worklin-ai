@@ -24,11 +24,11 @@ export function AiPage() {
 
   return (
     <div className="space-y-5">
-      {/* Managed services billing banner */}
+      {/* Worklin credit billing banner */}
       <div className="flex items-start gap-2 rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] px-4 py-2.5">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-[var(--content-tertiary)]" />
         <p className="text-body-medium-lighter text-[var(--content-secondary)]">
-          Managed services are metered and deducted from your Worklin account
+          Services using Worklin credits are metered and deducted from your account
           balance.{" "}
           <a
             href="https://www.vellum.ai/docs/pricing"

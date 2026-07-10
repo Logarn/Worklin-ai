@@ -386,14 +386,14 @@ describe("ProviderCreateForm submit sequence", () => {
       </ModalWrapper>,
     );
 
-    // Default provider is anthropic with platform auth — switch to API Key.
+    // Default provider is anthropic with Worklin-credit auth — switch to API key.
     // Type a Key (name) and an API key value.
     fireEvent.change(getInputByPlaceholder("e.g. anthropic-personal"), {
       target: { value: "anthropic-personal" },
     });
 
-    // Select API Key auth so the API Key field renders.
-    selectDropdownOption("Auth type", "API Key");
+    // Select API key auth so the API key field renders.
+    selectDropdownOption("Auth type", "API key");
 
     fireEvent.change(getInputByPlaceholder("Enter your API key"), {
       target: { value: "sk-test-123" },
@@ -468,13 +468,13 @@ describe("ProviderCreateForm submit sequence", () => {
     );
 
     // Inline variant drops the modal title.
-    expect(document.body.textContent).not.toContain("New Provider Connection");
+    expect(document.body.textContent).not.toContain("Add model service");
 
     fireEvent.change(getInputByPlaceholder("e.g. anthropic-personal"), {
       target: { value: "anthropic-personal" },
     });
 
-    selectDropdownOption("Auth type", "API Key");
+    selectDropdownOption("Auth type", "API key");
     fireEvent.change(getInputByPlaceholder("Enter your API key"), {
       target: { value: "sk-test-123" },
     });
@@ -489,7 +489,7 @@ describe("ProviderCreateForm submit sequence", () => {
     });
   });
 
-  test("defaultAuthType='api_key' seeds the API Key path (Save as New clone)", () => {
+  test("defaultAuthType='api_key' seeds the API key path (Save as New clone)", () => {
     render(
       <ModalWrapper>
         <ProviderCreateForm
@@ -503,7 +503,7 @@ describe("ProviderCreateForm submit sequence", () => {
       </ModalWrapper>,
     );
 
-    // The API Key field only renders for api_key auth, so its presence
+    // The API key field only renders for api_key auth, so its presence
     // confirms the form initialized on the "bring your own credential" path
     // (instead of the managed-capable provider's default `platform`).
     expect(getInputByPlaceholder("Enter your API key")).toBeDefined();
@@ -512,7 +512,7 @@ describe("ProviderCreateForm submit sequence", () => {
   test("a provider without platform auth (e.g. openrouter) seeds api_key, not platform", () => {
     // openrouter has no managed proxy, so defaulting to `platform` would let the
     // user create an unusable connection. The initial auth seed must fall back
-    // to api_key — the API Key field's presence confirms it.
+    // to api_key — the API key field's presence confirms it.
     render(
       <ModalWrapper>
         <ProviderCreateForm
@@ -543,7 +543,7 @@ describe("ProviderCreateForm submit sequence", () => {
     fireEvent.change(getInputByPlaceholder("e.g. anthropic-personal"), {
       target: { value: "anthropic-personal" },
     });
-    selectDropdownOption("Auth type", "API Key");
+    selectDropdownOption("Auth type", "API key");
     fireEvent.change(getInputByPlaceholder("Enter your API key"), {
       target: { value: "sk-test-123" },
     });
@@ -612,7 +612,7 @@ describe("ProviderCreateForm submit sequence", () => {
     expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
   });
 
-  test("creating Kimi while Managed is active switches the assistant to Kimi", async () => {
+  test("creating Kimi while Worklin credits are active switches the assistant to Kimi", async () => {
     configGetData = {
       llm: {
         activeProfile: "balanced",
@@ -731,7 +731,7 @@ describe("ProviderCreateForm submit sequence", () => {
     key: string;
     model: string;
   }>)(
-    "creating $label while Managed is active selects a runnable default profile",
+    "creating $label while Worklin credits are active selects a runnable default profile",
     async ({ provider, label, name, key, model }) => {
       configGetData = {
         llm: {
@@ -773,7 +773,7 @@ describe("ProviderCreateForm submit sequence", () => {
         label === "Google Gemini" ||
         label === "Fireworks"
       ) {
-        selectDropdownOption("Auth type", "API Key");
+        selectDropdownOption("Auth type", "API key");
       }
       if (provider !== "ollama") {
         fireEvent.change(getInputByPlaceholder("Enter your API key"), {
@@ -823,7 +823,7 @@ describe("ProviderCreateForm submit sequence", () => {
     fireEvent.change(getInputByPlaceholder("e.g. anthropic-personal"), {
       target: { value: "anthropic-personal" },
     });
-    selectDropdownOption("Auth type", "API Key");
+    selectDropdownOption("Auth type", "API key");
     fireEvent.change(getInputByPlaceholder("Enter your API key"), {
       target: { value: "sk-test-123" },
     });

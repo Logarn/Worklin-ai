@@ -215,7 +215,7 @@ describe("ManageProfilesModal — profile-create success toast (Settings surface
     );
 
     // Open the create editor.
-    fireEvent.click(getButton("+ New Profile"));
+    fireEvent.click(getButton("+ New setup"));
 
     // Provider-first create: pick Anthropic, a model, then a name.
     pickOption(providerTrigger(), "Anthropic");

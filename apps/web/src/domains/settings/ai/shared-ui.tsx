@@ -53,14 +53,14 @@ interface CredentialsGuideProps {
 
 export function ModeToggle({ mode, onChange }: ModeToggleProps) {
   return (
-    <div className="max-w-[280px]">
+    <div className="max-w-[340px]">
       <SegmentControl<ServiceMode>
         ariaLabel="Service mode"
         value={mode}
         onChange={onChange}
         items={[
-          { value: "managed", label: "Managed" },
-          { value: "your-own", label: "Your Own" },
+          { value: "managed", label: "Worklin credits" },
+          { value: "your-own", label: "My API key" },
         ]}
       />
     </div>

@@ -92,9 +92,9 @@ export function ProfileListItem({
             {isManaged && profile.name !== AUTO_PROFILE_NAME && (
               <Tag
                 tone="positive"
-                title="Managed by Platform — auth is locked, but you can rename or disable this profile."
+                title="Uses Worklin credits — auth is locked, but you can rename or disable this setup."
               >
-                Platform
+                Worklin credits
               </Tag>
             )}
           </div>
@@ -152,7 +152,7 @@ export function ProfileListItem({
               aria-label={`Delete ${profile.label ?? profile.name}`}
               disabled={isManaged || isDeleting}
               title={
-                isManaged ? "Managed profiles cannot be deleted" : undefined
+                isManaged ? "Worklin credit setups cannot be deleted" : undefined
               }
               onClick={onDeleteClick}
               tintColor="var(--system-negative-strong)"

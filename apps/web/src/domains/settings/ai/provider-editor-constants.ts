@@ -30,11 +30,11 @@ export const CONNECTION_PROVIDERS: ConnectionProvider[] = [
 ];
 
 export const AUTH_TYPE_DISPLAY_NAMES: Record<AuthType, string> = {
-  api_key: "API Key",
-  platform: "Platform (managed proxy)",
+  api_key: "API key",
+  platform: "Worklin credits",
   none: "None (local / no auth)",
-  oauth_subscription: "ChatGPT Subscription",
-  service_account: "Service Account",
+  oauth_subscription: "ChatGPT subscription",
+  service_account: "Service account",
 };
 
 // ---------------------------------------------------------------------------

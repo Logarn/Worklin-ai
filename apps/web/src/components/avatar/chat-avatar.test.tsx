@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ComponentPropsWithoutRef } from "react";
 
 import type { AssistantCharacterProfile } from "@/types/assistant-character-profile";
 import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
 
 mock.module("motion/react", () => ({
   motion: {
-    div: ({ children, ...props }: Record<string, unknown>) => (
+    div: ({ children, ...props }: ComponentPropsWithoutRef<"div">) => (
       <div {...props}>{children}</div>
     ),
   },

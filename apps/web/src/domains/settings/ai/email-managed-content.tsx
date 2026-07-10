@@ -291,7 +291,7 @@ export function EmailManagedContent({
       >
         Pro plans include a managed{" "}
         {`<your-subdomain>.${emailRootDomain}`} inbox — no provider
-        setup required. Or switch to <strong>Your Own</strong> to bring
+        setup required. Or switch to <strong>My API key</strong> to bring
         an existing provider.
       </Notice>
     );

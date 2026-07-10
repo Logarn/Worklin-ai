@@ -315,7 +315,7 @@ function CallSiteOverridesModalInner({
       }
       await configMutation.mutateAsync({ path: { assistant_id: assistantId }, body: { llm: { callSites: patch } } });
       onClose();
-      toast.success("Overrides saved.");
+      toast.success("Task-specific models saved.");
     } catch (error) {
       toast.error("Failed to save overrides. Please try again.");
       captureError(error, { context: "call_site_overrides_save" });
@@ -335,7 +335,7 @@ function CallSiteOverridesModalInner({
       }
       await configMutation.mutateAsync({ path: { assistant_id: assistantId }, body: { llm: { callSites: resetPatch } } });
       onClose();
-      toast.success("Overrides reset.");
+      toast.success("Task-specific models reset.");
     } catch (error) {
       toast.error("Failed to reset overrides. Please try again.");
       captureError(error, { context: "call_site_overrides_reset" });
@@ -352,10 +352,10 @@ function CallSiteOverridesModalInner({
   return (
     <Modal.Content size="lg" hideCloseButton>
       <Modal.Header>
-        <Modal.Title>Action Overrides</Modal.Title>
+        <Modal.Title>Task-specific models</Modal.Title>
         <Modal.Description>
-          Customize which model profile specific actions should use. Uses your
-          default profile if no override is set.
+          Choose special models for individual tasks. Worklin uses your main
+          model when a task does not have its own setting.
         </Modal.Description>
       </Modal.Header>
 
@@ -462,7 +462,7 @@ function CallSiteOverridesModalInner({
             tintColor="var(--system-negative-strong)"
             className="mr-auto"
           >
-            Reset to Defaults
+            Reset to main model
           </Button>
         )}
         <Button
@@ -486,8 +486,8 @@ function CallSiteOverridesModalInner({
       <ConfirmDialog
         open={showResetConfirmation}
         title="Reset to Defaults"
-        message="Every task override will be reset and will follow your active profile. This cannot be undone."
-        confirmLabel="Reset to Defaults"
+        message="Every task-specific model will be reset and will follow your main model. This cannot be undone."
+        confirmLabel="Reset to main model"
         destructive
         onConfirm={() => {
           setShowResetConfirmation(false);

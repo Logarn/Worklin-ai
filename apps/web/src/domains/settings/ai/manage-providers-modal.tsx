@@ -1,5 +1,5 @@
 import { Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@vellumai/design-library/components/button";
@@ -15,7 +15,10 @@ import { inferenceProviderconnectionsByNameDelete } from "@/generated/daemon/sdk
 
 import type { ProviderConnection } from "@/generated/daemon/types.gen";
 import { PROVIDER_DISPLAY_NAMES } from "@/assistant/llm-model-catalog";
-import { ProviderEditorContent } from "@/domains/settings/ai/provider-editor-modal";
+import {
+    ProviderEditorContent,
+    type ProviderEditorCreateSeed,
+} from "@/domains/settings/ai/provider-editor-modal";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -25,14 +28,18 @@ function formatAuthSummary(auth: ProviderConnection["auth"]): string {
     case "api_key":
       return `API key · ${auth.credential}`;
     case "oauth_subscription":
-      return "ChatGPT Subscription";
+      return "ChatGPT subscription";
     case "platform":
-      return "Managed proxy";
+      return "Worklin credits";
     case "none":
       return "None (local)";
     default:
       return auth.type;
   }
+}
+
+export interface ProviderCreateSeed extends ProviderEditorCreateSeed {
+  nonce: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,16 +49,20 @@ function formatAuthSummary(auth: ProviderConnection["auth"]): string {
 interface ManageProvidersModalProps {
   isOpen: boolean;
   assistantId: string;
+  createSeed?: ProviderCreateSeed | null;
   onClose: () => void;
 }
 
 export function ManageProvidersModal({
   isOpen,
   assistantId,
+  createSeed,
   onClose,
 }: ManageProvidersModalProps) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ProviderConnection | null>(null);
+  const [activeCreateSeed, setActiveCreateSeed] =
+    useState<ProviderEditorCreateSeed | null>(null);
 
   const queryClient = useQueryClient();
   const queryOpts = inferenceProviderconnectionsGetOptions({
@@ -75,9 +86,20 @@ export function ManageProvidersModal({
     });
     setEditorOpen(false);
     setEditingConnection(null);
+    setActiveCreateSeed(null);
   }
 
   const existingNames = connections.map((c) => c.name);
+
+  useEffect(() => {
+    if (!isOpen || !createSeed) return;
+    setEditingConnection(null);
+    setActiveCreateSeed({
+      provider: createSeed.provider,
+      authType: createSeed.authType,
+    });
+    setEditorOpen(true);
+  }, [createSeed, isOpen]);
 
   // Cancel the editor: returns to list view without saving. Used by the
   // editor's footer Cancel button AND by view-aware onOpenChange when the
@@ -85,6 +107,7 @@ export function ManageProvidersModal({
   const cancelEditor = () => {
     setEditorOpen(false);
     setEditingConnection(null);
+    setActiveCreateSeed(null);
   };
 
   // Single Modal.Root for both views (list + editor). Body content swaps
@@ -107,6 +130,13 @@ export function ManageProvidersModal({
       {isOpen ? (
         editorOpen ? (
           <ProviderEditorContent
+            key={
+              editingConnection
+                ? `edit:${editingConnection.name}`
+                : activeCreateSeed
+                  ? `create:${activeCreateSeed.provider}:${activeCreateSeed.authType ?? "default"}:${createSeed?.nonce ?? 0}`
+                  : "create"
+            }
             mode={
               !editingConnection
                 ? "create"
@@ -115,6 +145,7 @@ export function ManageProvidersModal({
                   : "edit"
             }
             connection={editingConnection ?? undefined}
+            createSeed={activeCreateSeed ?? undefined}
             assistantId={assistantId}
             existingNames={existingNames}
             onSave={handleEditorSave}
@@ -129,10 +160,12 @@ export function ManageProvidersModal({
             onClose={onClose}
             onEditClick={(conn) => {
               setEditingConnection(conn);
+              setActiveCreateSeed(null);
               setEditorOpen(true);
             }}
             onNewClick={() => {
               setEditingConnection(null);
+              setActiveCreateSeed(null);
               setEditorOpen(true);
             }}
             onConnectionDeleted={() => {
@@ -195,7 +228,7 @@ function ManageProvidersModalInner({
         setDeleteErrors((prev) => ({
           ...prev,
           [name]:
-            "Connection is in use by one or more profiles. Remove those references first.",
+            "Service is in use by one or more saved setups. Remove those references first.",
         }));
       } else {
         setDeleteErrors((prev) => ({
@@ -220,10 +253,9 @@ function ManageProvidersModalInner({
   return (
     <Modal.Content size="md">
       <Modal.Header>
-        <Modal.Title>Provider Connections</Modal.Title>
+        <Modal.Title>API keys & services</Modal.Title>
         <Modal.Description>
-          Manage inference provider connections. Each connection binds a name to a
-          provider and auth configuration.
+          Connect the model services Worklin can use for replies.
         </Modal.Description>
       </Modal.Header>
 
@@ -251,7 +283,7 @@ function ManageProvidersModalInner({
             as="p"
             className="py-4 text-center text-(--content-tertiary)"
           >
-            No connections yet. Create one to get started.
+            No services yet. Add one to get started.
           </Typography>
         ) : (
           <div className="space-y-1">
@@ -276,9 +308,9 @@ function ManageProvidersModalInner({
                         {isManaged && (
                           <Tag
                             tone="positive"
-                            title="Managed by Platform — auth is locked, but you can rename this connection."
+                            title="Uses Worklin credits — auth is locked, but you can rename this service."
                           >
-                            Platform
+                            Worklin credits
                           </Tag>
                         )}
                       </div>
@@ -311,7 +343,7 @@ function ManageProvidersModalInner({
                         disabled={isManaged || isDeleting}
                         title={
                           isManaged
-                            ? "Managed connections cannot be deleted"
+                            ? "Worklin credit services cannot be deleted"
                             : undefined
                         }
                         onClick={() => void handleDelete(conn.name)}
@@ -338,7 +370,7 @@ function ManageProvidersModalInner({
 
       <Modal.Footer className="justify-between">
         <Button variant="outlined" size="compact" onClick={onNewClick}>
-          + New Connection
+          + Add service
         </Button>
         <Button variant="outlined" size="compact" onClick={onClose}>
           Done
