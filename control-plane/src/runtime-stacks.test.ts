@@ -3,10 +3,17 @@ import { describe, expect, test } from "bun:test";
 
 import {
   assistantApiStatusForRuntimeStack,
+  countAllocatedRuntimeServices,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
+  getRuntimeStackById,
   isRuntimeStackRoutable,
+  markRuntimeStackActive,
+  markRuntimeStackFailed,
+  markRuntimeStackProvisioning,
   operationalStateForRuntimeStack,
+  recordRuntimeStackService,
+  recordRuntimeStackVolume,
   runtimeStackConfigFromEnv,
   type AssistantRuntimeRow,
   type RuntimeStackConfig,
@@ -141,6 +148,41 @@ describe("runtime stack provisioning defaults", () => {
     expect(second.id).toBe(first.id);
     expect(second.status).toBe("provisioning");
     expect(count?.count).toBe(1);
+  });
+
+  test("persists resumable Railway provisioning state", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+
+    recordRuntimeStackService(db, initial.id, "service-1", NOW);
+    recordRuntimeStackVolume(db, initial.id, "volume-1", NOW);
+    expect(countAllocatedRuntimeServices(db)).toBe(1);
+    expect(getRuntimeStackById(db, initial.id)).toMatchObject({
+      status: "provisioning",
+      service_ref: "service-1",
+      workspace_volume_ref: "volume-1",
+    });
+
+    markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
+    expect(getRuntimeStackById(db, initial.id)).toMatchObject({
+      status: "failed",
+      last_error: "deploy failed",
+    });
+
+    markRuntimeStackProvisioning(db, initial.id, NOW);
+    markRuntimeStackActive(
+      db,
+      initial.id,
+      "http://runtime.railway.internal:8080",
+      "200",
+      NOW,
+    );
+    expect(getRuntimeStackById(db, initial.id)).toMatchObject({
+      status: "active",
+      gateway_url: "http://runtime.railway.internal:8080",
+      last_health_status: "200",
+      last_error: null,
+    });
   });
 });
 

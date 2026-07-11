@@ -300,6 +300,100 @@ export function ensureRuntimeStackForAssistant(
   return stack;
 }
 
+export function getRuntimeStackById(
+  db: Database,
+  stackId: string,
+): RuntimeStackRow | null {
+  return (
+    db
+      .query<RuntimeStackRow, [string]>(
+        "SELECT * FROM runtime_stacks WHERE id = ?",
+      )
+      .get(stackId) ?? null
+  );
+}
+
+export function countAllocatedRuntimeServices(db: Database): number {
+  return (
+    db
+      .query<{ count: number }, []>(`
+        SELECT COUNT(*) AS count
+        FROM runtime_stacks
+        WHERE service_ref IS NOT NULL AND status != 'deleted'
+      `)
+      .get()?.count ?? 0
+  );
+}
+
+export function markRuntimeStackProvisioning(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+): void {
+  db.query(`
+    UPDATE runtime_stacks
+    SET status = 'provisioning', last_error = NULL, updated_at = ?
+    WHERE id = ?
+  `).run(nowIso(), stackId);
+}
+
+export function recordRuntimeStackService(
+  db: Database,
+  stackId: string,
+  serviceRef: string,
+  nowIso: () => string,
+): void {
+  db.query(`
+    UPDATE runtime_stacks
+    SET service_ref = ?, updated_at = ?
+    WHERE id = ?
+  `).run(serviceRef, nowIso(), stackId);
+}
+
+export function recordRuntimeStackVolume(
+  db: Database,
+  stackId: string,
+  volumeRef: string,
+  nowIso: () => string,
+): void {
+  db.query(`
+    UPDATE runtime_stacks
+    SET workspace_volume_ref = ?, updated_at = ?
+    WHERE id = ?
+  `).run(volumeRef, nowIso(), stackId);
+}
+
+export function markRuntimeStackActive(
+  db: Database,
+  stackId: string,
+  gatewayUrl: string,
+  healthStatus: string,
+  nowIso: () => string,
+): void {
+  db.query(`
+    UPDATE runtime_stacks
+    SET status = 'active',
+        gateway_url = ?,
+        last_health_status = ?,
+        last_error = NULL,
+        updated_at = ?
+    WHERE id = ?
+  `).run(gatewayUrl, healthStatus, nowIso(), stackId);
+}
+
+export function markRuntimeStackFailed(
+  db: Database,
+  stackId: string,
+  error: string,
+  nowIso: () => string,
+): void {
+  db.query(`
+    UPDATE runtime_stacks
+    SET status = 'failed', last_error = ?, updated_at = ?
+    WHERE id = ?
+  `).run(error.slice(0, 2_000), nowIso(), stackId);
+}
+
 export function assistantApiStatusForRuntimeStack(
   stack: RuntimeStackRow | null,
 ): "initializing" | "active" | "to_be_deleted" {

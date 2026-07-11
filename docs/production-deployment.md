@@ -40,16 +40,16 @@ Already present:
 - `gateway/Dockerfile`: gateway container.
 - `credential-executor/Dockerfile`: managed credential executor container.
 - `control-plane`: account/session endpoints, assistant ownership checks,
-  runtime stack metadata, and fail-closed runtime proxy routing.
+  runtime stack metadata, fail-closed runtime proxy routing, and a gated
+  Railway per-assistant provisioner.
 - Retention domain package and Worklin retention skill surfaces.
 
-Missing for real multi-tenant production:
+Still required for broader multi-tenant production:
 
 - Durable managed database for users, organizations, plans, assistant ownership,
   and runtime stack metadata.
-- Per-tenant assistant provisioning/orchestration that turns a
-  `runtime_stacks.status = 'provisioning'` row into an active private gateway
-  URL.
+- Production billing, quota enforcement, and automated retirement of inactive
+  per-assistant runtime services.
 - A safe connection model for Klaviyo and Shopify credentials per brand.
 
 Do not expose one shared assistant runtime to multiple brands. That would mix

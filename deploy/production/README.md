@@ -29,13 +29,16 @@ Included:
 - Gateway-backed chat/runtime calls.
 - Existing assistant/gateway/CES runtime behavior.
 
-Not included yet:
+Not enabled by default:
 
 - Billing implementation.
 - Team accounts.
-- Separate assistant stacks per customer.
-- Runtime auto-provisioning per tenant.
 - Full SaaS-grade tenant isolation.
+
+The control plane includes a gated Railway provisioner for separate assistant
+stacks. It remains inert until a project-scoped token, project/environment IDs,
+and an explicit positive service cap are configured. This prevents a code
+deploy from creating billable resources by itself.
 
 Managed chat requires a runtime stack row per assistant. Without an active
 stack-specific gateway URL, the control-plane returns `runtime_not_ready`
@@ -58,6 +61,37 @@ The service listens publicly through the control-plane and wires
 Production defaults `WORKLIN_REQUIRE_ISOLATED_RUNTIME=true`, so that gateway is
 not used for user chat unless the assistant has an active isolated runtime
 stack.
+
+### Isolated Railway runtime provisioning
+
+Set all of the following on the public control-plane service only:
+
+```bash
+WORKLIN_RAILWAY_PROVISIONING_ENABLED=true
+WORKLIN_RAILWAY_PROJECT_TOKEN=<project-scoped token>
+WORKLIN_RAILWAY_PROJECT_ID=<project id>
+WORKLIN_RAILWAY_ENVIRONMENT_ID=<production environment id>
+WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES=1
+```
+
+The maximum-service value is a required cost guard. Start at `1` for the
+production test account and raise it only alongside an approved customer and
+infrastructure budget. Optional settings include:
+
+```bash
+WORKLIN_RAILWAY_RUNTIME_REPOSITORY=Logarn/Worklin-ai
+WORKLIN_RAILWAY_RUNTIME_BRANCH=main
+WORKLIN_RAILWAY_RUNTIME_REGION=<Railway region>
+WORKLIN_RAILWAY_RUNTIME_MOUNT_PATH=/data
+WORKLIN_RAILWAY_RUNTIME_PORT=8080
+```
+
+For each assistant, the provisioner creates one GitHub-backed service and one
+persistent volume, applies assistant-scoped runtime variables, deploys the
+service, waits for Railway deployment success and `/readyz`, then stores its
+private `SERVICE_NAME.railway.internal` gateway URL. Partial attempts persist
+their service and volume IDs so retries do not intentionally create duplicate
+resources.
 
 Create a real env file from the template:
 

@@ -48,6 +48,13 @@ export function resolveAssistantLifecycleState(
   result: GetAssistantResult,
 ): ResolvedAssistantLifecycleState {
   if (result.ok) {
+    if (result.data.runtime_status === "failed") {
+      return {
+        kind: "error",
+        message:
+          "Worklin could not start your managed assistant. Please try again or contact support.",
+      };
+    }
     switch (result.data.status) {
       case "active":
         if (result.data.is_local && !isPlatformManagedAssistant(result.data)) {

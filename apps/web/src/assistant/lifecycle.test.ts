@@ -11,6 +11,25 @@ import {
 } from "./lifecycle";
 
 describe("resolveAssistantLifecycleState — transport-shaped failures (LUM-2402)", () => {
+  test("surfaces a failed managed runtime instead of polling forever", () => {
+    expect(
+      resolveAssistantLifecycleState({
+        ok: true,
+        status: 200,
+        data: {
+          id: "assistant-1",
+          name: "Worklin",
+          status: "initializing",
+          runtime_status: "failed",
+        },
+      } as Parameters<typeof resolveAssistantLifecycleState>[0]),
+    ).toEqual({
+      kind: "error",
+      message:
+        "Worklin could not start your managed assistant. Please try again or contact support.",
+    });
+  });
+
   test("proxy-synthesized network 502 resolves to a transient error with friendly copy", () => {
     expect(
       resolveAssistantLifecycleState({

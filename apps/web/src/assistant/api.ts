@@ -42,7 +42,10 @@ import { getSelfHostedIngressUrl } from "@/lib/self-hosted/connection";
 // THIS IS HERE JUST FOR LEGACY COMPATIBILITY.
 
 export type HatchInput = HatchAssistantRequest;
-export type Assistant = GeneratedAssistant;
+export type Assistant = GeneratedAssistant & {
+  runtime_status?: "provisioning" | "active" | "failed" | "suspended";
+  runtime_last_error?: string | null;
+};
 
 export type HatchResult =
   | { ok: true; status: number; data: Assistant }

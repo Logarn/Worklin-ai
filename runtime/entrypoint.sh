@@ -14,7 +14,6 @@ set -euo pipefail
 : "${WORKLIN_CONTROL_DB:=${WORKLIN_RUNTIME_ROOT}/control-plane.sqlite}"
 : "${CES_HEALTH_PORT:=8090}"
 : "${CES_CREDENTIAL_URL:=http://127.0.0.1:${CES_HEALTH_PORT}}"
-: "${GATEWAY_PORT:=7830}"
 : "${RUNTIME_HTTP_PORT:=3001}"
 : "${RUNTIME_HTTP_HOST:=0.0.0.0}"
 : "${ASSISTANT_HOST:=127.0.0.1}"
@@ -23,6 +22,13 @@ set -euo pipefail
 : "${IS_CONTAINERIZED:=true}"
 : "${CES_MODE:=managed}"
 : "${WORKLIN_REQUIRE_ISOLATED_RUNTIME:=true}"
+: "${WORKLIN_RUNTIME_MODE:=combined}"
+
+if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ]]; then
+  : "${GATEWAY_PORT:=${PORT}}"
+else
+  : "${GATEWAY_PORT:=7830}"
+fi
 
 workspace_data_dir="${VELLUM_WORKSPACE_DIR%/}/data"
 workspace_credentials_dir="${workspace_data_dir}/credentials"
@@ -55,6 +61,7 @@ export GATEWAY_TRUST_PROXY
 export IS_CONTAINERIZED
 export CES_MODE
 export WORKLIN_REQUIRE_ISOLATED_RUNTIME
+export WORKLIN_RUNTIME_MODE
 export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 
 mkdir -p \
@@ -176,7 +183,9 @@ fi
 
 start_as gateway bash -lc "cd /app/gateway && exec bun --smol run src/index.ts"
 start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
-start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
+if [[ "${WORKLIN_RUNTIME_MODE}" != "isolated" ]]; then
+  start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
+fi
 
 exit_code=0
 if ! wait -n "${pids[@]}"; then

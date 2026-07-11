@@ -11,14 +11,26 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   assistantApiStatusForRuntimeStack,
+  countAllocatedRuntimeServices,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
+  getRuntimeStackById,
   isRuntimeStackRoutable,
+  markRuntimeStackActive,
+  markRuntimeStackFailed,
+  markRuntimeStackProvisioning,
   operationalStateForRuntimeStack,
+  recordRuntimeStackService,
+  recordRuntimeStackVolume,
   runtimeNotReadyPayload,
   runtimeStackConfigFromEnv,
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
+import {
+  provisionRailwayRuntime,
+  railwayProvisionerConfigurationError,
+  railwayProvisionerConfigFromEnv,
+} from "./railway-runtime-provisioner.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -71,6 +83,8 @@ const hostedWebBaseUrl = resolvePublicAuthBaseUrl(
   configuredWebOrigin,
   configuredAuth0BaseUrl,
 );
+const auth0ClientCredential =
+  process.env.AUTH0_CLIENT_SECRET ?? process.env.CLIENT_SECRET ?? "";
 
 const env = {
   port: Number(process.env.WORKLIN_CONTROL_PLANE_PORT ?? process.env.PORT ?? 8080),
@@ -90,7 +104,7 @@ const env = {
   // the public app domain rather than becoming a third-party backend cookie.
   auth0BaseUrl: hostedWebBaseUrl,
   auth0ClientId: process.env.AUTH0_CLIENT_ID ?? process.env.CLIENT_ID ?? "",
-  auth0ClientSecret: process.env.AUTH0_CLIENT_SECRET ?? process.env.CLIENT_SECRET ?? "",
+  auth0ClientSecret: auth0ClientCredential,
   auth0Secret: process.env.AUTH0_SECRET ?? process.env.SECRET ?? process.env.WORKLIN_SESSION_SECRET ?? "",
 };
 const runtimeStackConfig = runtimeStackConfigFromEnv(
@@ -98,6 +112,7 @@ const runtimeStackConfig = runtimeStackConfigFromEnv(
   env.gatewayUrl,
   canonicalHostedWebOrigin(env.webOrigin) ?? env.webOrigin,
 );
+const railwayProvisionerConfig = railwayProvisionerConfigFromEnv(process.env);
 
 if (!env.sessionSecret || env.sessionSecret.length < 32) {
   throw new Error("WORKLIN_SESSION_SECRET must be set to at least 32 characters.");
@@ -569,6 +584,7 @@ function assistantPayload(
     runtime_stack_id: runtimeStack.id,
     runtime_provider: runtimeStack.provider,
     runtime_last_health_status: runtimeStack.last_health_status,
+    runtime_last_error: runtimeStack.last_error,
     created: row.created_at,
     modified: row.updated_at,
     release_channel: "stable",
@@ -583,6 +599,109 @@ function assistantPayload(
     platform_actor_token: mintActorToken(row.id, user.id),
     access_consented: false,
   };
+}
+
+const runtimeProvisioningInFlight = new Map<string, Promise<void>>();
+let runtimeProvisioningQueue: Promise<void> = Promise.resolve();
+
+function runtimeProvisioningConfigurationError(): string | null {
+  if (runtimeStackConfig.runtimeStackUrlTemplate) return null;
+  if (
+    !runtimeStackConfig.requireIsolatedRuntime &&
+    runtimeStackConfig.allowLegacySharedRuntime
+  ) {
+    return null;
+  }
+  if (runtimeStackConfig.runtimeStackProvider !== "railway") {
+    return `Unsupported runtime stack provider: ${runtimeStackConfig.runtimeStackProvider}.`;
+  }
+  return railwayProvisionerConfigurationError(railwayProvisionerConfig);
+}
+
+function scheduleRuntimeProvisioning(
+  assistant: AssistantRow,
+  stack: RuntimeStackRow,
+): void {
+  if (
+    stack.provider !== "railway" ||
+    (stack.status !== "provisioning" && stack.status !== "failed") ||
+    runtimeProvisioningConfigurationError() !== null ||
+    runtimeProvisioningInFlight.has(stack.id)
+  ) {
+    return;
+  }
+
+  const task = runtimeProvisioningQueue.then(async () => {
+    const current = getRuntimeStackById(db, stack.id);
+    if (
+      !current ||
+      (current.status !== "provisioning" && current.status !== "failed")
+    ) {
+      return;
+    }
+
+    try {
+      if (
+        !current.service_ref &&
+        countAllocatedRuntimeServices(db) >= railwayProvisionerConfig.maxRuntimeServices
+      ) {
+        throw new Error(
+          `Railway runtime service limit (${railwayProvisionerConfig.maxRuntimeServices}) has been reached.`,
+        );
+      }
+
+      markRuntimeStackProvisioning(db, current.id, nowIso);
+      await provisionRailwayRuntime({
+        assistant,
+        stack: current,
+        actorSigningKey: env.actorSigningKey,
+        config: railwayProvisionerConfig,
+        persistence: {
+          recordService: (serviceId) =>
+            recordRuntimeStackService(db, current.id, serviceId, nowIso),
+          recordVolume: (volumeId) =>
+            recordRuntimeStackVolume(db, current.id, volumeId, nowIso),
+          markActive: (gatewayUrl, healthStatus) =>
+            markRuntimeStackActive(
+              db,
+              current.id,
+              gatewayUrl,
+              healthStatus,
+              nowIso,
+            ),
+        },
+      });
+      console.log("runtime_stack_provisioned", {
+        assistantId: assistant.id,
+        runtimeStackId: current.id,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Runtime provisioning failed.";
+      markRuntimeStackFailed(db, current.id, message, nowIso);
+      console.error("runtime_stack_provisioning_failed", {
+        assistantId: assistant.id,
+        runtimeStackId: current.id,
+        error: message,
+      });
+    }
+  });
+
+  runtimeProvisioningInFlight.set(stack.id, task);
+  runtimeProvisioningQueue = task.catch(() => {});
+  void task.then(
+    () => runtimeProvisioningInFlight.delete(stack.id),
+    () => runtimeProvisioningInFlight.delete(stack.id),
+  );
+}
+
+function resumeRuntimeProvisioning(): void {
+  if (runtimeProvisioningConfigurationError() !== null) return;
+  const assistants = db.query<AssistantRow, []>("SELECT * FROM assistants").all();
+  for (const assistant of assistants) {
+    const stack = runtimeStackForPayload(assistant);
+    scheduleRuntimeProvisioning(assistant, stack);
+  }
 }
 
 function operationalStatusPayload(
@@ -806,8 +925,47 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
     }
-    const assistant = getOrCreateAssistant(user);
-    sendJson(req, res, assistantPayload(assistant, user), 201);
+    const existing = getActiveAssistant(user);
+    const provisioningError = runtimeProvisioningConfigurationError();
+    if (!existing && provisioningError) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Managed assistant provisioning is not available.",
+          code: "platform_hosted_disabled",
+        },
+        503,
+      );
+      return true;
+    }
+
+    const assistant = existing ?? getOrCreateAssistant(user);
+    const runtimeStack = runtimeStackForPayload(assistant);
+    if (
+      (runtimeStack.status === "provisioning" ||
+        runtimeStack.status === "failed") &&
+      provisioningError
+    ) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Managed assistant provisioning is not available.",
+          code: "platform_hosted_disabled",
+        },
+        503,
+      );
+      return true;
+    }
+
+    scheduleRuntimeProvisioning(assistant, runtimeStack);
+    sendJson(
+      req,
+      res,
+      assistantPayload(assistant, user, runtimeStack),
+      existing ? 200 : 201,
+    );
     return true;
   }
 
@@ -1126,6 +1284,15 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 const server = app.listen(env.port, env.host, () => {
   console.log(`Worklin control plane listening on ${env.host}:${env.port}`);
 });
+
+const runtimeProvisionerError = runtimeProvisioningConfigurationError();
+if (runtimeProvisionerError) {
+  console.warn("runtime_stack_provisioner_unavailable", {
+    reason: runtimeProvisionerError,
+  });
+} else {
+  resumeRuntimeProvisioning();
+}
 
 // Bun's Node HTTP compatibility can let an Express-only process exit after
 // listen() unless another handle is active. Keep the control-plane alive in
