@@ -4,8 +4,8 @@ import { create } from "storybook/theming";
 const lightManagerTheme = create({
   base: "light",
 
-  brandTitle: "Vellum Web",
-  brandUrl: "https://github.com/vellum-ai/vellum-assistant",
+  brandTitle: "Worklin Web",
+  brandUrl: "https://github.com/Logarn/Worklin-ai",
   appBorderRadius: 8,
 
   appBg: "#F6F5F4",
