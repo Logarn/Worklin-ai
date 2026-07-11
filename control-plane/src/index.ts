@@ -9,6 +9,16 @@ import { auth } from "express-openid-connect";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  assistantApiStatusForRuntimeStack,
+  ensureRuntimeStackForAssistant,
+  ensureRuntimeStackSchema,
+  isRuntimeStackRoutable,
+  operationalStateForRuntimeStack,
+  runtimeNotReadyPayload,
+  runtimeStackConfigFromEnv,
+  type RuntimeStackRow,
+} from "./runtime-stacks.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -83,6 +93,11 @@ const env = {
   auth0ClientSecret: process.env.AUTH0_CLIENT_SECRET ?? process.env.CLIENT_SECRET ?? "",
   auth0Secret: process.env.AUTH0_SECRET ?? process.env.SECRET ?? process.env.WORKLIN_SESSION_SECRET ?? "",
 };
+const runtimeStackConfig = runtimeStackConfigFromEnv(
+  process.env,
+  env.gatewayUrl,
+  canonicalHostedWebOrigin(env.webOrigin) ?? env.webOrigin,
+);
 
 if (!env.sessionSecret || env.sessionSecret.length < 32) {
   throw new Error("WORKLIN_SESSION_SECRET must be set to at least 32 characters.");
@@ -118,6 +133,8 @@ db.exec(`
     user_id TEXT NOT NULL,
     org_id TEXT NOT NULL,
     name TEXT NOT NULL,
+    runtime_stack_id TEXT,
+    isolation_version INTEGER NOT NULL DEFAULT 2,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -128,6 +145,7 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 `);
+ensureRuntimeStackSchema(db);
 
 const useSecureCookies = env.apiOrigin.startsWith("https://") && env.auth0BaseUrl.startsWith("https://");
 const cookieSameSite: "None" | "Lax" = useSecureCookies ? "None" : "Lax";
@@ -153,6 +171,8 @@ interface AssistantRow {
   user_id: string;
   org_id: string;
   name: string;
+  runtime_stack_id: string | null;
+  isolation_version: number;
   created_at: string;
   updated_at: string;
 }
@@ -474,11 +494,32 @@ function getOrCreateAssistant(user: UserRow): AssistantRow {
     user_id: user.id,
     org_id: org.id,
     name: "Worklin",
+    runtime_stack_id: null,
+    isolation_version: 2,
     created_at: timestamp,
     updated_at: timestamp,
   };
-  db.query("INSERT INTO assistants (id, user_id, org_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(assistant.id, assistant.user_id, assistant.org_id, assistant.name, assistant.created_at, assistant.updated_at);
+  db.query(`
+    INSERT INTO assistants (
+      id,
+      user_id,
+      org_id,
+      name,
+      runtime_stack_id,
+      isolation_version,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    assistant.id,
+    assistant.user_id,
+    assistant.org_id,
+    assistant.name,
+    assistant.runtime_stack_id,
+    assistant.isolation_version,
+    assistant.created_at,
+    assistant.updated_at,
+  );
   return assistant;
 }
 
@@ -503,14 +544,31 @@ function mintActorToken(assistantId: string, userId: string): string {
   return `${sigInput}.${sig}`;
 }
 
-function assistantPayload(row: AssistantRow, user: UserRow) {
+function runtimeStackForPayload(row: AssistantRow): RuntimeStackRow {
+  return ensureRuntimeStackForAssistant(
+    db,
+    row,
+    runtimeStackConfig,
+    nowIso,
+  );
+}
+
+function assistantPayload(
+  row: AssistantRow,
+  user: UserRow,
+  runtimeStack = runtimeStackForPayload(row),
+) {
   return {
     id: row.id,
     name: row.name,
     handle: "worklin",
     description: "Worklin autonomous retention marketing assistant",
     configuration: {},
-    status: "active",
+    status: assistantApiStatusForRuntimeStack(runtimeStack),
+    runtime_status: runtimeStack.status,
+    runtime_stack_id: runtimeStack.id,
+    runtime_provider: runtimeStack.provider,
+    runtime_last_health_status: runtimeStack.last_health_status,
     created: row.created_at,
     modified: row.updated_at,
     release_channel: "stable",
@@ -527,29 +585,39 @@ function assistantPayload(row: AssistantRow, user: UserRow) {
   };
 }
 
-function operationalStatusPayload(row: AssistantRow) {
+function operationalStatusPayload(
+  row: AssistantRow,
+  runtimeStack = runtimeStackForPayload(row),
+) {
   const updatedAt = nowIso();
+  const state = operationalStateForRuntimeStack(runtimeStack);
+  const runtimeReady = state === "active";
   return {
-    state: "active",
-    detail_state: null,
-    poll_after_ms: 30_000,
+    state,
+    detail_state: runtimeStack.status,
+    poll_after_ms: runtimeReady ? 30_000 : 5_000,
     updated_at: updatedAt,
     active_operation: null,
     assistant: {
       id: row.id,
       name: row.name,
+      status: assistantApiStatusForRuntimeStack(runtimeStack),
     },
     pod: {
-      phase: "running",
-      ready: true,
+      phase: runtimeReady ? "running" : "pending",
+      ready: runtimeReady,
       restart_count: 0,
     },
     runtime: {
-      reachable: true,
+      reachable: runtimeReady,
     },
     detail: {
-      reason: null,
-      message: null,
+      reason: runtimeReady ? null : runtimeStack.status,
+      message:
+        runtimeReady
+          ? null
+          : runtimeStack.last_error ??
+            "Your assistant runtime is being prepared.",
     },
   };
 }
@@ -826,12 +894,6 @@ function assistantIdFromProxyPath(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
-function requestHasAuthorization(req: Request): boolean {
-  return Object.keys(req.headers).some(
-    (name) => name.toLowerCase() === "authorization",
-  );
-}
-
 async function proxyToGateway(
   req: Request,
   res: Response,
@@ -854,7 +916,24 @@ async function proxyToGateway(
     return;
   }
 
-  const target = new URL(env.gatewayUrl);
+  const runtimeStack = ensureRuntimeStackForAssistant(
+    db,
+    assistant,
+    runtimeStackConfig,
+    nowIso,
+  );
+  if (!isRuntimeStackRoutable(runtimeStack)) {
+    console.warn("proxy_missing_active_runtime_stack", {
+      assistantId: assistant.id,
+      userId: user.id,
+      runtimeStackId: runtimeStack.id,
+      runtimeStatus: runtimeStack.status,
+    });
+    sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
+    return;
+  }
+
+  const target = new URL(runtimeStack.gateway_url);
   target.pathname = url.pathname;
   target.search = url.search;
 
@@ -862,19 +941,25 @@ async function proxyToGateway(
   for (const [key, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const normalized = key.toLowerCase();
-    if (normalized === "host" || normalized === "cookie" || normalized === "content-length") continue;
+    if (
+      normalized === "host" ||
+      normalized === "cookie" ||
+      normalized === "content-length" ||
+      normalized === "authorization"
+    ) continue;
     if (Array.isArray(value)) {
       for (const item of value) headers.append(key, item);
     } else {
       headers.set(key, value);
     }
   }
-  if (!requestHasAuthorization(req)) {
-    headers.set(
-      "Authorization",
-      `Bearer ${mintActorToken(assistant.id, user.id)}`,
-    );
-  }
+  headers.set(
+    "Authorization",
+    `Bearer ${mintActorToken(assistant.id, user.id)}`,
+  );
+  headers.set("X-Worklin-Assistant-Id", assistant.id);
+  headers.set("X-Worklin-Org-Id", assistant.org_id);
+  headers.set("X-Worklin-User-Id", user.id);
 
   const bodyBuffer =
     req.method === "GET" || req.method === "HEAD"

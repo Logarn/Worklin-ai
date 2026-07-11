@@ -39,21 +39,24 @@ Already present:
 - `assistant/Dockerfile`: assistant runtime container.
 - `gateway/Dockerfile`: gateway container.
 - `credential-executor/Dockerfile`: managed credential executor container.
+- `control-plane`: account/session endpoints, assistant ownership checks,
+  runtime stack metadata, and fail-closed runtime proxy routing.
 - Retention domain package and Worklin retention skill surfaces.
 
 Missing for real multi-tenant production:
 
-- Public account backend for Google sign-in / session cookies.
-- Tenant database for users, organizations, plans, and assistant ownership.
-- `/v1/user/me/`, `/v1/organizations/`, `/v1/assistants/`, and
-  `/v1/assistants/hatch/` implementations that create isolated tenant runtime
-  resources.
-- Per-tenant assistant provisioning/orchestration.
+- Durable managed database for users, organizations, plans, assistant ownership,
+  and runtime stack metadata.
+- Per-tenant assistant provisioning/orchestration that turns a
+  `runtime_stacks.status = 'provisioning'` row into an active private gateway
+  URL.
 - A safe connection model for Klaviyo and Shopify credentials per brand.
 
 Do not expose one shared assistant runtime to multiple brands. That would mix
 conversations, documents, memory, API keys, Klaviyo data, Shopify data, and audit
-artifacts across customers.
+artifacts across customers. The production control-plane must return
+`runtime_not_ready` until an assistant has an active stack-specific gateway URL;
+the legacy shared gateway escape hatch is for local smoke tests only.
 
 ## Backend Contract Required By The Web App
 
@@ -109,4 +112,3 @@ The deploy cannot be completed without these:
 - LLM provider key or managed provider billing path.
 - Klaviyo and Shopify connection policy for customer accounts.
 - Billing provider details if plan gates should work in production.
-

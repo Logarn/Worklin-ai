@@ -13,6 +13,8 @@ import {
 } from "../../auth/token-exchange.js";
 import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
 import type { GatewayConfig } from "../../config.js";
+import { credentialKey } from "../../credential-key.js";
+import { readCredential } from "../../credential-reader.js";
 import { fetchImpl } from "../../fetch.js";
 import { getLogger } from "../../logger.js";
 import { isLoopbackAddress } from "../../util/is-loopback-address.js";
@@ -27,6 +29,40 @@ const log = getLogger("runtime-proxy");
  * limiting, etc.).
  */
 const WEBHOOK_PATH_RE = /^\/webhooks\//;
+
+type AssistantScopedPath = {
+  assistantId: string;
+  upstreamPath: string;
+};
+
+function decodePathSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+function parseAssistantScopedPath(pathname: string): AssistantScopedPath | null {
+  const match = pathname.match(/^\/v1\/assistants\/([^/]+)\/(.+)$/);
+  if (!match) return null;
+  const assistantId = decodePathSegment(match[1]!);
+  if (!assistantId) return null;
+  return {
+    assistantId,
+    upstreamPath: `/v1/${match[2]!}`,
+  };
+}
+
+async function resolveStackAssistantId(
+  config: GatewayConfig,
+): Promise<string | null> {
+  if (config.platformAssistantId) return config.platformAssistantId;
+  const fromCredential = await readCredential(
+    credentialKey("vellum", "platform_assistant_id"),
+  );
+  return fromCredential?.trim() || null;
+}
 
 export function createRuntimeProxyHandler(config: GatewayConfig) {
   return async (req: Request, clientIp?: string): Promise<Response> => {
@@ -96,11 +132,46 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
     // The daemon uses flat /v1/... paths. Rewrite any legacy
     // /v1/assistants/:assistantId/... requests from clients to flat paths.
     let upstreamPath = url.pathname;
-    const assistantScopedMatch = url.pathname.match(
-      /^\/v1\/assistants\/[^/]+\/(.+)$/,
-    );
-    if (assistantScopedMatch) {
-      upstreamPath = `/v1/${assistantScopedMatch[1]}`;
+    const assistantScopedPath = parseAssistantScopedPath(url.pathname);
+    if (assistantScopedPath) {
+      if (config.runtimeAssistantScopeMode === "enforce") {
+        let expectedAssistantId: string | null;
+        try {
+          expectedAssistantId = await resolveStackAssistantId(config);
+        } catch (err) {
+          log.error(
+            { err, method: req.method, path: url.pathname },
+            "Runtime proxy assistant scope validation failed",
+          );
+          return Response.json(
+            { error: "Assistant identity unavailable" },
+            { status: 503 },
+          );
+        }
+        if (!expectedAssistantId) {
+          log.error(
+            { method: req.method, path: url.pathname },
+            "Runtime proxy assistant scope identity is missing",
+          );
+          return Response.json(
+            { error: "Assistant identity unavailable" },
+            { status: 503 },
+          );
+        }
+        if (assistantScopedPath.assistantId !== expectedAssistantId) {
+          log.warn(
+            {
+              method: req.method,
+              path: url.pathname,
+              requestedAssistantId: assistantScopedPath.assistantId,
+              expectedAssistantId,
+            },
+            "Runtime proxy rejected cross-assistant request",
+          );
+          return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+      }
+      upstreamPath = assistantScopedPath.upstreamPath;
     }
 
     const upstream = buildUpstreamUrl(

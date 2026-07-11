@@ -22,6 +22,7 @@ set -euo pipefail
 : "${GATEWAY_TRUST_PROXY:=true}"
 : "${IS_CONTAINERIZED:=true}"
 : "${CES_MODE:=managed}"
+: "${WORKLIN_REQUIRE_ISOLATED_RUNTIME:=true}"
 
 workspace_data_dir="${VELLUM_WORKSPACE_DIR%/}/data"
 workspace_credentials_dir="${workspace_data_dir}/credentials"
@@ -53,6 +54,7 @@ export UNMAPPED_POLICY
 export GATEWAY_TRUST_PROXY
 export IS_CONTAINERIZED
 export CES_MODE
+export WORKLIN_REQUIRE_ISOLATED_RUNTIME
 export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 
 mkdir -p \

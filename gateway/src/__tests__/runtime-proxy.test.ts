@@ -95,6 +95,70 @@ describe("runtime proxy handler", () => {
     expect(body).toEqual({ ok: true });
   });
 
+  test("enforced assistant scope allows matching stack assistant id", async () => {
+    const captured: { url: string }[] = [];
+    fetchMock = mock(async (input: string | URL | Request) => {
+      captured.push({ url: String(input) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+    );
+    const req = new Request(
+      "http://localhost:7830/v1/assistants/test-assistant/health",
+    );
+    const res = await handler(req);
+
+    expect(res.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].url).toBe("http://localhost:7821/v1/health");
+  });
+
+  test("enforced assistant scope rejects mismatched assistant id", async () => {
+    const captured: string[] = [];
+    fetchMock = mock(async (input: string | URL | Request) => {
+      captured.push(String(input));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "expected-assistant",
+      }),
+    );
+    const req = new Request(
+      "http://localhost:7830/v1/assistants/other-assistant/health",
+    );
+    const res = await handler(req);
+
+    expect(res.status).toBe(403);
+    expect(captured).toHaveLength(0);
+  });
+
+  test("enforced assistant scope fails closed when stack identity is missing", async () => {
+    const captured: string[] = [];
+    fetchMock = mock(async (input: string | URL | Request) => {
+      captured.push(String(input));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const handler = createRuntimeProxyHandler(
+      makeConfig({ runtimeAssistantScopeMode: "enforce" }),
+    );
+    const req = new Request(
+      "http://localhost:7830/v1/assistants/test-assistant/health",
+    );
+    const res = await handler(req);
+
+    expect(res.status).toBe(503);
+    expect(captured).toHaveLength(0);
+  });
+
   test("forwards POST body to upstream", async () => {
     let capturedBody = "";
     fetchMock = mock(

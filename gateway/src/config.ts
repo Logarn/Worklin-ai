@@ -11,6 +11,7 @@ export type GatewayConfig = {
   assistantRuntimeBaseUrl: string;
   defaultAssistantId: string | undefined;
   gatewayInternalBaseUrl: string;
+  platformAssistantId?: string;
   velayBaseUrl?: string;
   logFile: LogFileConfig;
   maxAttachmentBytes: Record<
@@ -24,6 +25,7 @@ export type GatewayConfig = {
   routingEntries: RoutingEntry[];
   runtimeInitialBackoffMs: number;
   runtimeMaxRetries: number;
+  runtimeAssistantScopeMode?: "off" | "enforce";
   runtimeProxyRequireAuth: boolean;
   runtimeTimeoutMs: number;
   shutdownDrainMs: number;
@@ -103,6 +105,11 @@ function parsePositiveInteger(
   return parsed;
 }
 
+function envFlagTrue(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
 export function loadConfig(): GatewayConfig {
   const portRaw = process.env.GATEWAY_PORT || process.env.PORT || "7830";
   const port = Number(portRaw);
@@ -163,6 +170,21 @@ export function loadConfig(): GatewayConfig {
     (typeof gw.defaultAssistantId === "string" && gw.defaultAssistantId
       ? gw.defaultAssistantId
       : undefined);
+  const platformAssistantId =
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID?.trim() ||
+    process.env.PLATFORM_ASSISTANT_ID?.trim() ||
+    undefined;
+  const runtimeAssistantScopeModeRaw =
+    process.env.RUNTIME_ASSISTANT_SCOPE_MODE?.trim().toLowerCase();
+  const runtimeAssistantScopeMode: "off" | "enforce" =
+    runtimeAssistantScopeModeRaw === "off" ||
+    runtimeAssistantScopeModeRaw === "enforce"
+      ? runtimeAssistantScopeModeRaw
+      : platformAssistantId ||
+          envFlagTrue(process.env.WORKLIN_REQUIRE_ISOLATED_RUNTIME) ||
+          envFlagTrue(process.env.IS_PLATFORM)
+        ? "enforce"
+        : "off";
   const runtimeTimeoutMs =
     parsePositiveInteger(
       process.env.RUNTIME_TIMEOUT_MS,
@@ -197,6 +219,7 @@ export function loadConfig(): GatewayConfig {
       hasDefaultAssistant: !!defaultAssistantId,
       hasVelayBaseUrl: !!velayBaseUrl,
       port,
+      runtimeAssistantScopeMode,
       runtimeProxyRequireAuth,
       runtimeTimeoutMs,
       trustProxy,
@@ -208,6 +231,7 @@ export function loadConfig(): GatewayConfig {
     assistantRuntimeBaseUrl,
     defaultAssistantId,
     gatewayInternalBaseUrl,
+    platformAssistantId,
     velayBaseUrl,
     logFile,
     maxAttachmentBytes: {
@@ -223,6 +247,7 @@ export function loadConfig(): GatewayConfig {
     routingEntries,
     runtimeInitialBackoffMs: 500,
     runtimeMaxRetries: 2,
+    runtimeAssistantScopeMode,
     runtimeProxyRequireAuth,
     runtimeTimeoutMs,
     shutdownDrainMs: 5000,
