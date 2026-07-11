@@ -26,6 +26,9 @@ dist
 
 # storybook
 storybook-static/
+/firebase-storybook/
+/.firebase/
+firebase-debug.log*
 
 # Generated from meta/feature-flags/feature-flag-registry.json
 assistant/src/config/feature-flag-registry.json

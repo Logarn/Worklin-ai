@@ -51,90 +51,6 @@ jobs:
           path: packages/design-library/storybook-static
           if-no-files-found: error
 
-  deploy-design-library-storybook:
-    name: Deploy design-library Storybook
-    needs: [build-design-library-storybook]
-    # workflow_dispatch has no branch filter; guard the privileged publish.
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: design-library-storybook
-          path: storybook-static
-
-      - name: Check GCP deploy configuration
-        id: gcp-config
-        env:
-          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
-          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
-        run: |
-          missing=()
-          for name in GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GCP_PROJECT_ID; do
-            if [ -z "${!name:-}" ]; then
-              missing+=("${name}")
-            fi
-          done
-
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping Storybook publish because these GCP settings are missing: ${missing[*]}"
-            echo "### Storybook publish skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "Configure \`${missing[*]}\` as repository or production-environment variables/secrets to enable GCS publishing." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Authenticate to GCP
-        if: steps.gcp-config.outputs.configured == 'true'
-        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
-
-      - name: Publish to GCS
-        if: steps.gcp-config.outputs.configured == 'true'
-        env:
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
-          PREFIX: design-library/main
-        run: |
-          set -euo pipefail
-          if [ ! -f storybook-static/index.html ]; then
-            echo "::error::storybook-static/index.html missing — empty build."
-            exit 1
-          fi
-          DEST="gs://${PROJECT_ID}-assistant-storybook/${PREFIX}"
-
-          # 1. Content hashed assets can be cached indefinitely.
-          gcloud storage rsync -r \
-            --cache-control="public, max-age=31536000, immutable" \
-            storybook-static/assets "${DEST}/assets"
-
-          # 2. Everything else except the root entrypoints/manifests should have
-          #    a moderate cache TTL.
-          #    Storybook has some stable-ish sb-*/ files that might be tied to
-          #    particular versions, so don't mark them as immutable.
-          gcloud storage rsync -r \
-            --exclude='^assets/.*|^[^/]*\.(html|json)$' \
-            --cache-control="public, max-age=3600" \
-            storybook-static "${DEST}"
-
-          # 3. Root entrypoints/manifests change every deploy, so don't cache them.
-          for f in index.html iframe.html index.json project.json; do
-            if [ -f "storybook-static/${f}" ]; then
-              gcloud storage cp \
-                --cache-control="no-cache, max-age=0, must-revalidate" \
-                "storybook-static/${f}" "${DEST}/${f}"
-            fi
-          done
-          echo "Published Storybook to ${DEST}/"
-
   # ───────────────────────────── web ─────────────────────────────
   build-web-storybook:
     name: Build web Storybook
@@ -177,9 +93,10 @@ jobs:
           path: apps/web/storybook-static
           if-no-files-found: error
 
-  deploy-web-storybook:
-    name: Deploy web Storybook
-    needs: [build-web-storybook]
+  deploy-storybooks:
+    name: Deploy Storybooks
+    needs: [build-design-library-storybook, build-web-storybook]
+    # workflow_dispatch has no branch filter; guard the privileged publish.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
@@ -187,14 +104,22 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download artifact
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download design-library Storybook
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: design-library-storybook
+          path: firebase-storybook/design-library/main
+
+      - name: Download web Storybook
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: web-storybook
-          path: storybook-static
+          path: firebase-storybook/web/main
 
-      - name: Check GCP deploy configuration
-        id: gcp-config
+      - name: Validate Firebase deploy configuration
         env:
           GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
@@ -208,49 +133,29 @@ jobs:
           done
 
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping Storybook publish because these GCP settings are missing: ${missing[*]}"
-            echo "### Storybook publish skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "Configure \`${missing[*]}\` as repository or production-environment variables/secrets to enable GCS publishing." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Firebase deploy configuration is missing: ${missing[*]}"
+            exit 1
           fi
 
       - name: Authenticate to GCP
-        if: steps.gcp-config.outputs.configured == 'true'
         uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Publish to GCS
-        if: steps.gcp-config.outputs.configured == 'true'
+      - name: Publish to Firebase Hosting
         env:
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
-          PREFIX: web/main
         run: |
           set -euo pipefail
-          if [ ! -f storybook-static/index.html ]; then
-            echo "::error::storybook-static/index.html missing — empty build."
-            exit 1
-          fi
-          DEST="gs://${PROJECT_ID}-assistant-storybook/${PREFIX}"
+          test -f firebase-storybook/design-library/main/index.html
+          test -f firebase-storybook/web/main/index.html
 
-          # Same cache strategy as above.
-          gcloud storage rsync -r \
-            --cache-control="public, max-age=31536000, immutable" \
-            storybook-static/assets "${DEST}/assets"
+          npx --yes firebase-tools@15.23.0 deploy \
+            --project "${PROJECT_ID}" \
+            --only hosting \
+            --non-interactive
 
-          gcloud storage rsync -r \
-            --exclude='^assets/.*|^[^/]*\.(html|json)$' \
-            --cache-control="public, max-age=3600" \
-            storybook-static "${DEST}"
-
-          for f in index.html iframe.html index.json project.json; do
-            if [ -f "storybook-static/${f}" ]; then
-              gcloud storage cp \
-                --cache-control="no-cache, max-age=0, must-revalidate" \
-                "storybook-static/${f}" "${DEST}/${f}"
-            fi
-          done
-          echo "Published Storybook to ${DEST}/"
+          echo "### Storybooks published" >> "$GITHUB_STEP_SUMMARY"
+          echo "- https://${PROJECT_ID}.web.app/design-library/main/" >> "$GITHUB_STEP_SUMMARY"
+          echo "- https://${PROJECT_ID}.web.app/web/main/" >> "$GITHUB_STEP_SUMMARY"
