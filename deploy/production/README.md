@@ -37,9 +37,12 @@ Not included yet:
 - Runtime auto-provisioning per tenant.
 - Full SaaS-grade tenant isolation.
 
-For real SaaS isolation, provision separate assistant/gateway/CES stacks per
-customer or workspace and make the control-plane route each user to the correct
-stack.
+Managed chat requires a runtime stack row per assistant. Without an active
+stack-specific gateway URL, the control-plane returns `runtime_not_ready`
+instead of routing to the shared container runtime. The old co-located gateway
+can only be used when `WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=true` and
+`WORKLIN_REQUIRE_ISOLATED_RUNTIME=false` are set together for a local smoke
+test.
 
 ## Backend
 
@@ -52,6 +55,9 @@ single-service production deploy:
 
 The service listens publicly through the control-plane and wires
 `WORKLIN_GATEWAY_URL` to the co-located gateway over `127.0.0.1`.
+Production defaults `WORKLIN_REQUIRE_ISOLATED_RUNTIME=true`, so that gateway is
+not used for user chat unless the assistant has an active isolated runtime
+stack.
 
 Create a real env file from the template:
 

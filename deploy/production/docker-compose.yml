@@ -10,6 +10,7 @@ services:
       WORKLIN_CONTROL_PLANE_PORT: "8080"
       WORKLIN_GATEWAY_URL: http://gateway:7830
       WORKLIN_CONTROL_DB: /data/control-plane.sqlite
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true"
     volumes:
       - control-plane-data:/data
     ports:
@@ -56,6 +57,7 @@ services:
       VELLUM_WORKSPACE_DIR: /data/workspace
       CES_CREDENTIAL_URL: http://credential-executor:8090
       UNMAPPED_POLICY: default
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true"
     volumes:
       - assistant-data:/data
       - gateway-security:/gateway-security

@@ -189,5 +189,6 @@ ENV GATEWAY_SECURITY_DIR=/data/gateway-security
 ENV CES_DATA_DIR=/data/ces-data
 ENV CREDENTIAL_SECURITY_DIR=/data/ces-data/security
 ENV CES_BOOTSTRAP_SOCKET_DIR=/run/ces-bootstrap
+ENV WORKLIN_REQUIRE_ISOLATED_RUNTIME=true
 
 CMD ["/app/runtime/entrypoint.sh"]
