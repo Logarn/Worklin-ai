@@ -85,9 +85,11 @@ const assistantResult = (
     ...overrides,
   },
 });
-let getAssistantImpl: () => Promise<unknown> = async () =>
+let getAssistantImpl: (assistantId?: string) => Promise<unknown> = async () =>
   assistantResult("active");
-const getAssistantMock = mock(() => getAssistantImpl());
+const getAssistantMock = mock((assistantId?: string) =>
+  getAssistantImpl(assistantId),
+);
 let getAssistantHealthzImpl: () => Promise<unknown> = async () => ({
   ok: true,
   status: 200,
@@ -137,6 +139,13 @@ const fetchOnboardingRecipeMock = mock(() => fetchOnboardingRecipeImpl());
 let activeAssistantQueryResult:
   | ReturnType<typeof assistantResult>
   | undefined = assistantResult("active");
+let resolvedActiveAssistantId: string | null = null;
+let resolvedSelectedAssistantId: string | null = null;
+const useAssistantQueryMock = mock(
+  (options?: { enabled?: boolean; selectedPlatformAssistantId?: string | null }) => ({
+    data: options?.enabled === false ? undefined : activeAssistantQueryResult,
+  }),
+);
 
 mock.module("react-router", () => ({
   useNavigate: () => navigateMock,
@@ -151,9 +160,7 @@ mock.module("@/assistant/lifecycle-service", () => ({
 }));
 
 mock.module("@/assistant/queries", () => ({
-  useAssistantQuery: (options?: { enabled?: boolean }) => ({
-    data: options?.enabled === false ? undefined : activeAssistantQueryResult,
-  }),
+  useAssistantQuery: useAssistantQueryMock,
 }));
 
 mock.module("@/assistant/avatar-api", () => ({
@@ -297,8 +304,8 @@ mock.module("@/stores/resolved-assistants-store", () => ({
   useResolvedAssistantsStore: {
     getState: () => ({
       assistants: [],
-      activeAssistantId: null,
-      selectedAssistantId: null,
+      activeAssistantId: resolvedActiveAssistantId,
+      selectedAssistantId: resolvedSelectedAssistantId,
       assistantsHydrated: true,
       upsertFromApi: () => {},
       setActiveAssistantId: () => {},
@@ -306,8 +313,8 @@ mock.module("@/stores/resolved-assistants-store", () => ({
     }),
     use: {
       assistants: () => [],
-      activeAssistantId: () => null,
-      selectedAssistantId: () => null,
+      activeAssistantId: () => resolvedActiveAssistantId,
+      selectedAssistantId: () => resolvedSelectedAssistantId,
     },
   },
 }));
@@ -495,6 +502,8 @@ beforeEach(() => {
   platformSessionValue = "absent";
   fetchOnboardingRecipeImpl = async () => null;
   activeAssistantQueryResult = assistantResult("active");
+  resolvedActiveAssistantId = null;
+  resolvedSelectedAssistantId = null;
   randomSpy = spyOn(Math, "random").mockReturnValue(0);
   sessionStorage.clear();
   localStorage.clear();
@@ -508,6 +517,7 @@ beforeEach(() => {
   applyChatgptSubscriptionProviderMock.mockClear();
   hatchAssistantMock.mockClear();
   getAssistantMock.mockClear();
+  useAssistantQueryMock.mockClear();
   getAssistantHealthzMock.mockClear();
   fetchAssistantCharacterProfileMock.mockClear();
   fetchCharacterTraitsMock.mockClear();
@@ -718,17 +728,11 @@ describe("onboarding lifecycle sync", () => {
 
   test("pre-chat ensures and selects a platform assistant before entering chat", async () => {
     activeAssistantQueryResult = undefined;
-    getAssistantImpl = async () => ({
-      ok: false,
-      status: 404,
-      error: { detail: "No platform assistant found" },
-    });
 
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
 
-    await waitFor(() => expect(getAssistantMock).toHaveBeenCalled());
     await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
     await waitFor(() =>
       expect(setSelectedAssistantMock).toHaveBeenCalledWith("asst-1"),
@@ -742,6 +746,36 @@ describe("onboarding lifecycle sync", () => {
         { replace: true },
       ),
     );
+  });
+
+  test("pre-chat uses the selected assistant id when active lifecycle state is stale", async () => {
+    activeAssistantQueryResult = undefined;
+    resolvedActiveAssistantId = "asst-old";
+    resolvedSelectedAssistantId = "asst-selected";
+
+    render(<PreChatFlow />);
+
+    await waitFor(() =>
+      expect(useAssistantQueryMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selectedPlatformAssistantId: "asst-selected",
+        }),
+      ),
+    );
+
+    fireEvent.click(await screen.findByTestId("name-continue"));
+    fireEvent.click(await screen.findByText("Skip for now"));
+
+    await waitFor(() =>
+      expect(saveAssistantCharacterProfileMock).toHaveBeenCalledWith(
+        "asst-selected",
+        expect.any(Object),
+      ),
+    );
+    await waitFor(() =>
+      expect(checkAssistantMock).toHaveBeenCalledWith("asst-selected"),
+    );
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
   });
 
   test("activation flow flag selects the activation bootstrap after pre-chat", async () => {
@@ -1023,5 +1057,30 @@ describe("onboarding lifecycle sync", () => {
         queryKey: ["assistantAvatar", "asst-1"],
       }),
     );
+  });
+
+  test("hatching keeps polling a known hatch id instead of falling back to list default", async () => {
+    let assistantCalls = 0;
+    getAssistantImpl = async (assistantId?: string) => {
+      assistantCalls += 1;
+      if (assistantCalls === 1) {
+        throw new Error("transient pre-flight failure");
+      }
+      expect(assistantId).toBe("asst-1");
+      return {
+        ok: false,
+        status: 404,
+        error: { detail: "hatch target not visible yet" },
+      };
+    };
+
+    render(<HatchingScreen />);
+
+    await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
+    await waitFor(() => expect(getAssistantMock).toHaveBeenCalledTimes(2));
+
+    expect(getAssistantMock.mock.calls).toEqual([[], ["asst-1"]]);
+    expect(setSelectedAssistantMock).toHaveBeenCalledWith("asst-1");
+    expect(checkAssistantMock).not.toHaveBeenCalled();
   });
 });

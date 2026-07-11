@@ -84,10 +84,11 @@ export function useAssistantIdentityInit({
   // async identity fetch resolves. Declared after the clear effect so
   // React's effect execution order (declaration order) guarantees the
   // clear runs first and this seed survives.
-  const seededRef = useRef(false);
+  const seededForAssistantRef = useRef<string | null>(null);
   useEffect(() => {
-    if (seededRef.current || !canFetchIdentity) return;
-    seededRef.current = true;
+    if (!canFetchIdentity || !assistantId) return;
+    if (seededForAssistantRef.current === assistantId) return;
+    seededForAssistantRef.current = assistantId;
     const optimisticName = consumePendingAssistantName();
     if (!optimisticName) return;
     const { name: current } = useAssistantIdentityStore.getState();

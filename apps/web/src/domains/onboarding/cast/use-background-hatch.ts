@@ -166,11 +166,13 @@ export function useBackgroundHatch(): UseBackgroundHatch {
           return;
         }
         try {
-          let result = await getAssistant(hatchedAssistantId);
-          // A stale hatched id (404) falls back to list-based discovery.
+          const result = await getAssistant(hatchedAssistantId);
+          // A stale hatched id (404) should not fall back to list-based
+          // discovery here. In multi-assistant orgs that can attach this
+          // onboarding run to an older assistant instead of the hatch target.
           if (hatchedAssistantId && !result.ok && result.status === 404) {
-            hatchedAssistantId = undefined;
-            result = await getAssistant();
+            await sleep(POLL_INTERVAL_MS);
+            continue;
           }
           const state = resolveAssistantLifecycleState(result);
           if (state.kind === "active" && result.ok) {
@@ -213,7 +215,7 @@ export function useBackgroundHatch(): UseBackgroundHatch {
 
       settleReady(activeAssistantId);
     })();
-  }, [hatchTraits, queryClient, settleError, settleReady]);
+  }, [settleError, settleReady]);
 
   const seedAvatar = useCallback(
     async (

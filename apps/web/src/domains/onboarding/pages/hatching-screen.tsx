@@ -431,6 +431,8 @@ export function HatchingScreen() {
         if (cancelled) return;
         if (result.ok) {
           hatchedAssistantId = result.data.id;
+          useResolvedAssistantsStore.getState().upsertFromApi(result.data);
+          void setSelectedAssistant(result.data.id);
         }
         // 201 = newly created; 200 = an existing assistant was returned.
         createdFreshAssistant = result.ok && result.status === 201;
@@ -486,9 +488,15 @@ export function HatchingScreen() {
       try {
         let result = await getAssistant(hatchedAssistantId);
         if (cancelled) return;
-        // If the hatched ID 404s (e.g. stale after refresh, or backend
-        // assigned a different ID), fall back to list-based discovery.
+        // If the hatched ID 404s, retry that explicit target unless preflight
+        // proved the account had no assistant before this hatch. List-based
+        // discovery can otherwise attach onboarding to an older assistant in
+        // multi-assistant orgs.
         if (hatchedAssistantId && !result.ok && result.status === 404) {
+          if (!preflightFoundNoAssistant) {
+            scheduleNextPoll(POLL_INTERVAL_MS);
+            return;
+          }
           hatchedAssistantId = undefined;
           result = await getAssistant();
           if (cancelled) return;

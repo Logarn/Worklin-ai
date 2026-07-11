@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
-import { getAssistant, hatchAssistant } from "@/assistant/api";
+import { hatchAssistant } from "@/assistant/api";
 import { saveAssistantCharacterProfile } from "@/assistant/avatar-api";
 import { useIsIOSWeb } from "@/runtime/platform-detection";
 import { setSelectedAssistant } from "@/assistant/selection";
@@ -92,6 +92,8 @@ export function PreChatFlow() {
   const lastName = user?.lastName ?? "";
   const isNative = useIsNativePlatform();
   const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  const selectedAssistantId =
+    useResolvedAssistantsStore.use.selectedAssistantId();
   const localMode = isLocalMode();
   const isIOSWeb = useIsIOSWeb();
   const showIOSAppStep = isIOSWeb && !readIOSAppDownloaded();
@@ -147,6 +149,7 @@ export function PreChatFlow() {
       !isAuthInitializing &&
       isAuthenticated &&
       (!localMode || hasPlatformSession),
+    selectedPlatformAssistantId: localMode ? null : selectedAssistantId,
   });
   const activeAssistant = activeAssistantResult?.ok
     ? activeAssistantResult.data
@@ -159,7 +162,10 @@ export function PreChatFlow() {
   });
   const recipe = fetchedRecipe ?? null;
   const googleAssistantId =
-    activeAssistant?.id ?? activeAssistantId ?? localPlatformAssistantId;
+    activeAssistant?.id ??
+    selectedAssistantId ??
+    activeAssistantId ??
+    localPlatformAssistantId;
   const selectedAvatar =
     WORKLIN_AVATAR_CHOICES.find((avatar) => avatar.id === selectedAvatarId) ??
     WORKLIN_AVATAR_CHOICES[0] ??
@@ -201,19 +207,20 @@ export function PreChatFlow() {
     await persistSelectedAvatarProfile();
 
     let handoffAssistantId =
-      activeAssistant?.id ?? activeAssistantId ?? localPlatformAssistantId;
+      activeAssistant?.id ??
+      selectedAssistantId ??
+      activeAssistantId ??
+      localPlatformAssistantId;
 
     // Hosted web onboarding must never hand the user off to `/assistant`
     // without a resolvable assistant. If the hatch step was skipped,
     // raced, or failed to persist selection, recover here by resolving the
-    // current assistant and, if none exists yet, ensuring one before the
-    // lifecycle refresh.
+    // current assistant through the server-side hatch/ensure path before the
+    // lifecycle refresh. Avoid list-defaulting here: in multi-assistant orgs the
+    // first hosted assistant may be unrelated to this onboarding run.
     if (!isNative && !localMode && !handoffAssistantId) {
       try {
-        let resolved = await getAssistant();
-        if (!resolved.ok && resolved.status === 404) {
-          resolved = await hatchAssistant();
-        }
+        const resolved = await hatchAssistant();
         if (resolved.ok) {
           handoffAssistantId = resolved.data.id;
           useResolvedAssistantsStore.getState().upsertFromApi(resolved.data);
