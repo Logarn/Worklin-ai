@@ -37,6 +37,24 @@
             "value": "no-cache, max-age=0, must-revalidate"
           }
         ]
+      },
+      {
+        "source": "/design-library/main/",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, max-age=0, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "/web/main/",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, max-age=0, must-revalidate"
+          }
+        ]
       }
     ]
   }

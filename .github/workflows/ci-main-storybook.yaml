@@ -10,6 +10,7 @@ on:
       - "apps/web/**"
       - "packages/local-mode/**"
       - "packages/environments/**"
+      - "firebase.json"
       - ".github/workflows/ci-main-storybook.yaml"
       - ".github/actions/install-shared-packages/**"
 
