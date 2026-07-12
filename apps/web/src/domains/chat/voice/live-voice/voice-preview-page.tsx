@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 
 import type { LiveVoiceSessionState } from "./live-voice-store";
 import { VoiceConversationPanel } from "./voice-conversation-panel";
@@ -13,6 +13,15 @@ const PREVIEW_STATES: Array<{
   { label: "Speaking", state: "speaking" },
   { label: "Interrupted", state: "interrupted" },
 ];
+
+const PREVIEW_THEME = {
+  "--background-primary": "#0b0a0f",
+  "--background-secondary": "#15131b",
+  "--content-primary": "#f7f5fb",
+  "--content-secondary": "#b8b3c2",
+  "--content-tertiary": "#817a8e",
+  "--border-secondary": "rgba(255, 255, 255, 0.12)",
+} as CSSProperties;
 
 export function VoicePreviewPage() {
   const [state, setState] = useState<LiveVoiceSessionState>("speaking");
@@ -37,7 +46,10 @@ export function VoicePreviewPage() {
   const outputAmplitude = state === "speaking" ? amplitude : 0;
 
   return (
-    <main className="min-h-full overflow-auto bg-[radial-gradient(circle_at_50%_10%,rgba(107,33,168,.14),transparent_42%),var(--background-primary)] px-6 py-10">
+    <main
+      className="min-h-screen overflow-auto bg-[radial-gradient(circle_at_50%_10%,rgba(107,33,168,.18),transparent_42%),var(--background-primary)] px-6 py-10"
+      style={PREVIEW_THEME}
+    >
       <div className="mx-auto max-w-4xl space-y-8">
         <header className="space-y-2">
           <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-violet-500">
