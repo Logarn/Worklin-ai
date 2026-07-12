@@ -119,6 +119,10 @@ export const routeTree = [
     // Shared live-voice panel rendered in the non-focus-stealing Electron overlay.
     { path: "/assistant/floating/voice-overlay", ErrorBoundary: RouteErrorBoundary, HydrateFallback: RootHydrateFallback, lazy: { Component: () => import("@/components/voice-overlay-page").then((m) => m.VoiceOverlayPage) } },
 
+    // Mic-free visual review route. It contains no user or provider data and is
+    // intentionally available before onboarding so reviewers can inspect the UI.
+    { path: "/assistant/voice-preview", ErrorBoundary: RouteErrorBoundary, HydrateFallback: RootHydrateFallback, lazy: { Component: () => import("@/domains/chat/voice/live-voice/voice-preview-page").then((m) => m.VoicePreviewPage) } },
+
     // Command palette — focused floating Electron BrowserWindow opened by
     // the app menu's Cmd/Ctrl+K accelerator. Standalone and unauthenticated
     // so it does not depend on ChatLayout being mounted in the main window.
@@ -158,10 +162,6 @@ export const routeTree = [
         {
           ErrorBoundary: RouteErrorBoundary,
           children: [
-        {
-          path: "voice-preview",
-          lazy: { Component: () => import("@/domains/chat/voice/live-voice/voice-preview-page").then((m) => m.VoicePreviewPage) },
-        },
         // Standalone pre-app routes (not part of the new-user onboarding funnel).
         {
           path: "welcome",
