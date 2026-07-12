@@ -73,6 +73,8 @@ export type LiveVoiceClientFrame =
 
 const LIVE_VOICE_SERVER_FRAME_TYPES = [
   "ready",
+  "listening",
+  "interrupted",
   "busy",
   "stt_partial",
   "stt_final",
@@ -98,6 +100,16 @@ export interface LiveVoiceReadyServerFrame extends LiveVoiceServerFrameBase {
   readonly conversationId: string;
 }
 
+export interface LiveVoiceListeningServerFrame extends LiveVoiceServerFrameBase {
+  readonly type: "listening";
+  readonly turnId?: string;
+}
+
+export interface LiveVoiceInterruptedServerFrame extends LiveVoiceServerFrameBase {
+  readonly type: "interrupted";
+  readonly turnId?: string;
+}
+
 export interface LiveVoiceBusyServerFrame extends LiveVoiceServerFrameBase {
   readonly type: "busy";
   readonly activeSessionId: string;
@@ -118,8 +130,7 @@ export interface LiveVoiceThinkingServerFrame extends LiveVoiceServerFrameBase {
   readonly turnId: string;
 }
 
-export interface LiveVoiceAssistantTextDeltaServerFrame
-  extends LiveVoiceServerFrameBase {
+export interface LiveVoiceAssistantTextDeltaServerFrame extends LiveVoiceServerFrameBase {
   readonly type: "assistant_text_delta";
   readonly text: string;
 }
@@ -167,6 +178,8 @@ export interface LiveVoiceErrorServerFrame extends LiveVoiceServerFrameBase {
 
 export type LiveVoiceServerFrame =
   | LiveVoiceReadyServerFrame
+  | LiveVoiceListeningServerFrame
+  | LiveVoiceInterruptedServerFrame
   | LiveVoiceBusyServerFrame
   | LiveVoiceSttPartialServerFrame
   | LiveVoiceSttFinalServerFrame

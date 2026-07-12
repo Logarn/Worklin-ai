@@ -53,6 +53,9 @@ export type VellumCommand =
   | { kind: "createAssistant" }
   | { kind: "retireAssistant"; assistantId: string }
   | { kind: "quickInputSubmit"; message: string }
+  | { kind: "toggleVoiceConversation" }
+  | { kind: "endVoiceConversation" }
+  | { kind: "toggleVoiceMute" }
   | { kind: "cancelDictation" }
   | { kind: "replayOnboarding" }
   | { kind: "previewPrechat" }
@@ -100,6 +103,32 @@ export type FnPushToTalkResult =
   | { ok: false; reason: string };
 
 // ---------------------------------------------------------------------------
+// Voice conversation overlay
+// ---------------------------------------------------------------------------
+
+export type VoiceOverlaySessionState =
+  | "idle"
+  | "connecting"
+  | "listening"
+  | "transcribing"
+  | "thinking"
+  | "speaking"
+  | "interrupted"
+  | "ending"
+  | "failed";
+
+export interface VoiceOverlayState {
+  state: VoiceOverlaySessionState;
+  partialTranscript: string;
+  finalTranscript: string;
+  assistantTranscript: string;
+  inputAmplitude: number;
+  outputAmplitude: number;
+  muted: boolean;
+  error: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // System permissions
 // ---------------------------------------------------------------------------
 
@@ -113,8 +142,7 @@ export const SYSTEM_PERMISSION_KINDS = [
   "notifications",
 ] as const;
 
-export type SystemPermissionKind =
-  (typeof SYSTEM_PERMISSION_KINDS)[number];
+export type SystemPermissionKind = (typeof SYSTEM_PERMISSION_KINDS)[number];
 
 export const SYSTEM_PERMISSION_STATUSES = [
   "unknown",

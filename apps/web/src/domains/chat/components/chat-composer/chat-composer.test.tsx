@@ -79,6 +79,8 @@ mock.module("@/domains/chat/voice/live-voice/live-voice-store", () => ({
       partialTranscript: () => mockLivePartial,
       finalTranscript: () => mockLiveFinal,
       assistantTranscript: () => mockLiveAssistant,
+      inputAmplitude: () => 0,
+      outputAmplitude: () => 0,
     },
   },
 }));
@@ -89,9 +91,12 @@ mock.module("@/domains/chat/voice/live-voice/use-live-voice", () => ({
     finalTranscript: mockLiveFinal,
     assistantTranscript: mockLiveAssistant,
     inputAmplitude: 0,
+    outputAmplitude: 0,
+    muted: false,
     error: null,
     start: liveStartSpy,
     stop: liveStopSpy,
+    toggleMute: () => {},
   }),
 }));
 
@@ -143,15 +148,21 @@ function resetLiveVoiceMocks() {
 // live-voice / voice-input-button imports) resolve against the mocked modules.
 // The pure helpers (computeGhostSuffix / shouldSubmitOnEnter) come from
 // `chat-composer-utils`, imported statically above.
-const { ChatComposer } = await import(
-  "@/domains/chat/components/chat-composer/chat-composer"
-);
+const { ChatComposer } =
+  await import("@/domains/chat/components/chat-composer/chat-composer");
 
 // ---------------------------------------------------------------------------
 // shouldSubmitOnEnter — keyboard policy
 // ---------------------------------------------------------------------------
 
-const ENTER = { key: "Enter", shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false, keyCode: 13 };
+const ENTER = {
+  key: "Enter",
+  shiftKey: false,
+  metaKey: false,
+  ctrlKey: false,
+  isComposing: false,
+  keyCode: 13,
+};
 const ENTER_WITH_SHIFT = { ...ENTER, shiftKey: true };
 const ENTER_DURING_IME = { ...ENTER, isComposing: true };
 const ENTER_IME_KEYCODE = { ...ENTER, keyCode: 229 };
@@ -242,7 +253,14 @@ describe("shouldSubmitOnEnter — non-Enter keys", () => {
   test("Space is ignored (key !== 'Enter')", () => {
     expect(
       shouldSubmitOnEnter(
-        { key: " ", shiftKey: false, metaKey: false, ctrlKey: false, isComposing: false, keyCode: 32 },
+        {
+          key: " ",
+          shiftKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          isComposing: false,
+          keyCode: 32,
+        },
         false,
         READY_POLICY,
       ),
@@ -262,11 +280,15 @@ describe("shouldSubmitOnEnter — cmdEnterMode=true", () => {
   });
 
   test("Cmd+Enter with content submits", () => {
-    expect(shouldSubmitOnEnter(CMD_ENTER, false, CMD_ENTER_POLICY)).toBe("submit");
+    expect(shouldSubmitOnEnter(CMD_ENTER, false, CMD_ENTER_POLICY)).toBe(
+      "submit",
+    );
   });
 
   test("Ctrl+Enter with content submits (Windows/Linux)", () => {
-    expect(shouldSubmitOnEnter(CTRL_ENTER, false, CMD_ENTER_POLICY)).toBe("submit");
+    expect(shouldSubmitOnEnter(CTRL_ENTER, false, CMD_ENTER_POLICY)).toBe(
+      "submit",
+    );
   });
 
   test("Cmd+Enter when sendDisabled returns 'prevent'", () => {
@@ -289,15 +311,21 @@ describe("shouldSubmitOnEnter — cmdEnterMode=true", () => {
   });
 
   test("Shift+Enter is still ignored in cmdEnterMode", () => {
-    expect(shouldSubmitOnEnter(ENTER_WITH_SHIFT, false, CMD_ENTER_POLICY)).toBe("ignore");
+    expect(shouldSubmitOnEnter(ENTER_WITH_SHIFT, false, CMD_ENTER_POLICY)).toBe(
+      "ignore",
+    );
   });
 
   test("IME composition is still ignored in cmdEnterMode", () => {
-    expect(shouldSubmitOnEnter(ENTER_DURING_IME, false, CMD_ENTER_POLICY)).toBe("ignore");
+    expect(shouldSubmitOnEnter(ENTER_DURING_IME, false, CMD_ENTER_POLICY)).toBe(
+      "ignore",
+    );
   });
 
   test("pointer:coarse is still ignored in cmdEnterMode", () => {
-    expect(shouldSubmitOnEnter(CMD_ENTER, true, CMD_ENTER_POLICY)).toBe("ignore");
+    expect(shouldSubmitOnEnter(CMD_ENTER, true, CMD_ENTER_POLICY)).toBe(
+      "ignore",
+    );
   });
 });
 
@@ -402,7 +430,9 @@ describe("computeGhostSuffix", () => {
 afterEach(cleanup);
 beforeEach(resetLiveVoiceMocks);
 
-function renderComposer(props: Partial<Parameters<typeof ChatComposer>[0]> = {}) {
+function renderComposer(
+  props: Partial<Parameters<typeof ChatComposer>[0]> = {},
+) {
   const { container } = render(
     <ChatComposer
       input=""
@@ -469,7 +499,10 @@ describe("ChatComposer — send/stop button visibility", () => {
   });
 
   test("canStopGenerating=false keeps the Send button even during awaiting_user_input", () => {
-    useTurnStore.setState({ ...INITIAL_TURN_STATE, phase: "awaiting_user_input" });
+    useTurnStore.setState({
+      ...INITIAL_TURN_STATE,
+      phase: "awaiting_user_input",
+    });
     const html = renderComposer({ canStopGenerating: false });
     expect(html).toContain('aria-label="Send message"');
     expect(html).not.toContain('aria-label="Stop generating"');
@@ -593,7 +626,7 @@ describe("ChatComposer — attachments strip", () => {
     const html = renderComposer({ chatAttachments: [] });
     // ChatAttachmentsStrip renders nothing when the list is empty — sanity
     // check that no obvious attachment chip markup leaks in.
-    expect(html).not.toContain("aria-label=\"Remove attachment\"");
+    expect(html).not.toContain('aria-label="Remove attachment"');
   });
 
   test("with attachments, renders the strip wrapper", () => {
@@ -716,9 +749,7 @@ describe("ChatComposer — live-voice integration", () => {
     // THEN the live-voice control is a stop affordance and the dictation
     // mic is disabled so the two capture flows can't run together
     expect(getByLabelText("Stop voice mode")).toBeTruthy();
-    const dictation = getByLabelText(
-      "Start voice input",
-    ) as HTMLButtonElement;
+    const dictation = getByLabelText("Start voice input") as HTMLButtonElement;
     expect(dictation.disabled).toBe(true);
   });
 
@@ -817,9 +848,7 @@ describe("ChatComposer — live-voice integration", () => {
     const { getByLabelText, queryByLabelText } = renderVoiceComposer();
 
     // THEN dictation is treated as available again (failed = inactive)...
-    const dictation = getByLabelText(
-      "Start voice input",
-    ) as HTMLButtonElement;
+    const dictation = getByLabelText("Start voice input") as HTMLButtonElement;
     expect(dictation.disabled).toBe(false);
     // ...and the transcript surface is unmounted rather than left hanging
     expect(queryByLabelText("Live voice transcript")).toBeNull();

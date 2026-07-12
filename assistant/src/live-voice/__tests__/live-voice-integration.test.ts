@@ -245,6 +245,7 @@ describe("LiveVoiceSession integration smoke harness", () => {
       "archived",
       "metrics",
       "tts_done",
+      "listening",
     ]);
     expect(frames[5]).toMatchObject({
       type: "tts_audio",
@@ -338,6 +339,8 @@ describe("LiveVoiceSession integration smoke harness", () => {
       "thinking",
       "archived",
       "metrics",
+      "interrupted",
+      "listening",
     ]);
     expect(frames[4]).toMatchObject({
       type: "archived",

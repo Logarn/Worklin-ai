@@ -38,12 +38,10 @@ import type { LiveVoiceAudioPlayer } from "@/domains/chat/voice/live-voice/tts-p
 // Import the controller + store *after* the connection mock is registered, so
 // the real connection.ts (which imports the generated SDK) never enters the
 // static import graph.
-const { useLiveVoice } = await import(
-  "@/domains/chat/voice/live-voice/use-live-voice"
-);
-const { useLiveVoiceStore } = await import(
-  "@/domains/chat/voice/live-voice/live-voice-store"
-);
+const { useLiveVoice } =
+  await import("@/domains/chat/voice/live-voice/use-live-voice");
+const { useLiveVoiceStore } =
+  await import("@/domains/chat/voice/live-voice/live-voice-store");
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -249,7 +247,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("full turn", () => {
-  test("drives idle → connecting → listening → thinking → speaking → idle (session ends after the turn)", async () => {
+  test("drives idle → connecting → listening → thinking → speaking → listening", async () => {
     const h = renderController();
 
     expect(h.view.result.current.state).toBe("idle");
@@ -327,16 +325,16 @@ describe("full turn", () => {
     expect(h.view.result.current.state).toBe("speaking");
     expect(h.player.enqueued).toHaveLength(1);
 
-    // tts_done awaits playback drain, then ends the session (single-utterance):
-    // the socket is closed and the mic is shut down, returning to idle.
+    // tts_done awaits playback drain, then resumes listening on the same
+    // socket and microphone for the next turn.
     await act(async () => {
       h.client.emit("ttsDone", { type: "tts_done", seq: 8, turnId: "t1" });
       h.player.finishPlayback();
       await Promise.resolve();
     });
-    expect(h.view.result.current.state).toBe("idle");
-    expect(h.client.closed).toBe(true);
-    expect(h.getCapture().shutdownCount).toBe(1);
+    expect(h.view.result.current.state).toBe("listening");
+    expect(h.client.closed).toBe(false);
+    expect(h.getCapture().shutdownCount).toBe(0);
   });
 });
 
@@ -345,7 +343,7 @@ describe("full turn", () => {
 // ---------------------------------------------------------------------------
 
 describe("barge-in", () => {
-  test("amplitude over threshold while speaking stops playback, interrupts, and ends the session", async () => {
+  test("amplitude over threshold while speaking stops playback and interrupts in place", async () => {
     const h = renderController();
     await startListening(h);
 
@@ -366,13 +364,17 @@ describe("barge-in", () => {
       h.getCapture().pushAmplitude(0.2); // over BARGE_IN_AMPLITUDE_THRESHOLD
     });
 
-    // Playback is stopped and a single interrupt is sent; the (now terminal)
-    // session is then torn down → idle (mic shut down, socket closed).
+    // Playback is stopped and a single interrupt is sent without tearing down
+    // the continuous conversation.
     expect(h.player.isPlaying).toBe(false);
     expect(h.client.interruptCount).toBe(1);
-    expect(h.view.result.current.state).toBe("idle");
-    expect(h.client.closed).toBe(true);
-    expect(h.getCapture().shutdownCount).toBe(1);
+    expect(h.view.result.current.state).toBe("interrupted");
+    expect(h.client.closed).toBe(false);
+    expect(h.getCapture().shutdownCount).toBe(0);
+    act(() => {
+      h.client.emit("listening", { type: "listening", seq: 4 });
+    });
+    expect(h.view.result.current.state).toBe("listening");
   });
 
   test("interrupt is sent at most once per response", async () => {
@@ -395,7 +397,7 @@ describe("barge-in", () => {
     expect(h.client.interruptCount).toBe(1);
   });
 
-  test("realistic turn: auto-release → speaking → barge-in ends the session", async () => {
+  test("realistic turn: auto-release → speaking → barge-in resumes the session", async () => {
     const h = renderController();
     await startListening(h);
     const capture = h.getCapture();
@@ -424,14 +426,14 @@ describe("barge-in", () => {
     expect(h.view.result.current.state).toBe("speaking");
 
     // The mic never stopped, so amplitude still flows while the assistant
-    // speaks: a loud reading interrupts (barge-in), which ends the session.
+    // speaks: a loud reading interrupts (barge-in) without closing the session.
     act(() => {
       capture.pushAmplitude(0.3); // over BARGE_IN_AMPLITUDE_THRESHOLD
     });
     expect(h.client.interruptCount).toBe(1);
     expect(h.player.isPlaying).toBe(false);
-    expect(h.view.result.current.state).toBe("idle");
-    expect(capture.shutdownCount).toBe(1);
+    expect(h.view.result.current.state).toBe("interrupted");
+    expect(capture.shutdownCount).toBe(0);
   });
 });
 

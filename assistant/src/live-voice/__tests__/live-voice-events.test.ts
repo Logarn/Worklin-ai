@@ -253,6 +253,7 @@ describe("LiveVoiceSession archive and metrics events", () => {
       "archived",
       "metrics",
       "tts_done",
+      "listening",
       "metrics",
     ]);
     expect(archiveAudio).toHaveBeenCalledTimes(2);

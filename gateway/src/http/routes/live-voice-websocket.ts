@@ -70,6 +70,8 @@ export type LiveVoiceSocketData = {
   config: GatewayConfig;
   upstream?: WebSocket;
   pendingMessages?: (string | ArrayBuffer | Uint8Array)[];
+  upstreamPath?: string;
+  providerAuthorization?: string;
 };
 
 /**
@@ -100,6 +102,37 @@ export function createLiveVoiceWebsocketHandler(config: GatewayConfig) {
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
 
+    return undefined;
+  };
+}
+
+export function createElevenLabsSpeechEngineWebsocketHandler(
+  config: GatewayConfig,
+) {
+  return function handleUpgrade(
+    req: Request,
+    server: import("bun").Server<unknown>,
+  ): Response | undefined {
+    if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return new Response("Upgrade Required", { status: 426 });
+    }
+    const providerAuthorization = req.headers.get(
+      "x-elevenlabs-speech-engine-authorization",
+    );
+    if (!providerAuthorization) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    const upgraded = server.upgrade(req, {
+      data: {
+        wsType: "live-voice",
+        config,
+        upstreamPath: "/v1/live-voice/providers/elevenlabs/upstream",
+        providerAuthorization,
+      } satisfies LiveVoiceSocketData,
+    });
+    if (!upgraded) {
+      return new Response("WebSocket upgrade failed", { status: 500 });
+    }
     return undefined;
   };
 }
@@ -191,7 +224,7 @@ export function getLiveVoiceWebsocketHandlers() {
       const { url: upstreamUrl, logSafeUrl: logSafeUpstreamUrl } =
         buildWsUpstreamUrl({
           baseUrl: config.assistantRuntimeBaseUrl,
-          path: "/v1/live-voice",
+          path: ws.data.upstreamPath ?? "/v1/live-voice",
           serviceToken: mintServiceToken(),
         });
 
@@ -200,7 +233,18 @@ export function getLiveVoiceWebsocketHandlers() {
         "Opening upstream live voice WS to runtime",
       );
 
-      const upstream = new WebSocket(upstreamUrl);
+      const HeaderWebSocket = WebSocket as unknown as new (
+        url: string,
+        options: { headers: Record<string, string> },
+      ) => WebSocket;
+      const upstream = ws.data.providerAuthorization
+        ? new HeaderWebSocket(upstreamUrl, {
+            headers: {
+              "X-Elevenlabs-Speech-Engine-Authorization":
+                ws.data.providerAuthorization,
+            },
+          })
+        : new WebSocket(upstreamUrl);
       ws.data.upstream = upstream;
 
       upstream.addEventListener("open", () => {

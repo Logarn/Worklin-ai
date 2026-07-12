@@ -72,6 +72,7 @@ describe("resolveHotkeyCatalog", () => {
     expect(catalog.filter((c) => c.rebindable).map((c) => c.key)).toEqual([
       "globalHotkey",
       "quickInput",
+      "voiceConversation",
       "newConversation",
       "currentConversation",
       "markCurrentUnread",
@@ -103,7 +104,9 @@ describe("resolveHotkeyCatalog", () => {
 
   test("reflects a custom override in the effective accelerator", () => {
     store["hotkeys"] = { newConversation: "CmdOrCtrl+Alt+T" };
-    const entry = resolveHotkeyCatalog().find((c) => c.key === "newConversation");
+    const entry = resolveHotkeyCatalog().find(
+      (c) => c.key === "newConversation",
+    );
     expect(entry?.override).toBe("CmdOrCtrl+Alt+T");
     expect(entry?.accelerator).toBe("CmdOrCtrl+Alt+T");
   });
@@ -137,7 +140,10 @@ describe("vellum:hotkeys:set", () => {
   });
 
   test("clears an override when passed null", () => {
-    store["hotkeys"] = { newConversation: "CmdOrCtrl+Alt+T", home: "CmdOrCtrl+Shift+H" };
+    store["hotkeys"] = {
+      newConversation: "CmdOrCtrl+Alt+T",
+      home: "CmdOrCtrl+Shift+H",
+    };
     invoke("vellum:hotkeys:set", ["newConversation", null]);
     expect(store["hotkeys"]).toEqual({ home: "CmdOrCtrl+Shift+H" });
   });

@@ -39,6 +39,7 @@ import type {
   TextInsertionResult,
   UpdateState,
   VellumCommand,
+  VoiceOverlayState,
 } from "./types";
 
 /**
@@ -115,7 +116,9 @@ export interface VellumBridge {
        * PCM — the offline transcript authority. Result arrives via
        * `onTranscribed`.
        */
-      transcribe?(audio: ArrayBuffer): Promise<{ ok: boolean; reason?: string }>;
+      transcribe?(
+        audio: ArrayBuffer,
+      ): Promise<{ ok: boolean; reason?: string }>;
       onTranscribed?(
         callback: (event: DictationPartialEvent) => void,
       ): () => void;
@@ -224,6 +227,14 @@ export interface VellumBridge {
     setState(state: DictationOverlayMessage): void;
     onState(callback: (state: DictationOverlayState) => void): () => void;
     getState(): Promise<DictationOverlayState | null>;
+  };
+  voiceOverlay: {
+    setState(state: VoiceOverlayState | null): void;
+    onState(callback: (state: VoiceOverlayState) => void): () => void;
+    getState(): Promise<VoiceOverlayState | null>;
+    close(): Promise<void>;
+    toggleMute(): Promise<void>;
+    openInWorklin(): Promise<void>;
   };
   popout: {
     open(conversationId: string): Promise<void>;

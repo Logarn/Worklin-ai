@@ -4,6 +4,7 @@ import { DEFAULT_IMAGE_MODEL } from "../../media/image-models.js";
 import { SEARCH_PROVIDER_IDS } from "../../providers/search-provider-catalog.js";
 import { SttServiceSchema } from "./stt.js";
 import { TtsServiceSchema } from "./tts.js";
+import { VoiceServiceSchema } from "./voice.js";
 
 export const ServiceModeSchema = z
   .enum(["managed", "your-own"])
@@ -148,6 +149,7 @@ export const ServicesSchema = z.object({
     providers: {},
   }),
   tts: TtsServiceSchema.default(TtsServiceSchema.parse({})),
+  voice: VoiceServiceSchema.default(VoiceServiceSchema.parse({})),
   "google-oauth": GoogleOAuthServiceSchema.default(
     GoogleOAuthServiceSchema.parse({}),
   ),

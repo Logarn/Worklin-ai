@@ -55,10 +55,12 @@ import {
   type SttStreamSocketData,
 } from "./http/routes/stt-stream-websocket.js";
 import {
+  createElevenLabsSpeechEngineWebsocketHandler,
   createLiveVoiceWebsocketHandler,
   getLiveVoiceWebsocketHandlers,
   type LiveVoiceSocketData,
 } from "./http/routes/live-voice-websocket.js";
+import { createLiveVoiceProviderProxyHandler } from "./http/routes/live-voice-provider-proxy.js";
 import { createWhatsAppWebhookHandler } from "./http/routes/whatsapp-webhook.js";
 
 import { createEmailWebhookHandler } from "./http/routes/email-webhook.js";
@@ -441,6 +443,10 @@ async function main() {
   });
   const handleSttStreamWs = createSttStreamWebsocketHandler(config);
   const handleLiveVoiceWs = createLiveVoiceWebsocketHandler(config);
+  const handleElevenLabsSpeechEngineWs =
+    createElevenLabsSpeechEngineWebsocketHandler(config);
+  const handleLiveVoiceProviderCallback =
+    createLiveVoiceProviderProxyHandler(config);
   const twilioRelayWebsocketHandlers = getRelayWebsocketHandlers();
   const twilioMediaStreamWebsocketHandlers = getMediaStreamWebsocketHandlers();
   const sttStreamWebsocketHandlers = getSttStreamWebsocketHandlers();
@@ -560,6 +566,12 @@ async function main() {
   // Auth middleware is applied declaratively per route — no manual
   // requireEdgeAuth/wrapWithAuthFailureTracking calls needed.
   const routes: RouteDefinition[] = [
+    {
+      path: "/v1/live-voice/providers/chat/completions",
+      method: "POST",
+      auth: "none",
+      handler: (req) => handleLiveVoiceProviderCallback(req),
+    },
     // ── A2A agent card discovery (read-only, unauthenticated per spec) ──
     {
       path: A2A_AGENT_CARD_PATH,
@@ -1770,6 +1782,12 @@ async function main() {
 
     if (url.pathname === "/v1/live-voice") {
       const upgradeResult = handleLiveVoiceWs(req, server);
+      if (upgradeResult !== undefined) return upgradeResult;
+      return undefined as unknown as Response;
+    }
+
+    if (url.pathname === "/v1/live-voice/providers/elevenlabs/upstream") {
+      const upgradeResult = handleElevenLabsSpeechEngineWs(req, server);
       if (upgradeResult !== undefined) return upgradeResult;
       return undefined as unknown as Response;
     }

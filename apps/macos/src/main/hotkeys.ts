@@ -10,7 +10,12 @@ import {
   type VellumCommandKind,
 } from "./commands";
 import { handle } from "./ipc";
-import { onSettingChange, readHotkeyOverride, readSetting, writeSetting } from "./settings";
+import {
+  onSettingChange,
+  readHotkeyOverride,
+  readSetting,
+  writeSetting,
+} from "./settings";
 
 export type { HotkeyScope, ResolvedHotkey };
 
@@ -32,6 +37,7 @@ interface HotkeyCommand {
 const HOTKEY_CATALOG: readonly HotkeyCommand[] = [
   { key: "globalHotkey", label: "Open Vellum", scope: "global" },
   { key: "quickInput", label: "Quick Input", scope: "global" },
+  { key: "voiceConversation", label: "Voice Conversation", scope: "global" },
   { key: "newConversation", label: "New chat", scope: "menu" },
   { key: "currentConversation", label: "Current conversation", scope: "menu" },
   {
@@ -42,7 +48,11 @@ const HOTKEY_CATALOG: readonly HotkeyCommand[] = [
   { key: "sidebarToggle", label: "Toggle sidebar", scope: "menu" },
   { key: "popOut", label: "Pop out conversation", scope: "menu" },
   { key: "home", label: "Home", scope: "menu" },
-  { key: "previousConversation", label: "Previous conversation", scope: "menu" },
+  {
+    key: "previousConversation",
+    label: "Previous conversation",
+    scope: "menu",
+  },
   { key: "nextConversation", label: "Next conversation", scope: "menu" },
 ];
 

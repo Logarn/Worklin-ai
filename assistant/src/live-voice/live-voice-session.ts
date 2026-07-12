@@ -362,10 +362,16 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
   private async interrupt(): Promise<void> {
     if (this.isClosed || this.state === "failed") return;
 
+    const interruptedTurnId = this.currentTurnId ?? undefined;
     this.state = "interrupted";
     stopTranscriberBestEffort(this.transcriber);
     this.transcriber = null;
     await this.cancelAssistantTurn("interrupt");
+    await this.sendFrame({
+      type: "interrupted",
+      ...(interruptedTurnId ? { turnId: interruptedTurnId } : {}),
+    });
+    await this.beginNextUtterance();
     await this.drainOutboundFrames();
   }
 
@@ -386,6 +392,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     const content = this.finalTranscriptText.trim();
     if (content.length === 0) {
       await this.finalizePendingTurn("empty_transcript");
+      await this.beginNextUtterance();
       return;
     }
 
@@ -598,11 +605,70 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
         );
 
         if (this.activeAssistantTurn?.token === token) {
-          if (currentTurn.handle && currentTurn.finalized) {
-            this.activeAssistantTurn = null;
-          }
+          this.activeAssistantTurn = null;
         }
+        await this.beginNextUtterance();
       });
+  }
+
+  private async beginNextUtterance(): Promise<void> {
+    if (this.isClosed || this.state === "failed") return;
+
+    stopTranscriberBestEffort(this.transcriber);
+    this.transcriber = null;
+    this.resetTurnState();
+    this.state = "initializing";
+    try {
+      const transcriber = await this.resolveTranscriber({
+        sampleRate: this.context.startFrame.audio.sampleRate,
+      });
+      if (this.isClosed) {
+        stopTranscriberBestEffort(transcriber);
+        return;
+      }
+      if (!transcriber) {
+        this.state = "failed";
+        await this.sendFrame({
+          type: "error",
+          code: LiveVoiceProtocolErrorCode.InvalidField,
+          message: unavailableTranscriberMessage(),
+        });
+        return;
+      }
+      this.transcriber = transcriber;
+      await transcriber.start((event) => {
+        void this.handleTranscriberEvent(event);
+      });
+      if (this.isClosed) {
+        stopTranscriberBestEffort(transcriber);
+        this.transcriber = null;
+        return;
+      }
+      this.state = "active";
+      await this.sendFrame({ type: "listening" });
+    } catch (error) {
+      stopTranscriberBestEffort(this.transcriber);
+      this.transcriber = null;
+      if (this.isClosed) return;
+      this.state = "failed";
+      await this.sendFrame({
+        type: "error",
+        code: LiveVoiceProtocolErrorCode.InvalidField,
+        message: `Live voice could not resume listening: ${errorMessage(error)}`,
+      });
+    }
+  }
+
+  private resetTurnState(): void {
+    this.finalTranscriptSegments.length = 0;
+    this.pttReleased = false;
+    this.assistantTurnStarted = false;
+    this.activeAssistantTurn = null;
+    this.currentTurnId = null;
+    this.currentUserMessageId = null;
+    this.currentUserAudioChunks = [];
+    this.metricsTurnStarted = false;
+    this.metricsTurnFinished = false;
   }
 
   private flushTtsBuffer(token: symbol, force: boolean): void {

@@ -26,6 +26,10 @@ import { getIsPlatform } from "../config/env-registry.js";
 import { getConfig } from "../config/loader.js";
 import { createApprovalCopyGenerator } from "../daemon/approval-generators.js";
 import { processMessage } from "../daemon/process-message.js";
+import {
+  ElevenLabsSpeechEngineSession,
+  verifyElevenLabsSpeechEngineJwt,
+} from "../live-voice/elevenlabs-speech-engine.js";
 import { createLiveVoiceSession } from "../live-voice/live-voice-session.js";
 import { LiveVoiceSessionManager } from "../live-voice/live-voice-session-manager.js";
 import {
@@ -37,6 +41,8 @@ import {
   parseLiveVoiceClientTextFrame,
 } from "../live-voice/protocol.js";
 import { resolveStreamingTranscriber } from "../providers/speech-to-text/resolve.js";
+import { credentialKey } from "../security/credential-key.js";
+import { getSecureKeyAsync } from "../security/secure-keys.js";
 import {
   activeSttStreamSessions,
   SttStreamSession,
@@ -150,6 +156,11 @@ interface LiveVoiceWebSocketData {
   lastSeq: number;
 }
 
+interface ElevenLabsSpeechEngineWebSocketData {
+  wsType: "elevenlabs-speech-engine";
+  session?: ElevenLabsSpeechEngineSession;
+}
+
 export class RuntimeHttpServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private port: number;
@@ -183,7 +194,8 @@ export class RuntimeHttpServer {
       | RelayWebSocketData
       | MediaStreamWebSocketData
       | SttStreamWebSocketData
-      | LiveVoiceWebSocketData;
+      | LiveVoiceWebSocketData
+      | ElevenLabsSpeechEngineWebSocketData;
     this.server = Bun.serve<AllWebSocketData>({
       port: this.port,
       hostname: this.hostname,
@@ -285,6 +297,11 @@ export class RuntimeHttpServer {
             log.info("Live voice WebSocket opened");
             return;
           }
+          if ("wsType" in data && data.wsType === "elevenlabs-speech-engine") {
+            data.session = new ElevenLabsSpeechEngineSession(ws);
+            log.info("ElevenLabs Speech Engine upstream opened");
+            return;
+          }
           const callSessionId = (data as RelayWebSocketData).callSessionId;
           log.info({ callSessionId }, "ConversationRelay WebSocket opened");
           if (callSessionId) {
@@ -340,6 +357,10 @@ export class RuntimeHttpServer {
                 },
               );
             });
+            return;
+          }
+          if ("wsType" in data && data.wsType === "elevenlabs-speech-engine") {
+            data.session?.handleMessage(raw);
             return;
           }
           const callSessionId = (data as RelayWebSocketData).callSessionId;
@@ -410,6 +431,11 @@ export class RuntimeHttpServer {
               "Live voice WebSocket closed",
             );
             this.releaseLiveVoiceSession(data, "websocket_close");
+            return;
+          }
+          if ("wsType" in data && data.wsType === "elevenlabs-speech-engine") {
+            data.session?.close();
+            log.info({ code }, "ElevenLabs Speech Engine upstream closed");
             return;
           }
           const callSessionId = (data as RelayWebSocketData).callSessionId;
@@ -595,6 +621,13 @@ export class RuntimeHttpServer {
       req.headers.get("upgrade")?.toLowerCase() === "websocket"
     ) {
       return this.handleLiveVoiceUpgrade(req, server);
+    }
+
+    if (
+      path === "/v1/live-voice/providers/elevenlabs/upstream" &&
+      req.headers.get("upgrade")?.toLowerCase() === "websocket"
+    ) {
+      return await this.handleElevenLabsSpeechEngineUpgrade(req, server);
     }
 
     // Twilio webhook endpoints — before auth check because Twilio
@@ -904,6 +937,37 @@ export class RuntimeHttpServer {
         wsType: "live-voice",
         lastSeq: 0,
       } satisfies LiveVoiceWebSocketData,
+    });
+    if (!upgraded) {
+      return new Response("WebSocket upgrade failed", { status: 500 });
+    }
+    return undefined!;
+  }
+
+  private async handleElevenLabsSpeechEngineUpgrade(
+    req: Request,
+    server: ReturnType<typeof Bun.serve>,
+  ): Promise<Response> {
+    if (!isPrivateNetworkPeer(server, req) || !isPrivateNetworkOrigin(req)) {
+      return httpError("FORBIDDEN", "Direct provider access disabled", 403);
+    }
+    const tokenError = this.verifyGatewayServiceToken(req);
+    if (tokenError) return tokenError;
+    const providerJwt = req.headers.get(
+      "x-elevenlabs-speech-engine-authorization",
+    );
+    const apiKey = await getSecureKeyAsync(
+      credentialKey("elevenlabs", "api_key"),
+    );
+    if (
+      !providerJwt ||
+      !apiKey ||
+      !verifyElevenLabsSpeechEngineJwt(providerJwt, apiKey)
+    ) {
+      return httpError("UNAUTHORIZED", "Invalid provider authorization", 401);
+    }
+    const upgraded = server.upgrade(req, {
+      data: { wsType: "elevenlabs-speech-engine" },
     });
     if (!upgraded) {
       return new Response("WebSocket upgrade failed", { status: 500 });

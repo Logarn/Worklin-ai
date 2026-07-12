@@ -199,7 +199,9 @@ describe("LiveVoiceSession TTS", () => {
     expect(frames.filter((frame) => frame.type === "tts_audio")).toHaveLength(
       2,
     );
-    expect(frames.at(-1)).toMatchObject({
+    expect(
+      frames.filter((frame) => frame.type === "tts_done").at(-1),
+    ).toMatchObject({
       type: "tts_done",
       turnId: "live-turn-1",
     });
@@ -291,7 +293,9 @@ describe("LiveVoiceSession TTS", () => {
       type: "error",
       message: expect.stringContaining("provider unavailable"),
     });
-    expect(frames.at(-1)).toMatchObject({
+    expect(
+      frames.filter((frame) => frame.type === "tts_done").at(-1),
+    ).toMatchObject({
       type: "tts_done",
       turnId: "live-turn-1",
     });

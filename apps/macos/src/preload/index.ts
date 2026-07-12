@@ -27,6 +27,7 @@ import type {
   UpdateState,
   VellumBridge,
   VellumCommand,
+  VoiceOverlayState,
 } from "@vellumai/ipc-contract";
 
 export type {
@@ -54,6 +55,7 @@ export type {
   UpdateState,
   VellumBridge,
   VellumCommand,
+  VoiceOverlayState,
 };
 
 const notImplemented = (name: string) => (): Promise<never> =>
@@ -89,9 +91,7 @@ const bridge: VellumBridge = {
         text,
       ) as Promise<TextInsertionResult>,
     openAutomationSettings: (): Promise<void> =>
-      ipcRenderer.invoke(
-        "vellum:text:openAutomationSettings",
-      ) as Promise<void>,
+      ipcRenderer.invoke("vellum:text:openAutomationSettings") as Promise<void>,
   },
   auth: {
     startOAuth: (options: {
@@ -143,8 +143,7 @@ const bridge: VellumBridge = {
     },
   },
   helper: {
-    ping: () =>
-      ipcRenderer.invoke("vellum:helper:ping") as Promise<"pong">,
+    ping: () => ipcRenderer.invoke("vellum:helper:ping") as Promise<"pong">,
     getState: () =>
       ipcRenderer.invoke("vellum:helper:state:get") as Promise<HelperState>,
     restart: () =>
@@ -192,9 +191,7 @@ const bridge: VellumBridge = {
         ipcRenderer.send("vellum:helper:dictation:audio", chunk);
       },
       onPartial: subscribeDictationEvent("vellum:helper:dictation:partial"),
-      onFinalized: subscribeDictationEvent(
-        "vellum:helper:dictation:finalized",
-      ),
+      onFinalized: subscribeDictationEvent("vellum:helper:dictation:finalized"),
       transcribe: (
         audio: ArrayBuffer,
       ): Promise<{ ok: boolean; reason?: string }> =>
@@ -296,7 +293,11 @@ const bridge: VellumBridge = {
         organizationId,
       ) as Promise<LockfileWriteResult>,
     wake: (assistantId: string, options?: LocalWakeOptions) =>
-      ipcRenderer.invoke("vellum:localMode:wake", assistantId, options) as Promise<{
+      ipcRenderer.invoke(
+        "vellum:localMode:wake",
+        assistantId,
+        options,
+      ) as Promise<{
         ok: boolean;
         error?: string;
       }>,
@@ -316,7 +317,10 @@ const bridge: VellumBridge = {
   },
   menu: {
     setPlatformSession: (has: boolean): Promise<void> =>
-      ipcRenderer.invoke("vellum:menu:setPlatformSession", has) as Promise<void>,
+      ipcRenderer.invoke(
+        "vellum:menu:setPlatformSession",
+        has,
+      ) as Promise<void>,
   },
   mainWindow: {
     ensureVisible: (): Promise<void> =>
@@ -377,22 +381,20 @@ const bridge: VellumBridge = {
       ipcRenderer.invoke("vellum:feedback:diagnostics") as Promise<
         Record<string, unknown>
       >,
-    logs: () =>
-      ipcRenderer.invoke("vellum:feedback:logs") as Promise<string>,
+    logs: () => ipcRenderer.invoke("vellum:feedback:logs") as Promise<string>,
   },
   connectivity: {
     onState: (callback) => {
-      const handler = (
-        _event: IpcRendererEvent,
-        state: ConnectivityState,
-      ) => {
+      const handler = (_event: IpcRendererEvent, state: ConnectivityState) => {
         callback(state);
       };
       ipcRenderer.on("vellum:connectivity:state", handler);
       // Emit the current state so late subscribers (window loaded after
       // the first probe) don't wait for the next state transition.
       void (
-        ipcRenderer.invoke("vellum:connectivity:get") as Promise<ConnectivityState>
+        ipcRenderer.invoke(
+          "vellum:connectivity:get",
+        ) as Promise<ConnectivityState>
       ).then(callback);
       return () => {
         ipcRenderer.off("vellum:connectivity:state", handler);
@@ -414,10 +416,10 @@ const bridge: VellumBridge = {
     show: (
       payload: ShowNotificationPayload,
     ): Promise<{ success: boolean; errorMessage?: string }> =>
-      ipcRenderer.invoke(
-        "vellum:notifications:show",
-        payload,
-      ) as Promise<{ success: boolean; errorMessage?: string }>,
+      ipcRenderer.invoke("vellum:notifications:show", payload) as Promise<{
+        success: boolean;
+        errorMessage?: string;
+      }>,
     onAction: (callback) => {
       const handler = (
         _event: IpcRendererEvent,
@@ -477,6 +479,31 @@ const bridge: VellumBridge = {
       ipcRenderer.invoke(
         "vellum:dictationOverlay:getState",
       ) as Promise<DictationOverlayState | null>,
+  },
+  voiceOverlay: {
+    setState: (state: VoiceOverlayState | null): void => {
+      ipcRenderer.send("vellum:voiceOverlay:setState", state);
+    },
+    onState: (callback) => {
+      const handler = (
+        _event: IpcRendererEvent,
+        payload: VoiceOverlayState,
+      ) => {
+        callback(payload);
+      };
+      ipcRenderer.on("vellum:voiceOverlay:state", handler);
+      return () => ipcRenderer.off("vellum:voiceOverlay:state", handler);
+    },
+    getState: (): Promise<VoiceOverlayState | null> =>
+      ipcRenderer.invoke(
+        "vellum:voiceOverlay:getState",
+      ) as Promise<VoiceOverlayState | null>,
+    close: (): Promise<void> =>
+      ipcRenderer.invoke("vellum:voiceOverlay:close") as Promise<void>,
+    toggleMute: (): Promise<void> =>
+      ipcRenderer.invoke("vellum:voiceOverlay:toggleMute") as Promise<void>,
+    openInWorklin: (): Promise<void> =>
+      ipcRenderer.invoke("vellum:voiceOverlay:openInWorklin") as Promise<void>,
   },
   popout: {
     open: (conversationId: string): Promise<void> =>

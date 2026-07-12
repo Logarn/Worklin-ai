@@ -187,6 +187,7 @@ describe("LiveVoiceSession assistant turn", () => {
       "assistant_text_delta",
       "assistant_text_delta",
       "tts_done",
+      "listening",
     ]);
     expect(frames[3]).toMatchObject({
       type: "thinking",
@@ -285,6 +286,7 @@ describe("LiveVoiceSession assistant turn", () => {
       "ready",
       "stt_final",
       "metrics",
+      "listening",
     ]);
   });
 
@@ -307,7 +309,12 @@ describe("LiveVoiceSession assistant turn", () => {
     await waitForFrameCount(frames, 2);
 
     expect(startVoiceTurn).not.toHaveBeenCalled();
-    expect(frames.map((frame) => frame.type)).toEqual(["ready", "stt_final"]);
+    expect(frames.map((frame) => frame.type)).toEqual([
+      "ready",
+      "stt_final",
+      "listening",
+      "listening",
+    ]);
   });
 
   test("falls back to the session id when start omits a conversation id", async () => {
@@ -369,6 +376,8 @@ describe("LiveVoiceSession assistant turn", () => {
       "ready",
       "stt_final",
       "thinking",
+      "interrupted",
+      "listening",
     ]);
   });
 });

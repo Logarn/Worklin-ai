@@ -18,11 +18,13 @@
  */
 
 import { Loader2, Mic, StopCircle } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 
 import { Button } from "@vellumai/design-library";
 
 import { useLiveVoice } from "@/domains/chat/voice/live-voice/use-live-voice";
+import { publishVoiceOverlayState } from "@/runtime/voice-overlay";
+import { useVellumCommands } from "@/runtime/vellum-commands";
 import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
 
 interface LiveVoiceButtonProps {
@@ -34,19 +36,49 @@ interface LiveVoiceButtonProps {
   disabled?: boolean;
 }
 
+const VOICE_DISCLOSURE_KEY = "worklin.voice-disclosure.v1";
+
+function confirmVoiceDisclosure(): boolean {
+  if (window.localStorage.getItem(VOICE_DISCLOSURE_KEY) === "accepted") {
+    return true;
+  }
+  const accepted = window.confirm(
+    "Worklin uses an AI-generated voice. Your live audio will be processed by the selected voice provider; Worklin retains the transcript, not the pilot audio. Continue?",
+  );
+  if (accepted) window.localStorage.setItem(VOICE_DISCLOSURE_KEY, "accepted");
+  return accepted;
+}
+
 export function LiveVoiceButton({
   assistantId,
   conversationId,
   disabled = false,
 }: LiveVoiceButtonProps) {
   const voiceMode = useAssistantFeatureFlagStore.use.voiceMode();
-  const { state, inputAmplitude, start, stop } = useLiveVoice();
+  const {
+    state,
+    partialTranscript,
+    finalTranscript,
+    assistantTranscript,
+    inputAmplitude,
+    outputAmplitude,
+    muted,
+    error,
+    start,
+    stop,
+    toggleMute,
+  } = useLiveVoice();
 
   const connecting = state === "connecting";
   // Anything past connecting (listening/transcribing/thinking/speaking/ending)
   // means a session is live and the button acts as a stop control.
   const active =
     state !== "idle" && state !== "failed" && state !== "connecting";
+
+  const startWithDisclosure = useCallback(() => {
+    if (!confirmVoiceDisclosure()) return;
+    void start(assistantId, conversationId);
+  }, [assistantId, conversationId, start]);
 
   const handleClick = useCallback(() => {
     if (connecting) return;
@@ -58,9 +90,56 @@ export function LiveVoiceButton({
     } else {
       // Only the start path honours the external `disabled` prop.
       if (disabled) return;
-      void start(assistantId, conversationId);
+      startWithDisclosure();
     }
-  }, [active, connecting, disabled, start, stop, assistantId, conversationId]);
+  }, [active, connecting, disabled, startWithDisclosure, stop]);
+
+  useVellumCommands({
+    toggleVoiceConversation: () => {
+      if (connecting) return;
+      if (active) void stop();
+      else if (!disabled) startWithDisclosure();
+    },
+    endVoiceConversation: () => void stop(),
+    toggleVoiceMute: () => toggleMute(),
+  });
+
+  useEffect(() => {
+    if (state === "idle") {
+      publishVoiceOverlayState(null);
+      return;
+    }
+    publishVoiceOverlayState({
+      state,
+      partialTranscript,
+      finalTranscript,
+      assistantTranscript,
+      inputAmplitude,
+      outputAmplitude,
+      muted,
+      error,
+    });
+  }, [
+    assistantTranscript,
+    error,
+    finalTranscript,
+    inputAmplitude,
+    muted,
+    outputAmplitude,
+    partialTranscript,
+    state,
+  ]);
+
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      void stop();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, stop]);
 
   if (!voiceMode) return null;
 

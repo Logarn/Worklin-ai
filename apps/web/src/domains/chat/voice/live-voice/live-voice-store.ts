@@ -51,6 +51,7 @@ export type LiveVoiceSessionState =
   | "transcribing"
   | "thinking"
   | "speaking"
+  | "interrupted"
   | "ending"
   | "failed";
 
@@ -65,6 +66,10 @@ export interface LiveVoiceState {
   assistantTranscript: string;
   /** Smoothed RMS mic amplitude in [0, 1] for UI / barge-in. */
   inputAmplitude: number;
+  /** RMS amplitude of Worklin's current playback chunk in [0, 1]. */
+  outputAmplitude: number;
+  /** Whether microphone audio is suppressed for the active session. */
+  muted: boolean;
   /** Human-readable error message when `state === "failed"`, `null` otherwise. */
   error: string | null;
 }
@@ -79,6 +84,8 @@ export interface LiveVoiceActions {
   /** Reset the assistant transcript ahead of a new response. */
   clearAssistantTranscript: () => void;
   setInputAmplitude: (amplitude: number) => void;
+  setOutputAmplitude: (amplitude: number) => void;
+  setMuted: (muted: boolean) => void;
   /** Transition to `failed` with a message. */
   fail: (message: string) => void;
   /** Reset every field back to the idle defaults. */
@@ -97,6 +104,8 @@ const INITIAL_STATE: LiveVoiceState = {
   finalTranscript: "",
   assistantTranscript: "",
   inputAmplitude: 0,
+  outputAmplitude: 0,
+  muted: false,
   error: null,
 };
 
@@ -110,6 +119,12 @@ const useLiveVoiceStoreBase = create<LiveVoiceStore>()((set) => ({
     set((s) => ({ assistantTranscript: s.assistantTranscript + delta })),
   clearAssistantTranscript: () => set({ assistantTranscript: "" }),
   setInputAmplitude: (inputAmplitude) => set({ inputAmplitude }),
+  setOutputAmplitude: (outputAmplitude) => set({ outputAmplitude }),
+  setMuted: (muted) =>
+    set((state) => ({
+      muted,
+      inputAmplitude: muted ? 0 : state.inputAmplitude,
+    })),
   fail: (message) => set({ state: "failed", error: message }),
   reset: () => set({ ...INITIAL_STATE }),
 }));

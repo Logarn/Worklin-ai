@@ -136,6 +136,7 @@ export function decodePcm16Base64(dataBase64: string): Float32Array {
 
 export class LiveVoiceAudioPlayer {
   private readonly createContext: AudioContextFactory;
+  private readonly onAmplitude?: (amplitude: number) => void;
   private context: AudioContextLike | null = null;
 
   /** Sources currently scheduled (playing or pending). */
@@ -177,8 +178,13 @@ export class LiveVoiceAudioPlayer {
    */
   private containerDecodeChain: Promise<void> = Promise.resolve();
 
-  constructor(options?: { audioContextFactory?: AudioContextFactory }) {
-    this.createContext = options?.audioContextFactory ?? defaultAudioContextFactory;
+  constructor(options?: {
+    audioContextFactory?: AudioContextFactory;
+    onAmplitude?: (amplitude: number) => void;
+  }) {
+    this.createContext =
+      options?.audioContextFactory ?? defaultAudioContextFactory;
+    this.onAmplitude = options?.onAmplitude;
   }
 
   /** Whether any audio is scheduled, playing, or still decoding. */
@@ -220,6 +226,7 @@ export class LiveVoiceAudioPlayer {
   private enqueueRawPcm(chunk: TtsAudioChunk): void {
     const samples = decodePcm16Base64(chunk.dataBase64);
     if (samples.length === 0) return;
+    this.onAmplitude?.(rmsAmplitude(samples));
 
     const context = this.ensureContext();
 
@@ -278,6 +285,7 @@ export class LiveVoiceAudioPlayer {
         ) {
           return;
         }
+        this.onAmplitude?.(rmsAmplitude(buffer.getChannelData(0)));
         this.scheduleBuffer(context, buffer);
       } finally {
         // A stop() between start and resolution already zeroed the counter (and
@@ -345,6 +353,7 @@ export class LiveVoiceAudioPlayer {
     // subsequent TTS. The in-flight decode's own `.then` still runs but no-ops on
     // the generation mismatch.
     this.containerDecodeChain = Promise.resolve();
+    this.onAmplitude?.(0);
     this.settleIfIdle();
   }
 
@@ -397,6 +406,7 @@ export class LiveVoiceAudioPlayer {
     if (this.activeSources.size > 0 || this.pendingContainerDecodes > 0) return;
     this.playheadTime = 0;
     this.playingState = false;
+    this.onAmplitude?.(0);
     this.resolveDrain();
   }
 
@@ -405,4 +415,14 @@ export class LiveVoiceAudioPlayer {
     this.drainResolvers = [];
     for (const resolve of resolvers) resolve();
   }
+}
+
+function rmsAmplitude(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sumSquares = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index] ?? 0;
+    sumSquares += sample * sample;
+  }
+  return Math.min(1, Math.sqrt(sumSquares / samples.length) * 4);
 }

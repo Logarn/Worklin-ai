@@ -13,7 +13,12 @@ import {
 
 import { installAbout, openAboutWindow } from "./about";
 import { installAutoUpdate } from "./auto-update";
-import { APP_HOST, APP_PROTOCOL, BUNDLES_DIR_NAME, VELLUMAPP_PROTOCOL } from "./app-config";
+import {
+  APP_HOST,
+  APP_PROTOCOL,
+  BUNDLES_DIR_NAME,
+  VELLUMAPP_PROTOCOL,
+} from "./app-config";
 import { resolveAllowedOrigin } from "./app-origin";
 import { writeCliLocator } from "./cli-installer";
 import { provisionCliForWrapper } from "./cli-path-installer";
@@ -38,13 +43,11 @@ import { installAvatarIpc } from "./avatar";
 import { installCommandPaletteWindow } from "./command-palette-window";
 import { installDictationOverlay } from "./dictation-overlay-window";
 import { installDock } from "./dock";
-import {
-  installEscapeMonitor,
-  setDictationRecording,
-} from "./escape-monitor";
+import { installEscapeMonitor, setDictationRecording } from "./escape-monitor";
 import { installFeatureFlagsIpc } from "./feature-flags";
 import { installFeedbackIpc } from "./feedback";
 import { installGlobalShortcuts } from "./global-shortcuts";
+import { installVoiceOverlay } from "./voice-overlay-window";
 import { installHotkeyHelper } from "./hotkey-helper";
 import { installHotkeysIpc } from "./hotkeys";
 import { installPopoutWindows } from "./popout-window";
@@ -195,7 +198,10 @@ const registerAppProtocol = (): void => {
     // secure renderer never touches an insecure `http://127.0.0.1` origin
     // directly; the lockfile allowlist is the security boundary. Mirrors the
     // Vite dev-server proxy (`apps/web/vite-plugin-local-mode.ts`).
-    const proxied = await forwardGatewayRequest(request, getAllowedGatewayPorts);
+    const proxied = await forwardGatewayRequest(
+      request,
+      getAllowedGatewayPorts,
+    );
     if (proxied) return proxied;
 
     // Platform API routes (`/v1/*`, `/_allauth/*`, `/accounts/*`) forward to
@@ -351,7 +357,9 @@ app
       // version bump rewrites the locator now (and prunes old versions)
       // rather than after the next in-app CLI action.
       void provisionCliForWrapper()
-        .then((provisioned) => (provisioned ? refreshCliPathMenuState() : undefined))
+        .then((provisioned) =>
+          provisioned ? refreshCliPathMenuState() : undefined,
+        )
         .catch((err: unknown) => {
           log.error("[app] startup CLI provisioning failed:", err);
         });
@@ -368,6 +376,7 @@ app
     installApplicationMenu();
     installQuickInput();
     installDictationOverlay({ onRecordingLifecycle: setDictationRecording });
+    installVoiceOverlay();
     installPopoutWindows();
     installGlobalShortcuts();
     // Register the avatar channel before the Dock and Tray install so their

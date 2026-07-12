@@ -10,6 +10,8 @@ type LiveVoiceClientFrameType = (typeof LIVE_VOICE_CLIENT_FRAME_TYPES)[number];
 
 const _LIVE_VOICE_SERVER_FRAME_TYPES = [
   "ready",
+  "listening",
+  "interrupted",
   "busy",
   "stt_partial",
   "stt_final",
@@ -99,6 +101,16 @@ export interface LiveVoiceReadyServerFrame extends LiveVoiceServerFrameBase {
   readonly conversationId: string;
 }
 
+export interface LiveVoiceListeningServerFrame extends LiveVoiceServerFrameBase {
+  readonly type: "listening";
+  readonly turnId?: string;
+}
+
+export interface LiveVoiceInterruptedServerFrame extends LiveVoiceServerFrameBase {
+  readonly type: "interrupted";
+  readonly turnId?: string;
+}
+
 export interface LiveVoiceBusyServerFrame extends LiveVoiceServerFrameBase {
   readonly type: "busy";
   readonly activeSessionId: string;
@@ -171,6 +183,8 @@ export interface LiveVoiceErrorServerFrame extends LiveVoiceServerFrameBase {
 
 export type LiveVoiceServerFrame =
   | LiveVoiceReadyServerFrame
+  | LiveVoiceListeningServerFrame
+  | LiveVoiceInterruptedServerFrame
   | LiveVoiceBusyServerFrame
   | LiveVoiceSttPartialServerFrame
   | LiveVoiceSttFinalServerFrame
@@ -186,6 +200,8 @@ type WithoutSeq<T extends LiveVoiceServerFrameBase> = Omit<T, "seq">;
 
 export type LiveVoiceServerFramePayload =
   | WithoutSeq<LiveVoiceReadyServerFrame>
+  | WithoutSeq<LiveVoiceListeningServerFrame>
+  | WithoutSeq<LiveVoiceInterruptedServerFrame>
   | WithoutSeq<LiveVoiceBusyServerFrame>
   | WithoutSeq<LiveVoiceSttPartialServerFrame>
   | WithoutSeq<LiveVoiceSttFinalServerFrame>

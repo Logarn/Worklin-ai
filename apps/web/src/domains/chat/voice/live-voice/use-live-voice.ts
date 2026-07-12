@@ -13,36 +13,23 @@
  * controller instance drives at most one session at a time; `start()` while a
  * session is live is a no-op (matching the macOS guard).
  *
- * ## Single-utterance sessions
- * A live-voice session handles exactly one utterance → one response. The runtime
- * (and the macOS reference) treat `ptt_release` as terminal: once released, the
- * session never re-accepts audio (sending more yields `invalid_audio_payload`).
- * So this controller does NOT keep one socket open across turns — after the
- * assistant finishes speaking it ends the session (→ idle), and the user starts
- * a fresh one for the next turn. Barge-in is the one case that reconnects
- * automatically (see below).
- *
- * ## State transitions (one session = one turn)
+ * ## State transitions
  * `idle → connecting` (start) → `listening` (ready + capture started) →
  * `transcribing` (ptt released) → `thinking` (server response) → `speaking`
- * (tts_audio) → `idle` (tts_done drained → session ended). The mic keeps
- * capturing for the whole session; `stop()`, teardown, an error, a server
- * `archived`/`closed`, or end-of-response returns to `idle`/`failed`.
+ * (tts_audio) → `listening` (tts_done drained). The socket and microphone stay
+ * open across turns until the user explicitly ends the conversation.
  *
  * ## Mic forwarding
  * The mic capture graph runs for the entire active session so amplitude keeps
  * flowing for barge-in even while the assistant is thinking/speaking. Audio
  * *forwarding* (`session.forwardingAudio`) is gated to the user's turn: captured
  * PCM is streamed only while forwarding is on. Push-to-talk release flips
- * forwarding off (without stopping the mic); it is not re-opened within a
- * session (the session is single-utterance — see above).
+ * forwarding off (without stopping the mic); it re-opens for the next turn.
  *
  * ## Barge-in
  * While `speaking`, a captured amplitude over {@link BARGE_IN_AMPLITUDE_THRESHOLD}
- * stops playback, sends `interrupt` (once per response), and ends the session
- * (→ idle) — the interrupted session is terminal on the runtime, so the user
- * starts a fresh session to respond. (Seamless reconnect-on-barge-in is a
- * follow-up.)
+ * stops playback, sends `interrupt` once, and resumes listening on the same
+ * conversation.
  *
  * ## Automatic push-to-talk release
  * While `listening`, sustained speech (≥ {@link MINIMUM_SPEECH_DURATION_BEFORE_RELEASE_MS})
@@ -55,7 +42,16 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   LiveVoiceChannelClient,
   type LiveVoiceClientError,
+  type LiveVoiceClientEventHandler,
+  type LiveVoiceClientEventName,
+  type LiveVoiceConnectArgs,
 } from "@/domains/chat/voice/live-voice/live-voice-client";
+import {
+  bootstrapVoiceSession,
+  releaseVoiceSession,
+  VoiceBootstrapRequestError,
+} from "@/domains/chat/voice/live-voice/bootstrap";
+import { ManagedVoiceChannelClient } from "@/domains/chat/voice/live-voice/managed-voice-client";
 import {
   LiveVoiceAudioCapture,
   LIVE_VOICE_AUDIO_FORMAT,
@@ -100,12 +96,18 @@ export interface UseLiveVoiceResult {
   assistantTranscript: string;
   /** Smoothed mic amplitude in [0, 1]. */
   inputAmplitude: number;
+  /** Worklin playback amplitude in [0, 1]. */
+  outputAmplitude: number;
+  /** Whether microphone samples are currently suppressed. */
+  muted: boolean;
   /** Failure message when `state === "failed"`, else `null`. */
   error: string | null;
   /** Start a session for `assistantId`, optionally attaching a conversation. */
   start: (assistantId: string, conversationId?: string) => Promise<void>;
   /** End the session and release the mic, socket, and audio context. */
   stop: () => Promise<void>;
+  /** Toggle microphone suppression without closing the provider session. */
+  toggleMute: () => void;
 }
 
 /** Injectable factories so tests can supply mock primitives. */
@@ -122,7 +124,7 @@ export interface UseLiveVoiceOptions {
  * ref alongside the active primitives; replaced wholesale on each `start()`.
  */
 interface SessionContext {
-  client: LiveVoiceChannelClient;
+  client: LiveVoiceClientLike;
   capture: LiveVoiceAudioCapture;
   player: LiveVoiceAudioPlayer;
   /** Unsubscribe callbacks for the client event handlers. */
@@ -134,11 +136,7 @@ interface SessionContext {
   /**
    * Whether captured PCM is currently streamed to the server. On while the user
    * is speaking (`listening`); turned off after an automatic push-to-talk
-   * release. A live-voice session is single-utterance (the runtime treats
-   * `ptt_release` as terminal — it never re-accepts audio), so forwarding is not
-   * re-opened within a session: the session ends after the response, and a fresh
-   * session is started for the next turn. Amplitude keeps flowing regardless so
-   * barge-in works while not forwarding.
+   * release. The gate re-opens when the runtime is ready for the next turn.
    */
   forwardingAudio: boolean;
   /** Whether the assistant has sent any TTS audio for the current response. */
@@ -151,6 +149,24 @@ interface SessionContext {
   speechMs: number;
   /** Accumulated trailing silence (ms) after speech in the current utterance. */
   silenceMs: number;
+  naturalTurnTaking: boolean;
+  managedSessionId?: string;
+  assistantId: string;
+}
+
+interface LiveVoiceClientLike {
+  readonly ownsAudio?: boolean;
+  on<E extends LiveVoiceClientEventName>(
+    event: E,
+    handler: LiveVoiceClientEventHandler<E>,
+  ): () => void;
+  connect(args: LiveVoiceConnectArgs): Promise<void>;
+  sendAudio(pcm: ArrayBuffer): void;
+  pttRelease(): void;
+  interrupt(): void;
+  end(): void;
+  close(): void;
+  setMuted?(muted: boolean): void;
 }
 
 /** Number of bytes per Int16 PCM sample. */
@@ -170,6 +186,8 @@ export function useLiveVoice(
   const finalTranscript = useLiveVoiceStore.use.finalTranscript();
   const assistantTranscript = useLiveVoiceStore.use.assistantTranscript();
   const inputAmplitude = useLiveVoiceStore.use.inputAmplitude();
+  const outputAmplitude = useLiveVoiceStore.use.outputAmplitude();
+  const muted = useLiveVoiceStore.use.muted();
   const error = useLiveVoiceStore.use.error();
 
   const sessionRef = useRef<SessionContext | null>(null);
@@ -202,6 +220,12 @@ export function useLiveVoice(
     for (const unsubscribe of session.unsubscribes) unsubscribe();
     session.unsubscribes = [];
     session.client.close();
+    if (session.managedSessionId) {
+      void releaseVoiceSession({
+        assistantId: session.assistantId,
+        sessionId: session.managedSessionId,
+      });
+    }
     // dispose() stops playback *and* releases the AudioContext; a bare stop()
     // would leak the context across repeated sessions until page unload.
     void session.player.dispose();
@@ -221,10 +245,23 @@ export function useLiveVoice(
     for (const unsubscribe of session.unsubscribes) unsubscribe();
     session.unsubscribes = [];
     session.client.end();
+    if (session.managedSessionId) {
+      void releaseVoiceSession({
+        assistantId: session.assistantId,
+        sessionId: session.managedSessionId,
+      });
+    }
     // Release the AudioContext, not just the scheduled sources (see teardown).
     await session.player.dispose();
     await session.capture.shutdown();
     useLiveVoiceStore.getState().reset();
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    const store = useLiveVoiceStore.getState();
+    const muted = !store.muted;
+    sessionRef.current?.client.setMuted?.(muted);
+    store.setMuted(muted);
   }, []);
 
   const start = useCallback(
@@ -240,8 +277,52 @@ export function useLiveVoice(
       store.setState("connecting");
 
       const opts = optionsRef.current;
-      const client = (opts.createClient ?? (() => new LiveVoiceChannelClient()))();
-      const player = (opts.createPlayer ?? (() => new LiveVoiceAudioPlayer()))();
+      let client: LiveVoiceClientLike;
+      let naturalTurnTaking = false;
+      let managedSessionId: string | undefined;
+      let resolvedConversationId = conversationId;
+      if (opts.createClient) {
+        client = opts.createClient();
+      } else {
+        try {
+          const bootstrap = await bootstrapVoiceSession({
+            assistantId,
+            ...(conversationId ? { conversationId } : {}),
+          });
+          resolvedConversationId = bootstrap.conversationId;
+          if (bootstrap.connection.transport === "native") {
+            client = new LiveVoiceChannelClient();
+          } else {
+            client = new ManagedVoiceChannelClient(bootstrap, { assistantId });
+            naturalTurnTaking = true;
+            managedSessionId = bootstrap.sessionId;
+          }
+        } catch (error) {
+          // During the managed-provider rollout, an older runtime may not yet
+          // expose bootstrap. Keep the authenticated native WebSocket as the
+          // compatibility fallback; authorization/configuration failures must
+          // still surface instead of silently changing engines.
+          if (
+            error instanceof VoiceBootstrapRequestError &&
+            (error.status === 404 || error.status === 501)
+          ) {
+            client = new LiveVoiceChannelClient();
+          } else {
+            store.fail(
+              error instanceof Error
+                ? error.message
+                : "Voice session could not start",
+            );
+            return;
+          }
+        }
+      }
+      const player = opts.createPlayer
+        ? opts.createPlayer()
+        : new LiveVoiceAudioPlayer({
+            onAmplitude: (amplitude) =>
+              useLiveVoiceStore.getState().setOutputAmplitude(amplitude),
+          });
 
       const session: SessionContext = {
         client,
@@ -256,11 +337,17 @@ export function useLiveVoice(
         releaseInFlight: false,
         speechMs: 0,
         silenceMs: 0,
+        naturalTurnTaking,
+        ...(managedSessionId ? { managedSessionId } : {}),
+        assistantId,
       };
 
-      const capture = (opts.createCapture ?? ((o) => new LiveVoiceAudioCapture(o)))({
+      const capture = (
+        opts.createCapture ?? ((o) => new LiveVoiceAudioCapture(o))
+      )({
         onChunk: (buf) => handleChunk(session, buf),
-        onAmplitude: (amplitude) => handleAmplitude(session, amplitude, teardown),
+        onAmplitude: (amplitude) =>
+          handleAmplitude(session, amplitude, teardown),
       });
       session.capture = capture;
       sessionRef.current = session;
@@ -272,7 +359,21 @@ export function useLiveVoice(
       session.unsubscribes.push(
         client.on("ready", () => {
           if (!live()) return;
-          void startCapture(session, teardown);
+          if (session.client.ownsAudio) {
+            useLiveVoiceStore.getState().setState("listening");
+          } else if (session.captureRunning) resumeListening(session);
+          else void startCapture(session, teardown);
+        }),
+        client.on("listening", () => {
+          if (!live()) return;
+          if (useLiveVoiceStore.getState().state !== "speaking") {
+            resumeListening(session);
+          }
+        }),
+        client.on("interrupted", () => {
+          if (!live()) return;
+          session.player.stop();
+          resumeListening(session);
         }),
         client.on("sttPartial", (frame) => {
           if (!live()) return;
@@ -324,13 +425,29 @@ export function useLiveVoice(
           if (!live()) return;
           void finishResponseAfterPlayback(session, teardown);
         }),
+        client.on("providerSpeaking", () => {
+          if (!live()) return;
+          useLiveVoiceStore.getState().setState("speaking");
+        }),
+        client.on("inputAmplitude", ({ amplitude }) => {
+          if (!live()) return;
+          useLiveVoiceStore.getState().setInputAmplitude(amplitude);
+        }),
+        client.on("outputAmplitude", ({ amplitude }) => {
+          if (!live()) return;
+          useLiveVoiceStore.getState().setOutputAmplitude(amplitude);
+        }),
         client.on("archived", () => {
           if (!live()) return;
           // Persisted; nothing user-visible to do here.
         }),
         client.on("busy", () => {
           if (!live()) return;
-          finishWithError(session, teardown, "Another live-voice session is active.");
+          finishWithError(
+            session,
+            teardown,
+            "Another live-voice session is active.",
+          );
         }),
         client.on("error", (err: LiveVoiceClientError) => {
           if (!live()) return;
@@ -345,7 +462,12 @@ export function useLiveVoice(
         }),
       );
 
-      await client.connect({ assistantId, conversationId });
+      await client.connect({
+        assistantId,
+        ...(resolvedConversationId
+          ? { conversationId: resolvedConversationId }
+          : {}),
+      });
     },
     [teardown],
   );
@@ -361,9 +483,12 @@ export function useLiveVoice(
     finalTranscript,
     assistantTranscript,
     inputAmplitude,
+    outputAmplitude,
+    muted,
     error,
     start,
     stop,
+    toggleMute,
   };
 }
 
@@ -402,8 +527,12 @@ async function startCapture(
  */
 function handleChunk(session: SessionContext, buf: ArrayBuffer): void {
   if (!session.captureRunning || !session.forwardingAudio) return;
-  session.client.sendAudio(buf);
-  updateAutomaticRelease(session, buf);
+  const muted = useLiveVoiceStore.getState().muted;
+  // Managed turn detectors need a continuous clock even while muted, so send
+  // equal-duration silence instead of the microphone samples.
+  session.client.sendAudio(muted ? new ArrayBuffer(buf.byteLength) : buf);
+  if (muted) return;
+  if (!session.naturalTurnTaking) updateAutomaticRelease(session, buf);
 }
 
 /**
@@ -418,6 +547,7 @@ function handleAmplitude(
   teardown: () => void,
 ): void {
   if (!session.captureRunning) return;
+  if (useLiveVoiceStore.getState().muted) return;
   useLiveVoiceStore.getState().setInputAmplitude(amplitude);
   if (amplitude >= BARGE_IN_AMPLITUDE_THRESHOLD) {
     interruptIfSpeaking(session, teardown);
@@ -428,7 +558,10 @@ function handleAmplitude(
  * Track speech / trailing-silence durations and auto-release push-to-talk once
  * a real utterance is followed by a long-enough silence window.
  */
-function updateAutomaticRelease(session: SessionContext, buf: ArrayBuffer): void {
+function updateAutomaticRelease(
+  session: SessionContext,
+  buf: ArrayBuffer,
+): void {
   if (useLiveVoiceStore.getState().state !== "listening") return;
   const durationMs = chunkDurationMs(buf);
   if (durationMs <= 0) return;
@@ -472,21 +605,21 @@ function releasePushToTalk(session: SessionContext): void {
  * running (continuous capture), so there is nothing to restart here.
  */
 /**
- * Barge-in: stop playback and interrupt the server once per response, then end
- * the session (→ idle). The interrupted session is terminal on the runtime — it
- * won't accept more audio — so we can't keep forwarding on it; the user starts a
- * fresh session to respond. (Seamless reconnect-on-barge-in is a follow-up.)
+ * Barge-in: stop playback and interrupt the server once per response. The
+ * continuous runtime/provider session remains open and transitions back to
+ * listening when interruption cancellation completes.
  */
 function interruptIfSpeaking(
   session: SessionContext,
-  teardown: () => void,
+  _teardown: () => void,
 ): void {
   if (useLiveVoiceStore.getState().state !== "speaking") return;
   if (!session.player.isPlaying || session.interruptSent) return;
   session.interruptSent = true;
   session.player.stop();
   session.client.interrupt();
-  teardown();
+  if (!session.naturalTurnTaking) session.forwardingAudio = false;
+  useLiveVoiceStore.getState().setState("interrupted");
 }
 
 /** First TTS frame of a response: reset playback flags for the new utterance. */
@@ -497,20 +630,13 @@ function beginAssistantAudioIfNeeded(session: SessionContext): void {
 }
 
 /**
- * After `tts_done`, await playback drain, then end the session (→ idle).
- *
- * A live-voice session is single-utterance: once `ptt_release` fires the runtime
- * won't accept more audio on it, so we don't resume listening on the same
- * socket — we tear the session down and the user starts a fresh one for the next
- * turn (mirrors the macOS `closeCompletedUtteranceSessionAfterPlayback`).
- * Forwarding is suspended during the drain so playback audio captured by the
- * (still-open) mic isn't streamed back. A barge-in during the drain already
- * tore this session down and reconnected (generation bumped / state no longer
- * `speaking`), so we leave that fresh session alone.
+ * After `tts_done`, await playback drain, then resume listening on the same
+ * socket. Forwarding stays suspended during the drain so playback audio
+ * captured by the open mic is not streamed back.
  */
 async function finishResponseAfterPlayback(
   session: SessionContext,
-  teardown: () => void,
+  _teardown: () => void,
 ): Promise<void> {
   const generation = session.generation;
   session.responseAudioStarted = false;
@@ -519,9 +645,21 @@ async function finishResponseAfterPlayback(
   await session.player.waitUntilDrained();
   if (session.generation !== generation) return;
 
-  // A barge-in mid-drain already reconnected a fresh session; don't tear it down.
-  if (useLiveVoiceStore.getState().state !== "speaking") return;
-  teardown();
+  if (useLiveVoiceStore.getState().state === "interrupted") return;
+  resumeListening(session);
+}
+
+function resumeListening(session: SessionContext): void {
+  session.forwardingAudio = true;
+  session.responseAudioStarted = false;
+  session.interruptSent = false;
+  session.releaseInFlight = false;
+  session.speechMs = 0;
+  session.silenceMs = 0;
+  const store = useLiveVoiceStore.getState();
+  store.setPartialTranscript("");
+  store.setInputAmplitude(0);
+  store.setState("listening");
 }
 
 /** Fail the session: tear down primitives and surface the message. */

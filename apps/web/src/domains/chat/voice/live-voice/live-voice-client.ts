@@ -29,6 +29,8 @@ import {
   type LiveVoiceClientStartFrame,
   LIVE_VOICE_AUDIO_FORMAT,
   type LiveVoiceMetricsServerFrame,
+  type LiveVoiceListeningServerFrame,
+  type LiveVoiceInterruptedServerFrame,
   type LiveVoiceReadyServerFrame,
   type LiveVoiceSttFinalServerFrame,
   type LiveVoiceSttPartialServerFrame,
@@ -61,6 +63,8 @@ export interface LiveVoiceClientError {
  */
 export interface LiveVoiceClientEventMap {
   ready: LiveVoiceReadyServerFrame;
+  listening: LiveVoiceListeningServerFrame;
+  interrupted: LiveVoiceInterruptedServerFrame;
   sttPartial: LiveVoiceSttPartialServerFrame;
   sttFinal: LiveVoiceSttFinalServerFrame;
   thinking: LiveVoiceThinkingServerFrame;
@@ -71,6 +75,9 @@ export interface LiveVoiceClientEventMap {
   archived: LiveVoiceArchivedServerFrame;
   busy: LiveVoiceBusyServerFrame;
   error: LiveVoiceClientError;
+  providerSpeaking: { eventId?: string };
+  inputAmplitude: { amplitude: number };
+  outputAmplitude: { amplitude: number };
   /** Fired exactly once when the transport closes (clean or otherwise). */
   closed: void;
 }
@@ -116,6 +123,8 @@ export class LiveVoiceChannelClient {
     [E in LiveVoiceClientEventName]: Set<LiveVoiceClientEventHandler<E>>;
   } = {
     ready: new Set(),
+    listening: new Set(),
+    interrupted: new Set(),
     sttPartial: new Set(),
     sttFinal: new Set(),
     thinking: new Set(),
@@ -126,6 +135,9 @@ export class LiveVoiceChannelClient {
     archived: new Set(),
     busy: new Set(),
     error: new Set(),
+    providerSpeaking: new Set(),
+    inputAmplitude: new Set(),
+    outputAmplitude: new Set(),
     closed: new Set(),
   };
 
@@ -188,7 +200,10 @@ export class LiveVoiceChannelClient {
     try {
       ws = this.webSocketFactory(url);
     } catch (err) {
-      this.fail("connection-failed", messageOf(err, "Failed to open live-voice WebSocket"));
+      this.fail(
+        "connection-failed",
+        messageOf(err, "Failed to open live-voice WebSocket"),
+      );
       return;
     }
     this.ws = ws;
@@ -202,7 +217,10 @@ export class LiveVoiceChannelClient {
 
     this.connectTimeout = setTimeout(() => {
       if (this.state === "connecting") {
-        this.fail("timeout", `Live-voice connection timed out after ${this.connectTimeoutMs}ms`);
+        this.fail(
+          "timeout",
+          `Live-voice connection timed out after ${this.connectTimeoutMs}ms`,
+        );
       }
     }, this.connectTimeoutMs);
   }
@@ -269,6 +287,12 @@ export class LiveVoiceChannelClient {
         this.state = "active";
         this.emit("ready", frame);
         return;
+      case "listening":
+        this.emit("listening", frame);
+        return;
+      case "interrupted":
+        this.emit("interrupted", frame);
+        return;
       case "busy":
         this.emit("busy", frame);
         this.close();
@@ -308,7 +332,10 @@ export class LiveVoiceChannelClient {
     // An unexpected transport close before `ready` is a connection failure;
     // otherwise it's a clean teardown.
     if (this.state === "connecting") {
-      this.fail("connection-failed", "Live-voice WebSocket closed before ready");
+      this.fail(
+        "connection-failed",
+        "Live-voice WebSocket closed before ready",
+      );
       return;
     }
     this.teardown();

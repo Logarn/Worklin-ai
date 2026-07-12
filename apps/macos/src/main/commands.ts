@@ -45,6 +45,9 @@ export const DEFAULT_ACCELERATORS: Record<VellumCommandKind, string> = {
   createAssistant: "",
   retireAssistant: "",
   quickInputSubmit: "",
+  toggleVoiceConversation: "",
+  endVoiceConversation: "",
+  toggleVoiceMute: "",
   cancelDictation: "",
   replayOnboarding: "",
   previewPrechat: "",
@@ -60,6 +63,7 @@ export const DEFAULT_ACCELERATORS: Record<VellumCommandKind, string> = {
 export const GLOBAL_SHORTCUT_DEFAULTS: Record<string, string> = {
   globalHotkey: "CmdOrCtrl+Shift+G",
   quickInput: "CmdOrCtrl+Shift+/",
+  voiceConversation: "Alt+Space",
 };
 
 /**

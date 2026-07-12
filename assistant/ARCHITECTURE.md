@@ -738,6 +738,21 @@ Live voice STT uses the same `resolveStreamingTranscriber()` path as conversatio
 
 Live voice TTS uses `streamLiveVoiceTtsAudio()` and the configured `services.tts.provider`. The selected provider must be registered, catalog-compatible, and expose `capabilities.supportsStreaming` plus `synthesizeStream()`. Fish Audio is the current catalog provider with streaming synthesis support; non-streaming providers remain available for buffered message playback or other supported surfaces, but live voice reports a TTS error instead of silently falling back to buffered playback.
 
+The native WebSocket is now continuous: after a completed or interrupted turn,
+the session creates a fresh streaming transcriber and emits `listening` without
+releasing the socket/session lease. Managed voice engines use the same Worklin
+turn bridge through `src/live-voice/provider-chat-completions.ts`. Hume EVI and
+ElevenLabs receive only short-lived provider credentials plus a signed Worklin
+session binding; long-lived provider secrets remain in the credential service.
+ElevenLabs Speech Engine connects back through the gateway WebSocket proxy; the
+runtime verifies its HS256 upstream JWT and correlates interruption-safe output
+with the provider `event_id`.
+`src/live-voice/provider-session.ts` enforces the active-session lease and
+validates the user, organization, assistant, conversation, engine, and expiry
+before a provider can start a Worklin turn. Provider selection and private-pilot
+allowlisting live in the server-only `services.voice` config block. See
+`docs/live-voice-pilot.md` for rollout configuration.
+
 V1 is local/gateway-scoped. Managed/cloud WebSocket proxy support, cross-region routing, and p50/p95 latency guarantees are out of scope for this version. Metrics frames expose timing data for measurement, but the architecture does not promise a hard latency SLO.
 
 **Client service-first boundary:**
