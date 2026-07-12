@@ -44,4 +44,14 @@ describe("VoiceConversationPanel", () => {
     expect(container.innerHTML).toContain("motion-reduce:animate-none");
     expect(container.innerHTML).toContain("motion-reduce:transition-none");
   });
+
+  test("keeps royal blue as the only visualization accent", () => {
+    const { container } = render(
+      <VoiceConversationPanel state="speaking" outputAmplitude={0.8} />,
+    );
+    expect(container.innerHTML).toContain("#4169e1");
+    expect(container.innerHTML).toContain("#9ab2ff");
+    expect(container.innerHTML).not.toContain("violet");
+    expect(container.innerHTML).not.toContain("fuchsia");
+  });
 });

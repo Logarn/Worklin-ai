@@ -50,7 +50,7 @@ function VoiceOrb({
   return (
     <div className="relative h-24 w-24 shrink-0" aria-hidden="true">
       <div
-        className={`absolute inset-[19px] rounded-full border border-violet-300/60 bg-[radial-gradient(circle_at_35%_30%,rgba(221,214,254,.95),rgba(124,58,237,.82)_48%,rgba(76,29,149,.98))] shadow-[0_0_28px_rgba(139,92,246,.55)] motion-reduce:transition-none ${
+        className={`absolute inset-[19px] rounded-full border border-[#9ab2ff]/65 bg-[radial-gradient(circle_at_35%_30%,#e9efff,#4169e1_48%,#142f8f)] shadow-[0_0_30px_rgba(65,105,225,.58)] motion-reduce:transition-none ${
           state === "thinking" ? "animate-pulse motion-reduce:animate-none" : ""
         }`}
         style={{ transform: `scale(${1 + Math.min(amplitude, 1) * 0.12})` }}
@@ -61,7 +61,7 @@ function VoiceOrb({
         return (
           <span
             key={index}
-            className={`absolute left-1/2 top-1/2 block w-[2px] origin-[50%_48px] rounded-full bg-gradient-to-t from-fuchsia-400 to-blue-400 transition-[height,opacity] duration-75 motion-reduce:transition-none ${
+            className={`absolute left-1/2 top-1/2 block w-[2px] origin-[50%_48px] rounded-full bg-gradient-to-t from-[#4169e1] to-[#9ab2ff] transition-[height,opacity] duration-75 motion-reduce:transition-none ${
               state === "thinking" ? "opacity-45" : "opacity-90"
             }`}
             style={{
@@ -98,7 +98,7 @@ export function VoiceConversationPanel({
       className={
         overlay
           ? "flex h-full w-full items-center gap-4 overflow-hidden rounded-[28px] border border-white/10 bg-[#111015]/95 px-5 py-4 text-white shadow-2xl backdrop-blur-xl"
-          : "mx-3 mb-2 flex items-center gap-3 rounded-2xl border border-violet-500/15 bg-violet-500/[0.045] px-3 py-2"
+          : "mx-3 mb-2 flex items-center gap-3 rounded-2xl border border-[#4169e1]/20 bg-[#4169e1]/[0.045] px-3 py-2"
       }
       aria-label="Live voice transcript"
       aria-live="polite"
@@ -109,7 +109,7 @@ export function VoiceConversationPanel({
         outputAmplitude={outputAmplitude}
       />
       <div className="min-w-0 flex-1">
-        <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-violet-400">
+        <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-[#7394ff]">
           {STATE_LABELS[state]}
         </p>
         {error ? (

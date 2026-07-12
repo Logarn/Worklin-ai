@@ -75,21 +75,20 @@ const DEMO_SEQUENCE: DemoPhase[] = [
 ];
 
 const PREVIEW_THEME = {
-  "--background-primary": "#0b0a0f",
-  "--background-secondary": "#15131b",
-  "--surface-base": "#0b0a0f",
-  "--surface-lift": "#17161c",
-  "--surface-overlay": "#1d1b23",
+  "--background-primary": "#000000",
+  "--background-secondary": "#0a0a0c",
+  "--surface-base": "#000000",
+  "--surface-lift": "#111114",
+  "--surface-overlay": "#18181c",
   "--content-primary": "#f7f5fb",
   "--content-default": "#f7f5fb",
   "--content-secondary": "#b8b3c2",
   "--content-tertiary": "#817a8e",
   "--content-disabled": "#625d6c",
   "--border-secondary": "rgba(255, 255, 255, 0.12)",
-  "--ring": "#8b5cf6",
+  "--ring": "#73737c",
   "--chat-max-width": "768px",
-  background:
-    "radial-gradient(circle at 50% 0%, rgba(107, 33, 168, 0.12), transparent 38%), #0b0a0f",
+  background: "#000000",
 } as CSSProperties;
 
 export function VoicePreviewPage() {
@@ -103,8 +102,8 @@ export function VoicePreviewPage() {
   const phase = active ? DEMO_SEQUENCE[phaseIndex] : undefined;
   const state = phase?.state ?? "idle";
   const voiceButtonClass = active
-    ? "flex h-8 items-center gap-2 rounded-full bg-violet-500/16 px-3 text-xs font-medium text-violet-200 ring-1 ring-violet-400/30 transition-all"
-    : "flex h-8 items-center gap-2 rounded-full bg-violet-600 px-3 text-xs font-medium text-white shadow-[0_0_24px_rgba(124,58,237,.28)] transition-all hover:bg-violet-500";
+    ? "flex h-8 items-center gap-2 rounded-full bg-white/8 px-3 text-xs font-medium text-[#9ab2ff] ring-1 ring-white/12 transition-all"
+    : "flex h-8 items-center gap-2 rounded-full bg-white/6 px-3 text-xs font-medium text-zinc-200 ring-1 ring-white/10 transition-all hover:bg-white/10";
 
   useEffect(() => {
     if (!phase?.duration) return;
@@ -153,8 +152,8 @@ export function VoicePreviewPage() {
         <Square size={11} fill="currentColor" />
       ) : (
         <span className="relative flex h-4 w-4 items-center justify-center">
-          <span className="absolute inset-0 rounded-full bg-white/20" />
-          <span className="relative h-2 w-2 rounded-full border border-white/90" />
+          <span className="absolute inset-0 rounded-full bg-[#4169e1]/20" />
+          <span className="relative h-2 w-2 rounded-full border border-[#9ab2ff]" />
         </span>
       )}
       {active ? "End voice" : "Live voice"}
@@ -181,7 +180,7 @@ export function VoicePreviewPage() {
           </div>
         }
         topBarRightSlot={
-          <span className="rounded-full border border-violet-400/20 bg-violet-500/8 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.13em] text-violet-300">
+          <span className="rounded-full border border-white/10 bg-white/[0.035] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.13em] text-zinc-500">
             Preview
           </span>
         }
@@ -193,7 +192,7 @@ export function VoicePreviewPage() {
             type="button"
             className="flex items-center gap-3 rounded-[10px] bg-[var(--surface-lift)] px-3 py-2.5 text-left text-sm"
           >
-            <span className="h-2 w-2 rounded-full bg-violet-400" />
+            <span className="h-2 w-2 rounded-full bg-zinc-500" />
             Launch planning
           </button>
           <div className="mt-auto px-3 pb-2">
@@ -214,7 +213,7 @@ export function VoicePreviewPage() {
                 product, design, and go-to-market.
               </div>
               <div className="flex max-w-[86%] gap-3">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-violet-300">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/5 text-zinc-400">
                   <Sparkles size={15} />
                 </div>
                 <p className="text-sm leading-6 text-[var(--content-secondary)]">
