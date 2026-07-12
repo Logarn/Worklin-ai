@@ -21,6 +21,8 @@ const PREVIEW_THEME = {
   "--content-secondary": "#b8b3c2",
   "--content-tertiary": "#817a8e",
   "--border-secondary": "rgba(255, 255, 255, 0.12)",
+  background:
+    "radial-gradient(circle at 50% 10%, rgba(107, 33, 168, 0.18), transparent 42%), #0b0a0f",
 } as CSSProperties;
 
 export function VoicePreviewPage() {
@@ -47,7 +49,7 @@ export function VoicePreviewPage() {
 
   return (
     <main
-      className="min-h-screen overflow-auto bg-[radial-gradient(circle_at_50%_10%,rgba(107,33,168,.18),transparent_42%),var(--background-primary)] px-6 py-10"
+      className="min-h-screen overflow-auto px-6 py-10"
       style={PREVIEW_THEME}
     >
       <div className="mx-auto max-w-4xl space-y-8">
