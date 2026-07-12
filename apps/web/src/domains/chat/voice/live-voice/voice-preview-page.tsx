@@ -1,15 +1,17 @@
+import { Sparkles, Square } from "lucide-react";
 import {
-  ArrowUp,
-  Mic,
-  Paperclip,
-  PanelLeft,
-  Sparkles,
-  Square,
-} from "lucide-react";
-import { type CSSProperties, useEffect, useState } from "react";
+  type CSSProperties,
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import { ChatLayoutHeader } from "@/domains/chat/chat-layout-header";
+import { ChatComposer } from "@/domains/chat/components/chat-composer/chat-composer";
+import type { VoiceInputButtonHandle } from "@/domains/chat/components/voice-input-button";
 
 import type { LiveVoiceSessionState } from "./live-voice-store";
-import { VoiceConversationPanel } from "./voice-conversation-panel";
 
 interface DemoPhase {
   state: LiveVoiceSessionState;
@@ -75,24 +77,34 @@ const DEMO_SEQUENCE: DemoPhase[] = [
 const PREVIEW_THEME = {
   "--background-primary": "#0b0a0f",
   "--background-secondary": "#15131b",
+  "--surface-base": "#0b0a0f",
+  "--surface-lift": "#17161c",
+  "--surface-overlay": "#1d1b23",
   "--content-primary": "#f7f5fb",
+  "--content-default": "#f7f5fb",
   "--content-secondary": "#b8b3c2",
   "--content-tertiary": "#817a8e",
+  "--content-disabled": "#625d6c",
   "--border-secondary": "rgba(255, 255, 255, 0.12)",
+  "--ring": "#8b5cf6",
+  "--chat-max-width": "768px",
   background:
-    "radial-gradient(circle at 50% 0%, rgba(107, 33, 168, 0.15), transparent 38%), #0b0a0f",
+    "radial-gradient(circle at 50% 0%, rgba(107, 33, 168, 0.12), transparent 38%), #0b0a0f",
 } as CSSProperties;
 
 export function VoicePreviewPage() {
   const [phaseIndex, setPhaseIndex] = useState(-1);
   const [amplitude, setAmplitude] = useState(0.3);
+  const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const voiceInputRef = useRef<VoiceInputButtonHandle | null>(null);
 
   const active = phaseIndex >= 0;
   const phase = active ? DEMO_SEQUENCE[phaseIndex] : undefined;
   const state = phase?.state ?? "idle";
   const voiceButtonClass = active
-    ? "flex h-9 items-center gap-2 rounded-full bg-violet-500/16 px-3 text-xs font-medium text-violet-200 ring-1 ring-violet-400/30 transition-all"
-    : "flex h-9 items-center gap-2 rounded-full bg-violet-600 px-3 text-xs font-medium text-white shadow-[0_0_24px_rgba(124,58,237,.28)] transition-all hover:bg-violet-500";
+    ? "flex h-8 items-center gap-2 rounded-full bg-violet-500/16 px-3 text-xs font-medium text-violet-200 ring-1 ring-violet-400/30 transition-all"
+    : "flex h-8 items-center gap-2 rounded-full bg-violet-600 px-3 text-xs font-medium text-white shadow-[0_0_24px_rgba(124,58,237,.28)] transition-all hover:bg-violet-500";
 
   useEffect(() => {
     if (!phase?.duration) return;
@@ -126,135 +138,130 @@ export function VoicePreviewPage() {
     setPhaseIndex((current) => (current >= 0 ? -1 : 0));
   };
 
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+  };
+
+  const voiceControl = (
+    <button
+      type="button"
+      onClick={toggleDemo}
+      className={voiceButtonClass}
+      aria-label={active ? "End live voice demo" : "Start live voice demo"}
+    >
+      {active ? (
+        <Square size={11} fill="currentColor" />
+      ) : (
+        <span className="relative flex h-4 w-4 items-center justify-center">
+          <span className="absolute inset-0 rounded-full bg-white/20" />
+          <span className="relative h-2 w-2 rounded-full border border-white/90" />
+        </span>
+      )}
+      {active ? "End voice" : "Live voice"}
+    </button>
+  );
+
   return (
-    <main className="min-h-screen text-[#f7f5fb]" style={PREVIEW_THEME}>
-      <div className="grid min-h-screen md:grid-cols-[220px_1fr]">
-        <aside className="hidden border-r border-white/8 bg-black/15 px-4 py-5 md:flex md:flex-col">
-          <div className="mb-8 flex items-center gap-3 px-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-500/18 text-violet-300">
-              <Sparkles size={17} />
-            </div>
-            <span className="text-sm font-semibold tracking-tight">
-              Worklin
-            </span>
+    <main
+      className="flex min-h-screen flex-col text-[var(--content-default)]"
+      style={PREVIEW_THEME}
+    >
+      <ChatLayoutHeader
+        isMobile={false}
+        drawerOpen={false}
+        collapsed={false}
+        sidebarWidth={230}
+        toggleSidebar={() => undefined}
+        topBarCenter={
+          <div className="text-center">
+            <p className="text-sm font-medium">Launch planning</p>
+            <p className="text-[11px] text-[var(--content-tertiary)]">
+              Worklin · Online
+            </p>
           </div>
+        }
+        topBarRightSlot={
+          <span className="rounded-full border border-violet-400/20 bg-violet-500/8 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.13em] text-violet-300">
+            Preview
+          </span>
+        }
+      />
+
+      <div className="flex min-h-0 flex-1">
+        <aside className="hidden w-[230px] shrink-0 border-r border-white/8 px-4 py-4 md:flex md:flex-col">
           <button
             type="button"
-            className="flex items-center gap-3 rounded-xl bg-white/6 px-3 py-2.5 text-left text-sm text-zinc-200"
+            className="flex items-center gap-3 rounded-[10px] bg-[var(--surface-lift)] px-3 py-2.5 text-left text-sm"
           >
             <span className="h-2 w-2 rounded-full bg-violet-400" />
             Launch planning
           </button>
-          <div className="mt-auto rounded-xl border border-white/8 bg-white/[0.025] p-3">
-            <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+          <div className="mt-auto px-3 pb-2">
+            <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--content-tertiary)]">
               Visual demo
             </p>
-            <p className="mt-1 text-xs leading-5 text-zinc-400">
-              No microphone or voice provider is connected.
+            <p className="mt-1 text-xs leading-5 text-[var(--content-tertiary)]">
+              No microphone or provider connection.
             </p>
           </div>
         </aside>
 
-        <section className="flex min-h-screen min-w-0 flex-col">
-          <header className="flex h-16 items-center justify-between border-b border-white/8 px-5">
-            <div className="flex items-center gap-3">
-              <PanelLeft className="text-zinc-500 md:hidden" size={18} />
-              <div>
-                <h1 className="text-sm font-medium">Launch planning</h1>
-                <p className="text-xs text-zinc-500">Worklin · Online</p>
+        <section className="flex min-w-0 flex-1 flex-col">
+          <div className="mx-auto flex w-full max-w-[var(--chat-max-width)] flex-1 flex-col justify-end px-4 py-8">
+            <div className="space-y-6">
+              <div className="ml-auto max-w-[78%] rounded-2xl rounded-br-md bg-[var(--surface-lift)] px-4 py-3 text-sm leading-6">
+                Let’s get tomorrow’s launch organized. We need a clear order for
+                product, design, and go-to-market.
+              </div>
+              <div className="flex max-w-[86%] gap-3">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-violet-300">
+                  <Sparkles size={15} />
+                </div>
+                <p className="text-sm leading-6 text-[var(--content-secondary)]">
+                  I have the project context. Start live voice and talk me
+                  through the priority order.
+                </p>
               </div>
             </div>
-            <span className="rounded-full border border-violet-400/20 bg-violet-500/8 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.13em] text-violet-300">
-              Interactive preview
-            </span>
-          </header>
+          </div>
 
-          <div className="flex flex-1 flex-col">
-            <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-end px-5 py-8">
-              <div className="space-y-6">
-                <div className="ml-auto max-w-[78%] rounded-2xl rounded-br-md bg-white/8 px-4 py-3 text-sm leading-6 text-zinc-200">
-                  Let’s get tomorrow’s launch organized. We need a clear order
-                  for product, design, and go-to-market.
-                </div>
-                <div className="flex max-w-[86%] gap-3">
-                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-violet-300">
-                    <Sparkles size={15} />
-                  </div>
-                  <div className="text-sm leading-6 text-zinc-300">
-                    I have the project context. Start live voice and talk me
-                    through the priority order.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-4 pb-6">
-              <div className="mx-auto max-w-3xl rounded-[24px] border border-white/10 bg-[#121117] shadow-[0_20px_70px_rgba(0,0,0,.3)]">
-                {active && (
-                  <div className="pt-3">
-                    <VoiceConversationPanel
-                      state={state}
-                      partialTranscript={phase?.partialTranscript}
-                      finalTranscript={phase?.finalTranscript}
-                      assistantTranscript={phase?.assistantTranscript}
-                      inputAmplitude={inputAmplitude}
-                      outputAmplitude={outputAmplitude}
-                    />
-                  </div>
-                )}
-
-                <div className="min-h-14 px-4 py-4 text-sm text-zinc-500">
-                  Message Worklin…
-                </div>
-
-                <div className="flex items-center justify-between border-t border-white/8 px-3 py-2.5">
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="rounded-full p-2 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-300"
-                      aria-label="Attach file"
-                    >
-                      <Paperclip size={17} />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      className="rounded-full p-2 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-300"
-                      aria-label="Dictate one message"
-                    >
-                      <Mic size={17} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={toggleDemo}
-                      className={voiceButtonClass}
-                      aria-label={
-                        active ? "End live voice demo" : "Start live voice demo"
-                      }
-                    >
-                      {active ? (
-                        <Square size={12} fill="currentColor" />
-                      ) : (
-                        <span className="relative flex h-4 w-4 items-center justify-center">
-                          <span className="absolute inset-0 rounded-full bg-white/20" />
-                          <span className="relative h-2 w-2 rounded-full border border-white/90" />
-                        </span>
-                      )}
-                      {active ? "End voice" : "Live voice"}
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-full bg-zinc-800 p-2 text-zinc-500"
-                      aria-label="Send message"
-                    >
-                      <ArrowUp size={17} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <p className="mx-auto mt-3 max-w-3xl text-center text-[11px] text-zinc-600">
-                Click Live voice to play a complete two-turn conversation.
+          <div className="px-3 pt-2 pb-5 sm:px-6">
+            <div className="mx-auto max-w-[var(--chat-max-width)]">
+              <ChatComposer
+                input={input}
+                setInput={setInput}
+                placeholder="What would you like to do?"
+                onSubmit={handleSubmit}
+                inputRef={inputRef}
+                typingDisabled={false}
+                sendDisabled={!input.trim()}
+                attachmentsUploadingCount={0}
+                canSendAttachments={false}
+                chatAttachments={[]}
+                onAddAttachmentFiles={() => undefined}
+                onRemoveAttachment={() => undefined}
+                voiceInputRef={voiceInputRef}
+                onVoiceTranscript={() => undefined}
+                onVoiceInterimTranscript={() => undefined}
+                onVoiceError={() => undefined}
+                onVoiceBeforeStart={() => false}
+                onStopGenerating={() => undefined}
+                canStopGenerating={false}
+                assistantId="voice-preview"
+                conversationId="voice-preview"
+                modelSupportsVision
+                liveVoicePreview={{
+                  state,
+                  partialTranscript: phase?.partialTranscript,
+                  finalTranscript: phase?.finalTranscript,
+                  assistantTranscript: phase?.assistantTranscript,
+                  inputAmplitude,
+                  outputAmplitude,
+                  control: voiceControl,
+                }}
+              />
+              <p className="mt-3 text-center text-[11px] text-[var(--content-tertiary)]">
+                Click Live voice to play the two-turn conversation.
               </p>
             </div>
           </div>

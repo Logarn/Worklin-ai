@@ -30,7 +30,10 @@ import {
 } from "@/domains/chat/components/voice-input-button";
 import { type TurnPhase, useTurnStore } from "@/domains/chat/turn-store";
 import { useLiveVoiceStore } from "@/domains/chat/voice/live-voice/live-voice-store";
-import { VoiceConversationPanel } from "@/domains/chat/voice/live-voice/voice-conversation-panel";
+import {
+  VoiceConversationPanel,
+  type VoiceConversationPanelProps,
+} from "@/domains/chat/voice/live-voice/voice-conversation-panel";
 import { useAudioAmplitude } from "@/domains/chat/voice/use-audio-amplitude";
 import { useVoiceRecordingStore } from "@/domains/chat/voice/voice-recording-store";
 import { useIsMobile } from "@/hooks/use-is-mobile";
@@ -127,6 +130,21 @@ export interface ChatComposerProps {
   conversationId?: string | null;
 
   /**
+   * Controlled live-voice presentation used by the hidden visual-review route.
+   * Normal chat sessions leave this undefined and continue through
+   * `LiveVoiceButton` + the shared live-voice store.
+   */
+  liveVoicePreview?: Pick<
+    VoiceConversationPanelProps,
+    | "state"
+    | "partialTranscript"
+    | "finalTranscript"
+    | "assistantTranscript"
+    | "inputAmplitude"
+    | "outputAmplitude"
+  > & { control: ReactNode };
+
+  /**
    * Whether the currently-active inference model accepts image input.
    * When `false`, the AttachFileButton is disabled so users can't pick a
    * file that the provider would reject downstream (MiniMax, Fireworks
@@ -191,6 +209,7 @@ export function ChatComposer({
   canStopGenerating,
   assistantId,
   conversationId,
+  liveVoicePreview,
   thresholdPickerSlot,
   contextWindowIndicatorSlot,
   noticesAboveFormSlot,
@@ -228,19 +247,33 @@ export function ChatComposer({
   // users without the flag. The live-voice button only appears alongside the
   // dictation button (same `showVoiceInput` precondition + a non-null id).
   const voiceMode = useAssistantFeatureFlagStore.use.voiceMode();
-  const liveVoiceEligible = voiceMode && showVoiceInput && !!assistantId;
+  const liveVoiceEligible =
+    liveVoicePreview !== undefined ||
+    (voiceMode && showVoiceInput && !!assistantId);
   // Read session state via the store's per-field selectors rather than mounting
   // a second `useLiveVoice()` controller. The single controller instance lives
   // in `LiveVoiceButton` (which drives start/stop + owns the unmount-teardown
   // effect); the composer only ever *reads* the projected state, so two
   // controllers with competing teardown effects on the same store would be a
   // footgun. These atomic selectors re-render only on the fields they read.
-  const liveVoiceState = useLiveVoiceStore.use.state();
-  const liveVoicePartial = useLiveVoiceStore.use.partialTranscript();
-  const liveVoiceFinal = useLiveVoiceStore.use.finalTranscript();
-  const liveVoiceAssistant = useLiveVoiceStore.use.assistantTranscript();
-  const liveVoiceInputAmplitude = useLiveVoiceStore.use.inputAmplitude();
-  const liveVoiceOutputAmplitude = useLiveVoiceStore.use.outputAmplitude();
+  const storedLiveVoiceState = useLiveVoiceStore.use.state();
+  const storedLiveVoicePartial = useLiveVoiceStore.use.partialTranscript();
+  const storedLiveVoiceFinal = useLiveVoiceStore.use.finalTranscript();
+  const storedLiveVoiceAssistant = useLiveVoiceStore.use.assistantTranscript();
+  const storedLiveVoiceInputAmplitude = useLiveVoiceStore.use.inputAmplitude();
+  const storedLiveVoiceOutputAmplitude =
+    useLiveVoiceStore.use.outputAmplitude();
+  const liveVoiceState = liveVoicePreview?.state ?? storedLiveVoiceState;
+  const liveVoicePartial =
+    liveVoicePreview?.partialTranscript ?? storedLiveVoicePartial;
+  const liveVoiceFinal =
+    liveVoicePreview?.finalTranscript ?? storedLiveVoiceFinal;
+  const liveVoiceAssistant =
+    liveVoicePreview?.assistantTranscript ?? storedLiveVoiceAssistant;
+  const liveVoiceInputAmplitude =
+    liveVoicePreview?.inputAmplitude ?? storedLiveVoiceInputAmplitude;
+  const liveVoiceOutputAmplitude =
+    liveVoicePreview?.outputAmplitude ?? storedLiveVoiceOutputAmplitude;
   // Anything but idle/failed counts as an active session; while active the
   // dictation mic is disabled so the two capture flows never run at once.
   // `failed` is a retryable/inactive state in `useLiveVoice`/`LiveVoiceButton`,
@@ -662,7 +695,8 @@ export function ChatComposer({
                         }}
                       />
                     )}
-                    {showVoiceInput && assistantId && (
+                    {showVoiceInput &&
+                      assistantId &&
                       // Self-gates on the `voice-mode` flag (renders null when
                       // off — no layout shift). The composer's busy/disabled
                       // signal only gates the START path; an active session
@@ -675,12 +709,15 @@ export function ChatComposer({
                       // recorder. `LiveVoiceButton` only applies external
                       // `disabled` to its START path, so an in-flight live-voice
                       // session is never trapped by this.
-                      <LiveVoiceButton
-                        assistantId={assistantId}
-                        conversationId={conversationId ?? undefined}
-                        disabled={typingDisabled || isVoiceActive}
-                      />
-                    )}
+                      (liveVoicePreview ? (
+                        liveVoicePreview.control
+                      ) : (
+                        <LiveVoiceButton
+                          assistantId={assistantId}
+                          conversationId={conversationId ?? undefined}
+                          disabled={typingDisabled || isVoiceActive}
+                        />
+                      ))}
                     {/* macOS parity: the send button is hidden during recording
                     and while transcription is being processed. Only the voice
                     button (mic / stop / spinner) is shown. */}

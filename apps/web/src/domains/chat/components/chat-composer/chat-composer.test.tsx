@@ -702,6 +702,36 @@ function renderVoiceComposer(
 }
 
 describe("ChatComposer — live-voice integration", () => {
+  test("controlled preview uses the real composer without starting a provider session", () => {
+    useTurnStore.setState(INITIAL_TURN_STATE);
+    mockVoiceMode = false;
+    mockLiveVoiceState = "idle";
+
+    const { getByLabelText, getByText, queryByLabelText } = renderVoiceComposer(
+      {
+        liveVoicePreview: {
+          state: "speaking",
+          finalTranscript: "Preview user turn",
+          assistantTranscript: "Preview assistant turn",
+          outputAmplitude: 0.75,
+          control: (
+            <button type="button" aria-label="End live voice demo">
+              End voice
+            </button>
+          ),
+        },
+      },
+    );
+
+    expect(getByLabelText("End live voice demo")).toBeTruthy();
+    expect(queryByLabelText("Start voice mode")).toBeNull();
+    expect(getByText("Preview user turn")).toBeTruthy();
+    expect(getByText("Preview assistant turn")).toBeTruthy();
+    expect(
+      (getByLabelText("Start voice input") as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
   test("flag OFF: no live-voice button, dictation mic stays enabled", () => {
     // GIVEN the voice-mode flag is disabled (default)
     useTurnStore.setState(INITIAL_TURN_STATE);
