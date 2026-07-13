@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 
 import {
   assistantApiStatusForRuntimeStack,
@@ -59,7 +60,7 @@ function config(
     publicIngressUrl: "https://worklin.example.com",
     requireIsolatedRuntime: true,
     allowLegacySharedRuntime: false,
-    legacySharedRuntimeAssistantIds: [],
+    legacySharedRuntimeUserHashes: [],
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
     runtimeRoot: "/data",
@@ -115,7 +116,9 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
-        legacySharedRuntimeAssistantIds: ["asst-internal-pilot"],
+        legacySharedRuntimeUserHashes: [
+          createHash("sha256").update("another-user").digest("hex"),
+        ],
       }),
       NOW,
     );
@@ -322,7 +325,9 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
-        legacySharedRuntimeAssistantIds: ["asst-internal-pilot"],
+        legacySharedRuntimeUserHashes: [
+          createHash("sha256").update("another-user").digest("hex"),
+        ],
       }),
       NOW,
     );
@@ -383,21 +388,21 @@ describe("runtimeStackConfigFromEnv", () => {
     ).toMatchObject({
       requireIsolatedRuntime: true,
       allowLegacySharedRuntime: false,
-      legacySharedRuntimeAssistantIds: [],
+      legacySharedRuntimeUserHashes: [],
       runtimeStackUrlTemplate: null,
     });
   });
 
-  test("parses a trimmed pilot assistant allowlist", () => {
+  test("parses a trimmed pilot user-hash allowlist", () => {
     expect(
       runtimeStackConfigFromEnv(
         {
-          WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS:
-            "asst-1, asst-2, ,asst-3",
+          WORKLIN_LEGACY_SHARED_RUNTIME_USER_HASHES:
+            "hash-1, hash-2, ,hash-3",
         },
         "http://gateway.test",
         "https://worklin.example.com",
-      ).legacySharedRuntimeAssistantIds,
-    ).toEqual(["asst-1", "asst-2", "asst-3"]);
+      ).legacySharedRuntimeUserHashes,
+    ).toEqual(["hash-1", "hash-2", "hash-3"]);
   });
 });

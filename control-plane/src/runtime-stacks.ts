@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export const RUNTIME_STACK_STATUSES = [
   "provisioning",
@@ -39,7 +39,7 @@ export interface RuntimeStackConfig {
   publicIngressUrl: string;
   requireIsolatedRuntime: boolean;
   allowLegacySharedRuntime: boolean;
-  legacySharedRuntimeAssistantIds: readonly string[];
+  legacySharedRuntimeUserHashes: readonly string[];
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
   runtimeRoot: string | null;
@@ -72,8 +72,8 @@ export function runtimeStackConfigFromEnv(
     rawEnv.WORKLIN_REQUIRE_ISOLATED_RUNTIME,
     true,
   );
-  const legacySharedRuntimeAssistantIds = (
-    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS ?? ""
+  const legacySharedRuntimeUserHashes = (
+    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_USER_HASHES ?? ""
   )
     .split(",")
     .map((value) => value.trim())
@@ -84,7 +84,7 @@ export function runtimeStackConfigFromEnv(
     publicIngressUrl,
     requireIsolatedRuntime,
     allowLegacySharedRuntime,
-    legacySharedRuntimeAssistantIds,
+    legacySharedRuntimeUserHashes,
     runtimeStackUrlTemplate: template,
     runtimeStackProvider:
       rawEnv.WORKLIN_RUNTIME_STACK_PROVIDER?.trim() ||
@@ -95,11 +95,14 @@ export function runtimeStackConfigFromEnv(
 
 function isLegacySharedRuntimeAllowedForAssistant(
   config: RuntimeStackConfig,
-  assistantId: string,
+  assistant: AssistantRuntimeRow,
 ): boolean {
+  const userHash = createHash("sha256")
+    .update(assistant.user_id)
+    .digest("hex");
   return (
-    config.legacySharedRuntimeAssistantIds.length === 0 ||
-    config.legacySharedRuntimeAssistantIds.includes(assistantId)
+    config.legacySharedRuntimeUserHashes.length === 0 ||
+    config.legacySharedRuntimeUserHashes.includes(userHash)
   );
 }
 
@@ -231,7 +234,7 @@ function nextRuntimeStackSeed(
   if (
     !config.requireIsolatedRuntime &&
     config.allowLegacySharedRuntime &&
-    isLegacySharedRuntimeAllowedForAssistant(config, assistant.id)
+    isLegacySharedRuntimeAllowedForAssistant(config, assistant)
   ) {
     return {
       status: "active",
@@ -259,6 +262,7 @@ function nextRuntimeStackSeed(
 
 function recoverUnallocatedStackToLegacySharedRuntime(
   db: Database,
+  assistant: AssistantRuntimeRow,
   stack: RuntimeStackRow,
   config: RuntimeStackConfig,
   nowIso: () => string,
@@ -266,7 +270,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
   if (
     config.requireIsolatedRuntime ||
     !config.allowLegacySharedRuntime ||
-    !isLegacySharedRuntimeAllowedForAssistant(config, stack.assistant_id) ||
+    !isLegacySharedRuntimeAllowedForAssistant(config, assistant) ||
     config.runtimeStackUrlTemplate ||
     stack.provider !== "railway" ||
     (stack.status !== "failed" && stack.status !== "provisioning") ||
@@ -321,6 +325,7 @@ export function ensureRuntimeStackForAssistant(
     }
     return recoverUnallocatedStackToLegacySharedRuntime(
       db,
+      assistant,
       existing,
       config,
       nowIso,
