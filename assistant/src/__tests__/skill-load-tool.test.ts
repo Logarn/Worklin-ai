@@ -23,6 +23,20 @@ mock.module("../skills/catalog-install.js", () => ({
   resolveCatalog: (_skillId?: string) => Promise.resolve([]),
 }));
 
+let persistedBrandContext: string | undefined;
+mock.module("../memory/brand-brain-store.js", () => ({
+  getStoredBrandBrain: () =>
+    persistedBrandContext
+      ? {
+          brandId: "brand_test",
+          brain: { brandName: "Acme Studio" },
+          revision: 2,
+          updatedAt: 1,
+        }
+      : undefined,
+  formatBrandBrainSkillContext: () => persistedBrandContext ?? "",
+}));
+
 await import("../tools/skills/load.js");
 const { getTool } = await import("../tools/registry.js");
 
@@ -106,6 +120,29 @@ describe("skill_load tool", () => {
     mockAutoInstall.mockReset();
     mockAutoInstall.mockImplementation((_skillId: string) =>
       Promise.resolve(false),
+    );
+    persistedBrandContext = undefined;
+  });
+
+  test("injects persisted Brand Brain context when brand copy loads", async () => {
+    persistedBrandContext =
+      '<worklin_brand_brain source="persisted">Acme Studio</worklin_brand_brain>';
+    writeSkillWithIncludes(
+      "write-brand-copy",
+      "Brand Copywriter",
+      "Writes brand copy",
+      "Use approved brand context.",
+      ["worklin-brand-brain"],
+    );
+
+    const result = await executeSkillLoad({ skill: "write-brand-copy" });
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain(persistedBrandContext);
+    expect(result.content).toContain("brand_brain_apply_correction");
+    expect(result.content).toContain('<loaded_skill id="worklin-brand-brain"');
+    expect(result.content.indexOf(persistedBrandContext)).toBeLessThan(
+      result.content.indexOf('<loaded_skill id="write-brand-copy"'),
     );
   });
 

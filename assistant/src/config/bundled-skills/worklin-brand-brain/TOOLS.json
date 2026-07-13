@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "brand_brain_read",
+      "description": "Read the persisted Brand Brain bound to this conversation, or select one by brand ID, brand name, or website. Returns only an unambiguous stored profile and binds the conversation to the selected brand.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brand_id": { "type": "string" },
+          "brand_name": { "type": "string" },
+          "website_url": { "type": "string" }
+        },
+        "required": []
+      },
+      "executor": "tools/brand-brain-read.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "brand_brain_apply_correction",
+      "description": "Persist one explicit user-approved Brand Brain correction with an audit event. Use only after the user directly corrects or approves a durable rule.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brand_id": { "type": "string" },
+          "brand_name": { "type": "string" },
+          "website_url": { "type": "string" },
+          "field": {
+            "type": "string",
+            "enum": [
+              "voice_summary",
+              "tagline",
+              "brand_story",
+              "unique_selling_proposition",
+              "rule_do",
+              "rule_dont",
+              "approved_phrase",
+              "avoid_phrase",
+              "approved_cta",
+              "audience_note",
+              "required_disclaimer",
+              "forbidden_claim",
+              "caution_area"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "enum": ["add", "remove", "replace"]
+          },
+          "value": { "type": "string" },
+          "previous_value": {
+            "type": "string",
+            "description": "Required when replacing one item in a list. Not needed for scalar field replacements."
+          },
+          "reason": { "type": "string" },
+          "explicitly_approved": {
+            "type": "boolean",
+            "description": "Set true only when the user directly corrected or approved this durable rule."
+          }
+        },
+        "required": ["field", "operation", "value", "explicitly_approved"]
+      },
+      "executor": "tools/brand-brain-apply-correction.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "brand_brain_record_campaign_outcome",
+      "description": "Persist a user-confirmed campaign learning and its evidence note in Brand Brain with an audit event. Never use for predicted or invented outcomes.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brand_id": { "type": "string" },
+          "brand_name": { "type": "string" },
+          "website_url": { "type": "string" },
+          "campaign_type": { "type": "string" },
+          "insight": { "type": "string" },
+          "outcome": {
+            "type": "string",
+            "enum": ["winning", "mixed", "avoid"]
+          },
+          "evidence": {
+            "type": "string",
+            "description": "Concrete result source, metric summary, or user-confirmed observation."
+          },
+          "result_confirmed": {
+            "type": "boolean",
+            "description": "Set true only when the user supplied or confirmed the actual result."
+          }
+        },
+        "required": [
+          "campaign_type",
+          "insight",
+          "outcome",
+          "evidence",
+          "result_confirmed"
+        ]
+      },
+      "executor": "tools/brand-brain-record-campaign-outcome.ts",
+      "execution_target": "host"
+    }
+  ]
+}

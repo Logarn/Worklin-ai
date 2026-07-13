@@ -129,6 +129,10 @@ import * as subagentSpawn from "./bundled-skills/subagent/tools/subagent-spawn.j
 import * as subagentStatus from "./bundled-skills/subagent/tools/subagent-status.js";
 // ── transcribe ─────────────────────────────────────────────────────────────────
 import * as transcribeMedia from "./bundled-skills/transcribe/tools/transcribe-media.js";
+// ── worklin-brand-brain ────────────────────────────────────────────────────────
+import * as brandBrainApplyCorrection from "./bundled-skills/worklin-brand-brain/tools/brand-brain-apply-correction.js";
+import * as brandBrainRead from "./bundled-skills/worklin-brand-brain/tools/brand-brain-read.js";
+import * as brandBrainRecordCampaignOutcome from "./bundled-skills/worklin-brand-brain/tools/brand-brain-record-campaign-outcome.js";
 // ── worklin-retention ──────────────────────────────────────────────────────────
 import * as retentionAudit from "./bundled-skills/worklin-retention/tools/retention-audit.js";
 import * as retentionAuditStatus from "./bundled-skills/worklin-retention/tools/retention-audit-status.js";
@@ -299,8 +303,27 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
   // transcribe
   ["transcribe:tools/transcribe-media.ts", transcribeMedia],
 
+  // worklin-brand-brain
+  ["worklin-brand-brain:tools/brand-brain-read.ts", brandBrainRead],
+  [
+    "worklin-brand-brain:tools/brand-brain-apply-correction.ts",
+    brandBrainApplyCorrection,
+  ],
+  [
+    "worklin-brand-brain:tools/brand-brain-record-campaign-outcome.ts",
+    brandBrainRecordCampaignOutcome,
+  ],
+
   // worklin-retention
   ["worklin-retention:tools/retention-source-status.ts", retentionSourceStatus],
+  [
+    "worklin-retention:tools/retention-connect-klaviyo.ts",
+    retentionConnectKlaviyo,
+  ],
+  [
+    "worklin-retention:tools/retention-list-klaviyo-accounts.ts",
+    retentionListKlaviyoAccounts,
+  ],
   ["worklin-retention:tools/retention-brand-brain.ts", retentionBrandBrain],
   [
     "worklin-retention:tools/retention-shopify-snapshot.ts",
@@ -351,16 +374,6 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
     "worklin-retention:tools/retention-create-klaviyo-draft.ts",
     retentionCreateKlaviyoDraft,
   ],
-  ["worklin-retention:tools/retention-context-pack.ts", retentionContextPack],
-  ["worklin-retention:tools/retention-audit.ts", retentionAudit],
-  [
-    "worklin-retention:tools/retention-connect-klaviyo.ts",
-    retentionConnectKlaviyo,
-  ],
-  [
-    "worklin-retention:tools/retention-list-klaviyo-accounts.ts",
-    retentionListKlaviyoAccounts,
-  ],
   ["worklin-retention:tools/retention-audit-status.ts", retentionAuditStatus],
   [
     "worklin-retention:tools/retention-schedule-audit.ts",
@@ -371,4 +384,6 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
     retentionGenerateAuditArtifact,
   ],
   ["worklin-retention:tools/retention-deep-audit.ts", retentionDeepAudit],
+  ["worklin-retention:tools/retention-context-pack.ts", retentionContextPack],
+  ["worklin-retention:tools/retention-audit.ts", retentionAudit],
 ]);

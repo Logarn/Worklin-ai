@@ -6,6 +6,8 @@ metadata:
   vellum:
     category: "content"
     display-name: "Brand Copywriter"
+    includes:
+      - "worklin-brand-brain"
     activation-hints:
       - "Write or rewrite marketing copy in my brand voice"
       - "Create an email, landing page, social post, ad, or video script"
@@ -31,6 +33,8 @@ Treat word choice as a renderer over semantic functions, not as a power-word dat
 4. Read only the relevant channel section in [channel-playbooks.md](references/channel-playbooks.md).
 5. Read [claim-critic.md](references/claim-critic.md) before finalizing commercial, comparative, regulated, scarcity, testimonial, or performance copy.
 6. Read [evidence-basis.md](references/evidence-basis.md) when explaining a recommendation or deciding whether a tactic is a default principle or merely a test hypothesis.
+
+The persisted Brand Brain is injected automatically when exactly one profile is available or the conversation is already bound to a brand. If several profiles exist, use the included Brand Brain skill to select the requested brand. Persist a correction only after the user explicitly approves it, and persist campaign learning only from a confirmed real result with an evidence note.
 
 Do not make the user repeat brand information that Worklin already has. Surface only missing facts that materially affect the strategy, claim scope, or legal safety.
 

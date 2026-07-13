@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  applyBrandBrainCorrection,
   buildDeepRetentionAudit,
   buildRetentionContextPack,
   buildRetentionMicroSegments,
   buildUnifiedCustomerView,
   buildUnifiedRetentionAudit,
   computeRetentionCustomerFeatures,
+  createDraftBrandBrain,
   findRetentionCampaignOpportunities,
   findRetentionMissingPieces,
   generateRetentionAuditArtifact,
@@ -17,6 +19,7 @@ import {
   getRetentionShopifySnapshot,
   getRetentionSourceStatus,
   RETENTION_BLOCKED_CAPABILITIES,
+  recordBrandBrainCampaignLearning,
   runRetentionQa,
   scheduleRetentionAudit,
   scoreRetentionCustomers,
@@ -45,6 +48,56 @@ describe("retention-domain safety posture", () => {
 });
 
 describe("Worklin Retention Brain", () => {
+  test("onboarding drafts never persist demo fixture facts", () => {
+    const result = createDraftBrandBrain({
+      brandName: "Acme Studio",
+      websiteUrl: "https://acme.example",
+      storefront: {
+        status: "fetched",
+        title: "Acme Studio",
+        description: "Practical tools for independent design teams.",
+        productHints: ["Design operations toolkit"],
+      },
+    });
+
+    expect(result.brandName).toBe("Acme Studio");
+    expect(result.positioning.story).toContain("Practical tools");
+    expect(result.products).toEqual([]);
+    expect(result.offers).toEqual([]);
+    expect(result.sourceProvenance.some((source) => source.status === "fixture"))
+      .toBe(false);
+    expect(result.caveats.join(" ")).not.toContain("Fixture brand brain");
+  });
+
+  test("approved corrections and verified outcomes update structured context", () => {
+    const draft = createDraftBrandBrain({ brandName: "Acme Studio" });
+    const corrected = applyBrandBrainCorrection(draft, {
+      field: "rule_dont",
+      operation: "add",
+      value: "Do not use manufactured urgency.",
+    });
+    const learned = recordBrandBrainCampaignLearning(corrected, {
+      campaignType: "welcome_email",
+      insight: "A product demonstration drove more qualified replies.",
+      outcome: "winning",
+    });
+
+    expect(corrected.rules).toContainEqual({
+      type: "dont",
+      rule: "Do not use manufactured urgency.",
+    });
+    expect(
+      corrected.sourceProvenance.some(
+        (source) => source.status === "approved",
+      ),
+    ).toBe(true);
+    expect(learned.campaignMemory).toContainEqual({
+      campaignType: "welcome_email",
+      insight: "A product demonstration drove more qualified replies.",
+      outcome: "winning",
+    });
+  });
+
   test("Brand Brain exposes voice, rules, and safety metadata", () => {
     const result = getRetentionBrandBrain();
 

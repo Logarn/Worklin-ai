@@ -282,6 +282,7 @@ export { migrateConversationOriginChannelIndex } from "./287-conversation-origin
 export { migrateBackfillOriginChannelFromBindings } from "./288-backfill-origin-channel-from-bindings.js";
 export { migrateContactChannelsUniqueExtUser } from "./289-contact-channels-unique-ext-user.js";
 export { createRetentionTables } from "./290-retention-tables.js";
+export { createRetentionBrandBrainTables } from "./291-retention-brand-brains.js";
 export {
   MIGRATION_REGISTRY,
   type MigrationRegistryEntry,

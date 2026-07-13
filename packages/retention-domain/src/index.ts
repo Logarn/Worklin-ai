@@ -152,6 +152,47 @@ export interface BrandBrainContext {
   safety: RetentionSafetyMetadata;
 }
 
+export type BrandBrainCorrectionField =
+  | "voice_summary"
+  | "tagline"
+  | "brand_story"
+  | "unique_selling_proposition"
+  | "rule_do"
+  | "rule_dont"
+  | "approved_phrase"
+  | "avoid_phrase"
+  | "approved_cta"
+  | "audience_note"
+  | "required_disclaimer"
+  | "forbidden_claim"
+  | "caution_area";
+
+export interface BrandBrainCorrection {
+  field: BrandBrainCorrectionField;
+  operation: "add" | "remove" | "replace";
+  value: string;
+  previousValue?: string;
+}
+
+export interface BrandBrainCampaignLearning {
+  campaignType: string;
+  insight: string;
+  outcome: "winning" | "mixed" | "avoid";
+}
+
+export interface BrandBrainOnboardingInput {
+  brandName: string;
+  websiteUrl?: string;
+  storefront?: {
+    status: "fetched" | "unavailable" | "skipped";
+    url?: string;
+    title?: string;
+    description?: string;
+    productHints?: string[];
+    caveat?: string;
+  };
+}
+
 export interface RetentionCustomer {
   id: string;
   email: string;
@@ -1318,6 +1359,330 @@ export function getRetentionBrandBrain(
     safety: createRetentionSafetyMetadata([
       "Brand Brain is fixture-backed until durable Worklin brand memory is wired.",
     ]),
+  };
+}
+
+function normalizedUnique(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((raw) => {
+    const value = raw.trim();
+    const key = value.toLocaleLowerCase();
+    if (!value || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((value) => value.trim());
+}
+
+function updateStringCollection(
+  values: string[],
+  correction: BrandBrainCorrection,
+): string[] {
+  const value = correction.value.trim();
+  const previousValue = correction.previousValue?.trim();
+  if (!value) throw new Error("Brand Brain correction value must not be empty.");
+  if (correction.operation === "add") return normalizedUnique([...values, value]);
+
+  const target = correction.operation === "replace" ? previousValue : value;
+  if (!target) {
+    throw new Error("Brand Brain replacements require the previous value being replaced.");
+  }
+  const targetKey = target.toLocaleLowerCase();
+  const remaining = values.filter(
+    (item) => item.trim().toLocaleLowerCase() !== targetKey,
+  );
+  return correction.operation === "replace"
+    ? normalizedUnique([...remaining, value])
+    : remaining;
+}
+
+/** Build a production-safe draft from onboarding facts without demo fixtures. */
+export function createDraftBrandBrain(
+  input: BrandBrainOnboardingInput,
+): BrandBrainContext {
+  const generatedAt = nowIso();
+  const brandName = input.brandName.trim() || "Unnamed brand";
+  const storefront = input.storefront;
+  const websiteUrl = input.websiteUrl?.trim() || storefront?.url?.trim();
+  const storefrontFetched = storefront?.status === "fetched";
+  const findings = normalizedUnique([
+    ...(storefront?.title ? [`Page title: ${storefront.title}`] : []),
+    ...(storefront?.description
+      ? [`Public description: ${storefront.description}`]
+      : []),
+    ...(storefront?.productHints ?? []).map(
+      (hint) => `Observed storefront signal: ${hint}`,
+    ),
+  ]).slice(0, 12);
+
+  return {
+    version: BRAND_BRAIN_VERSION,
+    generatedAt,
+    brandName,
+    ...(websiteUrl ? { websiteUrl } : {}),
+    industry: "Not yet confirmed",
+    positioning: {
+      tagline: "",
+      story:
+        storefront?.description?.trim() ||
+        `Initial onboarding profile for ${brandName}; positioning still needs approval.`,
+      uniqueSellingProposition: "Not yet confirmed",
+    },
+    voice: {
+      summary: "Brand voice has not yet been approved.",
+      sliders: {
+        formalCasual: 50,
+        seriousPlayful: 50,
+        reservedEnthusiastic: 50,
+      },
+      greetingStyle: "not_yet_specified",
+      signOffStyle: "not_yet_specified",
+      emojiUsage: "none",
+    },
+    audienceNotes: [],
+    offers: [],
+    products: [],
+    rules: [
+      {
+        type: "compliance",
+        rule: "Do not turn public-site observations into factual product, performance, comparative, or customer claims without evidence.",
+      },
+    ],
+    ctas: [],
+    phrases: [],
+    compliance: {
+      requiredDisclaimers: [],
+      forbiddenClaims: [
+        "Unsupported product, performance, health, comparative, scarcity, or customer-result claims",
+      ],
+      cautionAreas: [
+        "Product and performance claims",
+        "Testimonials and customer outcomes",
+        "Comparisons, urgency, and scarcity",
+      ],
+    },
+    documentSources:
+      websiteUrl || findings.length > 0
+        ? [
+            {
+              id: "onboarding_storefront_read",
+              title:
+                storefront?.title?.trim() ||
+                `Initial public storefront read for ${brandName}`,
+              sourceType: "storefront",
+              status: storefrontFetched ? "analyzed" : "pending",
+              keyFindings: findings,
+            },
+          ]
+        : [],
+    sourceProvenance: [
+      {
+        sourceType: "manual_profile",
+        label: `Provided brand name: ${brandName}`,
+        status: "draft",
+        observedAt: generatedAt,
+      },
+      ...(websiteUrl
+        ? [
+            {
+              sourceType: "store_analysis" as const,
+              label: `Public storefront: ${websiteUrl}`,
+              status: "draft" as const,
+              observedAt: storefrontFetched ? generatedAt : null,
+            },
+          ]
+        : []),
+    ],
+    readiness: {
+      status: "partial",
+      score: storefrontFetched ? 35 : websiteUrl ? 24 : 15,
+      completed: [
+        "Brand name provided in onboarding conversation",
+        ...(websiteUrl
+          ? ["Brand website/domain provided in onboarding conversation"]
+          : []),
+        ...(storefrontFetched ? ["Initial public storefront read"] : []),
+      ],
+      missing: [
+        "Approved positioning and unique selling proposition",
+        "Approved voice examples and forbidden style patterns",
+        "Audience research and direct customer language",
+        "Offer constraints and product-level claim evidence",
+        "Approved CTAs and compliance requirements",
+        "Dated campaign outcomes for the same audiences and channels",
+      ],
+      nextActions: [
+        "Confirm positioning, audience, offers, voice boundaries, and approved examples.",
+        "Attach evidence and allowed scope to every material product or performance claim.",
+        "Record explicit copy corrections and verified campaign outcomes as they are approved.",
+      ],
+    },
+    campaignMemory: [],
+    caveats: normalizedUnique([
+      "This is a draft onboarding profile. Public website observations are not approved claims.",
+      ...(storefront?.caveat ? [storefront.caveat] : []),
+    ]),
+    safety: createRetentionSafetyMetadata([
+      "Brand Brain creation only stored onboarding context; no external action was taken.",
+    ]),
+  };
+}
+
+/** Apply one explicit user-approved correction to a Brand Brain. */
+export function applyBrandBrainCorrection(
+  brain: BrandBrainContext,
+  correction: BrandBrainCorrection,
+): BrandBrainContext {
+  const value = correction.value.trim();
+  if (!value) throw new Error("Brand Brain correction value must not be empty.");
+  if (
+    [
+      "voice_summary",
+      "tagline",
+      "brand_story",
+      "unique_selling_proposition",
+    ].includes(correction.field) &&
+    correction.operation !== "replace"
+  ) {
+    throw new Error(`${correction.field} only supports the replace operation.`);
+  }
+
+  const next: BrandBrainContext = {
+    ...brain,
+    generatedAt: nowIso(),
+    positioning: { ...brain.positioning },
+    voice: { ...brain.voice, sliders: { ...brain.voice.sliders } },
+    audienceNotes: [...brain.audienceNotes],
+    rules: brain.rules.map((rule) => ({ ...rule })),
+    ctas: [...brain.ctas],
+    phrases: brain.phrases.map((phrase) => ({ ...phrase })),
+    compliance: {
+      requiredDisclaimers: [...brain.compliance.requiredDisclaimers],
+      forbiddenClaims: [...brain.compliance.forbiddenClaims],
+      cautionAreas: [...brain.compliance.cautionAreas],
+    },
+    sourceProvenance: [
+      ...brain.sourceProvenance,
+      {
+        sourceType: "manual_profile",
+        label: `Explicit user correction: ${correction.field}`,
+        status: "approved",
+        observedAt: nowIso(),
+      },
+    ],
+    readiness: {
+      ...brain.readiness,
+      completed: normalizedUnique([
+        ...brain.readiness.completed,
+        "Explicit user-approved Brand Brain corrections",
+      ]),
+    },
+  };
+
+  switch (correction.field) {
+    case "voice_summary":
+      next.voice.summary = value;
+      break;
+    case "tagline":
+      next.positioning.tagline = value;
+      break;
+    case "brand_story":
+      next.positioning.story = value;
+      break;
+    case "unique_selling_proposition":
+      next.positioning.uniqueSellingProposition = value;
+      break;
+    case "approved_cta":
+      next.ctas = updateStringCollection(next.ctas, correction);
+      break;
+    case "audience_note":
+      next.audienceNotes = updateStringCollection(next.audienceNotes, correction);
+      break;
+    case "required_disclaimer":
+      next.compliance.requiredDisclaimers = updateStringCollection(
+        next.compliance.requiredDisclaimers,
+        correction,
+      );
+      break;
+    case "forbidden_claim":
+      next.compliance.forbiddenClaims = updateStringCollection(
+        next.compliance.forbiddenClaims,
+        correction,
+      );
+      break;
+    case "caution_area":
+      next.compliance.cautionAreas = updateStringCollection(
+        next.compliance.cautionAreas,
+        correction,
+      );
+      break;
+    case "rule_do":
+    case "rule_dont": {
+      const type = correction.field === "rule_do" ? "do" : "dont";
+      const updated = updateStringCollection(
+        next.rules.filter((rule) => rule.type === type).map((rule) => rule.rule),
+        correction,
+      );
+      next.rules = [
+        ...next.rules.filter((rule) => rule.type !== type),
+        ...updated.map((rule) => ({ type, rule } as const)),
+      ];
+      break;
+    }
+    case "approved_phrase":
+    case "avoid_phrase": {
+      const type = correction.field === "approved_phrase" ? "approved" : "avoid";
+      const updated = updateStringCollection(
+        next.phrases
+          .filter((phrase) => phrase.type === type)
+          .map((phrase) => phrase.phrase),
+        correction,
+      );
+      next.phrases = [
+        ...next.phrases.filter((phrase) => phrase.type !== type),
+        ...updated.map((phrase) => ({ type, phrase } as const)),
+      ];
+      break;
+    }
+  }
+  return next;
+}
+
+/** Add or update a verified campaign learning without treating it as a law. */
+export function recordBrandBrainCampaignLearning(
+  brain: BrandBrainContext,
+  learning: BrandBrainCampaignLearning,
+): BrandBrainContext {
+  const campaignType = learning.campaignType.trim();
+  const insight = learning.insight.trim();
+  if (!campaignType || !insight) {
+    throw new Error("Campaign type and insight must not be empty.");
+  }
+  const key = `${campaignType}\u0000${insight}`.toLocaleLowerCase();
+  const campaignMemory = brain.campaignMemory.filter(
+    (item) =>
+      `${item.campaignType}\u0000${item.insight}`.toLocaleLowerCase() !== key,
+  );
+  campaignMemory.push({ campaignType, insight, outcome: learning.outcome });
+  return {
+    ...brain,
+    generatedAt: nowIso(),
+    campaignMemory,
+    sourceProvenance: [
+      ...brain.sourceProvenance,
+      {
+        sourceType: "campaign_memory",
+        label: `Verified campaign learning: ${campaignType}`,
+        status: "approved",
+        observedAt: nowIso(),
+      },
+    ],
+    readiness: {
+      ...brain.readiness,
+      completed: normalizedUnique([
+        ...brain.readiness.completed,
+        "Verified campaign outcome memory",
+      ]),
+    },
   };
 }
 

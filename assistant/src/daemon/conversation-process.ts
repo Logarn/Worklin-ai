@@ -8,7 +8,7 @@
 
 import {
   type BrandBrainContext,
-  getRetentionBrandBrain,
+  createDraftBrandBrain,
 } from "@vellumai/retention-domain";
 
 import { enrichMessageWithSourcePaths } from "../agent/attachments.js";
@@ -23,6 +23,7 @@ import {
   type TurnInterfaceContext,
 } from "../channels/types.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
+import { saveBrandBrain } from "../memory/brand-brain-store.js";
 import { listPendingRequestsByConversationScope } from "../memory/canonical-guardian-store.js";
 import {
   addMessage,
@@ -1020,15 +1021,36 @@ export async function runRetentionOnboardingTurn(
         onEvent,
       },
     );
-    const [brain, signal] = await Promise.all([
-      Promise.resolve(
-        getRetentionBrandBrain(undefined, {
-          brandName,
+    const signal = await readPublicBrandSignalWithDeadline(websiteUrl);
+    const brain = createDraftBrandBrain({
+      brandName,
+      websiteUrl,
+      storefront: {
+        status: signal.status,
+        url: signal.url,
+        title: signal.title,
+        description: signal.description,
+        productHints: signal.productHints,
+        caveat: signal.caveat,
+      },
+    });
+    try {
+      saveBrandBrain({
+        brain,
+        source: "onboarding",
+        conversationId: conversation.conversationId,
+        eventType: "onboarding_profile_created",
+        eventPayload: {
+          publicSignalStatus: signal.status,
           websiteUrl,
-        }),
-      ),
-      readPublicBrandSignalWithDeadline(websiteUrl),
-    ]);
+        },
+      });
+    } catch (err) {
+      log.error(
+        { err, conversationId: conversation.conversationId, requestId },
+        "Failed to persist retention onboarding Brand Brain",
+      );
+    }
     log.info(
       {
         conversationId: conversation.conversationId,

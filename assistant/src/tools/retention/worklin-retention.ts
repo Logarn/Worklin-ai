@@ -6,8 +6,8 @@ import {
   buildRetentionMicroSegments,
   buildUnifiedCustomerView,
   computeRetentionCustomerFeatures,
-  createRetentionSafetyMetadata,
   type ComputeRetentionOptions,
+  createRetentionSafetyMetadata,
   findRetentionCampaignOpportunities,
   findRetentionMissingPieces,
   generateRetentionAuditArtifact,
@@ -17,28 +17,35 @@ import {
   getRetentionKlaviyoSnapshot,
   getRetentionShopifySnapshot,
   getRetentionSourceStatus,
+  type RetentionAuditRun,
+  type RetentionDataset,
   runRetentionQa,
   scheduleRetentionAudit,
   scoreRetentionCustomers,
-  type RetentionAuditRun,
-  type RetentionDataset,
 } from "@vellumai/retention-domain";
 
-import { RiskLevel } from "../../permissions/types.js";
+import {
+  bindConversationToBrand,
+  getStoredBrandBrain,
+} from "../../memory/brand-brain-store.js";
 import { getMessages } from "../../memory/conversation-crud.js";
+import { RiskLevel } from "../../permissions/types.js";
 import { getSubagentManager, TERMINAL_STATUSES } from "../../subagent/index.js";
+import { getLogger } from "../../util/logger.js";
+import { executeDocumentCreate } from "../document/document-tool.js";
 import type {
   ToolContext,
   ToolDefinition,
   ToolExecutionResult,
 } from "../types.js";
-import { executeDocumentCreate } from "../document/document-tool.js";
 import {
   buildLiveReadonlyKlaviyoDatasetFromStoredConnection,
   executeRetentionConnectKlaviyoConnection,
   executeRetentionListKlaviyoConnections,
   type KlaviyoConnectionSelector,
 } from "./klaviyo-connection.js";
+
+const log = getLogger("worklin-retention-tools");
 
 function numberInput(
   input: Record<string, unknown>,
@@ -666,10 +673,6 @@ function buildKlaviyoInventoryAudit(
       sourceMode: "klaviyo_inventory",
     },
   };
-}
-
-function percent(value: number): string {
-  return `${Math.round(value * 100)}%`;
 }
 
 function countRecordRows(
@@ -4030,9 +4033,26 @@ export async function executeRetentionSourceStatus(
 
 export async function executeRetentionBrandBrain(
   input: Record<string, unknown>,
-  _context: ToolContext,
+  context: ToolContext,
 ): Promise<ToolExecutionResult> {
   try {
+    let stored;
+    try {
+      stored = getStoredBrandBrain({
+        conversationId: context.conversationId,
+        brandName: stringInput(input, "brand_name", "brandName"),
+        websiteUrl: stringInput(input, "website_url", "websiteUrl"),
+      });
+    } catch (err) {
+      log.warn(
+        { err },
+        "Persisted Brand Brain lookup failed; using computed context",
+      );
+    }
+    if (stored) {
+      bindConversationToBrand(context.conversationId, stored.brandId);
+      return asJsonToolResult(stored.brain);
+    }
     const dataset = await retentionDatasetForInput(input);
     return asJsonToolResult(
       dataset

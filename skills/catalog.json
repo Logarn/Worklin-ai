@@ -1185,6 +1185,7 @@
         "vellum": {
           "category": "content",
           "display-name": "Brand Copywriter",
+          "includes": ["worklin-brand-brain"],
           "activation-hints": [
             "Write or rewrite marketing copy in my brand voice",
             "Create an email, landing page, social post, ad, or video script",

@@ -10,6 +10,10 @@ import {
   loadSkillBySelector,
   loadSkillCatalog,
 } from "../../config/skills.js";
+import {
+  formatBrandBrainSkillContext,
+  getStoredBrandBrain,
+} from "../../memory/brand-brain-store.js";
 import { RiskLevel } from "../../permissions/types.js";
 import {
   autoInstallFromCatalog,
@@ -285,6 +289,23 @@ export const skillLoadTool = {
 
     let body = skill.body.length > 0 ? skill.body : "(No body content)";
 
+    let brandBrainContextSection: string | undefined;
+    if (skill.id === "write-brand-copy" || skill.id === "worklin-brand-brain") {
+      try {
+        const stored = getStoredBrandBrain({
+          conversationId: context.conversationId,
+        });
+        if (stored) {
+          brandBrainContextSection = formatBrandBrainSkillContext(stored);
+        }
+      } catch (err) {
+        log.warn(
+          { err, skillId: skill.id, conversationId: context.conversationId },
+          "Failed to load persisted Brand Brain context",
+        );
+      }
+    }
+
     // ── Inline command expansion ──────────────────────────────────────────
     const hasInlineCommands =
       skill.inlineCommandExpansions && skill.inlineCommandExpansions.length > 0;
@@ -510,6 +531,7 @@ export const skillLoadTool = {
         "",
         body,
         "",
+        ...(brandBrainContextSection ? [brandBrainContextSection, ""] : []),
         ...(referenceListing ? [referenceListing, ""] : []),
         ...(toolSchemasSection ? [toolSchemasSection, ""] : []),
         ...(!toolSchemasSection && anyChildHasTools

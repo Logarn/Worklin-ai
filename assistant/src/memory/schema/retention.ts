@@ -1,4 +1,11 @@
-import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const retentionBrands = sqliteTable("retention_brands", {
   id: text("id").primaryKey(),
@@ -8,6 +15,67 @@ export const retentionBrands = sqliteTable("retention_brands", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+export const retentionBrandBrains = sqliteTable(
+  "retention_brand_brains",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => retentionBrands.id, { onDelete: "cascade" }),
+    brandName: text("brand_name").notNull(),
+    websiteUrl: text("website_url"),
+    schemaVersion: text("schema_version").notNull(),
+    profileJson: text("profile_json").notNull(),
+    source: text("source").notNull(),
+    revision: integer("revision").notNull().default(1),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_retention_brand_brains_brand").on(table.brandId),
+    index("idx_retention_brand_brains_name").on(table.brandName),
+    index("idx_retention_brand_brains_website").on(table.websiteUrl),
+    index("idx_retention_brand_brains_updated_at").on(table.updatedAt),
+  ],
+);
+
+export const retentionConversationBrandScopes = sqliteTable(
+  "retention_conversation_brand_scopes",
+  {
+    conversationId: text("conversation_id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => retentionBrands.id, { onDelete: "cascade" }),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("idx_retention_conversation_brand_scopes_brand").on(table.brandId),
+  ],
+);
+
+export const retentionBrandBrainEvents = sqliteTable(
+  "retention_brand_brain_events",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => retentionBrands.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    conversationId: text("conversation_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_retention_brand_brain_events_brand_created").on(
+      table.brandId,
+      table.createdAt,
+    ),
+    index("idx_retention_brand_brain_events_conversation").on(
+      table.conversationId,
+    ),
+  ],
+);
 
 export const retentionCustomers = sqliteTable(
   "retention_customers",
