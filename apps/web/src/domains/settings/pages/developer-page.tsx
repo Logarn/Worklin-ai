@@ -4,6 +4,7 @@ import { Navigate, useNavigate, useSearchParams } from "react-router";
 import { AssistantLifecyclePanel } from "@/domains/settings/components/panels/assistant-lifecycle-panel";
 import { EnvironmentConfigPanel } from "@/domains/settings/components/panels/environment-config-panel";
 import { FeatureFlagsPanel } from "@/domains/settings/components/panels/feature-flags-panel";
+import { LiveVoicePilotPanel } from "@/domains/settings/components/panels/live-voice-pilot-panel";
 import { SentryTestingPanel } from "@/domains/settings/components/panels/sentry-testing-panel";
 import { isLocalMode } from "@/lib/local-mode";
 import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
@@ -13,6 +14,7 @@ import { Button } from "@vellumai/design-library/components/button";
 
 const ALL_TABS = [
   { id: "feature-flags", label: "Feature Flags" },
+  { id: "live-voice", label: "Live Voice" },
   { id: "lifecycle", label: "Assistant Lifecycle" },
   { id: "sentry", label: "Sentry Testing" },
 ] as const;
@@ -100,6 +102,7 @@ export function DeveloperPage() {
           </div>
         )}
         {activeTab === "lifecycle" && <AssistantLifecyclePanel />}
+        {activeTab === "live-voice" && <LiveVoicePilotPanel />}
         {activeTab === "sentry" && <SentryTestingPanel />}
       </div>
     </div>

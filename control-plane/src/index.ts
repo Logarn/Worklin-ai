@@ -26,6 +26,7 @@ import {
   runtimeStackConfigFromEnv,
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
+import { assistantIdFromManagedVoiceRoutingToken } from "./live-voice-provider-callback.js";
 import {
   provisionRailwayRuntime,
   railwayProvisionerConfigurationError,
@@ -1052,6 +1053,98 @@ function assistantIdFromProxyPath(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
+async function proxyLiveVoiceProviderCallback(
+  req: Request,
+  res: Response,
+  url: URL,
+): Promise<void> {
+  const sessionToken = url.searchParams.get("custom_session_id") ?? "";
+  const assistantId = assistantIdFromManagedVoiceRoutingToken(sessionToken);
+  if (!assistantId) {
+    sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
+    return;
+  }
+
+  const assistant = db
+    .query<AssistantRow, [string]>("SELECT * FROM assistants WHERE id = ?")
+    .get(assistantId);
+  if (!assistant) {
+    sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
+    return;
+  }
+
+  const runtimeStack = ensureRuntimeStackForAssistant(
+    db,
+    assistant,
+    runtimeStackConfig,
+    nowIso,
+  );
+  if (!isRuntimeStackRoutable(runtimeStack)) {
+    sendJson(
+      req,
+      res,
+      { error: { message: "Worklin voice is temporarily unavailable" } },
+      503,
+    );
+    return;
+  }
+
+  const target = new URL(runtimeStack.gateway_url);
+  target.pathname = "/v1/live-voice/providers/chat/completions";
+  target.search = url.search;
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (!value) continue;
+    const normalized = key.toLowerCase();
+    if (
+      normalized === "host" ||
+      normalized === "cookie" ||
+      normalized === "content-length"
+    ) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(key, item);
+    } else {
+      headers.set(key, value);
+    }
+  }
+
+  const body = Buffer.isBuffer(req.body)
+    ? new Uint8Array(req.body)
+    : new Uint8Array(Buffer.from(parseTextBody(req)));
+  const response = await fetch(target, {
+    method: "POST",
+    headers,
+    body,
+    redirect: "manual",
+  });
+
+  res.status(response.status);
+  setCorsHeaders(req, res);
+  for (const [key, value] of response.headers) {
+    const normalized = key.toLowerCase();
+    if (normalized.startsWith("access-control-allow-")) continue;
+    if (normalized === "content-length") continue;
+    res.setHeader(key, value);
+  }
+
+  if (!response.body) {
+    res.end();
+    return;
+  }
+
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+  } finally {
+    res.end();
+  }
+}
+
 async function proxyToGateway(
   req: Request,
   res: Response,
@@ -1244,6 +1337,14 @@ app.use(
     }
     if (url.pathname === "/v1/telemetry/ingest/" && req.method === "POST") {
       sendJson(req, res, { ok: true }, 202);
+      return;
+    }
+
+    if (
+      url.pathname === "/v1/live-voice/providers/chat/completions" &&
+      req.method === "POST"
+    ) {
+      await proxyLiveVoiceProviderCallback(req, res, url);
       return;
     }
 
