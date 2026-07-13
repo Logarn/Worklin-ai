@@ -23,6 +23,10 @@ import {
 function setupDb(): Database {
   const db = new Database(":memory:");
   db.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE
+    );
     CREATE TABLE assistants (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -33,6 +37,9 @@ function setupDb(): Database {
     );
   `);
   ensureRuntimeStackSchema(db);
+  db.query(`
+    INSERT INTO users (id, email) VALUES ('user-1', 'pilot@example.com')
+  `).run();
   db.query(`
     INSERT INTO assistants (id, user_id, org_id, name, created_at, updated_at)
     VALUES ('asst-1', 'user-1', 'org-1', 'Worklin', '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z')
@@ -60,7 +67,7 @@ function config(
     publicIngressUrl: "https://worklin.example.com",
     requireIsolatedRuntime: true,
     allowLegacySharedRuntime: false,
-    legacySharedRuntimeUserHashes: [],
+    legacySharedRuntimeUserEmailHashes: [],
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
     runtimeRoot: "/data",
@@ -116,8 +123,10 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
-        legacySharedRuntimeUserHashes: [
-          createHash("sha256").update("another-user").digest("hex"),
+        legacySharedRuntimeUserEmailHashes: [
+          createHash("sha256")
+            .update("another@example.com")
+            .digest("hex"),
         ],
       }),
       NOW,
@@ -126,6 +135,25 @@ describe("runtime stack provisioning defaults", () => {
     expect(stack.status).toBe("provisioning");
     expect(stack.provider).toBe("railway");
     expect(stack.gateway_url).toBeNull();
+  });
+
+  test("explicit legacy mode routes a user whose normalized email hash is allowlisted", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeUserEmailHashes: [
+          createHash("sha256").update("pilot@example.com").digest("hex"),
+        ],
+      }),
+      NOW,
+    );
+
+    expect(stack.status).toBe("active");
+    expect(stack.provider).toBe("legacy_shared");
   });
 
   test("a runtime URL template creates an active stack-specific route", () => {
@@ -325,8 +353,10 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
-        legacySharedRuntimeUserHashes: [
-          createHash("sha256").update("another-user").digest("hex"),
+        legacySharedRuntimeUserEmailHashes: [
+          createHash("sha256")
+            .update("another@example.com")
+            .digest("hex"),
         ],
       }),
       NOW,
@@ -388,21 +418,21 @@ describe("runtimeStackConfigFromEnv", () => {
     ).toMatchObject({
       requireIsolatedRuntime: true,
       allowLegacySharedRuntime: false,
-      legacySharedRuntimeUserHashes: [],
+      legacySharedRuntimeUserEmailHashes: [],
       runtimeStackUrlTemplate: null,
     });
   });
 
-  test("parses a trimmed pilot user-hash allowlist", () => {
+  test("parses a trimmed pilot user-email-hash allowlist", () => {
     expect(
       runtimeStackConfigFromEnv(
         {
-          WORKLIN_LEGACY_SHARED_RUNTIME_USER_HASHES:
+          WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES:
             "hash-1, hash-2, ,hash-3",
         },
         "http://gateway.test",
         "https://worklin.example.com",
-      ).legacySharedRuntimeUserHashes,
+      ).legacySharedRuntimeUserEmailHashes,
     ).toEqual(["hash-1", "hash-2", "hash-3"]);
   });
 });

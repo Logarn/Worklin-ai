@@ -39,7 +39,7 @@ export interface RuntimeStackConfig {
   publicIngressUrl: string;
   requireIsolatedRuntime: boolean;
   allowLegacySharedRuntime: boolean;
-  legacySharedRuntimeUserHashes: readonly string[];
+  legacySharedRuntimeUserEmailHashes: readonly string[];
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
   runtimeRoot: string | null;
@@ -72,8 +72,8 @@ export function runtimeStackConfigFromEnv(
     rawEnv.WORKLIN_REQUIRE_ISOLATED_RUNTIME,
     true,
   );
-  const legacySharedRuntimeUserHashes = (
-    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_USER_HASHES ?? ""
+  const legacySharedRuntimeUserEmailHashes = (
+    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES ?? ""
   )
     .split(",")
     .map((value) => value.trim())
@@ -84,7 +84,7 @@ export function runtimeStackConfigFromEnv(
     publicIngressUrl,
     requireIsolatedRuntime,
     allowLegacySharedRuntime,
-    legacySharedRuntimeUserHashes,
+    legacySharedRuntimeUserEmailHashes,
     runtimeStackUrlTemplate: template,
     runtimeStackProvider:
       rawEnv.WORKLIN_RUNTIME_STACK_PROVIDER?.trim() ||
@@ -94,16 +94,19 @@ export function runtimeStackConfigFromEnv(
 }
 
 function isLegacySharedRuntimeAllowedForAssistant(
+  db: Database,
   config: RuntimeStackConfig,
   assistant: AssistantRuntimeRow,
 ): boolean {
-  const userHash = createHash("sha256")
-    .update(assistant.user_id)
+  if (config.legacySharedRuntimeUserEmailHashes.length === 0) return true;
+  const user = db
+    .query<{ email: string }, [string]>("SELECT email FROM users WHERE id = ?")
+    .get(assistant.user_id);
+  if (!user) return false;
+  const userEmailHash = createHash("sha256")
+    .update(user.email.trim().toLowerCase())
     .digest("hex");
-  return (
-    config.legacySharedRuntimeUserHashes.length === 0 ||
-    config.legacySharedRuntimeUserHashes.includes(userHash)
-  );
+  return config.legacySharedRuntimeUserEmailHashes.includes(userEmailHash);
 }
 
 function tableColumns(db: Database, table: string): Set<string> {
@@ -202,6 +205,7 @@ function expandRuntimeStackUrlTemplate(
 }
 
 function nextRuntimeStackSeed(
+  db: Database,
   assistant: AssistantRuntimeRow,
   config: RuntimeStackConfig,
 ): Pick<
@@ -234,7 +238,7 @@ function nextRuntimeStackSeed(
   if (
     !config.requireIsolatedRuntime &&
     config.allowLegacySharedRuntime &&
-    isLegacySharedRuntimeAllowedForAssistant(config, assistant)
+    isLegacySharedRuntimeAllowedForAssistant(db, config, assistant)
   ) {
     return {
       status: "active",
@@ -270,7 +274,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
   if (
     config.requireIsolatedRuntime ||
     !config.allowLegacySharedRuntime ||
-    !isLegacySharedRuntimeAllowedForAssistant(config, assistant) ||
+    !isLegacySharedRuntimeAllowedForAssistant(db, config, assistant) ||
     config.runtimeStackUrlTemplate ||
     stack.provider !== "railway" ||
     (stack.status !== "failed" && stack.status !== "provisioning") ||
@@ -333,7 +337,7 @@ export function ensureRuntimeStackForAssistant(
   }
 
   const timestamp = nowIso();
-  const seed = nextRuntimeStackSeed(assistant, config);
+  const seed = nextRuntimeStackSeed(db, assistant, config);
   const stack: RuntimeStackRow = {
     id: "rt-" + randomUUID(),
     org_id: assistant.org_id,
