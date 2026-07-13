@@ -59,6 +59,7 @@ function config(
     publicIngressUrl: "https://worklin.example.com",
     requireIsolatedRuntime: true,
     allowLegacySharedRuntime: false,
+    legacySharedRuntimeAssistantIds: [],
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
     runtimeRoot: "/data",
@@ -104,6 +105,24 @@ describe("runtime stack provisioning defaults", () => {
     expect(stack.gateway_url).toBe("http://gateway.test");
     expect(isRuntimeStackRoutable(stack)).toBe(true);
     expect(assistantApiStatusForRuntimeStack(stack)).toBe("active");
+  });
+
+  test("explicit legacy mode fails closed outside a configured pilot allowlist", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-internal-pilot"],
+      }),
+      NOW,
+    );
+
+    expect(stack.status).toBe("provisioning");
+    expect(stack.provider).toBe("railway");
+    expect(stack.gateway_url).toBeNull();
   });
 
   test("a runtime URL template creates an active stack-specific route", () => {
@@ -292,6 +311,31 @@ describe("runtime stack provisioning defaults", () => {
     });
   });
 
+  test("shared recovery fails closed outside the configured pilot allowlist", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
+
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-internal-pilot"],
+      }),
+      NOW,
+    );
+
+    expect(stack).toMatchObject({
+      status: "failed",
+      provider: "railway",
+      gateway_url: null,
+      service_ref: null,
+      workspace_volume_ref: null,
+    });
+  });
+
   test("persists resumable Railway provisioning state", () => {
     const db = setupDb();
     const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
@@ -339,7 +383,21 @@ describe("runtimeStackConfigFromEnv", () => {
     ).toMatchObject({
       requireIsolatedRuntime: true,
       allowLegacySharedRuntime: false,
+      legacySharedRuntimeAssistantIds: [],
       runtimeStackUrlTemplate: null,
     });
+  });
+
+  test("parses a trimmed pilot assistant allowlist", () => {
+    expect(
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS:
+            "asst-1, asst-2, ,asst-3",
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ).legacySharedRuntimeAssistantIds,
+    ).toEqual(["asst-1", "asst-2", "asst-3"]);
   });
 });

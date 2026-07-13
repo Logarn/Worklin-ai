@@ -39,6 +39,7 @@ export interface RuntimeStackConfig {
   publicIngressUrl: string;
   requireIsolatedRuntime: boolean;
   allowLegacySharedRuntime: boolean;
+  legacySharedRuntimeAssistantIds: readonly string[];
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
   runtimeRoot: string | null;
@@ -71,18 +72,35 @@ export function runtimeStackConfigFromEnv(
     rawEnv.WORKLIN_REQUIRE_ISOLATED_RUNTIME,
     true,
   );
+  const legacySharedRuntimeAssistantIds = (
+    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS ?? ""
+  )
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   const template = rawEnv.WORKLIN_RUNTIME_STACK_URL_TEMPLATE?.trim() || null;
   return {
     gatewayUrl,
     publicIngressUrl,
     requireIsolatedRuntime,
     allowLegacySharedRuntime,
+    legacySharedRuntimeAssistantIds,
     runtimeStackUrlTemplate: template,
     runtimeStackProvider:
       rawEnv.WORKLIN_RUNTIME_STACK_PROVIDER?.trim() ||
       (template ? "static_template" : "railway"),
     runtimeRoot: rawEnv.WORKLIN_RUNTIME_ROOT?.trim() || null,
   };
+}
+
+function isLegacySharedRuntimeAllowedForAssistant(
+  config: RuntimeStackConfig,
+  assistantId: string,
+): boolean {
+  return (
+    config.legacySharedRuntimeAssistantIds.length === 0 ||
+    config.legacySharedRuntimeAssistantIds.includes(assistantId)
+  );
 }
 
 function tableColumns(db: Database, table: string): Set<string> {
@@ -210,7 +228,11 @@ function nextRuntimeStackSeed(
     };
   }
 
-  if (!config.requireIsolatedRuntime && config.allowLegacySharedRuntime) {
+  if (
+    !config.requireIsolatedRuntime &&
+    config.allowLegacySharedRuntime &&
+    isLegacySharedRuntimeAllowedForAssistant(config, assistant.id)
+  ) {
     return {
       status: "active",
       provider: "legacy_shared",
@@ -244,6 +266,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
   if (
     config.requireIsolatedRuntime ||
     !config.allowLegacySharedRuntime ||
+    !isLegacySharedRuntimeAllowedForAssistant(config, stack.assistant_id) ||
     config.runtimeStackUrlTemplate ||
     stack.provider !== "railway" ||
     (stack.status !== "failed" && stack.status !== "provisioning") ||
