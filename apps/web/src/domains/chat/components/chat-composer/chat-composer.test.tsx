@@ -667,10 +667,9 @@ describe("Slash popup — SSR rendering", () => {
 // ---------------------------------------------------------------------------
 // Live-voice integration
 //
-// The live-voice button is only mounted alongside the dictation button (same
-// `voiceInputRef`/`onVoiceTranscript` precondition) and self-gates on the
-// `voice-mode` flag. These tests render the *voice-enabled* variant so both
-// mic affordances are in play.
+// Live voice uses the same voice-capable composer preconditions as dictation
+// and self-gates on the `voice-mode` flag. When eligible it replaces the
+// one-shot dictation mic so the composer has a single voice entry point.
 // ---------------------------------------------------------------------------
 
 /** Render the composer with the dictation voice props supplied. */
@@ -727,9 +726,7 @@ describe("ChatComposer — live-voice integration", () => {
     expect(queryByLabelText("Start voice mode")).toBeNull();
     expect(getByText("Preview user turn")).toBeTruthy();
     expect(getByText("Preview assistant turn")).toBeTruthy();
-    expect(
-      (getByLabelText("Start voice input") as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(queryByLabelText("Start voice input")).toBeNull();
   });
 
   test("flag OFF: no live-voice button, dictation mic stays enabled", () => {
@@ -750,7 +747,7 @@ describe("ChatComposer — live-voice integration", () => {
     expect(dictation?.disabled).toBe(false);
   });
 
-  test("flag ON, idle: live-voice button present, dictation still enabled", () => {
+  test("flag ON, idle: live voice replaces the dictation mic", () => {
     // GIVEN the flag is on with no active session
     useTurnStore.setState(INITIAL_TURN_STATE);
     mockVoiceMode = true;
@@ -759,28 +756,24 @@ describe("ChatComposer — live-voice integration", () => {
     // WHEN the composer renders
     const { getByLabelText, queryByLabelText } = renderVoiceComposer();
 
-    // THEN both mics are available and neither is forced disabled
+    // THEN live voice is the composer's only voice entry point
     expect(getByLabelText("Start voice mode")).toBeTruthy();
-    const dictation = queryByLabelText(
-      "Start voice input",
-    ) as HTMLButtonElement | null;
-    expect(dictation?.disabled).toBe(false);
+    expect(queryByLabelText("Start voice input")).toBeNull();
   });
 
-  test("active session disables dictation (mutual exclusion)", () => {
+  test("active session keeps the dictation mic hidden", () => {
     // GIVEN a live-voice session is listening
     useTurnStore.setState(INITIAL_TURN_STATE);
     mockVoiceMode = true;
     mockLiveVoiceState = "listening";
 
     // WHEN the composer renders
-    const { getByLabelText } = renderVoiceComposer();
+    const { getByLabelText, queryByLabelText } = renderVoiceComposer();
 
-    // THEN the live-voice control is a stop affordance and the dictation
-    // mic is disabled so the two capture flows can't run together
+    // THEN the live-voice control is a stop affordance and dictation remains
+    // absent rather than appearing as a second, disabled microphone
     expect(getByLabelText("Stop voice mode")).toBeTruthy();
-    const dictation = getByLabelText("Start voice input") as HTMLButtonElement;
-    expect(dictation.disabled).toBe(true);
+    expect(queryByLabelText("Start voice input")).toBeNull();
   });
 
   test("active session surfaces user + assistant transcripts", () => {
@@ -868,19 +861,18 @@ describe("ChatComposer — live-voice integration", () => {
     expect(liveVoice.disabled).toBe(true);
   });
 
-  test("failed live-voice state is inactive: dictation re-enabled, no transcript surface", () => {
+  test("failed live-voice state is inactive: dictation stays hidden, no transcript surface", () => {
     // GIVEN the flag is on and a live-voice start attempt has failed
     useTurnStore.setState(INITIAL_TURN_STATE);
     mockVoiceMode = true;
     mockLiveVoiceState = "failed";
 
     // WHEN the composer renders (dictation idle)
-    const { getByLabelText, queryByLabelText } = renderVoiceComposer();
+    const { queryByLabelText } = renderVoiceComposer();
 
-    // THEN dictation is treated as available again (failed = inactive)...
-    const dictation = getByLabelText("Start voice input") as HTMLButtonElement;
-    expect(dictation.disabled).toBe(false);
-    // ...and the transcript surface is unmounted rather than left hanging
+    // THEN the single voice entry point remains live voice, while the
+    // transcript surface is unmounted rather than left hanging.
+    expect(queryByLabelText("Start voice input")).toBeNull();
     expect(queryByLabelText("Live voice transcript")).toBeNull();
   });
 });

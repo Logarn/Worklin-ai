@@ -241,11 +241,11 @@ export function ChatComposer({
     voiceInputRef !== undefined && onVoiceTranscript !== undefined;
 
   // ---- Live voice (full-duplex conversation) ----------------------------
-  // Coexists with dictation: `LiveVoiceButton` self-gates on the `voice-mode`
-  // flag, but the transcript surface and the mutual-exclusion wiring below
-  // must also no-op when the flag is off so the composer is byte-identical for
-  // users without the flag. The live-voice button only appears alongside the
-  // dictation button (same `showVoiceInput` precondition + a non-null id).
+  // `LiveVoiceButton` self-gates on the `voice-mode` flag, but the transcript
+  // surface below must also no-op when the flag is off so the composer is
+  // byte-identical for users without the flag. Live voice replaces the
+  // one-shot dictation affordance when it is available, so the composer never
+  // presents two microphone entry points for the same assistant.
   const voiceMode = useAssistantFeatureFlagStore.use.voiceMode();
   const liveVoiceEligible =
     liveVoicePreview !== undefined ||
@@ -274,11 +274,10 @@ export function ChatComposer({
     liveVoicePreview?.inputAmplitude ?? storedLiveVoiceInputAmplitude;
   const liveVoiceOutputAmplitude =
     liveVoicePreview?.outputAmplitude ?? storedLiveVoiceOutputAmplitude;
-  // Anything but idle/failed counts as an active session; while active the
-  // dictation mic is disabled so the two capture flows never run at once.
+  // Anything but idle/failed counts as an active session.
   // `failed` is a retryable/inactive state in `useLiveVoice`/`LiveVoiceButton`,
-  // so we must treat it as inactive — otherwise dictation stays disabled and
-  // the (empty) transcript surface stays mounted after a failed start.
+  // so we must treat it as inactive — otherwise the empty transcript surface
+  // stays mounted after a failed start.
   const isLiveVoiceActive =
     liveVoiceEligible &&
     liveVoiceState !== "idle" &&
@@ -677,14 +676,11 @@ export function ChatComposer({
                           : undefined
                       }
                     />
-                    {showVoiceInput && (
+                    {showVoiceInput && !liveVoiceEligible && (
                       <VoiceInputButton
                         ref={voiceInputRef}
                         assistantId={assistantId}
-                        // Mutual exclusion: an active live-voice session
-                        // disables the dictation mic so the two capture flows
-                        // never run simultaneously.
-                        disabled={typingDisabled || isLiveVoiceActive}
+                        disabled={typingDisabled}
                         onTranscript={onVoiceTranscript}
                         onInterimTranscript={onVoiceInterimTranscript}
                         onError={onVoiceError}
