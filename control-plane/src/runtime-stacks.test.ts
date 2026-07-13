@@ -127,7 +127,7 @@ describe("runtime stack provisioning defaults", () => {
     expect(isRuntimeStackRoutable(stack)).toBe(true);
   });
 
-  test("ensure is idempotent for the same assistant", () => {
+  test("explicit legacy mode recovers an unallocated provisioning Railway stack", () => {
     const db = setupDb();
     const first = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
     const second = ensureRuntimeStackForAssistant(
@@ -146,8 +146,122 @@ describe("runtime stack provisioning defaults", () => {
       )
       .get();
     expect(second.id).toBe(first.id);
-    expect(second.status).toBe("provisioning");
+    expect(second).toMatchObject({
+      status: "active",
+      provider: "legacy_shared",
+      gateway_url: "http://gateway.test",
+      public_ingress_url: "https://worklin.example.com",
+      workspace_volume_ref: "/data",
+      service_ref: "legacy-shared-runtime",
+      last_health_status: null,
+      last_error: null,
+    });
     expect(count?.count).toBe(1);
+  });
+
+  test("explicit legacy mode recovers an unallocated failed Railway stack idempotently", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
+    const sharedConfig = config({
+      requireIsolatedRuntime: false,
+      allowLegacySharedRuntime: true,
+    });
+
+    const recovered = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      sharedConfig,
+      NOW,
+    );
+    const repeated = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      sharedConfig,
+      NOW,
+    );
+
+    expect(recovered).toMatchObject({
+      id: initial.id,
+      status: "active",
+      provider: "legacy_shared",
+      gateway_url: "http://gateway.test",
+      service_ref: "legacy-shared-runtime",
+      last_error: null,
+    });
+    expect(repeated).toEqual(recovered);
+  });
+
+  test("legacy recovery refuses a Railway stack with an allocated service", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    recordRuntimeStackService(db, initial.id, "service-1", NOW);
+    markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
+
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+      }),
+      NOW,
+    );
+
+    expect(stack).toMatchObject({
+      status: "failed",
+      provider: "railway",
+      gateway_url: null,
+      service_ref: "service-1",
+      last_error: "deploy failed",
+    });
+  });
+
+  test("legacy recovery refuses a Railway stack with an allocated volume", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    recordRuntimeStackVolume(db, initial.id, "volume-1", NOW);
+    markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
+
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+      }),
+      NOW,
+    );
+
+    expect(stack).toMatchObject({
+      status: "failed",
+      provider: "railway",
+      gateway_url: null,
+      workspace_volume_ref: "volume-1",
+      last_error: "deploy failed",
+    });
+  });
+
+  test("isolated defaults leave an unallocated failed Railway stack failed", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
+
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      config(),
+      NOW,
+    );
+
+    expect(stack).toMatchObject({
+      status: "failed",
+      provider: "railway",
+      gateway_url: null,
+      service_ref: null,
+      workspace_volume_ref: null,
+      last_error: "provisioning unavailable",
+    });
   });
 
   test("persists resumable Railway provisioning state", () => {

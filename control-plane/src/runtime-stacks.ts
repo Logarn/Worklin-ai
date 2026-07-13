@@ -235,6 +235,53 @@ function nextRuntimeStackSeed(
   };
 }
 
+function recoverUnallocatedStackToLegacySharedRuntime(
+  db: Database,
+  stack: RuntimeStackRow,
+  config: RuntimeStackConfig,
+  nowIso: () => string,
+): RuntimeStackRow {
+  if (
+    config.requireIsolatedRuntime ||
+    !config.allowLegacySharedRuntime ||
+    config.runtimeStackUrlTemplate ||
+    stack.provider !== "railway" ||
+    (stack.status !== "failed" && stack.status !== "provisioning") ||
+    stack.gateway_url !== null ||
+    stack.service_ref !== null ||
+    stack.workspace_volume_ref !== null
+  ) {
+    return stack;
+  }
+
+  db.query(`
+    UPDATE runtime_stacks
+    SET status = 'active',
+        provider = 'legacy_shared',
+        gateway_url = ?,
+        public_ingress_url = ?,
+        workspace_volume_ref = ?,
+        service_ref = 'legacy-shared-runtime',
+        last_health_status = NULL,
+        last_error = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND provider = 'railway'
+      AND status IN ('failed', 'provisioning')
+      AND gateway_url IS NULL
+      AND service_ref IS NULL
+      AND workspace_volume_ref IS NULL
+  `).run(
+    config.gatewayUrl,
+    config.publicIngressUrl,
+    config.runtimeRoot,
+    nowIso(),
+    stack.id,
+  );
+
+  return getRuntimeStackById(db, stack.id) ?? stack;
+}
+
 export function ensureRuntimeStackForAssistant(
   db: Database,
   assistant: AssistantRuntimeRow,
@@ -249,7 +296,12 @@ export function ensureRuntimeStackForAssistant(
         assistant.id,
       );
     }
-    return existing;
+    return recoverUnallocatedStackToLegacySharedRuntime(
+      db,
+      existing,
+      config,
+      nowIso,
+    );
   }
 
   const timestamp = nowIso();
