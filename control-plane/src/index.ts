@@ -28,7 +28,16 @@ import {
 } from "./runtime-stacks.js";
 import { assistantIdFromManagedVoiceRoutingToken } from "./live-voice-provider-callback.js";
 import {
+  getActiveAssistant as getStoredActiveAssistant,
+  getOrCreateAssistant as getOrCreateStoredAssistant,
+  getOrCreateOrganization as getOrCreateStoredOrganization,
+  hasAcceptedAssistantConsent,
+  type AssistantRow,
+  type OrganizationRow,
+} from "./assistant-store.js";
+import {
   provisionRailwayRuntime,
+  railwayRuntimeCapacityError,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
 } from "./railway-runtime-provisioner.js";
@@ -174,23 +183,6 @@ interface UserRow {
   first_name: string;
   last_name: string;
   consent_json: string | null;
-}
-
-interface OrganizationRow {
-  id: string;
-  user_id: string;
-  name: string;
-}
-
-interface AssistantRow {
-  id: string;
-  user_id: string;
-  org_id: string;
-  name: string;
-  runtime_stack_id: string | null;
-  isolation_version: number;
-  created_at: string;
-  updated_at: string;
 }
 
 interface Auth0Claims {
@@ -478,65 +470,15 @@ function unauthenticatedPayload() {
 }
 
 function getOrCreateOrganization(user: UserRow): OrganizationRow {
-  const existing = db
-    .query<OrganizationRow, [string]>("SELECT * FROM organizations WHERE user_id = ? ORDER BY created_at LIMIT 1")
-    .get(user.id);
-  if (existing) return existing;
-
-  const timestamp = nowIso();
-  const org: OrganizationRow = {
-    id: randomUUID(),
-    user_id: user.id,
-    name: "Worklin Workspace",
-  };
-  db.query("INSERT INTO organizations (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-    .run(org.id, org.user_id, org.name, timestamp, timestamp);
-  return org;
+  return getOrCreateStoredOrganization(db, user.id, nowIso);
 }
 
 function getActiveAssistant(user: UserRow): AssistantRow | null {
-  return db
-    .query<AssistantRow, [string]>("SELECT * FROM assistants WHERE user_id = ? ORDER BY created_at LIMIT 1")
-    .get(user.id);
+  return getStoredActiveAssistant(db, user.id);
 }
 
 function getOrCreateAssistant(user: UserRow): AssistantRow {
-  const existing = getActiveAssistant(user);
-  if (existing) return existing;
-  const org = getOrCreateOrganization(user);
-  const timestamp = nowIso();
-  const assistant: AssistantRow = {
-    id: "worklin-" + randomUUID(),
-    user_id: user.id,
-    org_id: org.id,
-    name: "Worklin",
-    runtime_stack_id: null,
-    isolation_version: 2,
-    created_at: timestamp,
-    updated_at: timestamp,
-  };
-  db.query(`
-    INSERT INTO assistants (
-      id,
-      user_id,
-      org_id,
-      name,
-      runtime_stack_id,
-      isolation_version,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    assistant.id,
-    assistant.user_id,
-    assistant.org_id,
-    assistant.name,
-    assistant.runtime_stack_id,
-    assistant.isolation_version,
-    assistant.created_at,
-    assistant.updated_at,
-  );
-  return assistant;
+  return getOrCreateStoredAssistant(db, user.id, nowIso);
 }
 
 function mintActorToken(assistantId: string, userId: string): string {
@@ -642,14 +584,12 @@ function scheduleRuntimeProvisioning(
     }
 
     try {
-      if (
-        !current.service_ref &&
-        countAllocatedRuntimeServices(db) >= railwayProvisionerConfig.maxRuntimeServices
-      ) {
-        throw new Error(
-          `Railway runtime service limit (${railwayProvisionerConfig.maxRuntimeServices}) has been reached.`,
-        );
-      }
+      const capacityError = railwayRuntimeCapacityError(
+        current.service_ref,
+        countAllocatedRuntimeServices(db),
+        railwayProvisionerConfig.maxRuntimeServices,
+      );
+      if (capacityError) throw new Error(capacityError);
 
       markRuntimeStackProvisioning(db, current.id, nowIso);
       await provisionRailwayRuntime({
@@ -694,6 +634,24 @@ function scheduleRuntimeProvisioning(
     () => runtimeProvisioningInFlight.delete(stack.id),
     () => runtimeProvisioningInFlight.delete(stack.id),
   );
+}
+
+function ensureAssistantRuntime(
+  assistant: AssistantRow,
+): RuntimeStackRow {
+  const runtimeStack = runtimeStackForPayload(assistant);
+  const provisioningError = runtimeProvisioningConfigurationError();
+  if (provisioningError && runtimeStack.status === "provisioning") {
+    markRuntimeStackFailed(
+      db,
+      runtimeStack.id,
+      "Managed assistant runtime provisioning is unavailable.",
+      nowIso,
+    );
+    return getRuntimeStackById(db, runtimeStack.id) ?? runtimeStack;
+  }
+  scheduleRuntimeProvisioning(assistant, runtimeStack);
+  return runtimeStack;
 }
 
 function resumeRuntimeProvisioning(): void {
@@ -830,6 +788,10 @@ async function handleSession(req: Request, res: Response): Promise<void> {
   if (user) {
     ensureUserSessionCookie(req, res, user);
     getOrCreateOrganization(user);
+    // A Worklin account always owns a default assistant identity. Runtime
+    // provisioning remains consent-gated below, so session bootstrap itself
+    // cannot allocate external infrastructure.
+    getOrCreateAssistant(user);
     sendJson(req, res, authenticatedPayload(user));
     return;
   }
@@ -883,6 +845,12 @@ async function handleUserMe(req: Request, res: Response, user: UserRow): Promise
     db.query("UPDATE users SET username = ?, consent_json = ?, updated_at = ? WHERE id = ?")
       .run(nextUsername, consentJson, nowIso(), user.id);
     user = { ...user, username: nextUsername, consent_json: consentJson };
+    if (
+      body.consent !== undefined &&
+      hasAcceptedAssistantConsent(user.consent_json)
+    ) {
+      ensureAssistantRuntime(getOrCreateAssistant(user));
+    }
   }
   sendJson(req, res, {
     ...userPayload(user),
@@ -902,22 +870,28 @@ function handleOrganizations(req: Request, res: Response, user: UserRow): void {
 
 async function handleAssistants(req: Request, res: Response, url: URL, user: UserRow): Promise<boolean> {
   if (url.pathname === "/v1/assistants/" && req.method === "GET") {
-    const assistant = getActiveAssistant(user);
+    const assistant = getOrCreateAssistant(user);
     const hosting = url.searchParams.get("hosting");
     const includeAssistant =
-      !!assistant && (hosting === null || hosting === "platform" || hosting === "all");
-    const results = includeAssistant ? [assistantPayload(assistant, user)] : [];
+      hosting === null || hosting === "platform" || hosting === "all";
+    if (!includeAssistant) {
+      sendJson(req, res, { count: 0, next: null, previous: null, results: [] });
+      return true;
+    }
+    const runtimeStack = hasAcceptedAssistantConsent(user.consent_json)
+      ? ensureAssistantRuntime(assistant)
+      : runtimeStackForPayload(assistant);
+    const results = [assistantPayload(assistant, user, runtimeStack)];
     sendJson(req, res, { count: results.length, next: null, previous: null, results });
     return true;
   }
 
   if (url.pathname === "/v1/assistants/active/" && req.method === "GET") {
-    const assistant = getActiveAssistant(user);
-    if (!assistant) {
-      sendJson(req, res, { detail: "No active assistant." }, 404);
-      return true;
-    }
-    sendJson(req, res, assistantPayload(assistant, user));
+    const assistant = getOrCreateAssistant(user);
+    const runtimeStack = hasAcceptedAssistantConsent(user.consent_json)
+      ? ensureAssistantRuntime(assistant)
+      : runtimeStackForPayload(assistant);
+    sendJson(req, res, assistantPayload(assistant, user, runtimeStack));
     return true;
   }
 
@@ -928,19 +902,6 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
     }
     const existing = getActiveAssistant(user);
     const provisioningError = runtimeProvisioningConfigurationError();
-    if (!existing && provisioningError) {
-      sendJson(
-        req,
-        res,
-        {
-          detail: "Managed assistant provisioning is not available.",
-          code: "platform_hosted_disabled",
-        },
-        503,
-      );
-      return true;
-    }
-
     const assistant = existing ?? getOrCreateAssistant(user);
     const runtimeStack = runtimeStackForPayload(assistant);
     if (

@@ -126,6 +126,16 @@ export function railwayProvisionerConfigurationError(
   return null;
 }
 
+export function railwayRuntimeCapacityError(
+  existingServiceRef: string | null,
+  allocatedRuntimeServices: number,
+  maxRuntimeServices: number,
+): string | null {
+  if (existingServiceRef) return null;
+  if (allocatedRuntimeServices < maxRuntimeServices) return null;
+  return `Railway runtime service limit (${maxRuntimeServices}) has been reached.`;
+}
+
 export function railwayRuntimeServiceName(assistantId: string): string {
   const suffix = assistantId
     .toLowerCase()

@@ -105,14 +105,14 @@ export function shouldRecoverFromHatchFailure(status?: number): boolean {
 
 /**
  * The Django hatch endpoint returns 503 + `{ code: "platform_hosted_disabled" }`
- * when platform hosting is unavailable (global capacity kill-switch). The
- * onboarding flow surfaces this as a user-friendly message instead of
- * recovering / retrying.
+ * when platform hosting is unavailable because runtime provisioning is not
+ * configured. The onboarding flow surfaces this as a user-friendly message
+ * instead of recovering / retrying.
  */
 export const PLATFORM_HOSTED_DISABLED_CODE = "platform_hosted_disabled";
 
 export const PLATFORM_HOSTED_DISABLED_MESSAGE =
-  "We are at capacity for Worklin Managed Assistants, more will be available soon!";
+  "Worklin Managed Assistants are temporarily unavailable. Please try again shortly.";
 
 export function isPlatformHostedDisabled(
   status: number | undefined,

@@ -4,6 +4,7 @@ import {
   provisionRailwayRuntime,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
+  railwayRuntimeCapacityError,
   railwayRuntimeServiceName,
   type RailwayProvisionerConfig,
 } from "./railway-runtime-provisioner.js";
@@ -87,6 +88,19 @@ describe("railwayRuntimeServiceName", () => {
     expect(railwayRuntimeServiceName(assistant.id)).toBe(
       "worklin-runtime-52d71495-bab5-4567-bcfc-832cc2bb15fe",
     );
+  });
+});
+
+describe("railwayRuntimeCapacityError", () => {
+  test("blocks a new runtime at the configured cap", () => {
+    expect(railwayRuntimeCapacityError(null, 2, 2)).toBe(
+      "Railway runtime service limit (2) has been reached.",
+    );
+  });
+
+  test("allows capacity below the cap and resumable existing services", () => {
+    expect(railwayRuntimeCapacityError(null, 1, 2)).toBeNull();
+    expect(railwayRuntimeCapacityError("service-1", 2, 2)).toBeNull();
   });
 });
 

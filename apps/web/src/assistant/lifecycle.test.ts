@@ -4,7 +4,9 @@ import {
   ERROR_RETRY_BASE_MS,
   ERROR_RETRY_MAX_MS,
   errorRetryDelayMs,
+  isPlatformHostedDisabled,
   isTransportShapedError,
+  PLATFORM_HOSTED_DISABLED_MESSAGE,
   PROXY_NETWORK_ERROR_CODE,
   resolveAssistantLifecycleState,
   TRANSPORT_ERROR_MESSAGE,
@@ -126,6 +128,21 @@ describe("isTransportShapedError", () => {
       false,
     );
     expect(isTransportShapedError({})).toBe(false);
+  });
+});
+
+describe("platform hosting availability", () => {
+  test("recognizes only the explicit provisioning-disabled response", () => {
+    expect(
+      isPlatformHostedDisabled(503, { code: "platform_hosted_disabled" }),
+    ).toBe(true);
+    expect(
+      isPlatformHostedDisabled(500, { code: "platform_hosted_disabled" }),
+    ).toBe(false);
+  });
+
+  test("does not mislabel a configuration outage as capacity", () => {
+    expect(PLATFORM_HOSTED_DISABLED_MESSAGE).not.toContain("capacity");
   });
 });
 
