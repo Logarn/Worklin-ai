@@ -14833,6 +14833,173 @@ paths:
       responses:
         "200":
           description: Successful response
+  /v1/live-voice/providers/chat/completions:
+    post:
+      operationId: livevoice_providers_chat_completions_post
+      summary: Stream Worklin turns to a managed voice provider
+      tags:
+        - Live Voice
+      responses:
+        "200":
+          description: Successful response
+  /v1/live-voice/sessions:
+    post:
+      operationId: livevoice_sessions_post
+      summary: Create a provider-neutral live voice session
+      tags:
+        - Live Voice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assistantId:
+                  type: string
+                  minLength: 1
+                conversationId:
+                  type: string
+                  minLength: 1
+              required:
+                - assistantId
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  conversationId:
+                    type: string
+                  engine:
+                    type: string
+                    enum:
+                      - native
+                      - hume
+                      - elevenlabs
+                  expiresAt:
+                    type: string
+                  connection:
+                    oneOf:
+                      - type: object
+                        properties:
+                          transport:
+                            type: string
+                            const: native
+                        required:
+                          - transport
+                        additionalProperties: false
+                      - type: object
+                        properties:
+                          transport:
+                            type: string
+                            const: hume
+                          websocketUrl:
+                            type: string
+                          sessionToken:
+                            type: string
+                          voiceId:
+                            type: string
+                        required:
+                          - transport
+                          - websocketUrl
+                          - sessionToken
+                        additionalProperties: false
+                      - type: object
+                        properties:
+                          transport:
+                            type: string
+                            const: elevenlabs
+                          conversationToken:
+                            type: string
+                          sessionToken:
+                            type: string
+                          voiceId:
+                            type: string
+                        required:
+                          - transport
+                          - conversationToken
+                          - sessionToken
+                        additionalProperties: false
+                    type: object
+                required:
+                  - sessionId
+                  - conversationId
+                  - engine
+                  - expiresAt
+                  - connection
+                additionalProperties: false
+  /v1/live-voice/sessions/{sessionId}:
+    delete:
+      operationId: livevoice_sessions_by_sessionId_delete
+      summary: Release a managed live voice session
+      tags:
+        - Live Voice
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  released:
+                    type: boolean
+                required:
+                  - released
+                additionalProperties: false
+  /v1/live-voice/sessions/{sessionId}/provider-conversation:
+    post:
+      operationId: livevoice_sessions_by_sessionId_providerconversation_post
+      summary: Bind a managed provider conversation to a Worklin session
+      tags:
+        - Live Voice
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                providerConversationId:
+                  type: string
+                  minLength: 1
+                sessionToken:
+                  type: string
+                  minLength: 1
+              required:
+                - providerConversationId
+                - sessionToken
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bound:
+                    type: boolean
+                    const: true
+                required:
+                  - bound
+                additionalProperties: false
   /v1/llm-request-logs/{id}/context:
     get:
       operationId: llmrequestlogs_by_id_context_get

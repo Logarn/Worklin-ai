@@ -242,7 +242,35 @@ describe("runtime stack provisioning defaults", () => {
     });
   });
 
-  test("isolated defaults leave an unallocated failed Railway stack failed", () => {
+  test("legacy recovery refuses a Railway stack with an existing gateway", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    db.query(`
+      UPDATE runtime_stacks
+      SET gateway_url = 'http://allocated-runtime.test', status = 'failed'
+      WHERE id = ?
+    `).run(initial.id);
+
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+      }),
+      NOW,
+    );
+
+    expect(stack).toMatchObject({
+      status: "failed",
+      provider: "railway",
+      gateway_url: "http://allocated-runtime.test",
+      service_ref: null,
+      workspace_volume_ref: null,
+    });
+  });
+
+  test("shared recovery requires isolated mode to be explicitly disabled", () => {
     const db = setupDb();
     const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
     markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
@@ -250,7 +278,7 @@ describe("runtime stack provisioning defaults", () => {
     const stack = ensureRuntimeStackForAssistant(
       db,
       assistant({ runtime_stack_id: initial.id }),
-      config(),
+      config({ allowLegacySharedRuntime: true }),
       NOW,
     );
 
