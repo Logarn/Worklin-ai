@@ -1175,6 +1175,29 @@
         }
       },
       "updatedAt": "2026-06-03T03:10:07.000Z"
+    },
+    {
+      "id": "write-brand-copy",
+      "name": "write-brand-copy",
+      "description": "Create, rewrite, or critique evidence-led brand copy and scripts using Worklin onboarding research or another supplied brand profile. Use for emails, landing pages, paid or organic social, ecommerce copy, short-form video, educational video, hooks, CTAs, campaign variants, message testing, and claim review. Also use when copy must match a known brand voice, convert a Brand Brain into writing guidance, or diagnose weak, vague, manipulative, unsupported, or off-brand copy.",
+      "metadata": {
+        "emoji": "✍️",
+        "vellum": {
+          "category": "content",
+          "display-name": "Brand Copywriter",
+          "activation-hints": [
+            "Write or rewrite marketing copy in my brand voice",
+            "Create an email, landing page, social post, ad, or video script",
+            "Generate hooks, CTAs, concepts, or test variants",
+            "Audit copy for clarity, claims, trust, or brand fit"
+          ],
+          "avoid-when": [
+            "The user only wants spelling or grammar correction with no strategic rewrite",
+            "The user wants a GEO article designed for AI citation; use geo-writing",
+            "The user wants to publish, send, schedule, or launch an approved artifact; use the relevant channel skill after copy approval"
+          ]
+        }
+      }
     }
   ]
 }

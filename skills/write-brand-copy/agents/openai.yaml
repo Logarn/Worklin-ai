@@ -1,0 +1,4 @@
+interface:
+  display_name: "Brand Copywriter"
+  short_description: "Evidence-led copy in your brand voice"
+  default_prompt: "Use $write-brand-copy to draft and critique brand-aligned copy with verified claims."
