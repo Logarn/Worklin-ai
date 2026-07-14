@@ -13,7 +13,13 @@ import { useCopybookData } from "./use-copybook-data";
 export function CopybookPage() {
   const assistantId = useActiveAssistantId();
   const navigate = useNavigate();
-  const { copybookId = "", year = "", month = "" } = useParams<{
+  const {
+    brandId = "",
+    copybookId = "",
+    year = "",
+    month = "",
+  } = useParams<{
+    brandId: string;
     copybookId: string;
     year: string;
     month: string;
@@ -38,9 +44,16 @@ export function CopybookPage() {
 
   const handleSelectMonth = useCallback(
     (nextMonth: number) => {
-      void navigate(routes.copybooks.month(copybookId, selectedYear, nextMonth));
+      void navigate(
+        routes.work.copybookMonth(
+          brandId || copybook?.copybook.brandId || "unassigned",
+          copybookId,
+          selectedYear,
+          nextMonth,
+        ),
+      );
     },
-    [copybookId, navigate, selectedYear],
+    [brandId, copybook?.copybook.brandId, copybookId, navigate, selectedYear],
   );
 
   if (isLoading) {

@@ -18,6 +18,7 @@ import {
   addCoreColumns,
   createActivationSessionsTable,
   createApprovalPromptTsTrackerTable,
+  createArtifactRegistry,
   createAssistantInboxTables,
   createAuthFallbackEventsTable,
   createCallSessionsTables,
@@ -522,6 +523,7 @@ export function initializeDb(): void {
     createRetentionTables,
     createRetentionBrandBrainTables,
     createRetentionCopybookTables,
+    createArtifactRegistry,
   ];
 
   // Run each migration step, catching and logging individual failures so one

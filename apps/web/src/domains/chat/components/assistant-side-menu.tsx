@@ -1,11 +1,9 @@
 import {
-    BookOpenText,
     Brain,
     Clock,
     Hash,
-    LayoutGrid,
+  FolderKanban,
     Pin,
-    Rocket,
     Search,
     SquarePen,
     X,
@@ -15,19 +13,29 @@ import { useCallback, type ReactNode } from "react";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
 
 import { CollapsibleNavSection } from "@/components/collapsible-nav-section";
-import { CollapsedGroupIcon, getGroupIndicatorState } from "@/domains/chat/components/collapsed-group-icon";
+import {
+  CollapsedGroupIcon,
+  getGroupIndicatorState,
+} from "@/domains/chat/components/collapsed-group-icon";
 import {
     ConversationActionsMenu,
     renderConversationMenuItems,
     type ConversationMenuItemsProps,
 } from "@/domains/chat/components/conversation-actions-menu";
-import { GroupActionsMenu, renderGroupMenuItems } from "@/domains/chat/components/group-actions-menu";
+import {
+  GroupActionsMenu,
+  renderGroupMenuItems,
+} from "@/domains/chat/components/group-actions-menu";
 import { ThreadPinToggle } from "@/domains/chat/components/thread-pin-toggle";
 import { useDragReorder } from "@/domains/chat/hooks/use-drag-reorder";
-import { SIDEBAR_CONVERSATION_LIMIT, useSidebarState, type PaginatedSection, type UseSidebarStateParams } from "@/domains/chat/use-sidebar-state";
+import {
+  SIDEBAR_CONVERSATION_LIMIT,
+  useSidebarState,
+  type PaginatedSection,
+  type UseSidebarStateParams,
+} from "@/domains/chat/use-sidebar-state";
 import { isChannelConversation } from "@/domains/chat/utils/conversation-channel";
 import { isConversationPinned } from "@/domains/chat/utils/group-conversations";
-import { usePinnedAppsStore } from "@/stores/pinned-apps-store";
 import type { Conversation } from "@/types/conversation-types";
 import { canMarkRead, canMarkUnread } from "@/utils/conversation-predicates";
 import {
@@ -39,7 +47,8 @@ import {
 import { cn } from "@vellumai/design-library/utils/cn";
 
 /** @deprecated Use {@link SIDEBAR_CONVERSATION_LIMIT} from `use-sidebar-state.ts` */
-export const ASSISTANT_SIDE_MENU_CONVERSATION_LIMIT = SIDEBAR_CONVERSATION_LIMIT;
+export const ASSISTANT_SIDE_MENU_CONVERSATION_LIMIT =
+  SIDEBAR_CONVERSATION_LIMIT;
 
 export interface AssistantSideMenuProps extends UseSidebarStateParams {
   assistantName?: string | null;
@@ -51,12 +60,8 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onSelectConversation: (key: string) => void;
   isIntelligenceActive?: boolean;
   onOpenIntelligence?: () => void;
-  isLibraryActive?: boolean;
-  onOpenLibrary?: () => void;
-  isCopybooksActive?: boolean;
-  onOpenCopybooks?: () => void;
-  onOpenApp?: (appId: string) => void;
-  activeAppId?: string;
+  isWorkActive?: boolean;
+  onOpenWork?: () => void;
   onStartNewConversation?: () => void;
   footerAction?: ReactNode;
   onClose?: () => void;
@@ -77,7 +82,10 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onRenameGroup?: (groupId: string) => void;
   onDeleteGroup?: (groupId: string) => void;
   onMarkAllReadInGroup?: (conversations: Conversation[]) => void;
-  onArchiveAllInGroup?: (groupName: string, conversations: Conversation[]) => void;
+  onArchiveAllInGroup?: (
+    groupName: string,
+    conversations: Conversation[],
+  ) => void;
   processingConversationIds?: Set<string>;
   activeConversationProcessing?: boolean;
   onAnalyze?: (conversation: Conversation) => void;
@@ -134,12 +142,8 @@ export function AssistantSideMenu({
   onSelectConversation,
   isIntelligenceActive = false,
   onOpenIntelligence,
-  isLibraryActive = false,
-  onOpenLibrary,
-  isCopybooksActive = false,
-  onOpenCopybooks,
-  onOpenApp,
-  activeAppId,
+  isWorkActive = false,
+  onOpenWork,
   onStartNewConversation,
   footerAction,
   onPinConversation,
@@ -169,8 +173,6 @@ export function AssistantSideMenu({
     conversationGroups,
     attentionConversationIds,
   });
-
-  const pinnedApps = usePinnedAppsStore.use.pinnedApps();
 
   // --- Drag-reorder (Pinned + custom groups; sections sorted by displayOrder) ---
 
@@ -206,9 +208,11 @@ export function AssistantSideMenu({
   const renderThreadPinToggle = (conversation: Conversation): ReactNode => {
     const isProcessing =
       conversation.conversationId === activeConversationId
-        ? activeConversationProcessing ?? false
-        : processingConversationIds?.has(conversation.conversationId) ?? false;
-    const needsAttention = attentionConversationIds?.has(conversation.conversationId) ?? false;
+        ? (activeConversationProcessing ?? false)
+        : (processingConversationIds?.has(conversation.conversationId) ??
+          false);
+    const needsAttention =
+      attentionConversationIds?.has(conversation.conversationId) ?? false;
     return (
       <ThreadPinToggle
         conversation={conversation}
@@ -278,10 +282,11 @@ export function AssistantSideMenu({
     return (
       <ContextMenu.Root key={conversation.conversationId}>
         <ContextMenu.Trigger>{panelItem}</ContextMenu.Trigger>
-        <ContextMenu.Content
-          onClick={(event) => event.stopPropagation()}
-        >
-          {renderConversationMenuItems({ Primitive: ContextMenu, ...menuProps })}
+        <ContextMenu.Content onClick={(event) => event.stopPropagation()}>
+          {renderConversationMenuItems({
+            Primitive: ContextMenu,
+            ...menuProps,
+          })}
         </ContextMenu.Content>
       </ContextMenu.Root>
     );
@@ -293,7 +298,10 @@ export function AssistantSideMenu({
     options?: { onRename?: () => void; onDelete?: () => void },
   ) => {
     const hasAnyAction =
-      onMarkAllReadInGroup || onArchiveAllInGroup || options?.onRename || options?.onDelete;
+      onMarkAllReadInGroup ||
+      onArchiveAllInGroup ||
+      options?.onRename ||
+      options?.onDelete;
     if (!hasAnyAction) return undefined;
 
     return renderGroupMenuItems({
@@ -314,7 +322,10 @@ export function AssistantSideMenu({
   };
 
   const selectAndClose = useCallback(
-    (key: string) => { onSelectConversation(key); onClose?.(); },
+    (key: string) => {
+      onSelectConversation(key);
+      onClose?.();
+    },
     [onSelectConversation, onClose],
   );
 
@@ -384,10 +395,17 @@ export function AssistantSideMenu({
 
   // --- Collapsed-rail popover content renderer ---
 
-  const renderCollapsedGroupContent = (title: string, conversations: Conversation[], closePopover?: () => void, emptyState?: ReactNode): ReactNode => (
+  const renderCollapsedGroupContent = (
+    title: string,
+    conversations: Conversation[],
+    closePopover?: () => void,
+    emptyState?: ReactNode,
+  ): ReactNode => (
     <div className="pb-1">
       <div className="flex items-center justify-between px-4 py-1">
-        <span className="text-body-small-default text-[var(--content-tertiary)]">{title}</span>
+        <span className="text-body-small-default text-[var(--content-tertiary)]">
+          {title}
+        </span>
       </div>
       <div className="px-2">
         {conversations.length === 0 ? emptyState : null}
@@ -397,7 +415,10 @@ export function AssistantSideMenu({
             leadingSlot={renderThreadPinToggle(c)}
             label={c.title ?? "Untitled"}
             active={c.conversationId === activeConversationId}
-            onSelect={() => { closePopover?.(); selectAndClose(c.conversationId); }}
+            onSelect={() => {
+              closePopover?.();
+              selectAndClose(c.conversationId);
+            }}
             trailingAction={renderThreadActions(c)}
           />
         ))}
@@ -436,39 +457,27 @@ export function AssistantSideMenu({
           label={assistantName || "Your Assistant"}
           showCollapsedTooltip
           active={isIntelligenceActive}
-          onSelect={onOpenIntelligence ? () => { onOpenIntelligence(); onClose?.(); } : undefined}
-        />
-        {onOpenLibrary ? (
+          onSelect={
+            onOpenIntelligence
+              ? () => {
+                  onOpenIntelligence();
+                  onClose?.();
+                }
+              : undefined
+          }
+          />
+        {onOpenWork ? (
           <SideMenu.Item
-            icon={LayoutGrid}
-            label="Library"
+            icon={FolderKanban}
+            label="Work"
             showCollapsedTooltip
-            active={isLibraryActive}
-            onSelect={onOpenLibrary ? () => { onOpenLibrary(); onClose?.(); } : undefined}
+            active={isWorkActive}
+            onSelect={() => {
+              onOpenWork();
+              onClose?.();
+            }}
           />
         ) : null}
-        {onOpenCopybooks ? (
-          <SideMenu.Item
-            icon={BookOpenText}
-            label="Copybooks"
-            showCollapsedTooltip
-            active={isCopybooksActive}
-            onSelect={() => { onOpenCopybooks(); onClose?.(); }}
-          />
-        ) : null}
-        {pinnedApps.map((app) => (
-          <SideMenu.Item
-            key={app.appId}
-            // Apps source their icon as an emoji string on the manifest
-            // (`app.icon`). Fall back to the Rocket lucide glyph so unmojified
-            // apps still get a leading icon in the rail.
-            icon={app.icon ?? Rocket}
-            label={app.name}
-            showCollapsedTooltip
-            active={activeAppId === app.appId}
-            onSelect={onOpenApp ? () => { onOpenApp(app.appId); onClose?.(); } : undefined}
-          />
-        ))}
         <SideMenu.Separator />
       </SideMenu.Header>
 
@@ -480,26 +489,48 @@ export function AssistantSideMenu({
               <CollapsedGroupIcon
                 icon={Pin}
                 label="Pinned"
-                indicatorState={getGroupIndicatorState(sidebar.pinned, processingConversationIds, attentionConversationIds)}
+                indicatorState={getGroupIndicatorState(
+                  sidebar.pinned,
+                  processingConversationIds,
+                  attentionConversationIds,
+                )}
               >
-                {(close) => renderCollapsedGroupContent("Pinned", sidebar.pinned, close)}
+                {(close) =>
+                  renderCollapsedGroupContent("Pinned", sidebar.pinned, close)
+                }
               </CollapsedGroupIcon>
             ) : null}
             <CollapsedGroupIcon
               icon={Clock}
               label="Recents"
               disabled={sidebar.recents.all.length === 0}
-              indicatorState={getGroupIndicatorState(sidebar.recents.all, processingConversationIds, attentionConversationIds)}
+              indicatorState={getGroupIndicatorState(
+                sidebar.recents.all,
+                processingConversationIds,
+                attentionConversationIds,
+              )}
             >
-              {(close) => renderCollapsedGroupContent("Recents", sidebar.recents.all, close)}
+              {(close) =>
+                renderCollapsedGroupContent(
+                  "Recents",
+                  sidebar.recents.all,
+                  close,
+                )
+              }
             </CollapsedGroupIcon>
             <CollapsedGroupIcon
               icon={Hash}
               label="Slack"
               disabled={sidebar.slack.totalCount === 0}
-              indicatorState={getGroupIndicatorState(sidebar.slack.all, processingConversationIds, attentionConversationIds)}
+              indicatorState={getGroupIndicatorState(
+                sidebar.slack.all,
+                processingConversationIds,
+                attentionConversationIds,
+              )}
             >
-              {(close) => renderCollapsedGroupContent("Slack", sidebar.slack.all, close)}
+              {(close) =>
+                renderCollapsedGroupContent("Slack", sidebar.slack.all, close)
+              }
             </CollapsedGroupIcon>
           </div>
         ) : (
@@ -528,14 +559,18 @@ export function AssistantSideMenu({
                     value="slack"
                     icon={Hash}
                     label="Slack"
-                    contextMenuContent={buildGroupContextMenu("Slack", sidebar.slack.all)}
+                    contextMenuContent={buildGroupContextMenu(
+                      "Slack",
+                      sidebar.slack.all,
+                    )}
                   >
                     {renderFlatList(sidebar.slack.items, sidebar.slack)}
                   </CollapsibleNavSection.Section>
                 ) : null}
               </CollapsibleNavSection.Root>
 
-              {sidebar.conversationGroupsEnabled && sidebar.customGroups.length > 0 ? (
+              {sidebar.conversationGroupsEnabled &&
+              sidebar.customGroups.length > 0 ? (
                 <>
                   <SideMenu.Separator />
                   <SideMenu.Section title="Your Groups">
@@ -580,8 +615,12 @@ export function AssistantSideMenu({
                                   leadingSlot={renderThreadPinToggle(c)}
                                   label={c.title ?? "Untitled"}
                                   marqueeOnHover
-                                  active={c.conversationId === activeConversationId}
-                                  onSelect={() => selectAndClose(c.conversationId)}
+                                  active={
+                                    c.conversationId === activeConversationId
+                                  }
+                                  onSelect={() =>
+                                    selectAndClose(c.conversationId)
+                                  }
                                   trailingAction={renderThreadActions(c)}
                                   {...buildDragProps(
                                     `group:${group.id}`,

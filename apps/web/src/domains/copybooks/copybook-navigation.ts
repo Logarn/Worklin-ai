@@ -15,7 +15,8 @@ export function getCopybookDestination(
 
   return firstMonth === null
     ? null
-    : routes.copybooks.month(
+    : routes.work.copybookMonth(
+        detail.copybook.brandId,
         detail.copybook.id,
         detail.copybook.year,
         firstMonth,
@@ -26,4 +27,15 @@ export function copybookStartPrompt(title?: string): string {
   return title
     ? `Set up the monthly strategy and first campaign brief for "${title}". Stop for my review before writing campaign copy.`
     : "Help me create a Campaign Copybook for my brand. Start by gathering the monthly strategy inputs, then stop for my review.";
+}
+
+export function copybookWorklinPrompt(input: {
+  title: string;
+  year: number;
+  month: number;
+}): string {
+  const monthName = new Date(2000, input.month - 1).toLocaleString("en", {
+    month: "long",
+  });
+  return `Continue working with me on the ${monthName} ${input.year} campaign copybook in "${input.title}". The linked month document is already open. Read my comments and make targeted edits in this existing document; do not create another document.`;
 }

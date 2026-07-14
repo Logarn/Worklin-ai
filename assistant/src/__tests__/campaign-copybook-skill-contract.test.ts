@@ -30,6 +30,7 @@ describe("campaign-copybook skill contract", () => {
   test("keeps copywriting as a leaf behind explicit review gates", () => {
     expect(skill).toContain('includes:\n      - "worklin-brand-brain"');
     expect(skill).toContain('- "worklin-copybook"');
+    expect(skill).toContain('- "document-editor"');
     expect(skill).toContain('- "write-brand-copy"');
     expect(skill).toContain("Set the stage to `strategy_review` and stop");
     expect(skill).toContain("Do not write final copy for an unapproved brief");
@@ -49,6 +50,29 @@ describe("campaign-copybook skill contract", () => {
     expect(contract).toContain(
       "A failed or unavailable persistence call does not authorize a local-only state advance",
     );
+  });
+
+  test("writes every month through its existing document surface", () => {
+    expect(skill).toContain("Capture the returned `month.documentSurfaceId`");
+    expect(skill).toContain("Call `document_open` with that surface ID");
+    expect(skill).toContain("multiple `document_update` calls");
+    expect(skill).toContain(
+      "Never call `document_create`, `file_write`, `host_file_write`",
+    );
+    expect(contract).toContain(
+      "`copybook_month_create` returns the month record with `documentSurfaceId`",
+    );
+    expect(contract).toContain(
+      "A failed document operation leaves the structured stage unchanged",
+    );
+    expect(contract).toContain("Do not save a parallel Markdown copy");
+  });
+
+  test("keeps persistence failures concise and out of chat", () => {
+    expect(skill).toContain("do not dump the deliverable into chat");
+    expect(skill).toContain("Never expose internal planning narration");
+    expect(skill).toContain("or paste the full draft into chat");
+    expect(skill).toContain("keep the generated section available for a retry");
   });
 
   test("defines revision-bound approvals and ready-for-design safety", () => {

@@ -20,6 +20,7 @@ import {
 } from "@/utils/pdf-export";
 
 import type { CopybookDetail, CopybookMonth } from "../copybook-api";
+import { copybookWorklinPrompt } from "../copybook-navigation";
 import { CopybookMonthNav } from "./copybook-month-nav";
 import { CopybookStatusBar } from "./copybook-status-bar";
 
@@ -36,7 +37,11 @@ export function CopybookWorkspace({
 }) {
   const navigate = useNavigate();
   const viewerRef = useRef<DocumentViewerContainerHandle>(null);
-  const { data: document, isLoading, error } = useQuery({
+  const {
+    data: document,
+    isLoading,
+    error,
+  } = useQuery({
     ...documentsByIdGetOptions({
       path: { assistant_id: assistantId, id: month.documentSurfaceId ?? "" },
     }),
@@ -63,7 +68,11 @@ export function CopybookWorkspace({
       documentName: document.title,
       content: document.content,
     });
-    const prompt = `Help me review and improve the ${month.month}/${copybook.copybook.year} campaign copy in "${document.title}".`;
+    const prompt = copybookWorklinPrompt({
+      title: document.title,
+      year: copybook.copybook.year,
+      month: month.month,
+    });
     void navigate(
       `${routes.conversation(conversationId)}?prompt=${encodeURIComponent(prompt)}`,
     );
@@ -137,7 +146,11 @@ export function CopybookWorkspace({
               conversationId={document.conversationId}
               documentName={document.title}
               content={document.content}
-              onClose={() => void navigate(routes.library.root)}
+              onClose={() =>
+                void navigate(
+                  routes.work.brandArtifacts(copybook.copybook.brandId),
+                )
+              }
               onExport={() => void handleExport()}
               onSubmitFeedback={handleWorkWithWorklin}
               onWorkWithAssistant={handleWorkWithWorklin}

@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import type { CopybookDetail } from "./copybook-api";
-import { copybookStartPrompt, getCopybookDestination } from "./copybook-navigation";
+import {
+  copybookStartPrompt,
+  copybookWorklinPrompt,
+  getCopybookDestination,
+} from "./copybook-navigation";
 
 function detail(months: number[]): CopybookDetail {
   return {
@@ -32,7 +36,7 @@ function detail(months: number[]): CopybookDetail {
 describe("copybook index navigation", () => {
   test("opens the earliest existing month", () => {
     expect(getCopybookDestination(detail([7, 3, 11]))).toBe(
-      "/assistant/copybooks/copybook-1/2026/3",
+      "/assistant/work/brands/brand-1/artifacts/copybooks/copybook-1/2026/3",
     );
   });
 
@@ -44,5 +48,19 @@ describe("copybook index navigation", () => {
     expect(copybookStartPrompt("Acme 2026")).toContain(
       "Stop for my review before writing campaign copy",
     );
+  });
+
+  test("continues in the open month document without replacing human work", () => {
+    const prompt = copybookWorklinPrompt({
+      title: "2026 Copybook",
+      year: 2026,
+      month: 8,
+    });
+
+    expect(prompt).toContain("August 2026 campaign copybook");
+    expect(prompt).toContain("linked month document is already open");
+    expect(prompt).toContain("Read my comments");
+    expect(prompt).toContain("make targeted edits");
+    expect(prompt).toContain("do not create another document");
   });
 });

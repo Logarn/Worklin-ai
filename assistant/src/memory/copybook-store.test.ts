@@ -25,6 +25,7 @@ initializeDb();
 
 beforeEach(() => {
   const db = getDb();
+  rawRun("DELETE FROM artifacts");
   db.delete(retentionCopybookSnapshots).run();
   rawRun("DELETE FROM retention_copybook_campaigns");
   rawRun("DELETE FROM retention_copybook_months");

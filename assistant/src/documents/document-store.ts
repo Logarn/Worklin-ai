@@ -5,6 +5,7 @@
  * background jobs (e.g. proactive artifact generation) can persist documents
  * without going through the HTTP layer.
  */
+import { registerDocumentArtifact } from "../memory/artifact-store.js";
 import { rawAll, rawGet, rawRun } from "../memory/raw-query.js";
 import { getLogger } from "../util/logger.js";
 
@@ -415,6 +416,15 @@ export function saveDocument(params: {
       log.warn(
         { err, surfaceId: params.surfaceId },
         "Failed to record document–conversation association",
+      );
+    }
+
+    try {
+      registerDocumentArtifact(params.surfaceId);
+    } catch (err) {
+      log.warn(
+        { err, surfaceId: params.surfaceId },
+        "Failed to register document artifact",
       );
     }
 

@@ -16,6 +16,18 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
+## Collaborative Artifacts Implementation (In Flight)
+
+Branch `assistant/collaborative-artifacts` implements the brand-first Work destination and the first production-capable collaboration slice. It is not deployed yet.
+
+- The Campaign Copybook skill now requires the document editor, reuses the month creation result's `documentSurfaceId`, opens that document, and persists with `document_update`. It explicitly forbids duplicate documents, `file_write`, `host_file_write`, Markdown workspace files, and full-copy chat fallbacks. Persistence failure retains retry state and does not advance approval gates.
+- Migration 293 adds an additive artifact registry. Copybooks are registered deterministically, ordinary documents inherit only explicit conversation brand scope, Copybook month documents are excluded from root results, and ambiguous resources remain Unassigned.
+- New assistant APIs provide brand summaries plus artifact list, detail, and classification/favorite/archive updates. Partial and missing source states remain recoverable.
+- The web sidebar replaces Library and Copybooks with Work. `/assistant/work` chooses a brand and `/assistant/work/brands/:brandId/artifacts` renders the mixed Artifacts collection. Legacy Library and Copybook routes replace-redirect to the canonical Work routes.
+- Copybook documents remain directly human-editable with anchored comments. “Work with Worklin” opens the same document beside its conversation and supplies the active month, campaign, selected target, and unresolved-comment context for targeted revisions.
+
+Verified locally: 21 focused assistant tests, 23 focused web tests, assistant and web TypeScript, focused lint, OpenAPI freshness, `git diff --check`, and a production-mode web build. The ordinary local-mode Vite build path hit a Bun/Vite config-runner shutdown while dynamically loading the local-mode plugin; the production-mode build with `VITE_PLATFORM_MODE=true` completed successfully. Authenticated Chrome acceptance remains required before deployment. True multi-user live cursors/presence and persisted four-role team enforcement still require a team/realtime collaboration service and must not be represented as shipped by this slice.
+
 ## LLM-First Conversation Routing
 
 Natural-language messages now reach the agent loop before Worklin decides whether the user wants onboarding, a connection, an audit, copy, or another workflow. Deterministic code may still enforce permissions and explicit slash commands, but it no longer authors conversational onboarding replies.

@@ -284,6 +284,7 @@ export { migrateContactChannelsUniqueExtUser } from "./289-contact-channels-uniq
 export { createRetentionTables } from "./290-retention-tables.js";
 export { createRetentionBrandBrainTables } from "./291-retention-brand-brains.js";
 export { createRetentionCopybookTables } from "./292-retention-copybooks.js";
+export { createArtifactRegistry } from "./293-artifact-registry.js";
 export {
   MIGRATION_REGISTRY,
   type MigrationRegistryEntry,

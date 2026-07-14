@@ -45,6 +45,16 @@ When the host provides the included Copybook Records skill, use it as the write 
 | Editable month document | Human editing, comments, strategy, briefs, copy, and designer directions |
 | Chat | Concise progress, blockers, warnings, and explicit approval requests |
 
+`copybook_month_create` returns the month record with `documentSurfaceId`. Treat that value as the canonical editable surface for the lifetime of the month:
+
+1. Capture `month.documentSurfaceId` from the mutation result.
+2. Stop if the value is absent; do not invent or create another surface.
+3. Call `document_open` with the returned surface ID.
+4. Call `document_update` repeatedly against that same surface ID to stream strategy, briefs, copy, and designer directions.
+5. Use targeted document edits for later human or comment-led revisions so comment anchors and unrelated approved content remain intact.
+
+Do not call `document_create`, `file_write`, `host_file_write`, or any generic workspace-file tool for copybook content. Do not save a parallel Markdown copy or paste the full copybook into chat. A failed document operation leaves the structured stage unchanged. Retry the failed operation against the same surface; if retry is not possible, report the unsaved stage or section without claiming persistence.
+
 After every record mutation, check the returned state before describing the transition as complete. A failed or unavailable persistence call does not authorize a local-only state advance. When structured record tools are unavailable, retain this contract in the document, mark persistence as unavailable, and do not claim that an approval or `ready_for_design` snapshot was recorded.
 
 Record mutations are limited to Worklin's internal copybook state. They never authorize visual design generation, provider draft creation, sending, scheduling, flow activation, audience or profile mutation, or shop writes.
