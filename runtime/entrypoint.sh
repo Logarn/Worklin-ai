@@ -7,7 +7,7 @@ set -euo pipefail
 : "${CES_DATA_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-data}"
 : "${CREDENTIAL_SECURITY_DIR:=${CES_DATA_DIR%/}/security}"
 : "${CES_BOOTSTRAP_SOCKET_DIR:=/run/ces-bootstrap}"
-: "${GATEWAY_IPC_SOCKET_DIR:=/run/gateway-ipc}"
+: "${GATEWAY_IPC_SOCKET_DIR:=${VELLUM_WORKSPACE_DIR%/}/runtime-ipc}"
 : "${DEBUG_STDOUT_LOGS:=1}"
 : "${PORT:=8080}"
 : "${WORKLIN_CONTROL_PLANE_PORT:=${PORT}}"
@@ -182,6 +182,22 @@ if [[ ! -S "${socket_path}" ]]; then
 fi
 
 start_as gateway bash -lc "cd /app/gateway && exec bun --smol run src/index.ts"
+
+gateway_socket_path="${GATEWAY_IPC_SOCKET_DIR%/}/gateway.sock"
+for _ in $(seq 1 120); do
+  if [[ -S "${gateway_socket_path}" ]]; then
+    break
+  fi
+  sleep 0.25
+done
+
+if [[ ! -S "${gateway_socket_path}" ]]; then
+  echo "Gateway IPC socket did not appear at ${gateway_socket_path}" >&2
+  shutdown 1
+fi
+
+chmod 660 "${gateway_socket_path}"
+
 start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
 if [[ "${WORKLIN_RUNTIME_MODE}" != "isolated" ]]; then
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"

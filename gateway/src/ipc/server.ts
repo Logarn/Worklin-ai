@@ -18,11 +18,8 @@
  * only new `connect()` calls require the path to exist.
  */
 
-import {
-  SocketWatchdog,
-  ensureSocketDir,
-} from "@vellumai/ipc-server-utils";
-import { existsSync, unlinkSync } from "node:fs";
+import { SocketWatchdog, ensureSocketDir } from "@vellumai/ipc-server-utils";
+import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 
 import type { z } from "zod";
@@ -213,6 +210,19 @@ export class GatewayIpcServer {
 
   private createListeningServer(): Server {
     const server = createServer((socket) => this.handleConnection(socket));
+    server.once("listening", () => {
+      try {
+        // The combined runtime runs gateway and assistant under separate UIDs
+        // in a shared group. Make every initial or watchdog-rebound listener
+        // connectable by that group instead of relying on the process umask.
+        chmodSync(this.socketPath, 0o660);
+      } catch (err) {
+        log.error(
+          { err, path: this.socketPath },
+          "Failed to set gateway IPC socket permissions",
+        );
+      }
+    });
     server.on("error", (err) => {
       log.error({ err }, "IPC server error");
     });

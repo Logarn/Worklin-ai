@@ -1,6 +1,13 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,6 +113,23 @@ async function waitForListening(path: string, timeoutMs = 1000): Promise<void> {
   }
 }
 
+async function waitForSocketMode(
+  path: string,
+  expectedMode: number,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path) && (statSync(path).mode & 0o777) === expectedMode) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(
+    `socket ${path} did not reach mode ${expectedMode.toString(8)}`,
+  );
+}
+
 describe("GatewayIpcServer watchdog wiring", () => {
   let server: GatewayIpcServer | undefined;
   const sockets: Socket[] = [];
@@ -138,6 +162,8 @@ describe("GatewayIpcServer watchdog wiring", () => {
     server = buildServer({ watchdogIntervalMs: 0 });
     server.start();
     await waitForListening(socketPath);
+    await waitForSocketMode(socketPath, 0o660);
+    expect(statSync(socketPath).mode & 0o777).toBe(0o660);
 
     // A baseline client confirms the initial listener is healthy.
     const baseline = await connectClient(socketPath);
@@ -153,6 +179,7 @@ describe("GatewayIpcServer watchdog wiring", () => {
     const rebound = await server.rebindIfMissing();
     expect(rebound).toBe(true);
     expect(existsSync(socketPath)).toBe(true);
+    expect(statSync(socketPath).mode & 0o777).toBe(0o660);
 
     // A new client can connect to the re-bound listener and exercise the
     // route table — proving onRebind correctly installed the new server
