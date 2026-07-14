@@ -430,6 +430,76 @@ describe("no rule — autoApproveUpTo 'none'", () => {
     expect(result.reason).toContain("Read-only Brand Brain");
   });
 
+  test("headless web search bypasses a threshold that cannot be answered", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "web_search",
+      executionContext: "headless",
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("allow");
+    expect(result.reason).toContain("non-interactive research");
+  });
+
+  test("headless workspace reads bypass a threshold that cannot be answered", () => {
+    for (const toolName of ["file_read", "file_list"]) {
+      const result = evaluate({
+        riskLevel: RiskLevel.Low,
+        toolName,
+        executionContext: "headless",
+        isWorkspaceScoped: true,
+        autoApproveUpTo: "none",
+      });
+      expect(result.decision).toBe("allow");
+    }
+  });
+
+  test("headless reads outside the workspace still prompt", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "file_read",
+      executionContext: "headless",
+      isWorkspaceScoped: false,
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("prompt");
+  });
+
+  test("interactive strict mode still prompts for web search", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "web_search",
+      executionContext: "conversation",
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("prompt");
+  });
+
+  test("explicit deny still blocks headless read-only research", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "web_search",
+      executionContext: "headless",
+      matchedRule: makeRule({
+        tool: "web_search",
+        pattern: "web_search:*",
+        decision: "deny",
+      }),
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("deny");
+  });
+
+  test("headless web fetch remains approval-gated", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "web_fetch",
+      executionContext: "headless",
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("prompt");
+  });
+
   test("explicit deny still blocks plain skill loading", () => {
     const denyRule = makeRule({
       decision: "deny",

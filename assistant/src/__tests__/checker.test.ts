@@ -952,6 +952,16 @@ describe("Permission Checker", () => {
       expect(result.decision).toBe("prompt");
       expect(result.reason).toContain("above auto-approve threshold");
     });
+
+    test("headless web_search runs read-only research without an approval client", async () => {
+      mockIpcResponse("get_global_thresholds", STRICT_GATEWAY_THRESHOLDS);
+      _clearGlobalCacheForTesting();
+      const result = await check("web_search", { query: "test" }, "/tmp", {
+        executionContext: "headless",
+      });
+      expect(result.decision).toBe("allow");
+      expect(result.reason).toContain("non-interactive research");
+    });
   });
 
   // ── sandbox auto-approve ──
@@ -1376,12 +1386,12 @@ describe("Permission Checker", () => {
   // ── strict mode: skill_load behavior ──
 
   describe("strict mode — skill_load behavior (PR 34)", () => {
-    test("skill_load prompts in strict mode without an explicit user rule", async () => {
+    test("plain skill_load remains safe in strict mode", async () => {
       mockIpcResponse("get_global_thresholds", STRICT_GATEWAY_THRESHOLDS);
       _clearGlobalCacheForTesting();
       const result = await check("skill_load", { skill: "some-skill" }, "/tmp");
-      expect(result.decision).toBe("prompt");
-      expect(result.reason).toContain("above auto-approve threshold");
+      expect(result.decision).toBe("allow");
+      expect(result.reason).toContain("discovery and installation");
     });
 
     test("skill_load auto-allows in workspace mode (low risk fallback)", async () => {
@@ -1398,10 +1408,11 @@ describe("Permission Checker", () => {
   // must pass before the security hardening is considered complete.
 
   describe("Ship Gate Invariants (PR 40)", () => {
-    // ── Invariant 1: No tool call executes in strict mode without an
-    //    explicit matching rule. ──────────────────────────────────────
+    // ── Invariant 1: No non-exempt tool call executes in strict mode
+    //    without an explicit matching rule. Plain skill discovery is a
+    //    deliberate exemption; loaded tools are evaluated independently. ──
 
-    describe("Invariant 1: strict mode requires explicit matching rule for every tool", () => {
+    describe("Invariant 1: strict mode requires explicit matching rules outside safe setup", () => {
       test("bash prompts in strict mode (no default allow rule outside container)", async () => {
         mockIpcResponse("get_global_thresholds", STRICT_GATEWAY_THRESHOLDS);
         _clearGlobalCacheForTesting();
@@ -1434,7 +1445,7 @@ describe("Permission Checker", () => {
         expect(result.reason).toContain("above auto-approve threshold");
       });
 
-      test("low-risk skill_load prompts in strict mode without an explicit rule", async () => {
+      test("plain skill_load is the safe setup exemption in strict mode", async () => {
         mockIpcResponse("get_global_thresholds", STRICT_GATEWAY_THRESHOLDS);
         _clearGlobalCacheForTesting();
         const result = await check(
@@ -1442,8 +1453,8 @@ describe("Permission Checker", () => {
           { skill: "any-skill" },
           "/tmp",
         );
-        expect(result.decision).toBe("prompt");
-        expect(result.reason).toContain("above auto-approve threshold");
+        expect(result.decision).toBe("allow");
+        expect(result.reason).toContain("discovery and installation");
       });
 
       test("low-risk file_write with no rule prompts in strict mode", async () => {

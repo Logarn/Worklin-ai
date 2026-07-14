@@ -14,6 +14,8 @@ export interface ApprovalContext {
   matchedRule?: TrustRule;
   isContainerized: boolean;
   isWorkspaceScoped: boolean;
+  /** Whether this call has an interactive client available for approval. */
+  executionContext?: ExecutionContext;
   /**
    * Owner kind of the tool, as recorded by the tool registry — "skill" /
    * "plugin" / "mcp" for extension-owned tools, `undefined` for core tools
@@ -51,6 +53,9 @@ const THRESHOLD_ORDINAL: Record<string, number> = {
   high: 2,
 };
 
+const AUTONOMOUS_READ_TOOLS = new Set(["web_search", "recall"]);
+const AUTONOMOUS_WORKSPACE_READ_TOOLS = new Set(["file_read", "file_list"]);
+
 /**
  * Check whether a risk level falls within the configured auto-approve threshold.
  * Returns `true` when the risk is at or below the threshold (i.e. auto-approve).
@@ -87,7 +92,9 @@ export interface ApprovalPolicy {
  * 1. Deny rule → deny
  * 2. Safe skill setup/context read → allow
  *    (plain skill_load and brand_brain_read; dynamic skill loads excluded)
- * 3. Ask rule + risk > autoApproveUpTo → prompt
+ * 3. Non-interactive read-only research → allow
+ *    (web_search/recall, plus workspace-scoped file_read/file_list)
+ * 4. Ask rule + risk > autoApproveUpTo → prompt
  *    Ask rule + risk ≤ autoApproveUpTo → allow (threshold overrides ask rule)
  * 4. Sandbox auto-approve: bash + sandboxAutoApprove + autoApproveUpTo !== "none" → allow
  *    (Path resolution is baked into `hasSandboxAutoApprove` upstream: containerized
@@ -148,7 +155,26 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
       };
     }
 
-    // ── 3. Ask rules prompt — unless the threshold covers the risk.
+    // A background child has no approval UI to answer a prompt. Permit the
+    // small read-only set needed for research and orchestration while keeping
+    // explicit deny rules authoritative. Filesystem reads must remain within
+    // the workspace; outbound fetches and all side effects are excluded.
+    if (
+      context.executionContext === "headless" ||
+      context.executionContext === "background"
+    ) {
+      const isAutonomousRead =
+        AUTONOMOUS_READ_TOOLS.has(toolName) ||
+        (isWorkspaceScoped && AUTONOMOUS_WORKSPACE_READ_TOOLS.has(toolName));
+      if (isAutonomousRead) {
+        return {
+          decision: "allow",
+          reason: "Read-only operation allowed for non-interactive research",
+        };
+      }
+    }
+
+    // ── 4. Ask rules prompt — unless the threshold covers the risk.
     // The user's threshold setting takes precedence over ask rules: if the
     // risk falls within autoApproveUpTo, the ask rule is overridden and
     // the tool auto-approves.

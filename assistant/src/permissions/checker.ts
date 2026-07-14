@@ -550,6 +550,7 @@ export async function check(
       risk === RiskLevel.Low
         ? isWorkspaceScopedInvocation(toolName, input, workingDir)
         : false,
+    executionContext: policyContext?.executionContext ?? "conversation",
     toolOrigin: getToolOwner(toolName)?.kind,
     isSkillBundled: isToolOwnerSkillBundled(tool),
     hasManifestOverride: !!manifestOverride,
