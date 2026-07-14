@@ -11,6 +11,8 @@ import {
   mintExchangeToken,
   mintServiceToken,
 } from "../../auth/token-exchange.js";
+import { parseSub } from "../../auth/subject.js";
+import type { TokenClaims } from "../../auth/types.js";
 import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
 import type { GatewayConfig } from "../../config.js";
 import { credentialKey } from "../../credential-key.js";
@@ -43,7 +45,9 @@ function decodePathSegment(segment: string): string | null {
   }
 }
 
-function parseAssistantScopedPath(pathname: string): AssistantScopedPath | null {
+function parseAssistantScopedPath(
+  pathname: string,
+): AssistantScopedPath | null {
   const match = pathname.match(/^\/v1\/assistants\/([^/]+)\/(.+)$/);
   if (!match) return null;
   const assistantId = decodePathSegment(match[1]!);
@@ -62,6 +66,30 @@ async function resolveStackAssistantId(
     credentialKey("vellum", "platform_assistant_id"),
   );
   return fromCredential?.trim() || null;
+}
+
+function bindPlatformOwnerClaims(
+  claims: TokenClaims,
+  expectedAssistantId: string,
+): TokenClaims | null {
+  const subject = parseSub(claims.sub);
+  if (
+    !subject.ok ||
+    subject.principalType !== "actor" ||
+    !subject.actorPrincipalId ||
+    subject.assistantId !== expectedAssistantId
+  ) {
+    return null;
+  }
+
+  const principalId = subject.actorPrincipalId.startsWith("vellum-principal-")
+    ? subject.actorPrincipalId
+    : `vellum-principal-${subject.actorPrincipalId}`;
+
+  return {
+    ...claims,
+    sub: `actor:${expectedAssistantId}:${principalId}`,
+  };
 }
 
 export function createRuntimeProxyHandler(config: GatewayConfig) {
@@ -121,9 +149,43 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
         );
         return Response.json({ error: "Unauthorized" }, { status: 401 });
       }
+      let exchangeClaims = result.claims;
+      if (config.runtimeAssistantScopeMode === "enforce") {
+        let expectedAssistantId: string | null;
+        try {
+          expectedAssistantId = await resolveStackAssistantId(config);
+        } catch (err) {
+          log.error(
+            { err, method: req.method, path: url.pathname },
+            "Runtime proxy actor scope validation failed",
+          );
+          return Response.json(
+            { error: "Assistant identity unavailable" },
+            { status: 503 },
+          );
+        }
+        if (!expectedAssistantId) {
+          return Response.json(
+            { error: "Assistant identity unavailable" },
+            { status: 503 },
+          );
+        }
+        const boundClaims = bindPlatformOwnerClaims(
+          result.claims,
+          expectedAssistantId,
+        );
+        if (!boundClaims) {
+          log.warn(
+            { method: req.method, path: url.pathname },
+            "Runtime proxy rejected actor token for another assistant",
+          );
+          return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+        exchangeClaims = boundClaims;
+      }
       exchangeToken = mintExchangeToken(
-        result.claims,
-        result.claims.scope_profile,
+        exchangeClaims,
+        exchangeClaims.scope_profile,
       );
     } else {
       exchangeToken = mintServiceToken();
