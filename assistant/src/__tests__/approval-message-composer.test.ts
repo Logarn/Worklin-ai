@@ -45,6 +45,7 @@ describe("approval-message-composer", () => {
         const msg = getFallbackMessage({ scenario });
         expect(typeof msg).toBe("string");
         expect(msg.trim().length).toBeGreaterThan(0);
+        expect(msg.toLowerCase()).not.toContain("guardian");
       });
     }
 

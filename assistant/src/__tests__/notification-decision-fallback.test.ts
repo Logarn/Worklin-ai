@@ -87,7 +87,7 @@ describe("notification decision fallback copy", () => {
     ] as NotificationChannel[]);
 
     expect(decision.fallbackUsed).toBe(true);
-    expect(decision.renderedCopy.vellum?.title).toBe("Guardian Question");
+    expect(decision.renderedCopy.vellum?.title).toBe("Approval Request");
     expect(decision.renderedCopy.vellum?.body).toBe("What is the gate code?");
     expect(decision.renderedCopy.vellum?.title).not.toBe("guardian.question");
     expect(decision.renderedCopy.vellum?.body).not.toContain(

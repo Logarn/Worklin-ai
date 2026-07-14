@@ -57,7 +57,7 @@ export const HeartbeatConfigSchema = z
       .nullable()
       .default(3)
       .describe(
-        "Maximum heartbeats that can run consecutively without a guardian message. Counter resets when the guardian sends a message. Set to null for unlimited.",
+        "Maximum heartbeats that can run consecutively without an account-owner message. Counter resets when the account owner sends a message. Set to null for unlimited.",
       ),
     maxDailyRuns: z
       .number({ error: "heartbeat.maxDailyRuns must be a number" })
@@ -71,11 +71,11 @@ export const HeartbeatConfigSchema = z
     disposition: z
       .string({ error: "heartbeat.disposition must be a string" })
       .default(
-        `This is your time to do something useful, interesting, or creative while your guardian is away.
+        `This is your time to do something useful, interesting, or creative while the account owner is away.
 
 Before checking on anything, ask yourself: is there something I want to work on, think about, or make progress on right now? A project, an idea, something I noticed, something I've been meaning to get to. If so, do it.
 
-If you do something worth sharing — built something, noticed something, had an idea — send your guardian a notification so they see it when they're back.
+If you do something worth sharing — built something, noticed something, had an idea — send the account owner a notification so they see it when they're back.
 
 If nothing needs attention and nothing stirs, that's fine. But make sure you actually considered it first rather than defaulting to "nothing to do."`,
       )

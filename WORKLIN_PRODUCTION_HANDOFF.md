@@ -11,10 +11,50 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Latest voice change: `Keep live voice provider errors visible` (the commit that contains this handoff)
+- Latest deployed voice change: `Keep live voice provider errors visible`
+- Current local change: approval-free skill setup/Brand Brain reads and removal of user-facing legacy guardian terminology
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## Current Skills And System-Access Fix
+
+The existing Worklin system-access settings remain the single permission model. The current local fix does not add a second permissions UI or a new account type.
+
+- Plain skill discovery, catalog installation, and loading are setup operations and are allowed under every system-access preset, including Strict.
+- Read-only `brand_brain_read` context injection is allowed under every preset so persisted onboarding Brand Brain data can load without a misleading approval popup.
+- A skill load that expands inline commands remains executable behavior: it prompts under Strict and follows the user's selected system-access threshold at other levels, including Full Access.
+- Tools and external actions exposed by a loaded skill continue through the existing risk rules and the user's selected system-access level.
+- Explicit deny rules continue to win before these safe-operation exceptions.
+- The internal `guardian` trust/schema identifiers remain temporarily for database and protocol compatibility, but they are not user account roles and must never be shown to users.
+- User-facing surfaces now say `You`, `account owner`, `Approval Request`, or `account verification` as appropriate.
+- The channel setup intent router recognizes the new account-verification wording while retaining legacy phrase recognition for existing conversations.
+
+The role model requested for future team accounts is `admin`, `manager`, and `collaborator`, with the workspace creator becoming the initial admin. That team-membership model is separate from this compatibility fix and is not implemented by relabeling the internal trust class.
+
+Files at the core of this change:
+
+- `assistant/src/permissions/approval-policy.ts`
+- `assistant/src/permissions/checker.ts`
+- `assistant/src/tools/skills/load.ts` (existing catalog auto-install path, behavior verified)
+- `assistant/src/daemon/verification-session-intent.ts`
+- `apps/web/src/domains/contacts/components/contact-type-badge.tsx`
+- `apps/web/src/domains/contacts/contacts-page.tsx`
+
+### Verification For The Skills And System-Access Fix
+
+Passed locally on 2026-07-14:
+
+- 179 focused permission, approval-copy, channel, and verification tests.
+- 77 verification-intent and pointer-message tests.
+- 36 real `skill_load` tests, including catalog auto-install and persisted Brand Brain injection.
+- Focused tool-approval, verification-policy, call, ACP, invite, relay, and Contacts badge suites.
+- Assistant and web TypeScript checks.
+- Targeted assistant and web lint; zero errors, with one pre-existing hooks warning in `contacts-page.tsx`.
+- Production-mode web build using `VITE_PLATFORM_MODE=true bun run build`.
+- `git diff --check`.
+
+Deployment status: tested locally, not yet pushed or deployed. Pushing `main` will redeploy the Vercel frontend and Railway runtime, briefly restart the shared runtime, and test whether the recently re-entered Kimi credential persisted on its attached volume. Confirm that production restart before pushing.
 
 ## Current Objective And Blocker
 
@@ -112,6 +152,15 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ## Next Execution Steps
 
+### 0. Deploy the skills and terminology fix after restart confirmation
+
+1. Commit only the reviewed skills/system-access/terminology files and this handoff.
+2. Get explicit confirmation immediately before pushing because Railway will restart the shared runtime.
+3. Push `main`, watch Vercel and Railway deployment health separately, then verify `/healthz`, `/readyz`, and `/assistant`.
+4. Confirm the Kimi connection still exists after the runtime restart without exposing or re-entering the key on the user's behalf.
+5. Run an authenticated copy task and confirm Brand Brain context and the copywriting skill load without an approval popup.
+6. Confirm Contacts and approval/channel copy contain no user-facing `Guardian` or `non-guardian` account labels.
+
 ### 1. User action: restore Hume credits
 
 The user must manage the Hume account's billing/credits. Stop at that gate. Do not act on the user's behalf.
@@ -177,7 +226,7 @@ ElevenLabs remains deferred until Hume Release A passes the same-conversation in
 - Do not archive raw pilot audio in Worklin.
 - Preserve interrupted assistant output using existing partial/cancelled-message semantics.
 - Keep one active voice session per user. A second surface reports the active session instead of opening another microphone or provider connection.
-- Before commit, inspect `git status` and stage only the two web files plus this canonical handoff.
+- Before commit, inspect `git status` and stage only the reviewed files for the active change plus this canonical handoff.
 
 ## Paste-Ready Prompt For A Fresh Codex Chat
 
@@ -190,6 +239,8 @@ Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKL
 The private Hume pilot is configured through Worklin and production connectivity is proven: Worklin bootstrap returned 200, Hume WebSocket returned 101, session_settings/chat_metadata exchanged, Chrome granted the built-in microphone, Worklin showed Listening, and 16 kHz audio_input frames streamed. The current external blocker is Hume error E0300: exhausted credit balance. Stop at that billing gate; the user must add credits.
 
 The app also hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. A tested fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Verify the commit/deploy status first and preserve all unrelated worktree changes.
+
+A separate tested local fix now reuses Worklin's existing system-access settings: plain/catalog skill installation and loading plus read-only Brand Brain access do not ask for approval, while inline-command skill loads and tools/actions still follow the selected access level. User-facing legacy Guardian terminology has been replaced with You/account owner/account verification; internal identifiers remain only for compatibility. This fix is not deployed yet. Confirm the Railway restart before pushing, then verify Kimi credential persistence and run a live authenticated copy test.
 
 After credits exist, run the documented three-turn Hume test, real-time transcript check, output-driven speaking visualization check, barge-in latency measurement, end-session and refresh persistence checks, duplicate-session rejection, approval safety test, and no-raw-audio confirmation. Use the authenticated Chrome profile requested by the user; do not switch to Safari or the in-app browser. Never repeat or expose provider credentials.
 ```

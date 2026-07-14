@@ -298,7 +298,7 @@ export const ROUTES: RouteDefinition[] = [
       {
         name: "role",
         schema: { type: "string" },
-        description: "Filter by role (e.g. guardian)",
+        description: "Filter by internal contact role",
       },
       {
         name: "contactType",
@@ -389,7 +389,7 @@ export const ROUTES: RouteDefinition[] = [
         .describe("Expected user ID (E.164 for phone)")
         .optional(),
       friendName: z.string().describe("Friend name for the invite").optional(),
-      guardianName: z.string().describe("Guardian name").optional(),
+      guardianName: z.string().describe("Account owner name").optional(),
     }),
     responseBody: z.object({
       ok: z.boolean(),

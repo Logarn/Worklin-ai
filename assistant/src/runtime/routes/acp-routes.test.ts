@@ -127,8 +127,7 @@ mock.module("../../tools/credentials/metadata-store.js", () => ({
     const existing = metadataStore.get(key);
     metadataStore.set(key, {
       allowedTools: policy?.allowedTools ?? existing?.allowedTools ?? [],
-      usageDescription:
-        policy?.usageDescription ?? existing?.usageDescription,
+      usageDescription: policy?.usageDescription ?? existing?.usageDescription,
     });
     return {
       credentialId: `cred-${key}`,
@@ -305,7 +304,7 @@ describe("POST /v1/acp/spawn — approval gate", () => {
           conversationId: "conv-1",
         },
       }),
-    ).rejects.toThrow(/guardian approval/i);
+    ).rejects.toThrow(/account-owner approval/i);
 
     // Denied before any host side effects: no subprocess, no pending leak.
     expect(capturedSpawns).toHaveLength(0);
@@ -327,7 +326,7 @@ describe("POST /v1/acp/spawn — approval gate", () => {
         },
         abortSignal: controller.signal,
       }),
-    ).rejects.toThrow(/guardian approval/i);
+    ).rejects.toThrow(/account-owner approval/i);
 
     expect(capturedSpawns).toHaveLength(0);
   });

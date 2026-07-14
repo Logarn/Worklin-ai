@@ -42,7 +42,7 @@ import { resolveRoutingStateFromRuntime } from "./trust-context-resolver.js";
 
 const log = getLogger("runtime-http");
 const DISK_PRESSURE_REMOTE_BLOCK_REPLY =
-  "Storage is critically low, so remote messages are ignored until the guardian frees enough space. Please try again later.";
+  "Storage is critically low, so remote messages are ignored until the account owner frees enough space. Please try again later.";
 
 function parseTrustRuntimeContext(value: unknown): TrustContext | undefined {
   if (!value || typeof value !== "object") return undefined;

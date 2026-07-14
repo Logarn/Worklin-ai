@@ -153,7 +153,7 @@ describe("ToolApprovalHandler / pre-exec gate grant check", () => {
     expect(result.allowed).toBe(false);
     if (result.allowed) return;
     expect(result.result.isError).toBe(true);
-    expect(result.result.content).toContain("guardian approval");
+    expect(result.result.content).toContain("verified account owner");
 
     // A permission_denied event should have been emitted
     const deniedEvents = events.filter((e) => e.type === "permission_denied");
@@ -204,7 +204,7 @@ describe("ToolApprovalHandler / pre-exec gate grant check", () => {
 
     expect(result.allowed).toBe(false);
     if (result.allowed) return;
-    expect(result.result.content).toContain("verified channel identity");
+    expect(result.result.content).toContain("verified account owner");
   });
 
   test("grant is one-time: second invocation with same input denied", async () => {
@@ -426,7 +426,7 @@ describe("ToolApprovalHandler / pre-exec gate grant check", () => {
 
     expect(result.allowed).toBe(false);
     if (result.allowed) return;
-    expect(result.result.content).toContain("guardian approval");
+    expect(result.result.content).toContain("account owner");
     // Non-voice denials should be nearly instant — no 10s retry polling
     expect(elapsed).toBeLessThan(500);
   });

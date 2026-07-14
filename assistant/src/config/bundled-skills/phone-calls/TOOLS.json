@@ -28,7 +28,7 @@
           },
           "skip_disclosure": {
             "type": "boolean",
-            "description": "Skip the disclosure announcement at the start of the call. Set to true when calling someone who already knows who you are (e.g. your guardian, a family member, or a close contact)."
+            "description": "Skip the disclosure announcement at the start of the call. Set to true when calling someone who already knows who you are (e.g. the account owner, a family member, or a close contact)."
           }
         },
         "required": ["phone_number", "task"]

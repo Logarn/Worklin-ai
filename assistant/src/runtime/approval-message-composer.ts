@@ -70,7 +70,7 @@ export function buildGenerationPrompt(
         )}.\n`
       : "";
   return [
-    "Rewrite the following approval/guardian message as a natural assistant reply to the user.",
+    "Rewrite the following approval message as a natural assistant reply to the user.",
     "Keep the same concrete facts and next-step guidance.",
     keywordClause,
     `Context JSON: ${JSON.stringify(context)}`,
@@ -158,13 +158,13 @@ export function getFallbackMessage(context: ApprovalMessageContext): string {
 
     case "guardian_delivery_failed":
       return context.toolName
-        ? `Your request to run "${context.toolName}" could not be sent to the guardian for approval. The request has been denied for safety.`
-        : "I wasn't able to reach the guardian to request approval. The request has been denied for safety.";
+        ? `Your request to run "${context.toolName}" could not be sent to the account owner for approval. The request has been denied for safety.`
+        : "I wasn't able to reach the account owner to request approval. The request has been denied for safety.";
 
     case "guardian_request_forwarded":
       return `Your request to use "${
         context.toolName ?? "unknown"
-      }" has been forwarded to the guardian for approval. I'll let you know once they decide.`;
+      }" has been forwarded to the account owner for approval. I'll let you know once they decide.`;
 
     case "guardian_disambiguation":
       return `There are ${
@@ -172,20 +172,20 @@ export function getFallbackMessage(context: ApprovalMessageContext): string {
       } pending approval requests. Please use the approval buttons to specify which request you're responding to.`;
 
     case "guardian_identity_mismatch":
-      return "This approval request can only be handled by the designated guardian.";
+      return "This approval request can only be handled by the account owner.";
 
     case "request_pending_guardian":
-      return "Your request is pending guardian approval. Please wait for the guardian to respond.";
+      return "Your request is pending approval from the account owner.";
 
     case "guardian_decision_outcome":
-      return `The guardian has ${
+      return `The account owner has ${
         context.decision ?? "decided on"
       } your request to use "${context.toolName ?? "unknown"}".`;
 
     case "guardian_expired_requester":
       return `The approval request for "${
         context.toolName ?? "unknown"
-      }" has expired without a guardian response. The request has been denied.`;
+      }" has expired without a response. The request has been denied.`;
 
     case "guardian_expired_guardian":
       return `The approval request from ${
@@ -193,7 +193,7 @@ export function getFallbackMessage(context: ApprovalMessageContext): string {
       } for "${context.toolName ?? "unknown"}" has expired.`;
 
     case "guardian_verify_success":
-      return "Guardian verification successful! You are now set as the guardian for this channel.";
+      return "Account verification successful. This channel now belongs to you.";
 
     case "guardian_verify_failed":
       return `Verification failed. ${
@@ -211,27 +211,27 @@ export function getFallbackMessage(context: ApprovalMessageContext): string {
       const isNumeric = /^\d{4,8}$/.test(code);
       if (context.channel === "phone") {
         if (isNumeric) {
-          return `To complete guardian verification, speak or enter the ${code.length}-digit code: ${code}.`;
+          return `To complete account verification, speak or enter the ${code.length}-digit code: ${code}.`;
         }
-        return `To complete guardian verification, enter the code: ${code}.`;
+        return `To complete account verification, enter the code: ${code}.`;
       }
       if (isNumeric) {
-        return `To complete guardian verification, send the ${code.length}-digit code: ${code}.`;
+        return `To complete account verification, send the ${code.length}-digit code: ${code}.`;
       }
-      return `To complete guardian verification, send the code: ${code}.`;
+      return `To complete account verification, send the code: ${code}.`;
     }
 
     case "guardian_verify_status_bound":
-      return "A guardian is currently active for this channel.";
+      return "An account owner is currently verified for this channel.";
 
     case "guardian_verify_status_unbound":
-      return "No guardian is currently configured for this channel.";
+      return "No account owner is currently verified for this channel.";
 
     case "guardian_deny_no_identity":
       return "This action requires approval, but your identity could not be verified. The request has been denied for safety.";
 
     case "guardian_deny_no_binding":
-      return "This action requires guardian approval, but no guardian has been configured for this channel. The request has been denied for safety.";
+      return "This action requires approval from the account owner, but none is verified for this channel. The request has been denied for safety.";
 
     case "requester_cancel":
       return context.toolName

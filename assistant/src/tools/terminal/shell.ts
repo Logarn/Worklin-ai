@@ -138,7 +138,7 @@ export const shellTool = {
       return {
         content:
           "Error: proxied credential sessions are not available in untrusted shell mode. " +
-          "Use the credential grant workflow to request access through a guardian.",
+          "Use the credential grant workflow to request access from the account owner.",
         isError: true,
       };
     }
@@ -165,7 +165,7 @@ export const shellTool = {
       return {
         content:
           "Error: credential references are not available in untrusted shell mode. " +
-          "Use the credential grant workflow to request access through a guardian.",
+          "Use the credential grant workflow to request access from the account owner.",
         isError: true,
       };
     }

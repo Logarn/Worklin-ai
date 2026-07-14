@@ -490,7 +490,7 @@ describe("voice invite HTTP routes", () => {
 
     expect(res.status).toBe(400);
     expect(body.ok).toBe(false);
-    expect(body.error).toContain("guardianName");
+    expect(body.error).toContain("Account owner name");
   });
 
   test("voiceCodeDigits is always 6 — custom values are ignored", async () => {

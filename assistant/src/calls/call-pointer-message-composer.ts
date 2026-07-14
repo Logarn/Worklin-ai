@@ -85,13 +85,13 @@ export function getPointerFallbackMessage(
         : `\u{1F4DE} Call to ${context.phoneNumber} failed.`;
     case "verification_succeeded": {
       const ch = context.channel ?? "phone";
-      return `\u{2705} Guardian verification (${ch}) for ${context.phoneNumber} succeeded.`;
+      return `\u{2705} Account verification (${ch}) for ${context.phoneNumber} succeeded.`;
     }
     case "verification_failed": {
       const ch = context.channel ?? "phone";
       return context.reason
-        ? `\u{274C} Guardian verification (${ch}) for ${context.phoneNumber} failed: ${context.reason}.`
-        : `\u{274C} Guardian verification (${ch}) for ${context.phoneNumber} failed.`;
+        ? `\u{274C} Account verification (${ch}) for ${context.phoneNumber} failed: ${context.reason}.`
+        : `\u{274C} Account verification (${ch}) for ${context.phoneNumber} failed.`;
     }
     default: {
       const _exhaustive: never = context.scenario;

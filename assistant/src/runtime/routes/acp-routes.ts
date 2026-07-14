@@ -182,7 +182,7 @@ async function spawnSession({ body, abortSignal }: RouteHandlerArgs) {
   });
   if (decision !== "allow") {
     throw new ForbiddenError(
-      "Spawning an ACP coding agent requires guardian approval, which was " +
+      "Spawning an ACP coding agent requires account-owner approval, which was " +
         "not granted.",
     );
   }
@@ -513,7 +513,7 @@ export const ROUTES: RouteDefinition[] = [
       "in memory (completed, or lost to a daemon restart) are " +
       "transparently resumed from persisted history first, when the agent " +
       "supports ACP session loading. Resuming a terminal session re-spawns " +
-      "the host agent, so it requires guardian approval: the route acks " +
+      "the host agent, so it requires account-owner approval: the route acks " +
       "immediately with approvalPending=true and performs the resume in the " +
       "background once approved, streaming results over SSE.",
     tags: ["acp"],

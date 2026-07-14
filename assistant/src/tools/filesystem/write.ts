@@ -29,7 +29,8 @@ const logger = getLogger("file-write");
  * never blocks the app-builder workflow it redirects to.
  */
 const STANDALONE_HTML_RE = /<!doctype\s+html|<html[\s>]/i;
-const INLINE_SCRIPT_RE = /<script\b(?![^>]*\bsrc=)[^>]*>[\s\S]{400,}?<\/script>/i;
+const INLINE_SCRIPT_RE =
+  /<script\b(?![^>]*\bsrc=)[^>]*>[\s\S]{400,}?<\/script>/i;
 
 function isSelfContainedArtifactHtml(path: string, content: string): boolean {
   if (!/\.html?$/i.test(path)) return false;
@@ -60,7 +61,7 @@ function isInsidePkbRoot(absPath: string, pkbRoot: string): boolean {
 export const fileWriteTool = {
   name: "file_write",
   description:
-    "Write content to a file on your own machine, creating it if it does not exist. Use host_file_write for files on your guardian's device instead.",
+    "Write content to a file in the isolated workspace, creating it if it does not exist. Use host_file_write for files on the account owner's connected device instead.",
   category: "filesystem",
   executionTarget: "sandbox",
   defaultRiskLevel: RiskLevel.Low,

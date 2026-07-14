@@ -27,6 +27,8 @@ export interface ApprovalContext {
   hasManifestOverride?: boolean;
   /** Whether the command's registry entry has sandboxAutoApprove: true. */
   hasSandboxAutoApprove?: boolean;
+  /** Whether skill loading will execute inline command expansions. */
+  isDynamicSkillLoad?: boolean;
   /**
    * Resolved auto-approve threshold for this execution context.
    * - "none": prompt for everything (strictest)
@@ -83,21 +85,22 @@ export interface ApprovalPolicy {
  * The decision flow:
  *
  * 1. Deny rule → deny
- * 2. Ask rule + risk > autoApproveUpTo → prompt
+ * 2. Safe skill setup/context read → allow
+ *    (plain skill_load and brand_brain_read; dynamic skill loads excluded)
+ * 3. Ask rule + risk > autoApproveUpTo → prompt
  *    Ask rule + risk ≤ autoApproveUpTo → allow (threshold overrides ask rule)
- *    Exception: skill_load_dynamic ask rules always prompt (inline-command safety gate)
- * 3. Sandbox auto-approve: bash + sandboxAutoApprove + autoApproveUpTo !== "none" → allow
+ * 4. Sandbox auto-approve: bash + sandboxAutoApprove + autoApproveUpTo !== "none" → allow
  *    (Path resolution is baked into `hasSandboxAutoApprove` upstream: containerized
  *    environments skip path checks; non-containerized environments validate all
  *    path arguments against the workspace root.)
- * 4. Allow rule + non-High → allow
- * 5. Allow rule + High → fall through to risk-based
- * 6. No rule + third-party skill tool + risk > autoApproveUpTo → prompt
+ * 5. Allow rule + non-High → allow
+ * 6. Allow rule + High → fall through to risk-based
+ * 7. No rule + third-party skill tool + risk > autoApproveUpTo → prompt
  *    No rule + third-party skill tool + risk ≤ autoApproveUpTo → allow (threshold overrides)
- * 7. No rule + Low + workspace-scoped + within threshold → allow
- * 8. No rule + Low + bundled skill + within threshold → allow
- * 9. Risk ≤ autoApproveUpTo threshold → allow
- * 10. Risk > autoApproveUpTo threshold → prompt
+ * 8. No rule + Low + workspace-scoped + within threshold → allow
+ * 9. No rule + Low + bundled skill + within threshold → allow
+ * 10. Risk ≤ autoApproveUpTo threshold → allow
+ * 11. Risk > autoApproveUpTo threshold → prompt
  */
 export class DefaultApprovalPolicy implements ApprovalPolicy {
   evaluate(context: ApprovalContext): ApprovalDecision {
@@ -121,21 +124,39 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
       };
     }
 
-    // ── 2. Ask rules prompt — unless the threshold covers the risk.
+    // ── 2. Safe skill setup and read-only context do not need approval ──
+    // Loading a plain skill only discovers/installs its instructions. The
+    // actions exposed by that skill are evaluated separately when invoked.
+    // Dynamic loads are excluded because inline expansions execute commands
+    // while the skill is loading.
+    const isDynamicSkillLoad =
+      context.isDynamicSkillLoad === true ||
+      matchedRule?.pattern.startsWith("skill_load_dynamic:");
+    if (toolName === "skill_load" && !isDynamicSkillLoad) {
+      return {
+        decision: "allow",
+        reason: "Skill discovery and installation do not require approval",
+      };
+    }
+
+    // Brand Brain retrieval only reads persisted onboarding context. Any
+    // action taken with that context still passes through its own tool policy.
+    if (toolName === "brand_brain_read") {
+      return {
+        decision: "allow",
+        reason: "Read-only Brand Brain context does not require approval",
+      };
+    }
+
+    // ── 3. Ask rules prompt — unless the threshold covers the risk.
     // The user's threshold setting takes precedence over ask rules: if the
     // risk falls within autoApproveUpTo, the ask rule is overridden and
     // the tool auto-approves.
-    // Exception: skill_load_dynamic ask rules always prompt — they gate
-    // inline-command skill loads that execute embedded commands and must
-    // never be silently auto-approved.
+    // Dynamic skill loads are executable behavior, so unlike plain loads they
+    // are not unconditionally allowed. They still honor the user's selected
+    // system-access threshold like every other executable operation.
     if (matchedRule && matchedRule.decision === "ask") {
-      const isDynamicSkillAsk = matchedRule.pattern.startsWith(
-        "skill_load_dynamic:",
-      );
-      if (
-        !isDynamicSkillAsk &&
-        isRiskWithinThreshold(riskLevel, context.autoApproveUpTo)
-      ) {
+      if (isRiskWithinThreshold(riskLevel, context.autoApproveUpTo)) {
         return {
           decision: "allow",
           reason: `${riskLevel} risk: within auto-approve threshold (ask rule overridden)`,
@@ -148,7 +169,7 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
       };
     }
 
-    // ── 3. Sandbox auto-approve: bash + allowlisted → allow ──
+    // ── 4. Sandbox auto-approve: bash + allowlisted → allow ──
     // Respects the autoApproveUpTo threshold: when set to "none", sandbox
     // auto-approve is suppressed — the user wants to approve everything.
     // Path resolution is baked into `hasSandboxAutoApprove` upstream:

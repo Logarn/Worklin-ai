@@ -99,19 +99,19 @@ const templates: Record<
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.TELEGRAM_CHALLENGE_REQUEST]: (_vars) => {
-    return "Vellum assistant guardian verification requested. Reply with the 6-digit code you were given.";
+    return "Vellum assistant account verification requested. Reply with the 6-digit code you were given.";
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.TELEGRAM_RESEND]: (_vars) => {
-    return "Vellum assistant guardian verification requested. Reply with the 6-digit code you were given. (resent)";
+    return "Vellum assistant account verification requested. Reply with the 6-digit code you were given. (resent)";
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.SLACK_CHALLENGE_REQUEST]: (_vars) => {
-    return "Vellum assistant guardian verification requested. Reply with the 6-digit code you were given.";
+    return "Vellum assistant account verification requested. Reply with the 6-digit code you were given.";
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.SLACK_RESEND]: (_vars) => {
-    return "Vellum assistant guardian verification requested. Reply with the 6-digit code you were given. (resent)";
+    return "Vellum assistant account verification requested. Reply with the 6-digit code you were given. (resent)";
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.SLACK_TRUSTED_CONTACT_CHALLENGE]: (vars) => {
@@ -123,11 +123,11 @@ const templates: Record<
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.EMAIL_CHALLENGE_REQUEST]: (vars) => {
-    return `Vellum assistant guardian verification requested.\n\nYour verification code is: ${vars.code}\n\nReply to this email with only the 6-digit code above to complete verification. This code expires in ${vars.expiresInMinutes} minutes.`;
+    return `Vellum assistant account verification requested.\n\nYour verification code is: ${vars.code}\n\nReply to this email with only the 6-digit code above to complete verification. This code expires in ${vars.expiresInMinutes} minutes.`;
   },
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.EMAIL_RESEND]: (vars) => {
-    return `Vellum assistant guardian verification requested.\n\nYour new verification code is: ${vars.code}\n\nReply to this email with only the 6-digit code above to complete verification. This code expires in ${vars.expiresInMinutes} minutes. (resent)`;
+    return `Vellum assistant account verification requested.\n\nYour new verification code is: ${vars.code}\n\nReply to this email with only the 6-digit code above to complete verification. This code expires in ${vars.expiresInMinutes} minutes. (resent)`;
   },
 };
 
@@ -182,7 +182,7 @@ const voiceTemplates: Record<
   (vars: GuardianVerifyVoiceTemplateVars) => string
 > = {
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.VOICE_CALL_INTRO]: (vars) =>
-    `You are receiving a guardian verification call for your Vellum assistant. Please enter your ${vars.codeDigits}-digit verification code using your keypad.`,
+    `You are receiving an account verification call for your Vellum assistant. Please enter your ${vars.codeDigits}-digit verification code using your keypad.`,
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.VOICE_RETRY]: (_vars) =>
     "That code was incorrect. Please try again.",
@@ -217,7 +217,7 @@ const channelVerifyReplyTemplates: Record<
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.CHANNEL_VERIFY_SUCCESS]: (vars) =>
     vars.verificationType === "trusted_contact"
       ? "Verification successful! You can now message the assistant."
-      : "Verification successful. You are now set as the guardian for this channel.",
+      : "Verification successful. This channel now belongs to you.",
 
   [GUARDIAN_VERIFY_TEMPLATE_KEYS.CHANNEL_VERIFY_FAILED]: (vars) =>
     vars.failureReason ?? "The verification code is invalid or has expired.",

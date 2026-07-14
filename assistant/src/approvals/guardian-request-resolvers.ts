@@ -652,7 +652,7 @@ const accessRequestResolver: GuardianRequestResolver = {
             chatId: requesterTargetChatId,
             text:
               "Your access request has been approved! " +
-              "Please enter the 6-digit verification code you receive from the guardian.",
+              "Please enter the 6-digit verification code you receive from the account owner.",
             assistantId,
           };
           // On Slack shared channels, deliver as ephemeral so only the requester sees
@@ -732,7 +732,7 @@ const accessRequestResolver: GuardianRequestResolver = {
           chatId: targetChatId,
           text:
             "Your access request has been approved! " +
-            "Please enter the 6-digit verification code you receive from the guardian.",
+            "Please enter the 6-digit verification code you receive from the account owner.",
           assistantId,
         });
         requesterNotified = true;
@@ -799,7 +799,7 @@ const toolGrantRequestResolver: GuardianRequestResolver = {
           const grantDenialPayload: Parameters<typeof deliverChannelReply>[1] =
             {
               chatId: requesterChatId,
-              text: `Your request to use "${request.toolName}" has been denied by the guardian.`,
+              text: `Your request to use "${request.toolName}" has been denied by the account owner.`,
               assistantId,
             };
           if (

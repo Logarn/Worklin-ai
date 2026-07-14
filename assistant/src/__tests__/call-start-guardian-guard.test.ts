@@ -71,7 +71,7 @@ describe("call_start guardian verification guard", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain(
-      "guardian voice verification call is already active",
+      "account verification call is already active",
     );
     expect(startCallInputs.length).toBe(0);
   });

@@ -62,7 +62,7 @@ const TEMPLATES: Partial<Record<NotificationSourceEventName, CopyTemplate>> = {
   "guardian.question": (payload) => {
     const question = str(
       payload.questionText,
-      "A guardian question needs your attention",
+      "An approval request needs your attention",
     );
 
     // Parse once with Zod and reuse the typed payload downstream.
@@ -88,7 +88,7 @@ const TEMPLATES: Partial<Record<NotificationSourceEventName, CopyTemplate>> = {
 
     if (!requestCode) {
       return {
-        title: "Guardian Question",
+        title: "Approval Request",
         body: question,
         conversationSeedMessage,
         seedContentBlocks,
@@ -104,7 +104,7 @@ const TEMPLATES: Partial<Record<NotificationSourceEventName, CopyTemplate>> = {
       modeResolution.mode,
     );
     return {
-      title: "Guardian Question",
+      title: "Approval Request",
       body: `${question}\n\n${instruction}`,
       conversationSeedMessage,
       seedContentBlocks,
@@ -115,8 +115,8 @@ const TEMPLATES: Partial<Record<NotificationSourceEventName, CopyTemplate>> = {
     const code = str(payload.verificationCode, "------");
     const channel = str(payload.sourceChannel, "a channel");
     return {
-      title: "Guardian Verification Code",
-      body: `Your ${channel} verification code is: ${code}\n\nEnter this code in your ${channel} chat to verify your identity as guardian.`,
+      title: "Account Verification Code",
+      body: `Your ${channel} verification code is: ${code}\n\nEnter this code in your ${channel} chat to verify that the account belongs to you.`,
     };
   },
 
@@ -211,7 +211,7 @@ const TEMPLATES: Partial<Record<NotificationSourceEventName, CopyTemplate>> = {
         /^U[A-Z0-9]+$/i.test(decidedByExternalUserId)
           ? `<@${decidedByExternalUserId}>`
           : decidedByExternalUserId) ??
-        "a guardian",
+        "the account owner",
     );
 
     const verb = decision === "approved" ? "approved" : "denied";

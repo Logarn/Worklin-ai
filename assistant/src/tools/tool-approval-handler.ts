@@ -178,9 +178,9 @@ function guardianApprovalDeniedMessage(
   toolName: string,
 ): string {
   if (trustClass === "unknown") {
-    return `Permission denied for "${toolName}": this action requires guardian approval from a verified channel identity.`;
+    return `Permission denied for "${toolName}": this action requires approval from a verified account owner.`;
   }
-  return `Permission denied for "${toolName}": this action requires guardian approval and the current actor is not the guardian.`;
+  return `Permission denied for "${toolName}": this action requires approval from the account owner.`;
 }
 
 export type PreExecutionGateResult =
@@ -643,12 +643,12 @@ export class ToolApprovalHandler {
 
           let escalationMessage: string;
           if (waitResult.outcome === "denied") {
-            escalationMessage = `Permission denied for "${name}": the guardian rejected the request${codeSuffix}.`;
+            escalationMessage = `Permission denied for "${name}": the account owner rejected the request${codeSuffix}.`;
           } else {
             // timeout
             escalationMessage =
-              `Permission denied for "${name}": guardian approval was not received in time${codeSuffix}. ` +
-              `Please retry after the guardian approves.`;
+              `Permission denied for "${name}": approval was not received in time${codeSuffix}. ` +
+              `Please retry after the account owner approves.`;
           }
 
           log.warn(

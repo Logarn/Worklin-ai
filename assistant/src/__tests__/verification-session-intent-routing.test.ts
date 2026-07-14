@@ -8,6 +8,11 @@ import { resolveVerificationSessionIntent } from "../daemon/verification-session
 
 describe("direct guardian setup phrases trigger forced routing", () => {
   const directSetupPhrases = [
+    "I'd like to verify that this Slack account belongs to me",
+    "I'd like to verify that this Telegram account belongs to me",
+    "I'd like to verify that this phone number belongs to me",
+    "help me verify my account on Slack",
+    "set up account verification",
     "help me confirm myself as your guardian by phone",
     "verify me as guardian",
     "verify me as your guardian",

@@ -12,7 +12,7 @@ import type {
 export const fileEditTool = {
   name: "file_edit",
   description:
-    "Replace an exact string in a file on your own machine with a new string. Use this for surgical edits instead of rewriting entire files. Use host_file_edit for files on your guardian's device instead.",
+    "Replace an exact string in a file in the isolated workspace with a new string. Use this for surgical edits instead of rewriting entire files. Use host_file_edit for files on the account owner's connected device instead.",
   category: "filesystem",
   executionTarget: "sandbox",
   defaultRiskLevel: RiskLevel.Low,

@@ -135,6 +135,6 @@ export function enforceVerificationControlPlanePolicy(
   return {
     denied: true,
     reason:
-      "Guardian verification control-plane actions are restricted to guardian users. This is a security restriction \u2014 please wait for the designated guardian to perform this action.",
+      "Account verification controls are restricted to the verified account owner. Please wait for the account owner to perform this action.",
   };
 }

@@ -140,7 +140,7 @@ const TOOL_FRIENDLY_LABEL: Record<string, string> = {
 };
 
 function formatDiskPressureBlockedMessage(): string {
-  return "Storage is critically low, so background processes are paused and remote messages are ignored until the guardian frees enough space. Remote senders should try again later.";
+  return "Storage is critically low, so background processes are paused and remote messages are ignored until the account owner frees enough space. Remote senders should try again later.";
 }
 
 // ── Plugin pipeline helpers ──────────────────────────────────────────

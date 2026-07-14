@@ -99,7 +99,7 @@ import type { RouteHandlerArgs } from "./types.js";
 
 const log = getLogger("runtime-http");
 const DISK_PRESSURE_REMOTE_BLOCK_REPLY =
-  "Storage is critically low, so remote messages are ignored until the guardian frees enough space. Please try again later.";
+  "Storage is critically low, so remote messages are ignored until the account owner frees enough space. Please try again later.";
 
 // Delete-lookup retry configuration. Delete webhooks can race ahead of
 // the inbound handler's `linkMessage` call when the original message's

@@ -63,7 +63,7 @@ export const recallTool = {
     if (isUntrustedTrustClass(context.trustClass)) {
       return {
         content:
-          "Recall is only available to the guardian because it can read sensitive local context.",
+          "Recall is only available to the account owner because it can read sensitive local context.",
         isError: true,
       };
     }

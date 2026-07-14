@@ -315,8 +315,8 @@ export function createInboundVoiceSession(
   const callerIsGuardian = isGuardian(assistantId, "phone", fromNumber);
   const metadataHints: string[] = [
     callerIsGuardian
-      ? "Caller is the guardian"
-      : "Caller is not the guardian (external caller)",
+      ? "Caller is the account owner"
+      : "Caller is an external contact",
     `Timestamp: ${new Date().toLocaleString("en-US", {
       weekday: "short",
       month: "short",
@@ -1024,7 +1024,7 @@ export async function startVerificationCall(
 
     return {
       ok: false,
-      error: `Error initiating guardian verification call: ${msg}`,
+      error: `Error initiating account verification call: ${msg}`,
       status: 500,
     };
   }

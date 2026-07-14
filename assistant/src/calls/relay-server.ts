@@ -693,7 +693,7 @@ export class RelayConnection {
     const action = isGuardian
       ? `To verify, open your assistant's contacts page, click Verify next to the phone channel, ` +
         `and follow the prompts. Then call back once the verification session is active.`
-      : `Please reach out to the account guardian to start a new verification session, ` +
+      : `Please reach out to the account owner to start a new verification session, ` +
         `then call back once the verification session is active.`;
     const message =
       `This number is registered as ${displayName}'s phone but has not been verified yet. ` +
@@ -1085,7 +1085,7 @@ export class RelayConnection {
       updateCallSession(this.callSessionId, {
         status: "failed",
         endedAt: Date.now(),
-        lastError: "Guardian voice verification failed — max attempts exceeded",
+        lastError: "Account verification failed — maximum attempts exceeded",
       });
 
       const failSession = getCallSession(this.callSessionId);
@@ -1443,7 +1443,7 @@ export class RelayConnection {
     updateCallSession(this.callSessionId, {
       status: "failed",
       endedAt: Date.now(),
-      lastError: "Inbound voice ACL: guardian denied access request",
+      lastError: "The account owner denied the access request",
     });
 
     log.info(
@@ -1486,7 +1486,7 @@ export class RelayConnection {
     updateCallSession(this.callSessionId, {
       status: "failed",
       endedAt: Date.now(),
-      lastError: "Inbound voice ACL: guardian approval wait timed out",
+      lastError: "The account-owner approval request timed out",
     });
 
     log.info(

@@ -18,7 +18,7 @@ function describeRole(role: ContactRole, contactType?: string | null): {
 } {
   switch (role) {
     case "guardian":
-      return { label: "Guardian", tone: "positive" };
+      return { label: "You", tone: "positive" };
     case "assistant":
       return { label: "Assistant", tone: "negative" };
     default:

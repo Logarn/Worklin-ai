@@ -172,7 +172,7 @@ describe("addPointerMessage", () => {
     ensureConversation(convId);
     addPointerMessage(convId, "verification_succeeded", "+15559876543");
     const text = getLatestAssistantText(convId);
-    expect(text).toContain("Guardian verification");
+    expect(text).toContain("Account verification");
     expect(text).toContain("+15559876543");
     expect(text).toContain("succeeded");
   });
@@ -182,7 +182,7 @@ describe("addPointerMessage", () => {
     ensureConversation(convId);
     addPointerMessage(convId, "verification_failed", "+15559876543");
     const text = getLatestAssistantText(convId);
-    expect(text).toContain("Guardian verification");
+    expect(text).toContain("Account verification");
     expect(text).toContain("+15559876543");
     expect(text).toContain("failed");
   });

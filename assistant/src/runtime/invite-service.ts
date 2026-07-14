@@ -206,7 +206,10 @@ export async function createIngressInvite(params: {
       effectiveGuardianName === DEFAULT_USER_REFERENCE ||
       effectiveGuardianName === DECLINED_BY_USER_SENTINEL
     ) {
-      return { ok: false, error: "guardianName is required for voice invites" };
+      return {
+        ok: false,
+        error: "Account owner name is required for voice invites",
+      };
     }
     voiceCode = generateVoiceCode(6);
     voiceCodeHash = hashVoiceCode(voiceCode);

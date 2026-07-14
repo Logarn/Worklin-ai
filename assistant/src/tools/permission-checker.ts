@@ -255,21 +255,14 @@ export class PermissionChecker {
         // is the owner - prompting makes no sense when there is no client.
         // Exception: requireFreshApproval tools cannot be auto-approved -
         // without a human present, bundle installation must be denied.
-        // Exception: inline-command skill loads (skill_load_dynamic:*) must
-        // never be silently auto-approved — they execute embedded commands
-        // and require explicit human review or a pinned trust rule.
         // Exception: tools above the configured background threshold are
         // denied — unattended sessions must not auto-approve operations that
         // could cause significant damage if triggered by prompt injection
         // from untrusted content.
-        const isDynamicSkillLoad =
-          result.matchedRule?.pattern.startsWith("skill_load_dynamic:") ===
-          true;
         if (
           context.isInteractive === false &&
           context.trustClass === "guardian" &&
-          !context.requireFreshApproval &&
-          !isDynamicSkillLoad
+          !context.requireFreshApproval
         ) {
           // getAutoApproveThreshold returns from cache (populated by check() above).
           // Deferred inside the non-interactive branch so interactive prompts

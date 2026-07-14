@@ -185,7 +185,8 @@ function handleGetVerificationStatus({
   queryParams = {},
   body = {},
 }: RouteHandlerArgs) {
-  const channel = (queryParams.channel ?? (body as Record<string, unknown>).channel) as ChannelId | undefined;
+  const channel = (queryParams.channel ??
+    (body as Record<string, unknown>).channel) as ChannelId | undefined;
   return getVerificationStatus(channel);
 }
 
@@ -295,7 +296,9 @@ export const ROUTES: RouteDefinition[] = [
       rebind: z.boolean(),
       conversationId: z.string(),
       originConversationId: z.string(),
-      purpose: z.string().describe("guardian or trusted_contact"),
+      purpose: z
+        .string()
+        .describe("Internal verification purpose for owner or trusted contact"),
       contactChannelId: z.string(),
     }),
     handler: handleCreateVerificationSession,
@@ -343,7 +346,7 @@ export const ROUTES: RouteDefinition[] = [
       allowedPrincipalTypes: ACTOR_PRINCIPALS,
     },
     summary: "Revoke verification binding",
-    description: "Cancel all sessions and revoke the guardian binding.",
+    description: "Cancel all sessions and revoke the account-owner binding.",
     tags: ["channel-verification"],
     requestBody: z.object({
       channel: z.string(),
@@ -359,7 +362,7 @@ export const ROUTES: RouteDefinition[] = [
       allowedPrincipalTypes: ACTOR_PRINCIPALS,
     },
     summary: "Get verification status",
-    description: "Check guardian binding and verification session status.",
+    description: "Check account binding and verification session status.",
     tags: ["channel-verification"],
     queryParams: [
       {

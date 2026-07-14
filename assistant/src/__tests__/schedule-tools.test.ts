@@ -227,7 +227,7 @@ describe("schedule_create tool", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("restricted to guardian actors");
+    expect(result.content).toContain("restricted to the account owner");
   });
 });
 
@@ -1048,7 +1048,7 @@ describe("schedule_update tool", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("restricted to guardian actors");
+    expect(result.content).toContain("restricted to the account owner");
   });
 });
 

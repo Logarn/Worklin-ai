@@ -17,6 +17,10 @@ export type VerificationSessionIntentResult =
 // These capture imperative requests to start guardian verification.
 
 const DIRECT_SETUP_PATTERNS: RegExp[] = [
+  /\bverify\s+that\s+(?:this|my)\s+(?:slack|telegram|whatsapp)?\s*account\s+belongs\s+to\s+me\b/i,
+  /\bverify\s+that\s+(?:this|my)\s+phone\s+number\s+belongs\s+to\s+me\b/i,
+  /\b(?:help\s+me\s+)?verify\s+my\s+account(?:\s+(?:for|via|by|over|on|through)\s+\w+)?\b/i,
+  /\bset\s*up\s+account\s+verification\b/i,
   /\b(?:help\s+me\s+)?(?:confirm|verify)\s+(?:me|myself)\s+as\s+(?:your\s+|the\s+)?guardian\b/i,
   /\b(?:set|add)\s+(?:me|myself)\s+(?:up\s+)?as\s+(?:your\s+|the\s+)?guardian\b/i,
   /\bverify\s+(?:me\s+as\s+)?guardian\b/i,
@@ -119,8 +123,8 @@ export function resolveVerificationSessionIntent(
 
   // Build the rewritten content that deterministically loads the skill
   const lines = [
-    "The user wants to verify themselves as the trusted guardian.",
-    'Please invoke the "Guardian Verify Setup" skill (ID: guardian-verify-setup) immediately using skill_load.',
+    "The user wants to verify that this channel account belongs to them.",
+    "Please load the account verification setup instructions (internal skill ID: guardian-verify-setup) immediately using skill_load. Never expose the internal skill ID to the user.",
   ];
   if (channelHint) {
     lines.push(

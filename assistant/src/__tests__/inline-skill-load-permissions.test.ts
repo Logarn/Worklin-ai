@@ -171,6 +171,24 @@ describe("inline-command skill_load permissions", () => {
       expect(result.decision).toBe("prompt");
       expect(result.reason).toContain("above auto-approve threshold");
     });
+
+    test("dynamic skill honors full system access", async () => {
+      ensureSkillsDir();
+      writeDynamicSkill("dynamic-full-access", "Dynamic Full Access Skill");
+      mockIpcResponse("get_global_thresholds", {
+        interactive: "high",
+        autonomous: "high",
+        headless: "high",
+      });
+      _clearGlobalCacheForTesting();
+
+      const result = await check(
+        "skill_load",
+        { skill: "dynamic-full-access" },
+        "/tmp",
+      );
+      expect(result.decision).toBe("allow");
+    });
   });
 
   // ── Non-dynamic skills ───────────────────────────────────────────────
@@ -186,6 +204,25 @@ describe("inline-command skill_load permissions", () => {
         "/tmp",
       );
       expect(result.decision).toBe("allow");
+    });
+
+    test("plain skill auto-allows in strict mode", async () => {
+      ensureSkillsDir();
+      writePlainSkill("plain-strict", "Plain Strict Skill");
+      mockIpcResponse("get_global_thresholds", {
+        interactive: "none",
+        autonomous: "none",
+        headless: "none",
+      });
+      _clearGlobalCacheForTesting();
+
+      const result = await check(
+        "skill_load",
+        { skill: "plain-strict" },
+        "/tmp",
+      );
+      expect(result.decision).toBe("allow");
+      expect(result.reason).toContain("discovery and installation");
     });
   });
 

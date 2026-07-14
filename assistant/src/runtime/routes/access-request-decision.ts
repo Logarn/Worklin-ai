@@ -218,7 +218,7 @@ export async function notifyRequesterOfApproval(params: {
 }): Promise<void> {
   const text =
     "Your access request has been approved! " +
-    "Please enter the 6-digit verification code you receive from the guardian.";
+    "Please enter the 6-digit verification code you receive from the account owner.";
 
   const target = resolveRequesterTarget(params);
 
@@ -278,7 +278,7 @@ export async function notifyRequesterOfDenial(params: {
   channel?: string;
   requesterExternalUserId?: string;
 }): Promise<void> {
-  const text = "Your access request has been denied by the guardian.";
+  const text = "Your access request has been denied by the account owner.";
 
   const target = resolveRequesterTarget(params);
 

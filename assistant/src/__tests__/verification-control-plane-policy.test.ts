@@ -184,7 +184,7 @@ mock.module("../tools/verification-control-plane-policy.js", () => {
     return {
       denied: true,
       reason:
-        "Guardian verification control-plane actions are restricted to guardian users. This is a security restriction — please wait for the designated guardian to perform this action.",
+        "Account verification controls are restricted to the verified account owner. Please wait for the account owner to perform this action.",
     };
   }
 
@@ -565,7 +565,7 @@ describe("enforceVerificationControlPlanePolicy", () => {
       "trusted_contact",
     );
     expect(result.denied).toBe(true);
-    expect(result.reason).toContain("restricted to guardian users");
+    expect(result.reason).toContain("restricted to the verified account owner");
   });
 
   test("unverified_channel actor denied for verification endpoint", () => {
@@ -577,7 +577,7 @@ describe("enforceVerificationControlPlanePolicy", () => {
       "unknown",
     );
     expect(result.denied).toBe(true);
-    expect(result.reason).toContain("restricted to guardian users");
+    expect(result.reason).toContain("restricted to the verified account owner");
   });
 
   test("guardian actor is NOT denied for verification endpoint", () => {
@@ -612,7 +612,7 @@ describe("enforceVerificationControlPlanePolicy", () => {
       "some_future_role",
     );
     expect(result.denied).toBe(true);
-    expect(result.reason).toContain("restricted to guardian users");
+    expect(result.reason).toContain("restricted to the verified account owner");
   });
 
   test("non-guardian actor is NOT denied for unrelated endpoint", () => {
@@ -658,7 +658,9 @@ describe("ToolExecutor verification control-plane policy gate", () => {
       makeContext({ trustClass: "trusted_contact" }),
     );
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("restricted to guardian users");
+    expect(result.content).toContain(
+      "restricted to the verified account owner",
+    );
   });
 
   test("unverified_channel actor blocked from network_request to verification endpoint", async () => {
@@ -669,7 +671,9 @@ describe("ToolExecutor verification control-plane policy gate", () => {
       makeContext({ trustClass: "unknown" }),
     );
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("restricted to guardian users");
+    expect(result.content).toContain(
+      "restricted to the verified account owner",
+    );
   });
 
   test("guardian actor is NOT blocked from the same invocation", async () => {
@@ -741,7 +745,9 @@ describe("ToolExecutor verification control-plane policy gate", () => {
     );
     expect(capturedEvent).toBeDefined();
     expect(capturedEvent!.decision).toBe("deny");
-    expect(capturedEvent!.reason).toContain("restricted to guardian users");
+    expect(capturedEvent!.reason).toContain(
+      "restricted to the verified account owner",
+    );
   });
 
   test("non-guardian blocked from web_fetch to verification endpoint", async () => {
@@ -752,7 +758,9 @@ describe("ToolExecutor verification control-plane policy gate", () => {
       makeContext({ trustClass: "trusted_contact" }),
     );
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("restricted to guardian users");
+    expect(result.content).toContain(
+      "restricted to the verified account owner",
+    );
   });
 
   test("non-guardian blocked from host_bash with verification endpoint", async () => {
@@ -766,7 +774,9 @@ describe("ToolExecutor verification control-plane policy gate", () => {
       makeContext({ trustClass: "trusted_contact" }),
     );
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("restricted to guardian users");
+    expect(result.content).toContain(
+      "restricted to the verified account owner",
+    );
   });
 
   test("all verification endpoints are blocked for non-guardian via network_request", async () => {
@@ -785,7 +795,9 @@ describe("ToolExecutor verification control-plane policy gate", () => {
         makeContext({ trustClass: "trusted_contact" }),
       );
       expect(result.isError).toBe(true);
-      expect(result.content).toContain("restricted to guardian users");
+      expect(result.content).toContain(
+        "restricted to the verified account owner",
+      );
     }
   });
 
@@ -797,7 +809,7 @@ describe("ToolExecutor verification control-plane policy gate", () => {
       makeContext({ trustClass: "unknown" }),
     );
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("verified channel identity");
+    expect(result.content).toContain("verified account owner");
   });
 
   test("guardian actor can execute side-effect tools", async () => {

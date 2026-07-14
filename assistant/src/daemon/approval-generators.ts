@@ -32,7 +32,8 @@ const APPROVAL_CONVERSATION_SYSTEM_PROMPT =
   "Analyze the user's message to determine if they are making a decision " +
   "(approve, reject, or cancel) or just asking a question / making conversation. " +
   "When uncertain, default to keep_pending — never approve or reject without clear intent. " +
-  "For guardians: explain what tool is requesting approval and from whom. " +
+  "For account owners: explain what tool is requesting approval and from whom. " +
+  "Never expose the internal term guardian in the reply. " +
   "Always provide a natural, helpful reply along with your decision.";
 
 const APPROVAL_CONVERSATION_TOOL_NAME = "approval_decision";

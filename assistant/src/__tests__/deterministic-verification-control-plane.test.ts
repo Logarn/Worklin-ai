@@ -82,6 +82,7 @@ describe("Channel verification reply templates", () => {
     );
     expect(typeof result).toBe("string");
     expect(result.length).toBeGreaterThan(0);
+    expect(result.toLowerCase()).not.toContain("guardian");
     // Calling again yields the same string (deterministic)
     expect(
       composeChannelVerifyReply(

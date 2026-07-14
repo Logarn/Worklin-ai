@@ -963,7 +963,7 @@ export class CallController {
           "Caller is guardian — skipping ASK_GUARDIAN dispatch, asking directly",
         );
         this.pendingInstructions.push(
-          `You just tried to use [ASK_GUARDIAN] but the person on the phone IS your guardian. Ask them directly: "${questionText}"`,
+          `You just tried to use the internal [ASK_GUARDIAN] marker, but the person on the phone is the account owner. Ask them directly: "${questionText}"`,
         );
         // Fall through to normal turn completion (idle + flushPendingInstructions)
       } else if (this.guardianUnavailableForCall) {
@@ -978,8 +978,8 @@ export class CallController {
           question: questionText,
         });
         this.pendingInstructions.push(
-          `[GUARDIAN_UNAVAILABLE] You tried to consult your guardian again, but they were already unreachable earlier in this call. ` +
-            `Do NOT use [ASK_GUARDIAN] again. Instead, let the caller know you cannot reach the guardian right now, ` +
+          `[GUARDIAN_UNAVAILABLE] You tried to consult the account owner again, but they were already unreachable earlier in this call. ` +
+            `Do NOT use [ASK_GUARDIAN] again. Instead, let the caller know you cannot reach the account owner right now, ` +
             `and continue the conversation by asking if there is anything else you can help with or if they would like a callback. ` +
             `The unanswered question was: "${questionText}"`,
         );
@@ -1358,8 +1358,8 @@ export class CallController {
       // next turn. If idle, flush immediately; otherwise it merges
       // into the next turn completion.
       const timeoutInstruction =
-        `[GUARDIAN_TIMEOUT] Your guardian did not respond in time to your question: "${questionText}". ` +
-        `Apologize to the caller for the delay, let them know you were unable to reach your guardian, ` +
+        `[GUARDIAN_TIMEOUT] The account owner did not respond in time to your question: "${questionText}". ` +
+        `Apologize to the caller for the delay, let them know you were unable to reach the account owner, ` +
         `ask if they would like to leave a message or receive a callback, ` +
         `and ask if there are any other questions you can help with right now.`;
 

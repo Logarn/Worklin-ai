@@ -115,10 +115,10 @@ export function buildGuardianDenyContext(
   _sourceChannel: ChannelId,
 ): string {
   if (denialReason === "no_identity") {
-    return `Permission denied for "${toolName}": guardian approval was required, but requester identity could not be verified for this channel. In your next assistant reply, explain this clearly, avoid retrying yet, and ask the user to message from a verifiable direct account/chat before retrying.`;
+    return `Permission denied for "${toolName}": approval was required, but the requester's identity could not be verified for this channel. In your next assistant reply, explain this clearly, avoid retrying yet, and ask the user to message from a verifiable direct account or chat before retrying.`;
   }
 
-  return `Permission denied for "${toolName}": guardian approval was required, but no guardian is configured for this channel. In your next assistant reply, explain this and offer guardian setup. Mention that setup provides a verification code that the user replies with in the channel.`;
+  return `Permission denied for "${toolName}": approval was required, but no account owner is verified for this channel. In your next assistant reply, explain this and offer account verification. Mention that setup provides a verification code that the user replies with in the channel.`;
 }
 
 export function stripVerificationFailurePrefix(reason: string): string {

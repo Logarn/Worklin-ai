@@ -60,11 +60,11 @@ Before making real calls, offer a quick verification. Suggest a test call to the
 
 If they agree, ask for their personal phone number and place a test call with a simple task like "Introduce yourself and confirm the call system is working."
 
-## Step 5: Guardian Verification
+## Step 5: Account Verification
 
 The final step is for the user to verify themselves so that they are recognized when they call you. It's also a great way for them to hear what you sound like and decide if they want you to use a different voice.
 
-Load the `guardian-verify-setup` skill and follow the instructions for guardian verification over the `phone` channel. This will require the user to provide you with their phone number and then for you to give them a call. Say something like:
+Load the internal `guardian-verify-setup` skill and follow its account verification instructions for the `phone` channel. Never expose the internal skill ID or the legacy term "guardian" to the user. This will require the user to provide their phone number and then for you to give them a call. Say something like:
 
 > Want to do a quick verification call now so that you can hear what I sound like and also so that I recognize your number when you call me in the future?
 > I'll show a 6 digit code here in the chat and when you answer my call, enter it using your phone's keypad.
@@ -78,7 +78,6 @@ assistant channel-verification-sessions status --channel phone --json
 After they are verified, ask them what they think of your voice and offer to let them change it. Load up the `elevenlabs-voice` skill and follow the instructions there to see what voices are available and how to update your configured voice. Say something like:
 
 > Great, you're verified! What did you think of my voice? We can update it if you'd like.
-
 
 # Making Outbound Calls
 
@@ -150,13 +149,13 @@ Once Twilio is configured and the assistant has a phone number, inbound calls wo
 1. The gateway resolves the assistant by phone number and forwards to the runtime
 2. A new voice session is created, keyed by the Twilio CallSid
 3. The LLM-driven orchestrator answers in receptionist mode - greeting the caller warmly and asking how it can help
-4. The conversation proceeds naturally, with ASK_GUARDIAN dispatches to consult the user when needed
+4. The conversation proceeds naturally, using the internal ASK_GUARDIAN protocol marker to consult the account owner when needed; never speak or explain the marker
 
 No additional configuration is needed beyond Twilio setup and `calls.enabled` being `true`. As long as the phone number has been provisioned/assigned, inbound calls are handled automatically.
 
-### Guardian voice verification for inbound calls
+### Account verification for inbound calls
 
-To set up guardian verification, load the skill: `skill_load skill=guardian-verify-setup`. Once a guardian binding exists, inbound callers may be prompted for verification before calls proceed.
+To set up account verification, load the internal skill: `skill_load skill=guardian-verify-setup`. Once the user's account binding exists, inbound callers may be prompted for verification before calls proceed. Never expose the internal skill ID to the user.
 
 # Interacting with a Live Call
 
@@ -164,29 +163,29 @@ During an active call, the user can interact with the AI voice agent via the HTT
 
 #### Answering questions
 
-When the AI voice agent encounters something it needs user input for, it dispatches an **ASK_GUARDIAN** request to all configured guardian channels (mac desktop, Telegram). The call status changes to `waiting_on_user`.
+When the AI voice agent needs input from the account owner, it uses the internal **ASK_GUARDIAN** request marker to notify all configured owner channels (Mac desktop, Telegram). Never expose the marker name to users. The call status changes to `waiting_on_user`.
 
 1. The question is delivered simultaneously to every configured channel. The first channel to respond wins (first-response-wins semantics) -- once one channel provides an answer, the other channels receive a "already answered" notice.
-2. On the mac desktop, a guardian request conversation is created with the question. On Telegram, the question text and a request code are delivered via the gateway.
+2. On the Mac desktop, an approval request conversation is created with the question. On Telegram, the question text and a request code are delivered via the gateway.
 3. If DTMF callee verification is enabled, the callee must enter a verification code before the call proceeds (see the **DTMF Callee Verification** section above).
-4. The guardian provides an answer through whichever channel they prefer. The answer is routed to the AI voice agent, which continues the conversation naturally.
+4. The account owner provides an answer through whichever channel they prefer. The answer is routed to the AI voice agent, which continues the conversation naturally.
 
 **Important:** Respond to pending questions quickly. There is a consultation timeout (default: 2 minutes). If no answer is provided in time, the AI voice agent will move on.
 
-#### Guardian timeout and follow-up
+#### Account-owner timeout and follow-up
 
-When a consultation times out, the voice agent apologizes to the caller and moves on -- but the interaction is not lost. If the guardian responds after the timeout:
+When a consultation times out, the voice agent apologizes to the caller and moves on -- but the interaction is not lost. If the account owner responds after the timeout:
 
-1. **Late reply detection**: The system recognizes the late answer on whichever channel it arrives (desktop or Telegram) and presents a follow-up prompt asking the guardian what they would like to do.
-2. **Follow-up options**: The guardian can choose to:
+1. **Late reply detection**: The system recognizes the late answer on whichever channel it arrives (desktop or Telegram) and presents a follow-up prompt asking the account owner what they would like to do.
+2. **Follow-up options**: The account owner can choose to:
    - **Call back** the original caller with the answer
    - **Send a text message** to the caller with the answer
    - **Decline** if the follow-up is no longer needed
-3. **Automatic execution**: If the guardian chooses to call back or send a message, the system resolves the original caller's phone number from the call record and executes the action automatically -- placing an outbound callback call or sending a message via the gateway.
+3. **Automatic execution**: If the account owner chooses to call back or send a message, the system resolves the original caller's phone number from the call record and executes the action automatically -- placing an outbound callback call or sending a message via the gateway.
 
 All user-facing messages in this flow (timeout acknowledgments, follow-up prompts, completion confirmations) are generated by the assistant to maintain a natural, conversational tone. No fixed/canned responses are used.
 
-The follow-up flow works across all guardian channels. The guardian can receive the timeout notice on Telegram and choose to call back -- the system handles cross-channel routing transparently.
+The follow-up flow works across all owner channels. The account owner can receive the timeout notice on Telegram and choose to call back -- the system handles cross-channel routing transparently.
 
 #### Steering with instructions
 

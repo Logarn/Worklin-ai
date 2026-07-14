@@ -79,7 +79,7 @@ export function getGuardianActionFallbackMessage(
     case "caller_timeout_acknowledgment":
       return context.guardianIdentifier
         ? `I wasn't able to reach ${context.guardianIdentifier} right now. I'm sorry about that.`
-        : "I wasn't able to reach the guardian right now. I'm sorry about that.";
+        : "I wasn't able to reach the account owner right now. I'm sorry about that.";
 
     case "caller_timeout_continue":
       return "Would you like me to leave a message for them to get back to you, or is there anything else I can help with?";
@@ -112,13 +112,13 @@ export function getGuardianActionFallbackMessage(
 
     case "guardian_pending_disambiguation":
       return listedCodes
-        ? `You have multiple pending guardian questions. Please prefix your reply with the reference code (${listedCodes}) so I know which question you're answering.`
-        : "You have multiple pending guardian questions. Please prefix your reply with the reference code so I know which question you're answering.";
+        ? `You have multiple pending approval questions. Please prefix your reply with the reference code (${listedCodes}) so I know which question you're answering.`
+        : "You have multiple pending approval questions. Please prefix your reply with the reference code so I know which question you're answering.";
 
     case "guardian_expired_disambiguation":
       return listedCodes
-        ? `You have multiple expired guardian questions. Please prefix your reply with the reference code (${listedCodes}) so I know which question you're answering.`
-        : "You have multiple expired guardian questions. Please prefix your reply with the reference code so I know which question you're answering.";
+        ? `You have multiple expired approval questions. Please prefix your reply with the reference code (${listedCodes}) so I know which question you're answering.`
+        : "You have multiple expired approval questions. Please prefix your reply with the reference code so I know which question you're answering.";
 
     case "guardian_followup_disambiguation":
       return listedCodes
@@ -165,7 +165,7 @@ export function getGuardianActionFallbackMessage(
 
     default: {
       const _exhaustive: never = context.scenario;
-      return `Guardian action update. ${String(_exhaustive)}`;
+      return `Approval update. ${String(_exhaustive)}`;
     }
   }
 }

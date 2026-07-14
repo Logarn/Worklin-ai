@@ -94,7 +94,7 @@ export function createInboundChallenge(
       success: false,
       error: "already_bound",
       message:
-        "A guardian is already bound for this channel. Revoke the existing binding first, or set rebind: true to replace.",
+        "An account owner is already verified for this channel. Revoke the existing binding first, or set rebind: true to replace.",
       channel: resolvedChannel,
     };
   }
@@ -560,7 +560,11 @@ export async function handleChannelVerificationSession(
           const { to, text, subject, assistantId: aid } = result._pendingEmail;
           deliverVerificationEmail(to, text, subject, aid);
         }
-        const { _pendingSlackDm: _, _pendingEmail: __, ...publicResult } = result;
+        const {
+          _pendingSlackDm: _,
+          _pendingEmail: __,
+          ...publicResult
+        } = result;
         broadcastMessage({
           type: "channel_verification_session_response",
           ...publicResult,

@@ -44,12 +44,11 @@ export const NOTIFICATION_SOURCE_EVENT_NAMES = [
   },
   {
     id: "guardian.question",
-    description: "Guardian approval question requiring response",
+    description: "Account-owner approval question requiring response",
   },
   {
     id: "guardian.channel_activation",
-    description:
-      "Guardian channel activation code delivered for /start verification",
+    description: "Account verification code delivered for /start verification",
   },
   { id: "ingress.access_request", description: "Non-member requesting access" },
   {
@@ -62,7 +61,7 @@ export const NOTIFICATION_SOURCE_EVENT_NAMES = [
   },
   {
     id: "ingress.trusted_contact.guardian_decision",
-    description: "Guardian decided on trusted contact request",
+    description: "Account owner decided on trusted contact request",
   },
   {
     id: "ingress.trusted_contact.denied",

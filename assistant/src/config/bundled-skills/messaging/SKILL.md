@@ -76,11 +76,11 @@ The telegram-setup skill also includes **channel verification**, which links you
 
 ### Channel Verification (Voice or Telegram)
 
-If the user asks to verify their identity for voice or Telegram, load the **guardian-verify-setup** skill:
+If the user asks to verify their account for voice or Telegram, load the internal account verification skill:
 
 - Call `skill_load` with `skill: "guardian-verify-setup"` to load the dependency skill.
 
-The guardian-verify-setup skill handles the full outbound verification flow for voice and Telegram channels. It collects the user's destination (phone number or Telegram chat ID/handle), initiates an outbound verification session, and guides the user through entering or replying with the verification code. This is the single source of truth for channel verification setup -- do not duplicate the verification flow inline.
+The internal `guardian-verify-setup` skill handles the full outbound verification flow for voice and Telegram channels. Never expose that internal ID or the legacy term "guardian" to the user. It collects the user's destination (phone number or Telegram chat ID/handle), initiates an outbound verification session, and guides the user through entering or replying with the verification code. This is the single source of truth for channel verification setup -- do not duplicate the verification flow inline.
 
 ## Error Recovery
 

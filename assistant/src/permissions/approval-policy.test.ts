@@ -408,6 +408,42 @@ describe("no rule — third-party skill tool", () => {
 // ── No rule: autoApproveUpTo "none" (strict-equivalent) ────────────────────
 
 describe("no rule — autoApproveUpTo 'none'", () => {
+  test("plain skill loading bypasses the strict threshold", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "skill_load",
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("allow");
+    expect(result.reason).toContain("discovery and installation");
+  });
+
+  test("Brand Brain reads bypass the strict threshold", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "brand_brain_read",
+      toolOrigin: "skill",
+      isSkillBundled: true,
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("allow");
+    expect(result.reason).toContain("Read-only Brand Brain");
+  });
+
+  test("explicit deny still blocks plain skill loading", () => {
+    const denyRule = makeRule({
+      decision: "deny",
+      pattern: "skill_load:blocked-skill",
+    });
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "skill_load",
+      matchedRule: denyRule,
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("deny");
+  });
+
   test("none threshold, Low risk, not workspace-scoped → prompt", () => {
     const result = evaluate({
       riskLevel: RiskLevel.Low,
@@ -908,7 +944,7 @@ describe("autoApproveUpTo threshold", () => {
       expect(result.matchedRule).toBe(askRule);
     });
 
-    test("skill_load_dynamic ask rule always prompts even with high threshold", () => {
+    test("skill_load_dynamic ask rule honors a full-access threshold", () => {
       const dynamicSkillAskRule = makeRule({
         decision: "ask",
         pattern: "skill_load_dynamic:my-skill",
@@ -919,8 +955,8 @@ describe("autoApproveUpTo threshold", () => {
         matchedRule: dynamicSkillAskRule,
         autoApproveUpTo: "high",
       });
-      expect(result.decision).toBe("prompt");
-      expect(result.matchedRule).toBe(dynamicSkillAskRule);
+      expect(result.decision).toBe("allow");
+      expect(result.reason).toContain("within auto-approve threshold");
     });
 
     test("allow rule still allows non-High regardless of threshold", () => {

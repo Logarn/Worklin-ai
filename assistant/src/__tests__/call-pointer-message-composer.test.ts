@@ -79,7 +79,7 @@ describe("getPointerFallbackMessage", () => {
       scenario: "verification_succeeded",
       phoneNumber: "+15559876543",
     });
-    expect(msg).toContain("Guardian verification (phone)");
+    expect(msg).toContain("Account verification (phone)");
     expect(msg).toContain("succeeded");
   });
 
@@ -89,7 +89,7 @@ describe("getPointerFallbackMessage", () => {
       phoneNumber: "+15559876543",
       channel: "phone",
     });
-    expect(msg).toContain("Guardian verification (phone)");
+    expect(msg).toContain("Account verification (phone)");
   });
 
   test("verification_failed without reason", () => {
@@ -97,7 +97,7 @@ describe("getPointerFallbackMessage", () => {
       scenario: "verification_failed",
       phoneNumber: "+15559876543",
     });
-    expect(msg).toContain("Guardian verification");
+    expect(msg).toContain("Account verification");
     expect(msg).toContain("failed");
   });
 

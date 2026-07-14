@@ -14,7 +14,7 @@ import type {
 export const hostFileWriteTool = {
   name: "host_file_write",
   description:
-    "Write content to a file on your guardian's device, creating it if it does not exist. For files on your own machine, use file_write instead.",
+    "Write content to a file on the account owner's connected device, creating it if it does not exist. For files in the isolated workspace, use file_write instead.",
   category: "host-filesystem",
   executionTarget: "host",
   defaultRiskLevel: RiskLevel.Medium,

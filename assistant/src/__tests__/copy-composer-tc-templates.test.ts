@@ -175,7 +175,7 @@ describe("guardian_decision fallback copy", () => {
     expect(copy.body).toBe("Someone's access request has been denied by Bob.");
   });
 
-  test("falls back to 'a guardian' when decider identity is entirely absent", () => {
+  test("falls back to the account owner when decider identity is entirely absent", () => {
     const signal = buildGuardianDecisionSignal({
       requesterDisplayName: "Alice",
       decidedByDisplayName: null,
@@ -186,7 +186,7 @@ describe("guardian_decision fallback copy", () => {
     const copy = result.vellum!;
 
     expect(copy.body).toBe(
-      "Alice's access request has been approved by a guardian.",
+      "Alice's access request has been approved by the account owner.",
     );
   });
 

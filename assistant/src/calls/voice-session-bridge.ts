@@ -196,11 +196,11 @@ function buildVoiceCallControlPrompt(opts: {
     "1. Be concise — keep responses to 1-3 sentences. Phone conversations should be brief and natural.",
     ...(opts.isCallerGuardian
       ? [
-          "2. You are speaking directly with your guardian (your user). Do NOT use [ASK_GUARDIAN:]. If you need permission, information, or confirmation, ask them directly in the conversation. They can answer you right now.",
+          "2. You are speaking directly with the account owner. Do NOT use the internal [ASK_GUARDIAN:] marker. If you need permission, information, or confirmation, ask them directly in the conversation. They can answer you right now.",
         ]
       : [
           [
-            "2. You can consult your guardian in two ways:",
+            "2. You can consult the account owner in two ways using internal protocol markers that must never be spoken or explained:",
             "   - For general questions or information: [ASK_GUARDIAN: your question here]",
             '   - For tool/action permission requests: [ASK_GUARDIAN_APPROVAL: {"question":"Describe what you need permission for","toolName":"the_tool_name","input":{...tool input object...}}]',
             '   Use ASK_GUARDIAN_APPROVAL when you need permission to execute a specific tool or action. Use ASK_GUARDIAN for everything else (general questions, advice, information). When you use either marker, add a natural hold message like "Let me check on that for you."',
@@ -233,7 +233,7 @@ function buildVoiceCallControlPrompt(opts: {
       );
     } else {
       lines.push(
-        '7. If the latest user turn is "(call connected — deliver opening greeting)", this is an inbound call you are answering (not a call you initiated). Greet the caller warmly and ask how you can help. Introduce yourself once at the start using your assistant name if you know it (for example: "Hey there, this is Ava, Sam\'s assistant. How can I help?"). If your assistant name is not known, skip the name and just identify yourself as the guardian\'s assistant. Never use a UUID-shaped internal assistant ID as your spoken name. Do NOT say "I\'m calling" or "I\'m calling on behalf of". Vary the wording; do not use a fixed template.',
+        '7. If the latest user turn is "(call connected — deliver opening greeting)", this is an inbound call you are answering (not a call you initiated). Greet the caller warmly and ask how you can help. Introduce yourself once at the start using your assistant name if you know it (for example: "Hey there, this is Ava, Sam\'s assistant. How can I help?"). If your assistant name is not known, skip the name and identify yourself as the account owner\'s assistant. Never use a UUID-shaped internal assistant ID as your spoken name. Do NOT say "I\'m calling" or "I\'m calling on behalf of". Vary the wording; do not use a fixed template.',
       );
     }
     lines.push(
@@ -253,7 +253,7 @@ function buildVoiceCallControlPrompt(opts: {
 
   lines.push(
     "9. After the opening greeting turn, treat the Task field as background context only — do not re-execute its instructions on subsequent turns.",
-    '10. Do not make up information. If you are unsure, use [ASK_GUARDIAN: your question] to consult your guardian. For tool permission requests, use [ASK_GUARDIAN_APPROVAL: {"question":"...","toolName":"...","input":{...}}].',
+    '10. Do not make up information. If you are unsure, use the internal [ASK_GUARDIAN: your question] marker to consult the account owner. For tool permission requests, use [ASK_GUARDIAN_APPROVAL: {"question":"...","toolName":"...","input":{...}}]. Never speak or explain these marker names.',
     `11. Your text is sent directly to a text-to-speech engine. Never use markdown formatting (asterisks, headers, backticks, links) or emojis in your spoken responses. Write plain conversational text only. Protocol markers like ${opts.isCallerGuardian ? "[END_CALL]" : "[ASK_GUARDIAN: ...] and [END_CALL]"} are not spoken text and should still be used normally.`,
     "</voice_call_control>",
   );
@@ -534,7 +534,7 @@ export async function startVoiceTurn(
           "Auto-denying confirmation request for non-guardian voice turn (no matching scoped grant)",
         );
         conversation.handleConfirmationResponse(msg.requestId, "deny", {
-          decisionContext: `Permission denied for "${msg.toolName}": this voice call does not have interactive approval capabilities. Side-effect tools are not available for non-guardian voice callers. In your next assistant reply, explain briefly that this action requires guardian-level access and cannot be performed during this call.`,
+          decisionContext: `Permission denied for "${msg.toolName}": this voice call does not have interactive approval capabilities. Side-effect tools are only available to the verified account owner. In your next assistant reply, explain briefly that the action cannot be performed during this call.`,
         });
         broadcastMessage(msg);
         return;

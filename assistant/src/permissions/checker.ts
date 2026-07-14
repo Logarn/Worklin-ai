@@ -553,6 +553,10 @@ export async function check(
     toolOrigin: getToolOwner(toolName)?.kind,
     isSkillBundled: isToolOwnerSkillBundled(tool),
     hasManifestOverride: !!manifestOverride,
+    isDynamicSkillLoad:
+      toolName === "skill_load" &&
+      resolveSkillMetadata(getStringField(input, "skill").trim())?.isDynamic ===
+        true,
     autoApproveUpTo: threshold,
     hasSandboxAutoApprove,
   };

@@ -65,7 +65,7 @@ const DEFAULT_CHANNELS: ChannelInfo[] = [
     supportsVerification: true,
     setupMessages: {
       guardian:
-        "I'd like to verify my identity as your guardian on Slack. Can you help me set that up?",
+        "I'd like to verify that this Slack account belongs to me. Can you help me set that up?",
       contact:
         "I'd like to verify a contact's Slack identity. Can you walk me through it?",
     },
@@ -78,7 +78,7 @@ const DEFAULT_CHANNELS: ChannelInfo[] = [
     supportsVerification: true,
     setupMessages: {
       guardian:
-        "I'd like to verify my identity as your guardian on Telegram. Can you help me set that up?",
+        "I'd like to verify that this Telegram account belongs to me. Can you help me set that up?",
       contact:
         "I'd like to verify a contact's Telegram identity. Can you walk me through it?",
     },
@@ -91,7 +91,7 @@ const DEFAULT_CHANNELS: ChannelInfo[] = [
     supportsVerification: true,
     setupMessages: {
       guardian:
-        "I'd like to verify my identity as your guardian for phone calls. Can you help me set that up?",
+        "I'd like to verify that this phone number belongs to me. Can you help me set that up?",
       contact:
         "I'd like to verify a contact's phone number. Can you help me set that up?",
     },

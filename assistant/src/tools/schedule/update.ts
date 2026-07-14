@@ -34,7 +34,7 @@ export async function executeScheduleUpdate(
   if (context.trustClass !== "guardian") {
     return {
       content:
-        "Error: schedule_update is restricted to guardian actors because schedules execute with elevated privileges.",
+        "Error: schedule_update is restricted to the account owner because schedules execute with elevated privileges.",
       isError: true,
     };
   }

@@ -217,8 +217,8 @@ const CATALOG_RECORD: CatalogRecord = {
   },
   guardianQuestionCopy: {
     id: "guardianQuestionCopy",
-    displayName: "Guardian Question Copy",
-    description: "Generates copy for guardian onboarding questions.",
+    displayName: "Approval Question Copy",
+    description: "Generates copy for account-owner approval questions.",
     domain: "ui",
   },
   approvalCopy: {

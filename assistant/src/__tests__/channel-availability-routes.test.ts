@@ -201,6 +201,9 @@ describe("channels/available", () => {
       expect(ch!.supportsVerification).toBe(true);
       expect(ch!.setupMessages.guardian.length).toBeGreaterThan(0);
       expect(ch!.setupMessages.contact.length).toBeGreaterThan(0);
+      expect(ch!.setupMessages.guardian.toLowerCase()).not.toContain(
+        "guardian",
+      );
     }
   });
 });

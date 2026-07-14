@@ -1866,7 +1866,7 @@ describe("relay-server", () => {
     const updated = getCallSession(session.id);
     expect(updated).not.toBeNull();
     expect(updated!.status).toBe("failed");
-    expect(updated!.lastError).toContain("Guardian voice verification failed");
+    expect(updated!.lastError).toContain("Account verification failed");
 
     // Should have sent goodbye message
     const textMessages = ws.sentMessages
@@ -2039,7 +2039,7 @@ describe("relay-server", () => {
     // Origin conversation should have a pointer message
     const originText = getLatestAssistantText("conv-gv-pointer-success-origin");
     expect(originText).not.toBeNull();
-    expect(originText).toContain("Guardian verification");
+    expect(originText).toContain("Account verification");
     expect(originText).toContain("+15559999999");
     expect(originText).toContain("succeeded");
 
@@ -2095,7 +2095,7 @@ describe("relay-server", () => {
     // Origin conversation should have a failure pointer message
     const originText = getLatestAssistantText("conv-gv-pointer-fail-origin");
     expect(originText).not.toBeNull();
-    expect(originText).toContain("Guardian verification");
+    expect(originText).toContain("Account verification");
     expect(originText).toContain("+15559999999");
     expect(originText).toContain("failed");
 
@@ -2356,7 +2356,7 @@ describe("relay-server", () => {
     expect(promptText).toContain("Vargas");
     expect(promptText).toContain("has not been verified yet");
     expect(promptText).toContain("contacts page");
-    expect(promptText).not.toContain("reach out to the account guardian");
+    expect(promptText).not.toContain("reach out to the account owner");
     expect(promptText).not.toContain("don't recognize");
 
     const events = getCallEvents(session.id);
@@ -2413,7 +2413,7 @@ describe("relay-server", () => {
     const promptText = textMessages.map((m) => m.token ?? "").join("");
     expect(promptText).toContain("Pending Pat");
     expect(promptText).toContain("has not been verified yet");
-    expect(promptText).toContain("reach out to the account guardian");
+    expect(promptText).toContain("reach out to the account owner");
     expect(promptText).not.toContain("contacts page");
 
     const events = getCallEvents(session.id);

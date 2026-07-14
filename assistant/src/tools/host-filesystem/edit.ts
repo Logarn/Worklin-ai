@@ -14,7 +14,7 @@ import type {
 export const hostFileEditTool = {
   name: "host_file_edit",
   description:
-    "Replace exact text in a file on your guardian's device with new text. For files on your own machine, use file_edit instead.",
+    "Replace exact text in a file on the account owner's connected device with new text. For files in the isolated workspace, use file_edit instead.",
   category: "host-filesystem",
   executionTarget: "host",
   defaultRiskLevel: RiskLevel.Medium,

@@ -32,7 +32,7 @@ class ManageSecureCommandToolImpl implements ToolDefinition {
   name = "manage_secure_command_tool";
   description =
     "Request installation, update, or removal of a secure command tool bundle. " +
-    "Accepts only bundle metadata for guardian review - never raw bytes or file paths. " +
+    "Accepts only bundle metadata for account-owner review - never raw bytes or file paths. " +
     "Each invocation requires fresh approval.";
   category = "credential-execution";
   executionTarget = "sandbox" as const;

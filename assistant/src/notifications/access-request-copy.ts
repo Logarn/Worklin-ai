@@ -306,7 +306,7 @@ export function buildAccessRequestContractText(
     p.sourceChannel
   ) {
     lines.push(
-      `Note: You haven't verified your identity on ${p.sourceChannel} yet. If this was you trying to message your assistant, say "help me verify as guardian on ${p.sourceChannel}" to set up direct access.`,
+      `Note: You haven't verified that the ${p.sourceChannel} account belongs to you yet. If this was you trying to message your assistant, say "help me verify my account on ${p.sourceChannel}" to set up direct access.`,
     );
   }
   return lines.join("\n");

@@ -325,7 +325,7 @@ export function routeSetup(ctx: SetupContext): {
       outcome: {
         action: "deny",
         message:
-          "This number requires guardian approval for calls. Please have the account guardian update your permissions.",
+          "This number requires approval for calls. Please have the account owner update your permissions.",
         logReason:
           "Inbound voice ACL: member policy escalate — voice calls cannot await guardian approval",
       },

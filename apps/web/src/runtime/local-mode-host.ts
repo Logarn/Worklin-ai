@@ -280,7 +280,7 @@ export async function fetchGuardianTokenHost(
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new GuardianTokenError(
       res.status,
-      body.error ?? `Guardian token request failed: ${res.status}`,
+      body.error ?? `Owner access token request failed: ${res.status}`,
     );
   }
   const { accessToken } = (await res.json()) as { accessToken: string };
