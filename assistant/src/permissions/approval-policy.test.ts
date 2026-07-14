@@ -408,6 +408,43 @@ describe("no rule — third-party skill tool", () => {
 // ── No rule: autoApproveUpTo "none" (strict-equivalent) ────────────────────
 
 describe("no rule — autoApproveUpTo 'none'", () => {
+  test("internal subagent orchestration bypasses the strict threshold", () => {
+    for (const toolName of [
+      "subagent_spawn",
+      "subagent_status",
+      "subagent_message",
+      "subagent_read",
+      "subagent_abort",
+      "notify_parent",
+    ]) {
+      const result = evaluate({
+        riskLevel: RiskLevel.Low,
+        toolName,
+        executionContext: "headless",
+        toolOrigin: toolName.startsWith("subagent_") ? "skill" : undefined,
+        isSkillBundled: toolName.startsWith("subagent_") || undefined,
+        autoApproveUpTo: "none",
+      });
+      expect(result.decision).toBe("allow");
+      expect(result.reason).toContain("Internal subagent orchestration");
+    }
+  });
+
+  test("explicit deny still blocks internal subagent orchestration", () => {
+    const result = evaluate({
+      riskLevel: RiskLevel.Low,
+      toolName: "subagent_spawn",
+      executionContext: "headless",
+      matchedRule: makeRule({
+        tool: "subagent_spawn",
+        pattern: "subagent_spawn:*",
+        decision: "deny",
+      }),
+      autoApproveUpTo: "none",
+    });
+    expect(result.decision).toBe("deny");
+  });
+
   test("plain skill loading bypasses the strict threshold", () => {
     const result = evaluate({
       riskLevel: RiskLevel.Low,

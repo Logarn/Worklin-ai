@@ -55,6 +55,14 @@ const THRESHOLD_ORDINAL: Record<string, number> = {
 
 const AUTONOMOUS_READ_TOOLS = new Set(["web_search", "recall"]);
 const AUTONOMOUS_WORKSPACE_READ_TOOLS = new Set(["file_read", "file_list"]);
+const INTERNAL_ORCHESTRATION_TOOLS = new Set([
+  "subagent_spawn",
+  "subagent_status",
+  "subagent_message",
+  "subagent_read",
+  "subagent_abort",
+  "notify_parent",
+]);
 
 /**
  * Check whether a risk level falls within the configured auto-approve threshold.
@@ -90,9 +98,10 @@ export interface ApprovalPolicy {
  * The decision flow:
  *
  * 1. Deny rule → deny
- * 2. Safe skill setup/context read → allow
+ * 2. Internal subagent orchestration → allow
+ * 3. Safe skill setup/context read → allow
  *    (plain skill_load and brand_brain_read; dynamic skill loads excluded)
- * 3. Non-interactive read-only research → allow
+ * 4. Non-interactive read-only research → allow
  *    (web_search/recall, plus workspace-scoped file_read/file_list)
  * 4. Ask rule + risk > autoApproveUpTo → prompt
  *    Ask rule + risk ≤ autoApproveUpTo → allow (threshold overrides ask rule)
@@ -131,7 +140,18 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
       };
     }
 
-    // ── 2. Safe skill setup and read-only context do not need approval ──
+    // Spawning and coordinating bounded in-process subagents is internal
+    // control flow, not access to the user's device. Child tool calls are
+    // evaluated independently, so this exemption cannot authorize the work a
+    // child performs. Explicit deny rules above remain authoritative.
+    if (INTERNAL_ORCHESTRATION_TOOLS.has(toolName)) {
+      return {
+        decision: "allow",
+        reason: "Internal subagent orchestration does not require approval",
+      };
+    }
+
+    // ── 3. Safe skill setup and read-only context do not need approval ──
     // Loading a plain skill only discovers/installs its instructions. The
     // actions exposed by that skill are evaluated separately when invoked.
     // Dynamic loads are excluded because inline expansions execute commands
