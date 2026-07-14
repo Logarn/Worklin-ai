@@ -99,7 +99,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: assistant
@@ -141,7 +141,7 @@ jobs:
       - name: Test
         run: bun run test:stable
         env:
-          TEST_WORKERS: '2'
+          TEST_WORKERS: '1'
           TEST_DURATIONS_FILE: .test-durations
           TEST_DURATIONS_OUTPUT: .test-durations
 

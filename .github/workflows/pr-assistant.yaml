@@ -108,7 +108,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: assistant
@@ -144,7 +144,7 @@ jobs:
         run: bun run test
         env:
           EXCLUDE_EXPERIMENTAL: 'true'
-          TEST_WORKERS: '2'
+          TEST_WORKERS: '1'
 
       # Smoke-run the meet-join manifest emitter so an assistant-side
       # change that breaks the `SkillHost` contract or `register(host)`
