@@ -1,11 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import type { ToolContext } from "../types.js";
 import { _setMetadataPath } from "../credentials/metadata-store.js";
+import type { ToolContext } from "../types.js";
 import { buildLiveReadonlyKlaviyoDatasetFromApiKey } from "./klaviyo-connection.js";
 import {
   buildKlaviyoL365AuditForTest,
@@ -90,9 +89,11 @@ describe("Worklin Retention tools", () => {
     expect(parsed.readiness.completed).toContain(
       "Brand website/domain provided in onboarding conversation",
     );
-    expect(parsed.sourceProvenance.some((source: { label?: string }) =>
-      source.label?.includes("drrachaelinstitute.com"),
-    )).toBe(true);
+    expect(
+      parsed.sourceProvenance.some((source: { label?: string }) =>
+        source.label?.includes("drrachaelinstitute.com"),
+      ),
+    ).toBe(true);
   });
 
   test("Shopify and Klaviyo snapshot tools return safe read-only snapshots", async () => {
@@ -329,22 +330,26 @@ describe("Worklin Retention tools", () => {
       "Campaign Cadence Agent",
     );
     expect(audit.artifact.contentMarkdown).toContain("## Audit Swarm Method");
-    expect(audit.artifact.contentMarkdown).toContain(
-      "Data Trust Agent",
-    );
+    expect(audit.artifact.contentMarkdown).toContain("Data Trust Agent");
     expect(audit.safety.externalActionTaken).toBe(false);
     expect(audit.safety.canGoLiveNow).toBe(false);
   });
 
   test("Klaviyo L365 dataset records optional forms read failures without sample data", async () => {
-    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       expect(init?.method).toBe("GET");
       const path = String(url).replace("https://a.klaviyo.com/api", "");
       if (path === "/forms/?page[size]=100") {
-        return new Response(JSON.stringify({ errors: [{ detail: "forbidden" }] }), {
-          status: 403,
-          headers: { "content-type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ errors: [{ detail: "forbidden" }] }),
+          {
+            status: 403,
+            headers: { "content-type": "application/json" },
+          },
+        );
       }
       const dataByPath: Record<string, unknown> = {
         "/accounts/": {
@@ -359,7 +364,9 @@ describe("Worklin Retention tools", () => {
             },
           ],
         },
-        "/campaigns/?filter=equals(messages.channel%2C'email')&page[size]=50": { data: [] },
+        "/campaigns/?filter=equals(messages.channel%2C'email')&page[size]=50": {
+          data: [],
+        },
         "/flows/?page[size]=50": { data: [] },
         "/lists/?page[size]=10": { data: [] },
         "/segments/?page[size]=10": { data: [] },

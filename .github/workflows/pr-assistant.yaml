@@ -102,6 +102,8 @@ jobs:
 
       - name: Type check
         run: bunx tsc --noEmit
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
 
   test:
     name: Test
