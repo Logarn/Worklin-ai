@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "@vellumai/design-library";
 import { Loader2 } from "lucide-react";
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 import {
@@ -8,9 +9,18 @@ import {
   type DocumentViewerContainerHandle,
 } from "@/components/document-viewer-container";
 import { documentsByIdGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
-import { documentsByIdPdfGet } from "@/generated/daemon/sdk.gen";
+import {
+  copybookcampaignsByIdApprovePost,
+  copybookcampaignsByIdPatch,
+  copybookcampaignsByIdReadyfordesignPost,
+  copybookmonthsByIdPatch,
+  documentsByIdCommentsGet,
+  documentsByIdConversationsPost,
+  documentsByIdPdfGet,
+} from "@/generated/daemon/sdk.gen";
 import { useBusSubscription } from "@/hooks/use-bus-subscription";
 import { useDocumentCommentEvents } from "@/hooks/use-document-comment-events";
+import { useConversationStore } from "@/stores/conversation-store";
 import { useViewerStore } from "@/stores/viewer-store";
 import { routes } from "@/utils/routes";
 import {
@@ -21,6 +31,7 @@ import {
 
 import type { CopybookDetail, CopybookMonth } from "../copybook-api";
 import { copybookWorklinPrompt } from "../copybook-navigation";
+import { copybookQueryKey } from "../use-copybook-data";
 import { CopybookMonthNav } from "./copybook-month-nav";
 import { CopybookStatusBar } from "./copybook-status-bar";
 
@@ -36,7 +47,9 @@ export function CopybookWorkspace({
   onSelectMonth: (month: number) => void;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const viewerRef = useRef<DocumentViewerContainerHandle>(null);
+  const [approvalPending, setApprovalPending] = useState(false);
   const {
     data: document,
     isLoading,
@@ -47,6 +60,131 @@ export function CopybookWorkspace({
     }),
     enabled: month.documentSurfaceId != null,
   });
+  const commentsQuery = useQuery({
+    queryKey: ["document-comments", assistantId, month.documentSurfaceId],
+    queryFn: async () => {
+      const { data } = await documentsByIdCommentsGet({
+        path: {
+          assistant_id: assistantId,
+          id: month.documentSurfaceId ?? "",
+        },
+        throwOnError: true,
+      });
+      return data?.comments ?? [];
+    },
+    enabled: month.documentSurfaceId != null,
+  });
+  const blockingCommentCount =
+    commentsQuery.data?.filter((comment) => comment.status === "open").length ??
+    0;
+
+  const approvalAction = useMemo(() => {
+    if (month.strategyStatus === "in_review") {
+      return {
+        kind: "strategy" as const,
+        campaigns: [],
+        label: "Approve strategy",
+      };
+    }
+    const briefReviews = month.campaigns.filter(
+      (campaign) => campaign.status === "brief_review",
+    );
+    if (briefReviews.length > 0) {
+      return {
+        kind: "briefs" as const,
+        campaigns: briefReviews,
+        label:
+          briefReviews.length === 1
+            ? "Approve brief"
+            : `Approve ${briefReviews.length} briefs`,
+      };
+    }
+    const copyReviews = month.campaigns.filter(
+      (campaign) => campaign.status === "copy_review",
+    );
+    if (copyReviews.length > 0) {
+      return {
+        kind: "copy" as const,
+        campaigns: copyReviews,
+        label:
+          copyReviews.length === 1
+            ? "Approve copy"
+            : `Approve ${copyReviews.length} campaigns`,
+      };
+    }
+    const approved = month.campaigns.filter(
+      (campaign) => campaign.status === "approved",
+    );
+    if (approved.length > 0) {
+      return {
+        kind: "design" as const,
+        campaigns: approved,
+        label:
+          approved.length === 1
+            ? "Send to design"
+            : `Send ${approved.length} to design`,
+      };
+    }
+    return null;
+  }, [month.campaigns, month.strategyStatus]);
+
+  const handleApprove = useCallback(async () => {
+    if (!approvalAction || approvalPending || blockingCommentCount > 0) return;
+    setApprovalPending(true);
+    try {
+      if (approvalAction.kind === "strategy") {
+        await copybookmonthsByIdPatch({
+          path: { assistant_id: assistantId, id: month.id },
+          body: { strategyStatus: "approved" },
+          throwOnError: true,
+        });
+      } else if (approvalAction.kind === "briefs") {
+        await Promise.all(
+          approvalAction.campaigns.map((campaign) =>
+            copybookcampaignsByIdPatch({
+              path: { assistant_id: assistantId, id: campaign.id },
+              body: { status: "brief_approved" },
+              throwOnError: true,
+            }),
+          ),
+        );
+      } else if (approvalAction.kind === "copy") {
+        await Promise.all(
+          approvalAction.campaigns.map((campaign) =>
+            copybookcampaignsByIdApprovePost({
+              path: { assistant_id: assistantId, id: campaign.id },
+              throwOnError: true,
+            }),
+          ),
+        );
+      } else {
+        await Promise.all(
+          approvalAction.campaigns.map((campaign) =>
+            copybookcampaignsByIdReadyfordesignPost({
+              path: { assistant_id: assistantId, id: campaign.id },
+              throwOnError: true,
+            }),
+          ),
+        );
+      }
+      await queryClient.invalidateQueries({
+        queryKey: copybookQueryKey(assistantId, copybook.copybook.id),
+      });
+      toast.success(`${approvalAction.label} completed.`);
+    } catch {
+      toast.error("Approval could not be completed. Please try again.");
+    } finally {
+      setApprovalPending(false);
+    }
+  }, [
+    approvalAction,
+    approvalPending,
+    blockingCommentCount,
+    assistantId,
+    month.id,
+    queryClient,
+    copybook.copybook.id,
+  ]);
 
   const refreshComments = useCallback(() => {
     void viewerRef.current?.refreshComments();
@@ -58,9 +196,21 @@ export function CopybookWorkspace({
   });
   useBusSubscription("sse.event", handleCommentEvent);
 
-  const handleWorkWithWorklin = useCallback(() => {
+  const handleWorkWithWorklin = useCallback(async () => {
     if (!document) return;
     const conversationId = document.conversationId;
+    try {
+      await documentsByIdConversationsPost({
+        path: { assistant_id: assistantId, id: document.surfaceId },
+        body: { conversationId },
+        throwOnError: true,
+      });
+    } catch {
+      toast.error(
+        "Could not connect this artifact to Worklin. Please try again.",
+      );
+      return;
+    }
     useViewerStore.getState().openDocument();
     useViewerStore.getState().setLoadedDocument({
       surfaceId: document.surfaceId,
@@ -68,6 +218,7 @@ export function CopybookWorkspace({
       documentName: document.title,
       content: document.content,
     });
+    useConversationStore.getState().setActiveConversationId(conversationId);
     const prompt = copybookWorklinPrompt({
       title: document.title,
       year: copybook.copybook.year,
@@ -76,7 +227,7 @@ export function CopybookWorkspace({
     void navigate(
       `${routes.conversation(conversationId)}?prompt=${encodeURIComponent(prompt)}`,
     );
-  }, [copybook.copybook.year, document, month.month, navigate]);
+  }, [assistantId, copybook.copybook.year, document, month.month, navigate]);
 
   const handleExport = useCallback(async () => {
     if (!document) return;
@@ -112,6 +263,10 @@ export function CopybookWorkspace({
           title={copybook.copybook.title}
           year={copybook.copybook.year}
           month={month}
+          approvalLabel={approvalAction?.label}
+          approvalPending={approvalPending}
+          blockingCommentCount={blockingCommentCount}
+          onApprove={() => void handleApprove()}
         />
         <label className="mx-4 mt-3 md:hidden">
           <span className="sr-only">Select month</span>
@@ -152,8 +307,8 @@ export function CopybookWorkspace({
                 )
               }
               onExport={() => void handleExport()}
-              onSubmitFeedback={handleWorkWithWorklin}
-              onWorkWithAssistant={handleWorkWithWorklin}
+              onSubmitFeedback={() => void handleWorkWithWorklin()}
+              onWorkWithAssistant={() => void handleWorkWithWorklin()}
               handleRef={viewerRef}
             />
           )}

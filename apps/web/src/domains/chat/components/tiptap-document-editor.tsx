@@ -16,20 +16,27 @@ import { BubbleMenu } from "@tiptap/react/menus";
 import StarterKit from "@tiptap/starter-kit";
 import { cn } from "@vellumai/design-library";
 import {
-    Bold,
-    Code,
-    Italic,
-    Link as LinkIcon,
-    MessageSquareText,
-    Strikethrough,
+  Bold,
+  Code,
+  Italic,
+  Link as LinkIcon,
+  MessageSquareText,
+  Strikethrough,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Markdown, type MarkdownStorage } from "tiptap-markdown";
 
 import type { CommentAnchor } from "@/domains/chat/utils/tiptap-position-map";
 import {
-    charOffsetToPmPos,
-    pmPosToCharOffset,
+  charOffsetToPmPos,
+  pmPosToCharOffset,
 } from "@/domains/chat/utils/tiptap-position-map";
 
 // ---------------------------------------------------------------------------
@@ -40,16 +47,22 @@ interface TiptapDocumentEditorProps {
   content: string;
   editable?: boolean;
   onContentChange?: (markdown: string) => void;
-  onTextSelect?: (selection: {
-    start: number;
-    end: number;
-    text: string;
-    rect: DOMRect;
-  } | null) => void;
+  onTextSelect?: (
+    selection: {
+      start: number;
+      end: number;
+      text: string;
+      rect: DOMRect;
+    } | null,
+  ) => void;
   commentAnchors?: CommentAnchor[];
   highlightRange?: { start: number; end: number } | null;
-  onCommentSubmit?: (comment: string) => void;
+  onCommentSubmit?: (
+    comment: string,
+    selection: { start: number; end: number; text: string },
+  ) => void;
   commentSubmitting?: boolean;
+  assistantName?: string | null;
   className?: string;
 }
 
@@ -200,13 +213,27 @@ function buildActiveHighlightDecorations(
 
 interface BubbleToolbarProps {
   editor: ReturnType<typeof useEditor> & object;
-  onCommentSubmit?: (comment: string) => void;
+  onCommentSubmit?: (
+    comment: string,
+    selection: { start: number; end: number; text: string },
+  ) => void;
   commentSubmitting?: boolean;
+  assistantName?: string | null;
 }
 
-function BubbleToolbar({ editor, onCommentSubmit, commentSubmitting }: BubbleToolbarProps) {
+function BubbleToolbar({
+  editor,
+  onCommentSubmit,
+  commentSubmitting,
+  assistantName,
+}: BubbleToolbarProps) {
   const [commentOpen, setCommentOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [commentSelection, setCommentSelection] = useState<{
+    start: number;
+    end: number;
+    text: string;
+  } | null>(null);
 
   const toggleComment = useCallback(() => {
     setCommentOpen((prev) => {
@@ -214,6 +241,11 @@ function BubbleToolbar({ editor, onCommentSubmit, commentSubmitting }: BubbleToo
       if (opening && editor) {
         const { from, to } = editor.state.selection;
         if (from !== to) {
+          setCommentSelection({
+            start: pmPosToCharOffset(editor.state.doc, from),
+            end: pmPosToCharOffset(editor.state.doc, to),
+            text: editor.state.doc.textBetween(from, to),
+          });
           const tr = editor.state.tr.setMeta(activeHighlightPluginKey, {
             range: {
               start: pmPosToCharOffset(editor.state.doc, from),
@@ -223,7 +255,10 @@ function BubbleToolbar({ editor, onCommentSubmit, commentSubmitting }: BubbleToo
           editor.view.dispatch(tr);
         }
       } else if (editor) {
-        const tr = editor.state.tr.setMeta(activeHighlightPluginKey, { range: null });
+        setCommentSelection(null);
+        const tr = editor.state.tr.setMeta(activeHighlightPluginKey, {
+          range: null,
+        });
         editor.view.dispatch(tr);
       }
       return opening;
@@ -289,12 +324,14 @@ function BubbleToolbar({ editor, onCommentSubmit, commentSubmitting }: BubbleToo
   ];
 
   const handleSubmitComment = () => {
-    if (!draft.trim() || commentSubmitting) return;
-    onCommentSubmit?.(draft.trim());
+    if (!draft.trim() || commentSubmitting || !commentSelection) return;
+    onCommentSubmit?.(draft.trim(), commentSelection);
     setDraft("");
     setCommentOpen(false);
     if (editor) {
-      const tr = editor.state.tr.setMeta(activeHighlightPluginKey, { range: null });
+      const tr = editor.state.tr.setMeta(activeHighlightPluginKey, {
+        range: null,
+      });
       editor.view.dispatch(tr);
     }
   };
@@ -329,12 +366,18 @@ function BubbleToolbar({ editor, onCommentSubmit, commentSubmitting }: BubbleToo
             <span className="mx-0.5 h-4 w-px bg-[var(--border-base)]" />
             <button
               type="button"
-              className={cn(btnBase, commentOpen && btnActive)}
+              className={cn(
+                "flex h-7 items-center gap-1 rounded-md px-2 text-label-small-default",
+                "text-[var(--content-secondary)] transition-colors",
+                "hover:bg-[var(--surface-hover)] hover:text-[var(--content-emphasised)]",
+                commentOpen && btnActive,
+              )}
               onClick={toggleComment}
               aria-label="Comment"
               aria-pressed={commentOpen}
             >
               <MessageSquareText size={14} />
+              Comment
             </button>
           </>
         ) : null}
@@ -344,7 +387,7 @@ function BubbleToolbar({ editor, onCommentSubmit, commentSubmitting }: BubbleToo
           <textarea
             className="w-full resize-none rounded-md border border-[var(--field-border)] bg-[var(--field-bg)] px-3 py-2 text-body-medium-lighter text-[var(--content-default)] placeholder:text-[var(--content-tertiary)] outline-none transition-[border-color] duration-150 ease-out focus-visible:border-[var(--border-active)]"
             rows={2}
-            placeholder="Add your feedback…"
+            placeholder={`Add feedback or tag @${assistantName ?? "Worklin"}…`}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -389,13 +432,18 @@ export function TiptapDocumentEditor({
   highlightRange = null,
   onCommentSubmit,
   commentSubmitting,
+  assistantName,
   className,
 }: TiptapDocumentEditorProps) {
   const onContentChangeRef = useRef(onContentChange);
-  useLayoutEffect(() => { onContentChangeRef.current = onContentChange; });
+  useLayoutEffect(() => {
+    onContentChangeRef.current = onContentChange;
+  });
 
   const onTextSelectRef = useRef(onTextSelect);
-  useLayoutEffect(() => { onTextSelectRef.current = onTextSelect; });
+  useLayoutEffect(() => {
+    onTextSelectRef.current = onTextSelect;
+  });
 
   const editor = useEditor({
     extensions: [
@@ -415,7 +463,9 @@ export function TiptapDocumentEditor({
     onSelectionUpdate({ editor: ed }) {
       const { from, to } = ed.state.selection;
       if (from === to) {
-        const tr = ed.state.tr.setMeta(activeHighlightPluginKey, { range: null });
+        const tr = ed.state.tr.setMeta(activeHighlightPluginKey, {
+          range: null,
+        });
         ed.view.dispatch(tr);
         onTextSelectRef.current?.(null);
         return;
@@ -515,6 +565,7 @@ export function TiptapDocumentEditor({
             editor={editor}
             onCommentSubmit={onCommentSubmit}
             commentSubmitting={commentSubmitting}
+            assistantName={assistantName}
           />
         </BubbleMenu>
       ) : null}

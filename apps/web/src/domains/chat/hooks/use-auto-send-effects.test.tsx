@@ -22,7 +22,8 @@ describe("useAutoSendEffects", () => {
         },
         reachabilityPhase: "ready",
         reachabilityProbe: () => {},
-        getPendingInitialMessage: () => "Hi Atlas, I am Steve. Nice to meet you.",
+        getPendingInitialMessage: () =>
+          "Hi Atlas, I am Steve. Nice to meet you.",
         onInitialMessageCaptured: (message) => captured.push(message),
       }),
     );
@@ -31,5 +32,34 @@ describe("useAutoSendEffects", () => {
       expect(sent).toEqual(["Hi Atlas, I am Steve. Nice to meet you."]);
     });
     expect(captured).toEqual(["Hi Atlas, I am Steve. Nice to meet you."]);
+  });
+
+  test("waits for the URL conversation before sending a deep-link prompt", async () => {
+    const sent: string[] = [];
+    const base = {
+      assistantId: "asst-1",
+      urlConversationId: "doc-conversation",
+      searchParams: new URLSearchParams("prompt=Review%20my%20comments"),
+      sendMessage: async (content: string) => {
+        sent.push(content);
+      },
+      reachabilityPhase: "ready" as const,
+      reachabilityProbe: () => {},
+      getPendingInitialMessage: () => undefined,
+    };
+
+    const { rerender } = renderHook(
+      ({ activeConversationId }: { activeConversationId: string }) =>
+        useAutoSendEffects({ ...base, activeConversationId }),
+      { initialProps: { activeConversationId: "previous-conversation" } },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual([]);
+
+    rerender({ activeConversationId: "doc-conversation" });
+    await waitFor(() => {
+      expect(sent).toEqual(["Review my comments"]);
+    });
   });
 });

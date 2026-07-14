@@ -7,37 +7,38 @@
  */
 
 import {
-    lazy,
-    useCallback,
-    useEffect,
-    useImperativeHandle,
-    useRef,
-    useState,
-    type Ref,
+  lazy,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
 } from "react";
 
 import { LazyBoundary } from "@/components/lazy-boundary";
 import { Button, Typography } from "@vellumai/design-library";
 import {
-    Check,
-    Download,
-    FileText,
-    Loader2,
-    MessageSquareText,
-    Sparkles,
-    X,
+  Check,
+  Download,
+  FileText,
+  Loader2,
+  MessageSquareText,
+  Sparkles,
+  X,
 } from "lucide-react";
 
 import {
-    createComment,
-    fetchComments,
+  createComment,
+  fetchComments,
 } from "@/domains/chat/api/document-comments";
 import type { CommentAnchor } from "@/domains/chat/utils/tiptap-position-map";
 import { documentsPost } from "@/generated/daemon/sdk.gen";
 import type { DocumentsByIdCommentsPostResponse } from "@/generated/daemon/types.gen";
+import { useAssistantIdentityStore } from "@/stores/assistant-identity-store";
 import {
-    DocumentCommentPanel,
-    type DocumentCommentPanelHandle,
+  DocumentCommentPanel,
+  type DocumentCommentPanelHandle,
 } from "./document-comment-panel";
 
 // Tiptap + ProseMirror pull in ~600 kB of editor code that's only needed
@@ -73,26 +74,6 @@ export interface DocumentViewerContainerProps {
 }
 
 // ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-interface SelectionRect {
-  top: number;
-  left: number;
-  bottom: number;
-  right: number;
-  width: number;
-  height: number;
-}
-
-interface TextSelection {
-  start: number;
-  end: number;
-  text: string;
-  rect?: SelectionRect;
-}
-
-// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -108,10 +89,8 @@ export function DocumentViewerContainer({
   onWorkWithAssistant,
   handleRef,
 }: DocumentViewerContainerProps) {
+  const assistantName = useAssistantIdentityStore.use.name();
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
-  const [textSelection, setTextSelection] = useState<TextSelection | null>(
-    null,
-  );
   const [addingInlineComment, setAddingInlineComment] = useState(false);
   const [commentAnchors, setCommentAnchors] = useState<CommentAnchor[]>([]);
   const [activeHighlight, setActiveHighlight] = useState<{
@@ -174,7 +153,6 @@ export function DocumentViewerContainer({
   useEffect(() => {
     setCommentAnchors([]);
     setActiveHighlight(null);
-    setTextSelection(null);
   }, [surfaceId]);
 
   // -------------------------------------------------------------------------
@@ -240,25 +218,39 @@ export function DocumentViewerContainer({
   // -------------------------------------------------------------------------
 
   const handleCommentSubmit = useCallback(
-    async (commentText: string) => {
-      if (!textSelection) return;
+    async (
+      commentText: string,
+      selection: { start: number; end: number; text: string },
+    ) => {
       setAddingInlineComment(true);
       try {
         await createComment(assistantId, surfaceId, {
           content: commentText,
           conversationId,
-          anchorStart: textSelection.start,
-          anchorEnd: textSelection.end,
-          anchorText: textSelection.text,
+          anchorStart: selection.start,
+          anchorEnd: selection.end,
+          anchorText: selection.text,
         });
-        setTextSelection(null);
         setCommentsPanelOpen(true);
         await refreshComments();
+        const normalized = commentText.toLocaleLowerCase();
+        const tagsAssistant =
+          normalized.includes("@worklin") ||
+          (assistantName != null &&
+            normalized.includes(`@${assistantName.toLocaleLowerCase()}`));
+        if (tagsAssistant) onSubmitFeedback?.();
       } finally {
         setAddingInlineComment(false);
       }
     },
-    [assistantId, surfaceId, conversationId, textSelection, refreshComments],
+    [
+      assistantId,
+      surfaceId,
+      conversationId,
+      refreshComments,
+      assistantName,
+      onSubmitFeedback,
+    ],
   );
 
   // -------------------------------------------------------------------------
@@ -383,29 +375,13 @@ export function DocumentViewerContainer({
             <TiptapDocumentEditor
               content={content}
               onContentChange={handleContentChange}
-              onTextSelect={(sel) => {
-                if (!sel) {
-                  setTextSelection(null);
-                  return;
-                }
-                setTextSelection({
-                  start: sel.start,
-                  end: sel.end,
-                  text: sel.text,
-                  rect: {
-                    top: sel.rect.top,
-                    left: sel.rect.left,
-                    bottom: sel.rect.bottom,
-                    right: sel.rect.right,
-                    width: sel.rect.width,
-                    height: sel.rect.height,
-                  },
-                });
-              }}
               commentAnchors={commentAnchors}
               highlightRange={activeHighlight}
-              onCommentSubmit={(text) => void handleCommentSubmit(text)}
+              onCommentSubmit={(text, selection) =>
+                void handleCommentSubmit(text, selection)
+              }
               commentSubmitting={addingInlineComment}
+              assistantName={assistantName}
               className="h-full"
             />
           </LazyBoundary>
@@ -420,6 +396,7 @@ export function DocumentViewerContainer({
             onClose={() => setCommentsPanelOpen(false)}
             onCommentSelect={handleCommentSelect}
             onSubmitFeedback={onSubmitFeedback}
+            assistantName={assistantName}
             handleRef={commentPanelRef}
           />
         ) : null}

@@ -25,6 +25,8 @@ import type {
 export interface UseAutoSendEffectsOptions {
   assistantId: string | null;
   activeConversationId: string | null;
+  /** Conversation named by the route that supplied a URL prompt. */
+  urlConversationId?: string | null;
   searchParams: URLSearchParams;
   sendMessage: (content: string) => Promise<void>;
   reachabilityPhase: ReachabilityState["phase"];
@@ -38,6 +40,7 @@ export interface UseAutoSendEffectsOptions {
 export function useAutoSendEffects({
   assistantId,
   activeConversationId,
+  urlConversationId,
   searchParams,
   sendMessage,
   reachabilityPhase,
@@ -66,11 +69,12 @@ export function useAutoSendEffects({
   useEffect(() => {
     const prompt = searchParams.get("prompt");
     if (!prompt || !activeConversationId) return;
+    if (urlConversationId && activeConversationId !== urlConversationId) return;
     const key = `${activeConversationId}:${prompt}`;
     if (promptConsumedRef.current === key) return;
     promptConsumedRef.current = key;
     void sendMessage(prompt);
-  }, [searchParams, activeConversationId, sendMessage]);
+  }, [searchParams, activeConversationId, urlConversationId, sendMessage]);
 
   // 2. Pre-chat reachability probe — eagerly start the probe cycle.
   useEffect(() => {
@@ -86,7 +90,12 @@ export function useAutoSendEffects({
   // 3. Onboarding initial message — fires once when daemon is reachable.
   const initialMessageConsumedRef = useRef(false);
   useEffect(() => {
-    if (initialMessageConsumedRef.current || !assistantId || !activeConversationId) return;
+    if (
+      initialMessageConsumedRef.current ||
+      !assistantId ||
+      !activeConversationId
+    )
+      return;
     if (reachabilityPhase !== "ready") return;
     const message = getPendingInitialMessageRef.current();
     if (!message) return;

@@ -7,14 +7,7 @@
  * listeners) live here so they don't execute during non-active states.
  */
 
-import {
-  lazy,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
@@ -88,10 +81,13 @@ import type { ChatMainPanelProps } from "@/domains/chat/components/chat-route-co
 export function ActiveChatView() {
   const showLlmInspector = useCanUseLlmInspector();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { conversationId: urlConversationId } = useParams<{ conversationId?: string }>();
+  const { conversationId: urlConversationId } = useParams<{
+    conversationId?: string;
+  }>();
   const assistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const assistantState = useAssistantLifecycleStore.use.assistantState();
-  const conversationGroupsUI = useAssistantFeatureFlagStore.use.conversationGroupsUI();
+  const conversationGroupsUI =
+    useAssistantFeatureFlagStore.use.conversationGroupsUI();
   const turnPhase = useTurnStore.use.phase();
 
   // -------------------------------------------------------------------------
@@ -125,12 +121,14 @@ export function ActiveChatView() {
   // -------------------------------------------------------------------------
   // Pin-sync side-effect
   // -------------------------------------------------------------------------
-  useActiveAppPinSync(useCallback((appId: string) => {
-    const didClose = useViewerStore.getState().handleAppUnpinned(appId);
-    if (didClose) {
-      useConversationStore.getState().setEditingConversationId(null);
-    }
-  }, []));
+  useActiveAppPinSync(
+    useCallback((appId: string) => {
+      const didClose = useViewerStore.getState().handleAppUnpinned(appId);
+      if (didClose) {
+        useConversationStore.getState().setEditingConversationId(null);
+      }
+    }, []),
+  );
 
   // -------------------------------------------------------------------------
   // Shared refs — owned here, read/written by hooks
@@ -255,7 +253,8 @@ export function ActiveChatView() {
     assistantStateKind: assistantState.kind,
     activeConversationId,
     conversationExistsOnServer,
-    latestPageOldestTimestamp: historyResult.pagination.latestPageOldestTimestamp,
+    latestPageOldestTimestamp:
+      historyResult.pagination.latestPageOldestTimestamp,
     reachability,
     setAssetsRefreshKey,
   });
@@ -296,11 +295,13 @@ export function ActiveChatView() {
   useAutoSendEffects({
     assistantId,
     activeConversationId,
+    urlConversationId,
     searchParams,
     sendMessage,
     reachabilityPhase: reachability.state.phase,
     reachabilityProbe: reachability.probe,
-    getPendingInitialMessage: () => peekPendingPreChatContext()?.initialMessage ?? undefined,
+    getPendingInitialMessage: () =>
+      peekPendingPreChatContext()?.initialMessage ?? undefined,
     onInitialMessageCaptured: captureInitialMessage,
   });
 
