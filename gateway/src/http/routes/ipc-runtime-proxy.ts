@@ -18,6 +18,8 @@ import { parseSub } from "../../auth/subject.js";
 import { validateEdgeToken } from "../../auth/token-exchange.js";
 import type { TokenClaims } from "../../auth/types.js";
 import type { GatewayConfig } from "../../config.js";
+import { credentialKey } from "../../credential-key.js";
+import { readCredential } from "../../credential-reader.js";
 import {
   IpcHandlerError,
   IpcTransportError,
@@ -34,6 +36,40 @@ const log = getLogger("ipc-runtime-proxy");
 
 const V1_PREFIX = "/v1/";
 const VELLUM_HEADER_PREFIX = "x-vellum-";
+
+async function resolveStackAssistantId(
+  config: GatewayConfig,
+): Promise<string | null> {
+  if (config.platformAssistantId) return config.platformAssistantId;
+  const fromCredential = await readCredential(
+    credentialKey("vellum", "platform_assistant_id"),
+  );
+  return fromCredential?.trim() || null;
+}
+
+function bindPlatformOwnerClaims(
+  claims: TokenClaims,
+  expectedAssistantId: string,
+): TokenClaims | null {
+  const subject = parseSub(claims.sub);
+  if (
+    !subject.ok ||
+    subject.principalType !== "actor" ||
+    !subject.actorPrincipalId ||
+    subject.assistantId !== expectedAssistantId
+  ) {
+    return null;
+  }
+
+  const principalId = subject.actorPrincipalId.startsWith("vellum-principal-")
+    ? subject.actorPrincipalId
+    : `vellum-principal-${subject.actorPrincipalId}`;
+
+  return {
+    ...claims,
+    sub: `actor:${expectedAssistantId}:${principalId}`,
+  };
+}
 
 /**
  * Attempt to serve a request via IPC.
@@ -83,6 +119,36 @@ export async function tryIpcProxy(
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
     claims = result.claims;
+    if (config.runtimeAssistantScopeMode === "enforce") {
+      let expectedAssistantId: string | null;
+      try {
+        expectedAssistantId = await resolveStackAssistantId(config);
+      } catch (err) {
+        log.error(
+          { err, method: req.method, path: new URL(req.url).pathname },
+          "IPC proxy actor scope validation failed",
+        );
+        return Response.json(
+          { error: "Assistant identity unavailable" },
+          { status: 503 },
+        );
+      }
+      if (!expectedAssistantId) {
+        return Response.json(
+          { error: "Assistant identity unavailable" },
+          { status: 503 },
+        );
+      }
+      const boundClaims = bindPlatformOwnerClaims(claims, expectedAssistantId);
+      if (!boundClaims) {
+        log.warn(
+          { method: req.method, path: new URL(req.url).pathname },
+          "IPC proxy rejected actor token for another assistant",
+        );
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+      }
+      claims = boundClaims;
+    }
   }
 
   // --- Route matching -----------------------------------------------------

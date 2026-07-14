@@ -130,7 +130,9 @@ const { tryIpcProxy } = await import("./ipc-runtime-proxy.js");
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeConfig(overrides?: { runtimeProxyRequireAuth?: boolean }) {
+function makeConfig(
+  overrides?: Partial<import("../../config.js").GatewayConfig>,
+) {
   return {
     runtimeProxyRequireAuth: false,
     ...overrides,
@@ -312,6 +314,70 @@ describe("tryIpcProxy", () => {
     const result = await tryIpcProxy(req, config);
     expect(result!.status).toBe(200);
     expect(validateEdgeTokenMock).toHaveBeenCalledWith("good-token");
+  });
+
+  test("isolated runtime binds a legacy platform actor to the default owner namespace", async () => {
+    validateEdgeTokenMock.mockImplementation(() => ({
+      ok: true,
+      claims: {
+        iss: "vellum-auth",
+        aud: "vellum-gateway",
+        sub: "actor:asst_1:user_1",
+        scope_profile: "actor_client_v1",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        policy_epoch: 1,
+      },
+    }));
+    const config = makeConfig({
+      runtimeProxyRequireAuth: true,
+      runtimeAssistantScopeMode: "enforce",
+      platformAssistantId: "asst_1",
+    });
+    const result = await tryIpcProxy(
+      makeRequest("/v1/health", {
+        headers: { authorization: "Bearer valid" },
+      }),
+      config,
+    );
+
+    expect(result!.status).toBe(200);
+    const [, params] = ipcCallAssistantMock.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const headers = params.headers as Record<string, string>;
+    expect(headers["x-vellum-principal-type"]).toBe("actor");
+    expect(headers["x-vellum-actor-principal-id"]).toBe(
+      "vellum-principal-user_1",
+    );
+  });
+
+  test("isolated runtime rejects an actor token scoped to another assistant", async () => {
+    validateEdgeTokenMock.mockImplementation(() => ({
+      ok: true,
+      claims: {
+        iss: "vellum-auth",
+        aud: "vellum-gateway",
+        sub: "actor:other-assistant:user_1",
+        scope_profile: "actor_client_v1",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        policy_epoch: 1,
+      },
+    }));
+    const config = makeConfig({
+      runtimeProxyRequireAuth: true,
+      runtimeAssistantScopeMode: "enforce",
+      platformAssistantId: "asst_1",
+    });
+    const result = await tryIpcProxy(
+      makeRequest("/v1/health", {
+        headers: { authorization: "Bearer valid" },
+      }),
+      config,
+    );
+
+    expect(result!.status).toBe(403);
+    expect(ipcCallAssistantMock).not.toHaveBeenCalled();
   });
 
   test("returns handler error status code from IpcHandlerError", async () => {
