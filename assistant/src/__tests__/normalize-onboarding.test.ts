@@ -186,6 +186,18 @@ describe("normalizeOnboardingContext", () => {
     expect(result.assistantName).toBe("Jarvis");
   });
 
+  test("normalizes the brand research seed", () => {
+    const result = normalizeOnboardingContext({
+      tools: [],
+      tasks: [],
+      tone: "friendly",
+      brandName: "  Acme Studio\n",
+      websiteUrl: " https://acme.example\t",
+    });
+    expect(result.brandName).toBe("Acme Studio");
+    expect(result.websiteUrl).toBe("https://acme.example");
+  });
+
   test("normalizes tools and tasks together", () => {
     const ctx: OnboardingContext = {
       tools: ["github", "trello"],

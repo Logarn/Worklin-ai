@@ -133,6 +133,7 @@ import * as transcribeMedia from "./bundled-skills/transcribe/tools/transcribe-m
 import * as brandBrainApplyCorrection from "./bundled-skills/worklin-brand-brain/tools/brand-brain-apply-correction.js";
 import * as brandBrainRead from "./bundled-skills/worklin-brand-brain/tools/brand-brain-read.js";
 import * as brandBrainRecordCampaignOutcome from "./bundled-skills/worklin-brand-brain/tools/brand-brain-record-campaign-outcome.js";
+import * as brandResearchSave from "./bundled-skills/worklin-brand-brain/tools/brand-research-save.js";
 // ── worklin-copybook ───────────────────────────────────────────────────────────
 import * as copybookCampaignCreate from "./bundled-skills/worklin-copybook/tools/copybook-campaign-create.js";
 import * as copybookCampaignUpdate from "./bundled-skills/worklin-copybook/tools/copybook-campaign-update.js";
@@ -320,6 +321,7 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
     "worklin-brand-brain:tools/brand-brain-record-campaign-outcome.ts",
     brandBrainRecordCampaignOutcome,
   ],
+  ["worklin-brand-brain:tools/brand-research-save.ts", brandResearchSave],
 
   // worklin-copybook
   ["worklin-copybook:tools/copybook-list.ts", copybookList],

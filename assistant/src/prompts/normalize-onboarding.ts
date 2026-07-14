@@ -87,6 +87,7 @@ export interface NormalizedOnboarding {
   dailyTools: string[];
   tone?: string;
   assistantName?: string;
+  brandName?: string;
   priorAssistants?: string[];
   googleConnected?: boolean;
   googleServices?: string[];
@@ -129,6 +130,10 @@ export function normalizeOnboardingContext(
     dailyTools: normalizeTools(ctx.tools),
     tone: ctx.tone,
     assistantName: ctx.assistantName,
+    brandName:
+      typeof ctx.brandName === "string"
+        ? ctx.brandName.trim().replace(/[\r\n\t]/g, "") || undefined
+        : undefined,
     googleConnected: ctx.googleConnected,
     googleServices: ctx.googleConnected
       ? deriveGoogleServices(ctx.googleScopes)

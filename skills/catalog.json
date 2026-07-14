@@ -90,7 +90,7 @@
         }
       },
       "compatibility": "Designed for Worklin assistants with a rich-text document editor",
-      "updatedAt": "2026-07-14T16:35:29.000Z"
+      "updatedAt": "2026-07-14T17:00:45.000Z"
     },
     {
       "id": "chatgpt-import",
@@ -1205,6 +1205,33 @@
         }
       },
       "updatedAt": "2026-06-25T16:27:35.000Z"
+    },
+    {
+      "id": "worklin-brand-research",
+      "name": "worklin-brand-research",
+      "description": "Build a deep, evidence-led brand research brief from a brand name or public website. Use for onboarding, brand discovery, competitor mapping, SEO and content analysis, public social and lifecycle signals, product and launch analysis, customer and market sentiment, trend research, and research-backed copy preparation. The main assistant coordinates bounded parallel researchers, synthesizes their findings, and preserves source provenance without inventing claims or accessing private competitor data.",
+      "metadata": {
+        "emoji": "🔬",
+        "vellum": {
+          "category": "content",
+          "display-name": "Worklin Brand Research",
+          "includes": [
+            "worklin-brand-brain",
+            "subagent"
+          ],
+          "activation-hints": [
+            "Research this brand before we write anything",
+            "Analyze my brand, competitors, audience, and market",
+            "Build a deep brand brief from this company name or website",
+            "Research competitor SEO, social, email, SMS, products, and launches",
+            "Onboard a new brand with public research"
+          ],
+          "avoid-when": [
+            "The user only wants a single copy asset and an approved Brand Brain already exists",
+            "The user asks for private competitor data, account access, or unauthorized scraping"
+          ]
+        }
+      }
     },
     {
       "id": "write-brand-copy",

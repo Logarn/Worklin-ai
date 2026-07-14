@@ -87,6 +87,18 @@ describe("buildPreChatContext — control", () => {
     expect(context.occupation).toBe("Software Engineer");
   });
 
+  test("carries brand research seeds and eagerly loads the research skill", () => {
+    const context = buildPreChatContext(
+      baseInput({
+        brandName: "  Acme Studio  ",
+        websiteUrl: " https://acme.example ",
+      }),
+    );
+    expect(context.brandName).toBe("Acme Studio");
+    expect(context.websiteUrl).toBe("https://acme.example");
+    expect(context.skills).toEqual(["worklin-brand-research"]);
+  });
+
   test("omits occupation when absent or blank", () => {
     expect(buildPreChatContext(baseInput()).occupation).toBeUndefined();
     expect(
@@ -148,7 +160,9 @@ describe("buildPreChatContext — native", () => {
     expect(context.googleConnected).toBe(false);
     expect(context.priorAssistants).toBeUndefined();
     expect(context.userName).toBe("Alice");
-    expect(context.initialMessage).toBe("Hi Vela, I'm Alice. Nice to meet you.");
+    expect(context.initialMessage).toBe(
+      "Hi Vela, I'm Alice. Nice to meet you.",
+    );
   });
 });
 

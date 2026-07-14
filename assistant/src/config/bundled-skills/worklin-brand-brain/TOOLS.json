@@ -103,6 +103,27 @@
       },
       "executor": "tools/brand-brain-record-campaign-outcome.ts",
       "execution_target": "host"
+    },
+    {
+      "name": "brand_research_save",
+      "description": "Persist a completed public, read-only brand research report as research context on the matching Brand Brain. Findings remain unapproved observations and inferences.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brand_id": { "type": "string" },
+          "brand_name": { "type": "string" },
+          "website_url": { "type": "string" },
+          "report": {
+            "type": "object",
+            "description": "A BrandResearchReport object using version brand_research_v1, with evidence and public-source safety flags."
+          }
+        },
+        "required": ["report"]
+      },
+      "executor": "tools/brand-research-save.ts",
+      "execution_target": "host"
     }
   ]
 }

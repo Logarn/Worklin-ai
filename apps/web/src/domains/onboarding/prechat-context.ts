@@ -41,6 +41,10 @@ export interface BuildPreChatContextInput {
   userName: string;
   /** The user's role / occupation. Empty string when not collected. */
   occupation?: string;
+  /** Optional brand name supplied for the initial research pass. */
+  brandName?: string;
+  /** Optional public brand URL supplied for the initial research pass. */
+  websiteUrl?: string;
   assistantName: string;
   selfIntroGreetingEnabled: boolean;
   /** Selects the activation rail bootstrap template for experiment users. */
@@ -80,7 +84,12 @@ export function buildPreChatContext(
 
   let context: PreChatOnboardingContext;
   if (mode === "native") {
-    context = { tools: [], tasks: [], tone: input.tone, googleConnected: false };
+    context = {
+      tools: [],
+      tasks: [],
+      tone: input.tone,
+      googleConnected: false,
+    };
   } else if (mode === "paredDown") {
     context = {
       tools: connectedWithCurrentAction ? [...PARED_DOWN_GOOGLE_TOOL_IDS] : [],
@@ -113,6 +122,16 @@ export function buildPreChatContext(
   if (trimmedOccupation) context.occupation = trimmedOccupation;
   const trimmedAssistant = input.assistantName.trim();
   if (trimmedAssistant) context.assistantName = trimmedAssistant;
+  const trimmedBrandName = input.brandName?.trim();
+  if (trimmedBrandName) context.brandName = trimmedBrandName;
+  const trimmedWebsiteUrl = input.websiteUrl?.trim();
+  if (trimmedWebsiteUrl) context.websiteUrl = trimmedWebsiteUrl;
+
+  if (context.brandName || context.websiteUrl) {
+    context.skills = [
+      ...new Set([...(context.skills ?? []), "worklin-brand-research"]),
+    ];
+  }
 
   if (mode === "paredDown") {
     if (connectedWithCurrentAction) {
