@@ -36,7 +36,7 @@ Each subagent is spawned with a role that determines its tool access. Choose the
 | Role | Tools | When to use |
 |---|---|---|
 | `general` | Full tool access | Task genuinely needs unrestricted capabilities (rare -- prefer a specialized role) |
-| `supervisor` | Read-only research plus subagent orchestration tools | Own a multi-agent program: decompose work, spawn focused workers, reconcile their findings, and return one synthesis |
+| `supervisor` | Subagent orchestration tools only | Own a multi-agent program: decompose work, spawn focused workers, reconcile their findings, and return one synthesis. Supervisors coordinate; workers research and implement. |
 | `researcher` | `web_search`, `web_fetch`, `file_read`, `file_list`, `recall`, `notify_parent` | Information gathering, web research, codebase exploration, reading documentation |
 | `coder` | `bash`, `file_read`, `file_write`, `file_edit`, `web_search`, `recall`, `notify_parent` | Code changes, file editing, running commands, build/test tasks |
 | `planner` | `file_read`, `file_list`, `web_search`, `web_fetch`, `recall`, `notify_parent` | Analysis, planning, synthesizing information, reviewing approaches |
@@ -51,6 +51,7 @@ Use `role: "supervisor"` when one delegated objective needs several specialist w
 Delegation is bounded per root task: depth 2, at most 8 active children per parent, and at most 24 active descendants across the tree. Do not attempt to work around these limits.
 
 The supervisor must not finish after merely spawning workers. It should wait for completion notifications, call `subagent_read` for each worker, and synthesize the complete result.
+It must not perform a worker's research or implementation itself. If evidence is missing, spawn or redirect a worker rather than filling the gap directly.
 
 ## Parent Communication
 

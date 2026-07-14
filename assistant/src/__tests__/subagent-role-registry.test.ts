@@ -71,6 +71,22 @@ describe("SUBAGENT_ROLE_REGISTRY", () => {
     expect(tools).toContain("notify_parent");
   });
 
+  test("supervisor coordinates instead of doing worker research itself", () => {
+    const tools = SUBAGENT_ROLE_REGISTRY.supervisor.allowedTools!;
+    for (const workerTool of [
+      "web_search",
+      "web_fetch",
+      "file_read",
+      "file_list",
+      "recall",
+    ]) {
+      expect(tools).not.toContain(workerTool);
+    }
+    expect(SUBAGENT_ROLE_REGISTRY.supervisor.systemPromptPreamble).toContain(
+      "Do not perform worker research",
+    );
+  });
+
   test("supervisor preamble requires a synthesized result", () => {
     const preamble = SUBAGENT_ROLE_REGISTRY.supervisor.systemPromptPreamble;
     expect(preamble).toContain("Spawn focused workers");

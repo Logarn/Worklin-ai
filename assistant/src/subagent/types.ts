@@ -150,11 +150,6 @@ export const SUBAGENT_ROLE_REGISTRY: Record<SubagentRole, SubagentRoleConfig> =
         "subagent_message",
         "subagent_read",
         "subagent_abort",
-        "web_search",
-        "web_fetch",
-        "file_read",
-        "file_list",
-        "recall",
         "notify_parent",
       ],
       // Supervisors must receive the orchestration contract without trying to
@@ -162,6 +157,7 @@ export const SUBAGENT_ROLE_REGISTRY: Record<SubagentRole, SubagentRoleConfig> =
       skillIds: ["subagent"],
       systemPromptPreamble: [
         "You are a supervisor subagent responsible for decomposing a complex objective into independent worker tasks.",
+        "Do not perform worker research or implementation yourself; delegate every workstream to an appropriately scoped worker.",
         "Spawn focused workers, continue useful coordination while they run, and rely on automatic completion notifications instead of polling.",
         "Read every worker result, reconcile conflicts and missing evidence, then return one coherent final synthesis to your parent.",
         "You may delegate one level down only. Your workers cannot create further subagents.",
