@@ -412,15 +412,15 @@ describe("skill_load tool", () => {
     expect(result.content).toContain('<loaded_skill id="app-builder"');
   });
 
-  test("bundled phone-calls loads when setup includes are unavailable", async () => {
+  test("bundled phone-calls loads its first-party setup includes", async () => {
     const result = await executeSkillLoad({ skill: "phone-calls" });
 
     expect(result.isError).toBe(false);
     expect(result.content).toContain("Skill: Phone Calls");
-    expect(result.content).toContain("Suggested Included Skills (not loaded):");
+    expect(result.content).toContain("Included Skills (immediate):");
     expect(result.content).toContain("twilio-setup");
     expect(result.content).toContain('<loaded_skill id="phone-calls"');
-    expect(result.content).not.toContain('<loaded_skill id="twilio-setup"');
+    expect(result.content).toContain('<loaded_skill id="twilio-setup"');
   });
 
   test("skill_load output includes immediate child metadata", async () => {

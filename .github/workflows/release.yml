@@ -2437,6 +2437,7 @@ jobs:
           command -v bun &>/dev/null || { echo "ERROR: bun is required but not found"; exit 1; }
 
           ASSISTANT_SRC_DIR="../../assistant"
+          SKILLS_SRC_DIR="../../skills"
           CLI_SRC_DIR="../../cli"
           GATEWAY_SRC_DIR="../../gateway"
           CES_SRC_DIR="../../credential-executor"
@@ -2469,6 +2470,14 @@ jobs:
           rm -rf daemon-bin/node_modules
           rm -rf daemon-bin/bundled-skills
           cp -R "$ASSISTANT_SRC_DIR/src/config/bundled-skills" daemon-bin/bundled-skills
+          rm -rf daemon-bin/first-party-skills
+          rsync -a \
+            --exclude='node_modules/' \
+            --exclude='__tests__/' \
+            --exclude='*.test.ts' \
+            --exclude='dist/' \
+            --exclude='build/' \
+            "$SKILLS_SRC_DIR/" daemon-bin/first-party-skills/
           rm -rf daemon-bin/preloaded-apps
           cp -R "$ASSISTANT_SRC_DIR/src/config/preloaded-apps" daemon-bin/preloaded-apps
           rm -rf daemon-bin/templates

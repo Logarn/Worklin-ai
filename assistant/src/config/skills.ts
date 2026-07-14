@@ -61,7 +61,8 @@ const SkillMetadataSchema = z
 /**
  * Origin of a skill in the merged catalog.
  *
- * - `bundled`: ships inside the assistant binary under `bundled-skills/`.
+ * - `bundled`: ships with Worklin under `bundled-skills/` or
+ *   `first-party-skills/` and is available to every user without installation.
  * - `managed`: installed into `$VELLUM_WORKSPACE_DIR/skills/` from our catalog.
  * - `workspace`: user-authored skill living in a conversation's working dir.
  * - `extra`: third-party directory roots passed via `loadSkillCatalog`'s
@@ -211,6 +212,44 @@ export function getBundledSkillsDir(): string {
   }
 
   return join(dir, "bundled-skills");
+}
+
+/**
+ * Resolve the product skill catalog that ships for every Worklin user.
+ *
+ * Docker images provide the explicit env path. Compiled desktop binaries read
+ * from the app's Resources directory, while source checkouts use repo skills/.
+ */
+export function getFirstPartySkillsDir(): string | undefined {
+  const configured = process.env.VELLUM_FIRST_PARTY_SKILLS_DIR?.trim();
+  if (configured) {
+    const configuredPath = resolve(configured);
+    if (existsSync(configuredPath)) return configuredPath;
+    log.warn(
+      { configuredPath },
+      "Configured first-party skills directory does not exist",
+    );
+    return undefined;
+  }
+
+  const dir = import.meta.dir;
+  if (dir.startsWith("/$bunfs/")) {
+    const execDir = dirname(process.execPath);
+    const resourcesPath = join(
+      execDir,
+      "..",
+      "Resources",
+      "first-party-skills",
+    );
+    if (existsSync(resourcesPath)) return resourcesPath;
+
+    const execDirPath = join(execDir, "first-party-skills");
+    if (existsSync(execDirPath)) return execDirPath;
+    return undefined;
+  }
+
+  const repoSkillsPath = resolve(dir, "..", "..", "..", "skills");
+  return existsSync(repoSkillsPath) ? repoSkillsPath : undefined;
 }
 
 // ─── Frontmatter parsing ─────────────────────────────────────────────────────
@@ -587,25 +626,28 @@ function readBundledSkillFromDirectory(
 // ─── Skill discovery ─────────────────────────────────────────────────────────
 
 function discoverBundledSkillDirectories(): string[] {
-  const bundledDir = getBundledSkillsDir();
-  if (!existsSync(bundledDir)) return [];
-
   const dirs: string[] = [];
-  try {
-    const entries = readdirSync(bundledDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const directoryPath = join(bundledDir, entry.name);
-      if (existsSync(join(directoryPath, "SKILL.md"))) {
-        dirs.push(directoryPath);
+  const roots = [getBundledSkillsDir(), getFirstPartySkillsDir()].filter(
+    (root): root is string => Boolean(root),
+  );
+
+  for (const bundledDir of roots) {
+    if (!existsSync(bundledDir)) continue;
+    try {
+      const entries = readdirSync(bundledDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const directoryPath = join(bundledDir, entry.name);
+        if (existsSync(join(directoryPath, "SKILL.md"))) {
+          dirs.push(directoryPath);
+        }
       }
+    } catch (err) {
+      log.warn(
+        { err, bundledDir },
+        "Failed to discover bundled skill directories",
+      );
     }
-  } catch (err) {
-    log.warn(
-      { err, bundledDir },
-      "Failed to discover bundled skill directories",
-    );
-    return [];
   }
 
   return dirs.sort((a, b) => a.localeCompare(b));

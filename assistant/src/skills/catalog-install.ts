@@ -15,7 +15,7 @@ import { dirname, join, posix, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 import { getPlatformBaseUrl } from "../config/env.js";
-import { loadSkillCatalog } from "../config/skills.js";
+import { getFirstPartySkillsDir, loadSkillCatalog } from "../config/skills.js";
 import { deleteSkillCapabilityNode } from "../memory/graph/capability-seed.js";
 import { getLogger } from "../util/logger.js";
 import { getWorkspaceSkillsDir } from "../util/platform.js";
@@ -49,8 +49,7 @@ export interface CatalogSkill {
 
 /**
  * Resolve the directory containing a `catalog.json` and first-party skill
- * sources — either bundled next to a compiled binary (e.g. `Vellum.app`) or
- * in the dev repo.
+ * sources from the same product skill root used by the runtime loader.
  *
  * Both `getCatalog()` in `catalog-cache.ts` and `resolveCatalog()` below
  * merge the local catalog with the remote one so skills published after a
@@ -58,36 +57,10 @@ export interface CatalogSkill {
  * when the remote fetch fails.
  */
 export function getRepoSkillsDir(): string | undefined {
-  const importDir = import.meta.dir;
-
-  if (importDir.startsWith("/$bunfs/")) {
-    const execDir = dirname(process.execPath);
-    // macOS .app bundle: binary in Contents/MacOS/, resources in Contents/Resources/
-    const resourcesPath = join(
-      execDir,
-      "..",
-      "Resources",
-      "first-party-skills",
-    );
-    if (existsSync(join(resourcesPath, "catalog.json"))) {
-      return resourcesPath;
-    }
-    // Next to the binary (non-app-bundle compiled deployments)
-    const execDirPath = join(execDir, "first-party-skills");
-    if (existsSync(join(execDirPath, "catalog.json"))) {
-      return execDirPath;
-    }
-    return undefined;
-  }
-
-  if (!process.env.VELLUM_DEV) return undefined;
-
-  // assistant/src/skills/catalog-install.ts -> ../../../skills/
-  const candidate = join(importDir, "..", "..", "..", "skills");
-  if (existsSync(join(candidate, "catalog.json"))) {
-    return candidate;
-  }
-  return undefined;
+  const candidate = getFirstPartySkillsDir();
+  return candidate && existsSync(join(candidate, "catalog.json"))
+    ? candidate
+    : undefined;
 }
 
 // ─── Catalog operations ──────────────────────────────────────────────────────

@@ -911,4 +911,28 @@ describe("skill source ownership", () => {
 
     expect(duplicates).toEqual([]);
   });
+
+  test("every first-party skill is bundled and loadable without user installation", () => {
+    const expectedIds = collectSourceSkillIds(FIRST_PARTY_SKILLS_DIR);
+    const catalog = loadSkillCatalog();
+    const byId = new Map(catalog.map((skill) => [skill.id, skill]));
+
+    expect(expectedIds.length).toBeGreaterThan(0);
+    for (const id of expectedIds) {
+      const summary = byId.get(id);
+      expect(
+        summary,
+        `${id} is missing from the local skill catalog`,
+      ).toBeDefined();
+      expect(summary!.source, `${id} requires a per-user installation`).toBe(
+        "bundled",
+      );
+      expect(summary!.bundled).toBe(true);
+
+      const loaded = loadSkillBySelector(id);
+      expect(loaded.error, `${id} failed to load`).toBeUndefined();
+      expect(loaded.skill?.id).toBe(id);
+      expect(loaded.skill?.body.trim().length).toBeGreaterThan(0);
+    }
+  });
 });

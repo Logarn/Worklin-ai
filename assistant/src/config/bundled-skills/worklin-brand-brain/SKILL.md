@@ -2,6 +2,7 @@
 name: worklin-brand-brain
 description: Read and maintain Worklin's persisted Brand Brain for the current brand. Use through write-brand-copy to select a stored brand, persist explicit user-approved voice or messaging corrections, and record verified campaign outcomes without inventing evidence.
 metadata:
+  emoji: "🧠"
   vellum:
     category: content
     display-name: Worklin Brand Brain

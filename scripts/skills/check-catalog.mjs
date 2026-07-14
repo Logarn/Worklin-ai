@@ -12,7 +12,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATALOG_PATH = resolve(__dirname, "../../skills/catalog.json");
@@ -27,7 +27,7 @@ try {
 }
 
 // Regenerate the catalog
-execSync(`node ${GENERATE_SCRIPT}`, { stdio: "inherit" });
+execFileSync(process.execPath, [GENERATE_SCRIPT], { stdio: "inherit" });
 
 // Read the newly generated catalog
 const after = readFileSync(CATALOG_PATH, "utf-8");

@@ -55,6 +55,37 @@ Passed locally on 2026-07-14:
 
 Deployment status: pushed and deployed through `17d2e6e` on 2026-07-14. Railway recovered with healthy gateway readiness, and a fresh production text turn returned `Worklin is ready.`, confirming the configured LLM credential survived the restart.
 
+## Default Skill Availability
+
+Worklin-owned skills are product content, not per-user installations. Every user receives the complete first-party catalog, and the agent loads the relevant instructions on demand when a task matches. Loading is activation for the current conversation; it is not an install flow.
+
+- The local runtime catalog contains 89 bundled skills: 68 product skills from repo-level `skills/` plus 21 internal tool-bearing skills from `assistant/src/config/bundled-skills/`.
+- All 68 product skills ship in the production Docker context and resolve through `VELLUM_FIRST_PARTY_SKILLS_DIR=/app/skills`.
+- Both macOS release architectures package the same `first-party-skills` resource directory.
+- First-party skills appear as `bundled` in the skills API/UI, so users are not asked to install them.
+- Relevant skills remain discoverable through capability-memory seeding and can be activated with `skill_load` when a task calls for them.
+- Community and genuinely external skills may still use the existing installation path; that path is no longer required for Worklin's built-in catalog.
+
+Verified locally on 2026-07-14:
+
+- Both skill-spec linters passed: 68 product skills and 21 internal skills.
+- The regenerated 68-entry offline catalog passes the drift check, including from a repo path containing spaces.
+- A direct catalog probe returned 89 total skills, all 89 bundled, with zero invalid tool manifests.
+- Exhaustive coverage loaded every product skill without creating a user workspace installation.
+- 176 focused catalog, `skill_load`, tool-projection, registry, and search tests passed.
+- Assistant TypeScript and staged pre-commit lint/type checks passed.
+- Docker CLI validation could not run on this Mac because `docker` is not installed; Dockerfile paths and runtime env wiring were reviewed statically and remain subject to the production builder.
+
+Core files:
+
+- `assistant/src/config/skills.ts`
+- `assistant/src/skills/catalog-install.ts`
+- `.dockerignore`
+- `runtime/Dockerfile`
+- `assistant/Dockerfile`
+- `.github/workflows/release.yml`
+- `skills/catalog.json`
+
 ## Assistant And Live-Voice UI Consistency Pass
 
 Production commit `5653385` unifies the assistant and live-voice visual language around the black-and-royal-blue Worklin orb. It shipped as part of application deployment `17d2e6e` on 2026-07-14.

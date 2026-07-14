@@ -237,6 +237,7 @@ EXPOSE 3001
 
 ENV RUNTIME_HTTP_PORT=3001
 ENV IS_CONTAINERIZED=true
+ENV VELLUM_FIRST_PARTY_SKILLS_DIR=/app/skills
 
 # Copy installed deps, shared packages, bundled skills, assistant source,
 # and the generated meet-join manifest from the builder stage.

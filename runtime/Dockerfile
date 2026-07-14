@@ -51,7 +51,6 @@ RUN set -eu; for pkg in /app/skills/*/package.json; do \
     done
 
 COPY assistant ./assistant
-COPY skills/write-brand-copy ./assistant/src/config/bundled-skills/write-brand-copy
 COPY control-plane ./control-plane
 COPY gateway ./gateway
 COPY meta/feature-flags/feature-flag-registry.json ./assistant/src/config/feature-flag-registry.json
@@ -188,6 +187,7 @@ ENV UNMAPPED_POLICY=default
 ENV GATEWAY_TRUST_PROXY=true
 ENV WORKLIN_RUNTIME_ROOT=/data
 ENV VELLUM_WORKSPACE_DIR=/data/workspace
+ENV VELLUM_FIRST_PARTY_SKILLS_DIR=/app/skills
 ENV GATEWAY_SECURITY_DIR=/data/gateway-security
 ENV CES_DATA_DIR=/data/ces-data
 ENV CREDENTIAL_SECURITY_DIR=/data/ces-data/security
