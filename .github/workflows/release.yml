@@ -412,7 +412,7 @@ jobs:
 
   push-assistant-image:
     needs: [extract-version, ci-assistant]
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
@@ -1020,7 +1020,7 @@ jobs:
       matrix:
         include:
           - service: assistant
-            runs_on: ubuntu-latest-8-cores
+            runs_on: ubuntu-latest
             dockerhub_image_name: vellum-assistant
             context: .
             dockerfile: assistant/Dockerfile
@@ -3335,8 +3335,8 @@ jobs:
   # builds, which in turn blocks npm publish, the macOS DMG, and GitHub Release.
   ci-assistant:
     needs: extract-version
-    runs-on: ubuntu-latest-8-cores
-    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -3360,6 +3360,8 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
         working-directory: assistant
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - name: Restore test durations cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5

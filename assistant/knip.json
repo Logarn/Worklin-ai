@@ -17,6 +17,7 @@
     "@vellumai/environments",
     "@vellumai/gateway-client",
     "@vellumai/ipc-server-utils",
+    "@vellumai/retention-domain",
     "@vellumai/service-contracts",
     "@vellumai/slack-text",
     "@vellumai/twilio-client",

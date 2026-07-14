@@ -133,8 +133,8 @@ jobs:
   ci-assistant:
     needs: [check-for-new-commits]
     if: ${{ needs.check-for-new-commits.outputs.has_new_commits == 'true' }}
-    runs-on: ubuntu-latest-8-cores
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -163,6 +163,8 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
         working-directory: assistant
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - name: Test
         run: bun run test
@@ -270,7 +272,7 @@ jobs:
 
   push-assistant-image:
     needs: [compute-version, ci-assistant]
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read

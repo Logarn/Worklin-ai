@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  isDirectRetentionAuditIntent,
-  isRetentionKlaviyoConnectionIntent,
-  isRetentionOnboardingIntent,
-  isRetentionAuditSubagentNotification,
-} from "../retention-audit-intent.js";
-import {
   extractWebsiteUrl,
   isRetentionOnboardingWebsiteReply,
 } from "../conversation-process.js";
+import {
+  isDirectRetentionAuditIntent,
+  isRetentionAuditSubagentNotification,
+  isRetentionKlaviyoConnectionIntent,
+  isRetentionOnboardingIntent,
+} from "../retention-audit-intent.js";
 
 describe("isDirectRetentionAuditIntent", () => {
   test("accepts explicit user Klaviyo audit requests", () => {
