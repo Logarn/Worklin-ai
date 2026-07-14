@@ -141,6 +141,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       data: { connections: [] },
       response: { ok: true, status: 200 },
     }),
+  secretsGet: () =>
+    Promise.resolve({
+      data: { secrets: [], accounts: [] },
+      response: { ok: true, status: 200 },
+    }),
   inferenceProviderconnectionsByNamePatch: (opts: PatchConnectionCall) => {
     patchConnectionCalls.push(opts);
     return Promise.resolve({

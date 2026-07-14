@@ -100,6 +100,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       response: { ok: true, status: 200 },
     });
   },
+  secretsGet: () =>
+    Promise.resolve({
+      data: { secrets: [], accounts: [] },
+      response: { ok: true, status: 200 },
+    }),
   configGet: (opts: AssistantPathCall) => {
     configGetCalls.push(opts);
     return Promise.resolve({
