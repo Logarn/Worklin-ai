@@ -29,6 +29,7 @@ interface CapturedConversationState {
 
 const capturedConversations: CapturedConversationState[] = [];
 let runAgentLoopImpl: () => Promise<void> = () => Promise.resolve();
+let capturedRunOptions: Array<Record<string, unknown> | undefined> = [];
 
 // Stub Conversation so spawn() doesn't try to actually run an agent loop —
 // we only care about what provider it was constructed with.
@@ -90,7 +91,12 @@ class FakeConversation {
   persistUserMessage() {
     return { id: "msg-id", deduplicated: false };
   }
-  runAgentLoop() {
+  runAgentLoop(
+    _content: string,
+    _messageId: string,
+    options?: Record<string, unknown>,
+  ) {
+    capturedRunOptions.push(options);
     return runAgentLoopImpl();
   }
   isProcessing() {
@@ -283,6 +289,50 @@ describe("SubagentManager — provider call-site routing", () => {
     expect(capturedProvider).toBeInstanceOf(CallSiteRoutingProvider);
     // Default provider's name surfaces.
     expect((capturedProvider as { name: string }).name).toBe("anthropic");
+  });
+
+  test("forces the workspace active profile above the subagent call-site default", async () => {
+    setLlmConfig({
+      default: {
+        provider: "anthropic",
+        provider_connection: "anthropic-conn",
+        model: "claude-opus-4-7",
+      },
+      activeProfile: "altOpenai",
+      profiles: {
+        balanced: {
+          provider: "anthropic",
+          provider_connection: "anthropic-conn",
+          model: "claude-sonnet-4-6",
+        },
+        altOpenai: {
+          provider: "openai",
+          provider_connection: "openai-conn",
+          model: "gpt-5.4",
+        },
+      },
+      callSites: {
+        subagentSpawn: { profile: "balanced" },
+      },
+    });
+
+    capturedRunOptions = [];
+    const manager = new SubagentManager();
+    await manager.spawn(
+      {
+        parentConversationId: "parent-active-profile",
+        label: "test",
+        objective: "test objective",
+      },
+      () => {},
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(capturedRunOptions[0]).toMatchObject({
+      callSite: "subagentSpawn",
+      overrideProfile: "altOpenai",
+      forceOverrideProfile: true,
+    });
   });
 
   test("copies parent guardian and auth context into spawned conversation", async () => {

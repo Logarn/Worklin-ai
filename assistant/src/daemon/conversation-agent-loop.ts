@@ -215,6 +215,8 @@ export async function runAgentLoopImpl(
      * spawns).
      */
     overrideProfile?: string;
+    /** Float the override profile above non-main call-site defaults. */
+    forceOverrideProfile?: boolean;
   },
 ): Promise<void> {
   if (!ctx.abortController) {
@@ -290,6 +292,7 @@ export async function runAgentLoopImpl(
   ctx.toolRoutedProfile = undefined;
 
   const turnOverrideProfile = userExplicitOverride;
+  const forceOverrideProfile = options?.forceOverrideProfile === true;
 
   const readCurrentOverrideProfile = (): string | undefined =>
     options?.overrideProfile ??
@@ -300,6 +303,7 @@ export async function runAgentLoopImpl(
     llm: config.llm,
     callSite: turnCallSite,
     overrideProfile: turnOverrideProfile ?? undefined,
+    forceOverrideProfile,
     selectionSeed: ctx.conversationId,
   });
   let currentEffectiveContextWindow: EffectiveContextWindow =
@@ -307,6 +311,7 @@ export async function runAgentLoopImpl(
   let currentContextWindowConfig = contextWindowConfigFromEffective(
     resolveCallSiteConfig(turnCallSite, config.llm, {
       overrideProfile: turnOverrideProfile ?? undefined,
+      forceOverrideProfile,
       selectionSeed: ctx.conversationId,
     }).contextWindow,
     currentEffectiveContextWindow,
@@ -322,11 +327,13 @@ export async function runAgentLoopImpl(
         llm: config.llm,
         callSite: turnCallSite,
         overrideProfile: currentOverrideProfile,
+        forceOverrideProfile,
         selectionSeed: ctx.conversationId,
       });
       currentContextWindowConfig = contextWindowConfigFromEffective(
         resolveCallSiteConfig(turnCallSite, config.llm, {
           overrideProfile: currentOverrideProfile,
+          forceOverrideProfile,
           selectionSeed: ctx.conversationId,
         }).contextWindow,
         currentEffectiveContextWindow,
@@ -901,6 +908,7 @@ export async function runAgentLoopImpl(
         callSite: turnCallSite,
         trust: loopTrust,
         overrideProfile: turnOverrideProfile,
+        forceOverrideProfile,
         resolveOverrideProfile: resolveCurrentOverrideProfile,
         resolveContextWindow,
         compactInPlace,
