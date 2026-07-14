@@ -11,10 +11,40 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `b7d9943` (`Bundle first-party skills for every user`), including the system-access fix, bundled first-party catalog, and assistant/live-voice UI consistency pass
+- Current production application commit: `919abb2` (`Allow read-only Brand Brain context`), including LLM-first conversational routing from `f5b99c5`, the system-access fix, bundled first-party catalog, and assistant/live-voice UI consistency pass
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## LLM-First Conversation Routing
+
+Natural-language messages now reach the agent loop before Worklin decides whether the user wants onboarding, a connection, an audit, copy, or another workflow. Deterministic code may still enforce permissions and explicit slash commands, but it no longer authors conversational onboarding replies.
+
+The production failure had two independent causes:
+
+- The HTTP message route and daemon foreground/background/queue paths intercepted retention-shaped language and returned saved onboarding responses without calling an LLM. The first-turn wake-up path could also return a canned onboarding greeting.
+- After LLM-first routing exposed the real copy workflow, the actor pre-execution gate treated read-only `brand_brain_read` as a generic host tool and denied it before the approval policy's safe-read exemption could run.
+
+Deployed fixes:
+
+- `f5b99c5` removes natural-language retention interceptors from the HTTP, foreground, background, single-queue, and batched-queue paths. First-turn wake-up messages also proceed through LLM inference instead of a canned response.
+- `919abb2` exempts only read-only `brand_brain_read` from the earlier actor host-tool gate. Brand Brain corrections, campaign writes, files, shell commands, integrations, and other actions retain their existing permission behavior.
+
+Local verification on 2026-07-14:
+
+- 123 focused routing, HTTP parity, queue, retention-intent, and first-turn tests passed.
+- 205 focused executor, approval-policy, Brand Brain, and real `skill_load` tests passed.
+- Assistant TypeScript, targeted ESLint, formatting, secret scanning, and `git diff --check` passed.
+
+Authenticated production verification in the user-selected Lorgan Chrome profile:
+
+- The prior Dr Rachael copy attempt produced a saved onboarding reply and the inspector showed `0 LLM calls`.
+- After deployment, the same prompt completed through Kimi `kimi-k2.6` with three LLM calls and a final `no_tool_calls` loop exit.
+- The trace loaded `write-brand-copy`, read its email references, and executed `brand_brain_read` without an approval denial.
+- Worklin correctly reported that the account's only persisted Brand Brain is for `Seamossonly`, not Worklin, then produced the requested Dr Rachael email using a direct evidence-led Worklin voice instead of forcing onboarding or inventing a matching saved profile.
+- Verified production conversation: `0d13a814-d204-42bb-b3e5-b9f48c14674d`.
+
+Vercel and Railway both reported success for `919abb2`; Railway `/healthz` and `/readyz` returned HTTP 200 after the process replacement completed.
 
 ## Current Skills And System-Access Fix
 
@@ -138,7 +168,7 @@ The current external blocker is Hume billing, not Worklin connectivity:
 
 Verified on 2026-07-14:
 
-- `main` and `origin/main` resolved to deployed commit `b7d9943`.
+- `main` and `origin/main` resolved to deployed commit `919abb2` before this handoff-only refresh.
 - `GET https://worklin-ai-production.up.railway.app/healthz` returned HTTP 200 with `{"ok":true}`.
 - `GET https://worklin-ai-production.up.railway.app/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}`.
 - `GET https://worklin-ai.vercel.app/assistant` returned HTTP 200.
@@ -159,6 +189,8 @@ Verified on 2026-07-14:
 
 Recent production commits relevant to this pilot include:
 
+- `919abb2` — allow read-only Brand Brain context through the actor pre-execution gate.
+- `f5b99c5` — route every natural-language conversation path through the LLM.
 - `b7d9943` — bundle the complete first-party skill catalog for every user.
 - `12e8567` — refresh generated OpenAPI output and production handoff evidence.
 - `17d2e6e` — deploy the system-access and assistant/live-voice UI rollout stack.
@@ -232,12 +264,11 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ### 0. Finish post-deploy verification for skills and system access
 
-1. Run one fresh authenticated text turn to confirm the configured LLM connection survived the `b7d9943` Railway restart without exposing or re-entering the key.
-2. Query the production skills surface and confirm the complete first-party catalog appears as bundled rather than user-installed.
-3. Load representative product skills and confirm activation does not create a workspace installation or approval prompt.
-4. Run an authenticated copy task and confirm Brand Brain context and the copywriting skill load without an approval popup.
-5. Confirm Contacts and approval/channel copy contain no user-facing `Guardian` or `non-guardian` account labels.
-6. Restore the missing GitHub App ID secret for the macOS workflow, then rerun that check before treating release packaging as verified.
+1. Query the production skills surface and confirm the complete first-party catalog appears as bundled rather than user-installed.
+2. Load additional representative product skills and confirm activation does not create a workspace installation or approval prompt.
+3. Create or import a Worklin-specific Brand Brain only if the user wants future Worklin copy to use persisted Worklin voice rules; the current persisted profile belongs to Seamossonly.
+4. Confirm Contacts and approval/channel copy contain no user-facing `Guardian` or `non-guardian` account labels.
+5. Restore the missing GitHub App ID secret for the macOS workflow, then rerun that check before treating release packaging as verified.
 
 ### 1. User action: restore Hume credits
 
@@ -318,7 +349,7 @@ The private Hume pilot is configured through Worklin and production connectivity
 
 The app previously hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. The deployed fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Preserve all unrelated worktree changes.
 
-Production `main` is deployed through `b7d9943`. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while inline-command skill loads and tools/actions still follow the selected access level. User-facing legacy Guardian terminology has been replaced with You/account owner/account verification; internal identifiers remain only for compatibility. The complete first-party catalog is bundled for every user. Vercel and Railway are healthy, but production catalog/load behavior, a fresh post-`b7d9943` LLM turn, Brand Brain copy behavior, and the user-facing terminology sweep still need direct authenticated verification. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
+Production `main` is deployed through `919abb2`. Natural-language messages, including first-turn wake-up, onboarding, connection, audit, and copy requests, now reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The authenticated Dr Rachael production test completed through three Kimi calls, loaded `write-brand-copy`, read Brand Brain without denial, reported the truthful Seamossonly-versus-Worklin profile mismatch, and returned the requested email. The complete first-party catalog is bundled for every user. Vercel and Railway are healthy, but broader production catalog/load sampling and the user-facing terminology sweep still need direct verification. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
 
 After credits exist, run the documented three-turn Hume test, real-time transcript check, output-driven speaking visualization check, barge-in latency measurement, end-session and refresh persistence checks, duplicate-session rejection, approval safety test, and no-raw-audio confirmation. Use the authenticated Chrome profile requested by the user; do not switch to Safari or the in-app browser. Never repeat or expose provider credentials.
 ```
