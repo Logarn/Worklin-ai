@@ -168,8 +168,49 @@ describe("healGuardianBindingDrift", () => {
     expect(guardian!.channel.verifiedVia).toBe("challenge");
   });
 
-  test("returns false when no guardian binding exists", () => {
-    const healed = healGuardianBindingDrift("vellum-principal-orphan");
-    expect(healed).toBe(false);
+  test("creates the first owner binding from an authenticated Worklin principal", () => {
+    const ownerPrincipalId = "vellum-principal-platform-owner";
+    expect(
+      healGuardianBindingDrift(ownerPrincipalId, {
+        platformOwnerBound: true,
+      }),
+    ).toBe(true);
+
+    const guardian = findGuardianForChannel("vellum");
+    expect(guardian).not.toBeNull();
+    expect(guardian!.contact.principalId).toBe(ownerPrincipalId);
+    expect(guardian!.channel.externalUserId).toBe(ownerPrincipalId);
+    expect(guardian!.channel.verifiedVia).toBe("authenticated-owner-bootstrap");
+  });
+
+  test("refuses first binding for an unnamespaced principal", () => {
+    expect(
+      healGuardianBindingDrift("platform-owner", {
+        platformOwnerBound: true,
+      }),
+    ).toBe(false);
+    expect(findGuardianForChannel("vellum")).toBeNull();
+  });
+
+  test("refuses first binding without the trusted platform owner marker", () => {
+    expect(healGuardianBindingDrift("vellum-principal-unbound")).toBe(false);
+    expect(findGuardianForChannel("vellum")).toBeNull();
+  });
+
+  test("refuses first vellum binding when another owner already exists", () => {
+    createGuardianBinding({
+      channel: "slack",
+      guardianExternalUserId: "U_EXISTING_OWNER",
+      guardianDeliveryChatId: "C_OWNER",
+      guardianPrincipalId: "existing-owner-principal",
+      verifiedVia: "challenge",
+    });
+
+    expect(
+      healGuardianBindingDrift("vellum-principal-second-owner", {
+        platformOwnerBound: true,
+      }),
+    ).toBe(false);
+    expect(findGuardianForChannel("vellum")).toBeNull();
   });
 });

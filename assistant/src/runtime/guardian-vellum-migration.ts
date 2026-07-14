@@ -9,16 +9,60 @@
 
 import {
   findGuardianForChannel,
+  listContacts,
   updateContactPrincipalAndChannel,
+  upsertContact,
 } from "../contacts/contact-store.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("guardian-vellum-migration");
 
 const MIGRATABLE_BOOTSTRAP_METHODS = new Set([
+  "authenticated-owner-bootstrap",
   "bootstrap",
   "startup-migration",
 ]);
+
+function bootstrapAuthenticatedOwner(incomingPrincipalId: string): boolean {
+  // A missing vellum channel must not let a second identity claim an existing
+  // owner. First binding is permitted only for a completely ownerless store.
+  if (listContacts(1, "guardian").length > 0) return false;
+
+  const now = Date.now();
+  const owner = upsertContact({
+    displayName: "Worklin owner",
+    notes: "Authenticated Worklin account owner",
+    role: "guardian",
+    principalId: incomingPrincipalId,
+    channels: [
+      {
+        type: "vellum",
+        address: incomingPrincipalId,
+        isPrimary: true,
+        externalUserId: incomingPrincipalId,
+        externalChatId: "local",
+        status: "active",
+        policy: "allow",
+        verifiedAt: now,
+        verifiedVia: "authenticated-owner-bootstrap",
+      },
+    ],
+  });
+
+  const bound = owner.channels.some(
+    (channel) =>
+      channel.type === "vellum" &&
+      channel.status === "active" &&
+      channel.externalUserId === incomingPrincipalId,
+  );
+  if (bound) {
+    log.info(
+      { ownerContactId: owner.id, ownerCreated: owner.created },
+      "Created missing owner binding from authenticated Worklin principal",
+    );
+  }
+  return bound;
+}
 
 /**
  * Heal guardian binding drift for the vellum channel.
@@ -30,14 +74,16 @@ const MIGRATABLE_BOOTSTRAP_METHODS = new Set([
  * `unknown` because the principals don't match.
  *
  * This function detects that scenario and updates the binding to match the
- * JWT's principal. The incoming principal must use the platform-owner
- * namespace. The stored vellum binding must use that same generated namespace,
+ * JWT's principal. If startup backfill did not create any owner, it also
+ * establishes the first owner from a gateway-bound platform owner. The
+ * incoming principal must use the platform-owner namespace. The stored vellum
+ * binding must use that same generated namespace,
  * carry bootstrap provenance, or be explicitly marked as an import from the
  * retired guardian table. Challenge-verified and other external bindings are
  * never rewritten. The JWT's signature proves the incoming principal was
  * minted by this deployment's trusted control plane.
  *
- * Returns true if healing occurred, false otherwise.
+ * Returns true if healing or first-owner binding occurred, false otherwise.
  */
 export function healGuardianBindingDrift(
   incomingPrincipalId: string,
@@ -48,7 +94,11 @@ export function healGuardianBindingDrift(
   }
 
   const guardianResult = findGuardianForChannel("vellum");
-  if (!guardianResult) return false;
+  if (!guardianResult) {
+    return options.platformOwnerBound === true
+      ? bootstrapAuthenticatedOwner(incomingPrincipalId)
+      : false;
+  }
 
   const currentPrincipalId = guardianResult.contact.principalId;
   const wasBootstrapped =
