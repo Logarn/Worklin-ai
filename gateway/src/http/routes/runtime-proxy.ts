@@ -181,6 +181,23 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
         }
         actorScopeAssistantId = expectedAssistantId;
       }
+      if (!actorScopeAssistantId) {
+        // Hosted clients can use the runtime's canonical flat `/v1/...`
+        // routes. In that shape there is no URL assistant segment to bind
+        // against, but the already-verified edge token remains scoped to the
+        // assistant selected by the control plane. Use that signed scope so a
+        // newly signed-up user is the default owner of the assistant created
+        // for them. A client cannot choose or spoof this value, and malformed
+        // or non-actor subjects remain unbound below.
+        const subject = parseSub(result.claims.sub);
+        if (
+          subject.ok &&
+          subject.principalType === "actor" &&
+          subject.actorPrincipalId
+        ) {
+          actorScopeAssistantId = subject.assistantId;
+        }
+      }
       if (actorScopeAssistantId) {
         const boundClaims = bindPlatformOwnerClaims(
           result.claims,

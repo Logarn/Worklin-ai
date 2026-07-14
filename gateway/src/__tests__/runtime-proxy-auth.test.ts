@@ -227,6 +227,34 @@ describe("runtime proxy auth enforcement", () => {
     }
   });
 
+  test("flat hosted route binds the signed platform actor as the assistant owner", async () => {
+    let capturedHeaders: Headers | undefined;
+    fetchMock = mock(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        capturedHeaders = init?.headers as unknown as Headers;
+        return Response.json({ ok: true });
+      },
+    );
+    const handler = createRuntimeProxyHandler(makeConfig());
+
+    const res = await handler(
+      new Request("http://localhost:7830/v1/health", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedHeaders!.get("x-vellum-platform-owner")).toBe("true");
+    const exchangeToken = capturedHeaders!
+      .get("authorization")!
+      .replace(/^Bearer /, "");
+    const verified = verifyToken(exchangeToken, "vellum-daemon");
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.claims.sub).toBe("actor:self:vellum-principal-test-user");
+    }
+  });
+
   test("assistant-scoped URL rejects a token for another assistant", async () => {
     mockUpstream();
     const handler = createRuntimeProxyHandler(makeConfig());
