@@ -137,6 +137,7 @@ import {
 } from "../trust-context-resolver.js";
 import {
   BadRequestError,
+  ForbiddenError,
   InternalError,
   NotFoundError,
   RouteError,
@@ -1431,6 +1432,11 @@ export async function handleSendMessage(
             "JWT-verified actor resolved to unknown trust class — possible guardian binding drift (e.g. DB reset without re-bootstrap)",
           );
         }
+      }
+      if (trustCtx.trustClass === "unknown") {
+        throw new ForbiddenError(
+          "Authenticated owner identity is not bound to this assistant",
+        );
       }
       conversation.setTrustContext(withSourceChannel(sourceChannel, trustCtx));
     }
