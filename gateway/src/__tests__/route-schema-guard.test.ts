@@ -180,6 +180,10 @@ const EXCLUDED_FROM_SCHEMA = new Set([
   "/v1/contacts/guardian/channel",
   // BFF token auth — loopback-only, not part of the public gateway API
   "/auth/token",
+  // Provider-signed managed voice completion transport, not a public API.
+  "/v1/live-voice/providers/chat/completions",
+  // Private ElevenLabs Speech Engine WebSocket transport, not a public API.
+  "/v1/live-voice/providers/elevenlabs/upstream",
 ]);
 
 // ── Schema paths that don't map to a discrete route definition ──
