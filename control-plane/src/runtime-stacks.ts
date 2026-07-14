@@ -39,6 +39,7 @@ export interface RuntimeStackConfig {
   publicIngressUrl: string;
   requireIsolatedRuntime: boolean;
   allowLegacySharedRuntime: boolean;
+  legacySharedRuntimeAssistantIds: readonly string[];
   legacySharedRuntimeUserEmailHashes: readonly string[];
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
@@ -78,12 +79,19 @@ export function runtimeStackConfigFromEnv(
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const legacySharedRuntimeAssistantIds = (
+    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS ?? ""
+  )
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   const template = rawEnv.WORKLIN_RUNTIME_STACK_URL_TEMPLATE?.trim() || null;
   return {
     gatewayUrl,
     publicIngressUrl,
     requireIsolatedRuntime,
     allowLegacySharedRuntime,
+    legacySharedRuntimeAssistantIds,
     legacySharedRuntimeUserEmailHashes,
     runtimeStackUrlTemplate: template,
     runtimeStackProvider:
@@ -98,7 +106,10 @@ function isLegacySharedRuntimeAllowedForAssistant(
   config: RuntimeStackConfig,
   assistant: AssistantRuntimeRow,
 ): boolean {
-  if (config.legacySharedRuntimeUserEmailHashes.length === 0) return true;
+  if (config.legacySharedRuntimeAssistantIds.includes(assistant.id)) return true;
+  if (config.legacySharedRuntimeUserEmailHashes.length === 0) {
+    return config.legacySharedRuntimeAssistantIds.length === 0;
+  }
   const user = db
     .query<{ email: string }, [string]>("SELECT email FROM users WHERE id = ?")
     .get(assistant.user_id);

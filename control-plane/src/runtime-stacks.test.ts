@@ -67,6 +67,7 @@ function config(
     publicIngressUrl: "https://worklin.example.com",
     requireIsolatedRuntime: true,
     allowLegacySharedRuntime: false,
+    legacySharedRuntimeAssistantIds: [],
     legacySharedRuntimeUserEmailHashes: [],
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
@@ -156,6 +157,41 @@ describe("runtime stack provisioning defaults", () => {
     expect(stack.provider).toBe("legacy_shared");
   });
 
+  test("explicit legacy mode routes an allowlisted pilot assistant", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
+        legacySharedRuntimeUserEmailHashes: ["not-the-user-email-hash"],
+      }),
+      NOW,
+    );
+
+    expect(stack.status).toBe("active");
+    expect(stack.provider).toBe("legacy_shared");
+  });
+
+  test("explicit legacy mode fails closed outside an assistant-only pilot allowlist", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-another"],
+      }),
+      NOW,
+    );
+
+    expect(stack.status).toBe("provisioning");
+    expect(stack.provider).toBe("railway");
+  });
+
   test("a runtime URL template creates an active stack-specific route", () => {
     const db = setupDb();
     const stack = ensureRuntimeStackForAssistant(
@@ -186,6 +222,8 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
+        legacySharedRuntimeUserEmailHashes: ["not-the-user-email-hash"],
       }),
       NOW,
     );
@@ -418,6 +456,7 @@ describe("runtimeStackConfigFromEnv", () => {
     ).toMatchObject({
       requireIsolatedRuntime: true,
       allowLegacySharedRuntime: false,
+      legacySharedRuntimeAssistantIds: [],
       legacySharedRuntimeUserEmailHashes: [],
       runtimeStackUrlTemplate: null,
     });
@@ -434,5 +473,18 @@ describe("runtimeStackConfigFromEnv", () => {
         "https://worklin.example.com",
       ).legacySharedRuntimeUserEmailHashes,
     ).toEqual(["hash-1", "hash-2", "hash-3"]);
+  });
+
+  test("parses a trimmed pilot assistant allowlist", () => {
+    expect(
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS:
+            "asst-1, asst-2, ,asst-3",
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ).legacySharedRuntimeAssistantIds,
+    ).toEqual(["asst-1", "asst-2", "asst-3"]);
   });
 });
