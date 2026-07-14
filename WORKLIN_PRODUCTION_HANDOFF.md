@@ -12,7 +12,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
 - Latest deployed voice change: `Keep live voice provider errors visible`
-- Current local change: approval-free skill setup/Brand Brain reads and removal of user-facing legacy guardian terminology
+- Current local changes: approval-free skill setup/Brand Brain reads, removal of user-facing legacy guardian terminology, and the assistant/live-voice UI consistency pass
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
@@ -55,6 +55,33 @@ Passed locally on 2026-07-14:
 - `git diff --check`.
 
 Deployment status: tested locally, not yet pushed or deployed. Pushing `main` will redeploy the Vercel frontend and Railway runtime, briefly restart the shared runtime, and test whether the recently re-entered Kimi credential persisted on its attached volume. Confirm that production restart before pushing.
+
+## Assistant And Live-Voice UI Consistency Pass
+
+Local commit `5653385` unifies the assistant and live-voice visual language around the black-and-royal-blue Worklin orb. It is committed locally but is not pushed or deployed because `main` also contains the unrelated, intentionally unpushed system-access commit described above.
+
+The consistency pass:
+
+- replaces the legacy green blob as the default/abstract assistant identity with one shared royal-blue `WorklinOrb`,
+- keeps explicit user-uploaded images and intentionally selected modern character avatars,
+- removes the legacy blob renderer, legacy avatar builder, and old classic-avatar picker paths,
+- uses the same orb in chat, assistant identity, favicon/Dock fallbacks, live-voice entry, and live-voice state visualization,
+- keeps the live-voice panel present in the composer while idle, showing `Ready` before a session begins,
+- replaces the redundant microphone glyph with the Worklin orb,
+- preserves live partial/final transcripts and input-driven listening/output-driven speaking motion,
+- changes the empty-conversation heading to `What should we work on?`, and
+- keeps terminal Hume provider errors visible and retryable rather than making the voice interface disappear.
+
+Verified locally on 2026-07-14:
+
+- 76 focused chat/avatar/live-voice/electron-icon tests passed with zero failures.
+- Web TypeScript check passed.
+- Targeted web lint passed with zero errors and one pre-existing `slash` dependency warning in `chat-composer.tsx`.
+- Production-mode Vite build passed with `VITE_PLATFORM_MODE=1 ./node_modules/.bin/vite build --configLoader native`.
+- Chrome visual verification passed on the full black Worklin dashboard preview: Ready, Listening, Thinking, Speaking, Interrupted, transcripts, and End Voice all use the shared royal-blue treatment without a microphone glyph.
+- `git diff --check` passed.
+
+Before production verification, resolve the deployment boundary above. Do not push the unrelated system-access commit merely to ship this visual change. After an authorized deployment, recheck the authenticated production new-conversation screen, Your Assistant page, avatar modal, visible voice Ready/error panel, and absence of the old blob/microphone UI.
 
 ## Current Objective And Blocker
 
