@@ -36,6 +36,7 @@ import type { CommentAnchor } from "@/domains/chat/utils/tiptap-position-map";
 import { documentsPost } from "@/generated/daemon/sdk.gen";
 import type { DocumentsByIdCommentsPostResponse } from "@/generated/daemon/types.gen";
 import { useAssistantIdentityStore } from "@/stores/assistant-identity-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import {
   DocumentCommentPanel,
   type DocumentCommentPanelHandle,
@@ -89,7 +90,16 @@ export function DocumentViewerContainer({
   onWorkWithAssistant,
   handleRef,
 }: DocumentViewerContainerProps) {
-  const assistantName = useAssistantIdentityStore.use.name();
+  const identityName = useAssistantIdentityStore.use.name();
+  const assistants = useResolvedAssistantsStore.use.assistants();
+  const selectedAssistantId =
+    useResolvedAssistantsStore.use.selectedAssistantId();
+  const resolvedAssistant =
+    assistants.find((assistant) => assistant.id === assistantId) ??
+    assistants.find((assistant) => assistant.id === selectedAssistantId) ??
+    (assistants.length === 1 ? assistants[0] : undefined);
+  const assistantName =
+    identityName?.trim() || resolvedAssistant?.name?.trim() || "Worklin";
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
   const [addingInlineComment, setAddingInlineComment] = useState(false);
   const [commentAnchors, setCommentAnchors] = useState<CommentAnchor[]>([]);
@@ -236,8 +246,7 @@ export function DocumentViewerContainer({
         const normalized = commentText.toLocaleLowerCase();
         const tagsAssistant =
           normalized.includes("@worklin") ||
-          (assistantName != null &&
-            normalized.includes(`@${assistantName.toLocaleLowerCase()}`));
+          normalized.includes(`@${assistantName.toLocaleLowerCase()}`);
         if (tagsAssistant) onSubmitFeedback?.();
       } finally {
         setAddingInlineComment(false);
