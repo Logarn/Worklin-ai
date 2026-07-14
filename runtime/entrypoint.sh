@@ -10,7 +10,10 @@ set -euo pipefail
 : "${GATEWAY_IPC_SOCKET_DIR:=${VELLUM_WORKSPACE_DIR%/}/runtime-ipc}"
 : "${DEBUG_STDOUT_LOGS:=1}"
 : "${PORT:=8080}"
-: "${WORKLIN_CONTROL_PLANE_PORT:=${PORT}}"
+: "${WORKLIN_PUBLIC_EDGE_PORT:=${PORT}}"
+: "${WORKLIN_CONTROL_PLANE_INTERNAL_PORT:=8082}"
+: "${WORKLIN_CONTROL_PLANE_PORT:=${WORKLIN_CONTROL_PLANE_INTERNAL_PORT}}"
+: "${WORKLIN_CONTROL_PLANE_INTERNAL_URL:=http://127.0.0.1:${WORKLIN_CONTROL_PLANE_PORT}}"
 : "${WORKLIN_CONTROL_DB:=${WORKLIN_RUNTIME_ROOT}/control-plane.sqlite}"
 : "${CES_HEALTH_PORT:=8090}"
 : "${CES_CREDENTIAL_URL:=http://127.0.0.1:${CES_HEALTH_PORT}}"
@@ -47,7 +50,9 @@ export CES_BOOTSTRAP_SOCKET_DIR
 export GATEWAY_IPC_SOCKET_DIR
 export DEBUG_STDOUT_LOGS
 export PORT
+export WORKLIN_PUBLIC_EDGE_PORT
 export WORKLIN_CONTROL_PLANE_PORT
+export WORKLIN_CONTROL_PLANE_INTERNAL_URL
 export WORKLIN_CONTROL_DB
 export CES_HEALTH_PORT
 export CES_CREDENTIAL_URL
@@ -201,6 +206,7 @@ chmod 660 "${gateway_socket_path}"
 start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
 if [[ "${WORKLIN_RUNTIME_MODE}" != "isolated" ]]; then
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
+  start_as assistant bash -lc "cd /app/control-plane && exec bun run src/public-edge.ts"
 fi
 
 exit_code=0

@@ -203,10 +203,11 @@ Auth0 app settings and generated production secrets.
 Railway can generate a temporary HTTPS domain. A custom domain such as
 `api.worklin.ai` is useful later but is not required for the first deployment.
 
-The combined container keeps the gateway private on loopback and wires the
-public control-plane to it internally. Root `railway.json` is the default
-deploy target. The split configs remain in the repo for future multi-service
-topologies:
+The combined container keeps the gateway private on loopback. A small public
+edge forwards ordinary HTTP traffic to the control-plane and tunnels only the
+ElevenLabs Speech Engine upstream WebSocket path directly to the gateway. Root
+`railway.json` is the default deploy target. The split configs remain in the
+repo for future multi-service topologies:
 
 | Service | Dockerfile | Notes |
 | --- | --- | --- |
