@@ -37,8 +37,13 @@ export interface ArtifactGrantRow {
   updated_at: string;
 }
 
-export function isCollaborationRole(value: unknown): value is CollaborationRole {
-  return typeof value === "string" && (COLLABORATION_ROLES as readonly string[]).includes(value);
+export function isCollaborationRole(
+  value: unknown,
+): value is CollaborationRole {
+  return (
+    typeof value === "string" &&
+    (COLLABORATION_ROLES as readonly string[]).includes(value)
+  );
 }
 
 export function normalizeInviteEmail(email: string): string {
@@ -87,7 +92,10 @@ export function ensureArtifactSharingSchema(db: Database): void {
 
 export function createArtifactInvitation(
   db: Database,
-  input: Omit<ArtifactInvitationRow, "id" | "accepted_by_user_id" | "accepted_at" | "revoked_at">,
+  input: Omit<
+    ArtifactInvitationRow,
+    "id" | "accepted_by_user_id" | "accepted_at" | "revoked_at"
+  >,
 ): ArtifactInvitationRow {
   const invitation: ArtifactInvitationRow = {
     id: randomUUID(),
@@ -96,13 +104,15 @@ export function createArtifactInvitation(
     accepted_at: null,
     revoked_at: null,
   };
-  db.query(`
+  db.query(
+    `
     INSERT INTO artifact_invitations (
       id, assistant_id, artifact_id, email_normalized, role, token_hash,
       expires_at, created_by_user_id, accepted_by_user_id, accepted_at,
       revoked_at, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     invitation.id,
     invitation.assistant_id,
     invitation.artifact_id,
@@ -124,13 +134,19 @@ export function getActiveInvitationByTokenHash(
   tokenHash: string,
   nowSeconds: number,
 ): ArtifactInvitationRow | null {
-  return db.query<ArtifactInvitationRow, [string, number]>(`
+  return (
+    db
+      .query<ArtifactInvitationRow, [string, number]>(
+        `
     SELECT * FROM artifact_invitations
     WHERE token_hash = ?
       AND revoked_at IS NULL
       AND accepted_at IS NULL
       AND expires_at > ?
-  `).get(tokenHash, nowSeconds) ?? null;
+  `,
+      )
+      .get(tokenHash, nowSeconds) ?? null
+  );
 }
 
 export function acceptArtifactInvitation(
@@ -139,10 +155,14 @@ export function acceptArtifactInvitation(
   recipientUserId: string,
   acceptedAt: string,
 ): ArtifactGrantRow {
-  const existing = db.query<ArtifactGrantRow, [string, string, string]>(`
+  const existing = db
+    .query<ArtifactGrantRow, [string, string, string]>(
+      `
     SELECT * FROM artifact_grants
     WHERE assistant_id = ? AND artifact_id = ? AND recipient_user_id = ?
-  `).get(invitation.assistant_id, invitation.artifact_id, recipientUserId);
+  `,
+    )
+    .get(invitation.assistant_id, invitation.artifact_id, recipientUserId);
   const grant: ArtifactGrantRow = existing ?? {
     id: randomUUID(),
     assistant_id: invitation.assistant_id,
@@ -157,18 +177,22 @@ export function acceptArtifactInvitation(
 
   const accept = db.transaction(() => {
     if (existing) {
-      db.query(`
+      db.query(
+        `
         UPDATE artifact_grants
         SET role = ?, revoked_at = NULL, updated_at = ?
         WHERE id = ?
-      `).run(invitation.role, acceptedAt, existing.id);
+      `,
+      ).run(invitation.role, acceptedAt, existing.id);
     } else {
-      db.query(`
+      db.query(
+        `
         INSERT INTO artifact_grants (
           id, assistant_id, artifact_id, recipient_user_id, role,
           created_by_user_id, revoked_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `,
+      ).run(
         grant.id,
         grant.assistant_id,
         grant.artifact_id,
@@ -180,12 +204,52 @@ export function acceptArtifactInvitation(
         acceptedAt,
       );
     }
-    db.query(`
+    db.query(
+      `
       UPDATE artifact_invitations
       SET accepted_by_user_id = ?, accepted_at = ?
       WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL
-    `).run(recipientUserId, acceptedAt, invitation.id);
+    `,
+    ).run(recipientUserId, acceptedAt, invitation.id);
   });
   accept();
-  return { ...grant, role: invitation.role, revoked_at: null, updated_at: acceptedAt };
+  return {
+    ...grant,
+    role: invitation.role,
+    revoked_at: null,
+    updated_at: acceptedAt,
+  };
+}
+
+export function listActiveArtifactGrantsForRecipient(
+  db: Database,
+  recipientUserId: string,
+): ArtifactGrantRow[] {
+  return db
+    .query<ArtifactGrantRow, [string]>(
+      `
+    SELECT * FROM artifact_grants
+    WHERE recipient_user_id = ? AND revoked_at IS NULL
+    ORDER BY updated_at DESC
+  `,
+    )
+    .all(recipientUserId);
+}
+
+export function getActiveArtifactGrantForRecipient(
+  db: Database,
+  recipientUserId: string,
+  artifactId: string,
+): ArtifactGrantRow | null {
+  return (
+    db
+      .query<ArtifactGrantRow, [string, string]>(
+        `
+    SELECT * FROM artifact_grants
+    WHERE recipient_user_id = ? AND artifact_id = ? AND revoked_at IS NULL
+    LIMIT 1
+  `,
+      )
+      .get(recipientUserId, artifactId) ?? null
+  );
 }

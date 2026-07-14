@@ -8,6 +8,7 @@ import {
   DocumentViewerContainer,
   type DocumentViewerContainerHandle,
 } from "@/components/document-viewer-container";
+import { CopybookShareDialog } from "@/components/copybook-share-dialog";
 import { documentsByIdGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
   copybookcampaignsByIdApprovePost,
@@ -50,6 +51,7 @@ export function CopybookWorkspace({
   const queryClient = useQueryClient();
   const viewerRef = useRef<DocumentViewerContainerHandle>(null);
   const [approvalPending, setApprovalPending] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const {
     data: document,
     isLoading,
@@ -267,6 +269,7 @@ export function CopybookWorkspace({
           approvalPending={approvalPending}
           blockingCommentCount={blockingCommentCount}
           onApprove={() => void handleApprove()}
+          onShare={() => setShareOpen(true)}
         />
         <label className="mx-4 mt-3 md:hidden">
           <span className="sr-only">Select month</span>
@@ -314,6 +317,12 @@ export function CopybookWorkspace({
           )}
         </div>
       </main>
+      <CopybookShareDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        assistantId={assistantId}
+        copybookId={copybook.copybook.id}
+      />
     </div>
   );
 }

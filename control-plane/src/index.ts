@@ -6,7 +6,13 @@ import express, {
   type Response,
 } from "express";
 import { auth } from "express-openid-connect";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -43,6 +49,15 @@ import {
 } from "./railway-runtime-provisioner.js";
 import { platformOwnerPrincipalId } from "./platform-owner-principal.js";
 import { ensureArtifactSharingSchema } from "./artifact-sharing-store.js";
+import {
+  acceptArtifactInvitation,
+  createArtifactInvitation,
+  getActiveArtifactGrantForRecipient,
+  getActiveInvitationByTokenHash,
+  isCollaborationRole,
+  listActiveArtifactGrantsForRecipient,
+  normalizeInviteEmail,
+} from "./artifact-sharing-store.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -55,7 +70,10 @@ const ACTOR_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const POLICY_EPOCH = 1;
 
 function canonicalHostedWebOrigin(origin: string): string | null {
-  if (origin === CANONICAL_VERCEL_WEB_ORIGIN || origin === LEGACY_VERCEL_WEB_ORIGIN) {
+  if (
+    origin === CANONICAL_VERCEL_WEB_ORIGIN ||
+    origin === LEGACY_VERCEL_WEB_ORIGIN
+  ) {
     return CANONICAL_VERCEL_WEB_ORIGIN;
   }
   return null;
@@ -99,11 +117,17 @@ const auth0ClientCredential =
   process.env.AUTH0_CLIENT_SECRET ?? process.env.CLIENT_SECRET ?? "";
 
 const env = {
-  port: Number(process.env.WORKLIN_CONTROL_PLANE_PORT ?? process.env.PORT ?? 8080),
+  port: Number(
+    process.env.WORKLIN_CONTROL_PLANE_PORT ?? process.env.PORT ?? 8080,
+  ),
   host: process.env.WORKLIN_CONTROL_PLANE_HOST ?? "0.0.0.0",
   webOrigin: configuredWebOrigin,
-  apiOrigin: trimTrailingSlash(process.env.WORKLIN_API_ORIGIN ?? "https://api.worklin.ai"),
-  gatewayUrl: trimTrailingSlash(process.env.WORKLIN_GATEWAY_URL ?? "http://gateway:7830"),
+  apiOrigin: trimTrailingSlash(
+    process.env.WORKLIN_API_ORIGIN ?? "https://api.worklin.ai",
+  ),
+  gatewayUrl: trimTrailingSlash(
+    process.env.WORKLIN_GATEWAY_URL ?? "http://gateway:7830",
+  ),
   dbPath: process.env.WORKLIN_CONTROL_DB ?? "/data/control-plane.sqlite",
   sessionSecret: process.env.WORKLIN_SESSION_SECRET ?? "",
   actorSigningKey: process.env.ACTOR_TOKEN_SIGNING_KEY ?? "",
@@ -117,7 +141,11 @@ const env = {
   auth0BaseUrl: hostedWebBaseUrl,
   auth0ClientId: process.env.AUTH0_CLIENT_ID ?? process.env.CLIENT_ID ?? "",
   auth0ClientSecret: auth0ClientCredential,
-  auth0Secret: process.env.AUTH0_SECRET ?? process.env.SECRET ?? process.env.WORKLIN_SESSION_SECRET ?? "",
+  auth0Secret:
+    process.env.AUTH0_SECRET ??
+    process.env.SECRET ??
+    process.env.WORKLIN_SESSION_SECRET ??
+    "",
 };
 const runtimeStackConfig = runtimeStackConfigFromEnv(
   process.env,
@@ -127,11 +155,15 @@ const runtimeStackConfig = runtimeStackConfigFromEnv(
 const railwayProvisionerConfig = railwayProvisionerConfigFromEnv(process.env);
 
 if (!env.sessionSecret || env.sessionSecret.length < 32) {
-  throw new Error("WORKLIN_SESSION_SECRET must be set to at least 32 characters.");
+  throw new Error(
+    "WORKLIN_SESSION_SECRET must be set to at least 32 characters.",
+  );
 }
 
 if (!/^[0-9a-f]{64}$/i.test(env.actorSigningKey)) {
-  throw new Error("ACTOR_TOKEN_SIGNING_KEY must be 64 hex characters and shared with the gateway.");
+  throw new Error(
+    "ACTOR_TOKEN_SIGNING_KEY must be 64 hex characters and shared with the gateway.",
+  );
 }
 
 mkdirSync(dirname(env.dbPath), { recursive: true });
@@ -175,9 +207,13 @@ db.exec(`
 ensureArtifactSharingSchema(db);
 ensureRuntimeStackSchema(db);
 
-const useSecureCookies = env.apiOrigin.startsWith("https://") && env.auth0BaseUrl.startsWith("https://");
+const useSecureCookies =
+  env.apiOrigin.startsWith("https://") &&
+  env.auth0BaseUrl.startsWith("https://");
 const cookieSameSite: "None" | "Lax" = useSecureCookies ? "None" : "Lax";
-const csrfCookieName = useSecureCookies ? SECURE_CSRF_COOKIE : LOCAL_CSRF_COOKIE;
+const csrfCookieName = useSecureCookies
+  ? SECURE_CSRF_COOKIE
+  : LOCAL_CSRF_COOKIE;
 
 interface UserRow {
   id: string;
@@ -303,7 +339,10 @@ function setCorsHeaders(req: Request, res: Response): void {
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Vary", "Origin");
   }
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+  );
   res.setHeader(
     "Access-Control-Allow-Headers",
     // Hosted assistant runtime routes rely on the platform user id header for
@@ -322,7 +361,12 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-function sendJson(req: Request, res: Response, body: unknown, status = 200): void {
+function sendJson(
+  req: Request,
+  res: Response,
+  body: unknown,
+  status = 200,
+): void {
   setCorsHeaders(req, res);
   res.setHeader("Cache-Control", "private, no-store, max-age=0");
   res.setHeader("Pragma", "no-cache");
@@ -367,7 +411,14 @@ function appendCookie(res: Response, value: string): void {
 function ensureCsrf(req: Request, res: Response): string {
   const existing = parseCookies(req)[csrfCookieName];
   const csrf = existing || randomToken(24);
-  appendCookie(res, cookie(csrfCookieName, csrf, `Path=/; Max-Age=2592000; ${cookieSecurityAttributes()}`));
+  appendCookie(
+    res,
+    cookie(
+      csrfCookieName,
+      csrf,
+      `Path=/; Max-Age=2592000; ${cookieSecurityAttributes()}`,
+    ),
+  );
   res.setHeader("X-CSRFToken", csrf);
   return csrf;
 }
@@ -376,12 +427,14 @@ function getSessionUser(req: Request): UserRow | null {
   const sessionId = parseCookies(req)[SESSION_COOKIE];
   if (!sessionId) return null;
   return db
-    .query<UserRow, [string, number]>(`
+    .query<UserRow, [string, number]>(
+      `
       SELECT users.*
       FROM sessions
       JOIN users ON users.id = sessions.user_id
       WHERE sessions.id = ? AND sessions.expires_at > ?
-    `)
+    `,
+    )
     .get(sessionId, nowSeconds());
 }
 
@@ -394,7 +447,12 @@ function getAuth0User(req: Request): UserRow | null {
 function requireUser(req: Request, res: Response): UserRow | null {
   const user = getAuth0User(req) ?? getSessionUser(req);
   if (user) return user;
-  sendJson(req, res, { detail: "Authentication credentials were not provided." }, 401);
+  sendJson(
+    req,
+    res,
+    { detail: "Authentication credentials were not provided." },
+    401,
+  );
   return null;
 }
 
@@ -407,7 +465,10 @@ function checkCsrf(req: Request, form?: URLSearchParams): boolean {
   return !!cookieCsrf && !!submitted && safeEqual(cookieCsrf, submitted);
 }
 
-function checkProviderRedirectCsrf(req: Request, form: URLSearchParams): boolean {
+function checkProviderRedirectCsrf(
+  req: Request,
+  form: URLSearchParams,
+): boolean {
   if (checkCsrf(req, form)) return true;
 
   // Hosted production login starts on Vercel and posts to Railway. Some
@@ -432,7 +493,12 @@ function stringClaim(value: unknown): string {
 }
 
 function usernameFromEmail(email: string): string {
-  return email.split("@")[0]?.replace(/[^a-zA-Z0-9_-]/g, "").toLowerCase() || "user";
+  return (
+    email
+      .split("@")[0]
+      ?.replace(/[^a-zA-Z0-9_-]/g, "")
+      .toLowerCase() || "user"
+  );
 }
 
 function userPayload(user: UserRow) {
@@ -484,19 +550,41 @@ function getOrCreateAssistant(user: UserRow): AssistantRow {
   return getOrCreateStoredAssistant(db, user.id, nowIso);
 }
 
-function mintActorToken(assistantId: string, userId: string): string {
+function mintActorToken(
+  assistantId: string,
+  userId: string,
+  collaboration?: {
+    artifactId: string;
+    role: "viewer" | "commenter" | "editor" | "owner";
+  },
+): string {
   const now = nowSeconds();
+  const scopeProfile = collaboration
+    ? collaboration.role === "viewer"
+      ? "artifact_viewer_v1"
+      : collaboration.role === "commenter"
+        ? "artifact_commenter_v1"
+        : "artifact_editor_v1"
+    : "actor_client_v1";
   const claims = {
     iss: "vellum-auth",
     aud: "vellum-gateway",
     sub: `actor:${assistantId}:${platformOwnerPrincipalId(userId)}`,
-    scope_profile: "actor_client_v1",
-    exp: now + ACTOR_TOKEN_TTL_SECONDS,
+    scope_profile: scopeProfile,
+    exp: now + (collaboration ? 5 * 60 : ACTOR_TOKEN_TTL_SECONDS),
     policy_epoch: POLICY_EPOCH,
     iat: now,
     jti: randomBytes(16).toString("hex"),
+    ...(collaboration
+      ? {
+          artifact_id: collaboration.artifactId,
+          collaboration_role: collaboration.role,
+        }
+      : {}),
   };
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const header = Buffer.from(
+    JSON.stringify({ alg: "HS256", typ: "JWT" }),
+  ).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const sigInput = `${header}.${payload}`;
   const sig = createHmac("sha256", Buffer.from(env.actorSigningKey, "hex"))
@@ -505,13 +593,41 @@ function mintActorToken(assistantId: string, userId: string): string {
   return `${sigInput}.${sig}`;
 }
 
-function runtimeStackForPayload(row: AssistantRow): RuntimeStackRow {
-  return ensureRuntimeStackForAssistant(
+function invitationTokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function inviteUrl(token: string): string {
+  return `${env.webOrigin}/assistant/invitations/${encodeURIComponent(token)}`;
+}
+
+async function verifyShareableArtifact(
+  assistant: AssistantRow,
+  user: UserRow,
+  artifactId: string,
+): Promise<boolean> {
+  const runtimeStack = ensureRuntimeStackForAssistant(
     db,
-    row,
+    assistant,
     runtimeStackConfig,
     nowIso,
   );
+  if (!isRuntimeStackRoutable(runtimeStack)) return false;
+  const target = new URL(runtimeStack.gateway_url);
+  target.pathname = `/v1/assistants/${encodeURIComponent(assistant.id)}/shared-artifacts/${encodeURIComponent(artifactId)}/snapshot`;
+  const response = await fetch(target, {
+    headers: {
+      Authorization: `Bearer ${mintActorToken(assistant.id, user.id, {
+        artifactId,
+        role: "owner",
+      })}`,
+    },
+  });
+  return response.ok;
+}
+
+function runtimeStackForPayload(row: AssistantRow): RuntimeStackRow {
+  return ensureRuntimeStackForAssistant(db, row, runtimeStackConfig, nowIso);
 }
 
 function assistantPayload(
@@ -639,9 +755,7 @@ function scheduleRuntimeProvisioning(
   );
 }
 
-function ensureAssistantRuntime(
-  assistant: AssistantRow,
-): RuntimeStackRow {
+function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
   const runtimeStack = runtimeStackForPayload(assistant);
   const provisioningError = runtimeProvisioningConfigurationError();
   if (provisioningError && runtimeStack.status === "provisioning") {
@@ -659,7 +773,9 @@ function ensureAssistantRuntime(
 
 function resumeRuntimeProvisioning(): void {
   if (runtimeProvisioningConfigurationError() !== null) return;
-  const assistants = db.query<AssistantRow, []>("SELECT * FROM assistants").all();
+  const assistants = db
+    .query<AssistantRow, []>("SELECT * FROM assistants")
+    .all();
   for (const assistant of assistants) {
     const stack = runtimeStackForPayload(assistant);
     scheduleRuntimeProvisioning(assistant, stack);
@@ -694,31 +810,48 @@ function operationalStatusPayload(
     },
     detail: {
       reason: runtimeReady ? null : runtimeStack.status,
-      message:
-        runtimeReady
-          ? null
-          : runtimeStack.last_error ??
-            "Your assistant runtime is being prepared.",
+      message: runtimeReady
+        ? null
+        : (runtimeStack.last_error ??
+          "Your assistant runtime is being prepared."),
     },
   };
 }
 
 function upsertAuth0User(claims: Auth0Claims): UserRow {
   const sub = stringClaim(claims.sub);
-  const email = stringClaim(claims.email) || `${sub.replace(/[^a-zA-Z0-9_-]/g, "") || "user"}@auth0.local`;
+  const email =
+    stringClaim(claims.email) ||
+    `${sub.replace(/[^a-zA-Z0-9_-]/g, "") || "user"}@auth0.local`;
   const firstName = stringClaim(claims.given_name);
   const lastName = stringClaim(claims.family_name);
-  const username = usernameFromEmail(email) || stringClaim(claims.nickname) || usernameFromEmail(stringClaim(claims.name));
+  const username =
+    usernameFromEmail(email) ||
+    stringClaim(claims.nickname) ||
+    usernameFromEmail(stringClaim(claims.name));
   return upsertUser(email, username, firstName, lastName);
 }
 
-function upsertUser(email: string, username: string, firstName: string, lastName: string): UserRow {
-  const existing = db.query<UserRow, [string]>("SELECT * FROM users WHERE email = ?").get(email);
+function upsertUser(
+  email: string,
+  username: string,
+  firstName: string,
+  lastName: string,
+): UserRow {
+  const existing = db
+    .query<UserRow, [string]>("SELECT * FROM users WHERE email = ?")
+    .get(email);
   const timestamp = nowIso();
   if (existing) {
-    db.query("UPDATE users SET username = ?, first_name = ?, last_name = ?, updated_at = ? WHERE id = ?")
-      .run(username, firstName, lastName, timestamp, existing.id);
-    return { ...existing, username, first_name: firstName, last_name: lastName };
+    db.query(
+      "UPDATE users SET username = ?, first_name = ?, last_name = ?, updated_at = ? WHERE id = ?",
+    ).run(username, firstName, lastName, timestamp, existing.id);
+    return {
+      ...existing,
+      username,
+      first_name: firstName,
+      last_name: lastName,
+    };
   }
   const user: UserRow = {
     id: randomUUID(),
@@ -728,8 +861,18 @@ function upsertUser(email: string, username: string, firstName: string, lastName
     last_name: lastName,
     consent_json: null,
   };
-  db.query("INSERT INTO users (id, email, username, first_name, last_name, consent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(user.id, user.email, user.username, user.first_name, user.last_name, null, timestamp, timestamp);
+  db.query(
+    "INSERT INTO users (id, email, username, first_name, last_name, consent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    user.id,
+    user.email,
+    user.username,
+    user.first_name,
+    user.last_name,
+    null,
+    timestamp,
+    timestamp,
+  );
   return user;
 }
 
@@ -754,12 +897,17 @@ function parseJsonBody<T>(req: Request): T | null {
 
 function createSession(userId: string): string {
   const id = randomToken(32);
-  db.query("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
-    .run(id, userId, nowSeconds() + SESSION_TTL_SECONDS, nowIso());
+  db.query(
+    "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+  ).run(id, userId, nowSeconds() + SESSION_TTL_SECONDS, nowIso());
   return id;
 }
 
-function ensureUserSessionCookie(req: Request, res: Response, user: UserRow): void {
+function ensureUserSessionCookie(
+  req: Request,
+  res: Response,
+  user: UserRow,
+): void {
   const existingUser = getSessionUser(req);
   if (existingUser?.id === user.id) return;
   appendCookie(res, sessionCookieValue(createSession(user.id)));
@@ -783,7 +931,11 @@ async function handleSession(req: Request, res: Response): Promise<void> {
     }
     appendCookie(res, clearCookie(SESSION_COOKIE));
     appendCookie(res, clearCookie(AUTH0_SESSION_COOKIE));
-    sendJson(req, res, { data: {}, meta: { is_authenticated: false }, status: 200 });
+    sendJson(req, res, {
+      data: {},
+      meta: { is_authenticated: false },
+      status: 200,
+    });
     return;
   }
 
@@ -801,10 +953,18 @@ async function handleSession(req: Request, res: Response): Promise<void> {
   sendJson(req, res, unauthenticatedPayload(), 401);
 }
 
-async function handleProviderRedirect(req: Request, res: Response): Promise<void> {
+async function handleProviderRedirect(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const form = new URLSearchParams(parseTextBody(req));
   if (!checkProviderRedirectCsrf(req, form)) {
-    sendJson(req, res, { errors: [{ code: "csrf_failed", message: "CSRF validation failed." }] }, 403);
+    sendJson(
+      req,
+      res,
+      { errors: [{ code: "csrf_failed", message: "CSRF validation failed." }] },
+      403,
+    );
     return;
   }
   if (!auth0Configured() || !(res as Response & OidcResponse).oidc) {
@@ -813,7 +973,8 @@ async function handleProviderRedirect(req: Request, res: Response): Promise<void
   }
 
   const callbackUrl =
-    form.get("callback_url") || `${publicWebOrigin()}/account/provider/callback`;
+    form.get("callback_url") ||
+    `${publicWebOrigin()}/account/provider/callback`;
   if (!isAllowedCallbackUrl(callbackUrl)) {
     sendJson(req, res, { detail: "Callback URL is not allowed." }, 400);
     return;
@@ -836,17 +997,26 @@ async function handleProviderRedirect(req: Request, res: Response): Promise<void
   });
 }
 
-async function handleUserMe(req: Request, res: Response, user: UserRow): Promise<void> {
+async function handleUserMe(
+  req: Request,
+  res: Response,
+  user: UserRow,
+): Promise<void> {
   if (req.method === "PATCH") {
     if (!checkCsrf(req)) {
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return;
     }
-    const body = parseJsonBody<{ username?: string; consent?: unknown }>(req) ?? {};
+    const body =
+      parseJsonBody<{ username?: string; consent?: unknown }>(req) ?? {};
     const nextUsername = body.username?.trim() || user.username;
-    const consentJson = body.consent === undefined ? user.consent_json : JSON.stringify(body.consent);
-    db.query("UPDATE users SET username = ?, consent_json = ?, updated_at = ? WHERE id = ?")
-      .run(nextUsername, consentJson, nowIso(), user.id);
+    const consentJson =
+      body.consent === undefined
+        ? user.consent_json
+        : JSON.stringify(body.consent);
+    db.query(
+      "UPDATE users SET username = ?, consent_json = ?, updated_at = ? WHERE id = ?",
+    ).run(nextUsername, consentJson, nowIso(), user.id);
     user = { ...user, username: nextUsername, consent_json: consentJson };
     if (
       body.consent !== undefined &&
@@ -871,7 +1041,12 @@ function handleOrganizations(req: Request, res: Response, user: UserRow): void {
   });
 }
 
-async function handleAssistants(req: Request, res: Response, url: URL, user: UserRow): Promise<boolean> {
+async function handleAssistants(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
   if (url.pathname === "/v1/assistants/" && req.method === "GET") {
     const assistant = getOrCreateAssistant(user);
     const hosting = url.searchParams.get("hosting");
@@ -885,7 +1060,12 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
       ? ensureAssistantRuntime(assistant)
       : runtimeStackForPayload(assistant);
     const results = [assistantPayload(assistant, user, runtimeStack)];
-    sendJson(req, res, { count: results.length, next: null, previous: null, results });
+    sendJson(req, res, {
+      count: results.length,
+      next: null,
+      previous: null,
+      results,
+    });
     return true;
   }
 
@@ -935,9 +1115,7 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
   }
 
   const operationalStatusMatch =
-    /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(
-      url.pathname,
-    );
+    /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(url.pathname);
   if (operationalStatusMatch && req.method === "GET") {
     const assistant = db
       .query<AssistantRow, [string, string]>(
@@ -955,7 +1133,9 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
   const assistantMatch = /^\/v1\/assistants\/([^/]+)\/?$/.exec(url.pathname);
   if (assistantMatch) {
     const assistant = db
-      .query<AssistantRow, [string, string]>("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
+      .query<AssistantRow, [string, string]>(
+        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+      )
       .get(assistantMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
@@ -969,9 +1149,14 @@ async function handleAssistants(req: Request, res: Response, url: URL, user: Use
       const body = parseJsonBody<{ name?: string }>(req) ?? {};
       const name = body.name?.trim() || assistant.name;
       const updatedAt = nowIso();
-      db.query("UPDATE assistants SET name = ?, updated_at = ? WHERE id = ?")
-        .run(name, updatedAt, assistant.id);
-      sendJson(req, res, assistantPayload({ ...assistant, name, updated_at: updatedAt }, user));
+      db.query(
+        "UPDATE assistants SET name = ?, updated_at = ? WHERE id = ?",
+      ).run(name, updatedAt, assistant.id);
+      sendJson(
+        req,
+        res,
+        assistantPayload({ ...assistant, name, updated_at: updatedAt }, user),
+      );
       return true;
     }
     if (req.method === "GET") {
@@ -1010,6 +1195,273 @@ function handleBilling(req: Request, res: Response): void {
     effective_balance_usd: "0",
     is_degraded: false,
   });
+}
+
+async function handleArtifactInvitations(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  const createMatch =
+    /^\/v1\/assistants\/([^/]+)\/artifact-invitations\/?$/.exec(url.pathname);
+  if (createMatch && req.method === "POST") {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const assistant = db
+      .query<AssistantRow, [string, string]>(
+        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+      )
+      .get(createMatch[1]!, user.id);
+    if (!assistant) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    const body = parseJsonBody<{
+      artifactId?: unknown;
+      recipients?: Array<{ email?: unknown; role?: unknown }>;
+    }>(req);
+    const artifactId =
+      typeof body?.artifactId === "string" ? body.artifactId.trim() : "";
+    const recipients = Array.isArray(body?.recipients) ? body.recipients : [];
+    if (!/^copybook:[^/]+$/.test(artifactId) || recipients.length === 0) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "A Copybook artifact and at least one recipient are required.",
+        },
+        400,
+      );
+      return true;
+    }
+    if (!(await verifyShareableArtifact(assistant, user, artifactId))) {
+      sendJson(
+        req,
+        res,
+        { detail: "Artifact not found or not shareable." },
+        404,
+      );
+      return true;
+    }
+    const expiresAt = nowSeconds() + 7 * 24 * 60 * 60;
+    const invitations: Array<{
+      email: string;
+      role: string;
+      inviteUrl: string;
+      expiresAt: number;
+    }> = [];
+    for (const recipient of recipients) {
+      const email =
+        typeof recipient.email === "string"
+          ? normalizeInviteEmail(recipient.email)
+          : "";
+      if (
+        !/^\S+@\S+\.\S+$/.test(email) ||
+        !isCollaborationRole(recipient.role) ||
+        recipient.role === "owner"
+      ) {
+        sendJson(
+          req,
+          res,
+          {
+            detail:
+              "Each recipient needs a valid email and Viewer, Commenter, or Editor role.",
+          },
+          400,
+        );
+        return true;
+      }
+      const token = randomToken();
+      createArtifactInvitation(db, {
+        assistant_id: assistant.id,
+        artifact_id: artifactId,
+        email_normalized: email,
+        role: recipient.role,
+        token_hash: invitationTokenHash(token),
+        expires_at: expiresAt,
+        created_by_user_id: user.id,
+        created_at: nowIso(),
+      });
+      invitations.push({
+        email,
+        role: recipient.role,
+        inviteUrl: inviteUrl(token),
+        expiresAt,
+      });
+    }
+    sendJson(req, res, { invitations }, 201);
+    return true;
+  }
+
+  const acceptMatch = /^\/v1\/artifact-invitations\/([^/]+)\/accept\/?$/.exec(
+    url.pathname,
+  );
+  if (acceptMatch && req.method === "POST") {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const invitation = getActiveInvitationByTokenHash(
+      db,
+      invitationTokenHash(acceptMatch[1]!),
+      nowSeconds(),
+    );
+    if (
+      !invitation ||
+      invitation.email_normalized !== normalizeInviteEmail(user.email)
+    ) {
+      sendJson(req, res, { detail: "Invitation not found." }, 404);
+      return true;
+    }
+    const grant = acceptArtifactInvitation(db, invitation, user.id, nowIso());
+    sendJson(req, res, {
+      artifactId: grant.artifact_id,
+      ownerAssistantId: grant.assistant_id,
+      role: grant.role,
+    });
+    return true;
+  }
+  return false;
+}
+
+function copyProxyHeaders(req: Request): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (!value) continue;
+    const normalized = key.toLowerCase();
+    if (
+      normalized === "host" ||
+      normalized === "cookie" ||
+      normalized === "content-length" ||
+      normalized === "authorization"
+    )
+      continue;
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(key, item);
+    } else {
+      headers.set(key, value);
+    }
+  }
+  return headers;
+}
+
+async function streamRuntimeResponse(
+  req: Request,
+  res: Response,
+  response: globalThis.Response,
+): Promise<void> {
+  res.status(response.status);
+  setCorsHeaders(req, res);
+  for (const [key, value] of response.headers) {
+    const normalized = key.toLowerCase();
+    if (
+      normalized.startsWith("access-control-allow-") ||
+      normalized === "content-length"
+    )
+      continue;
+    res.setHeader(key, value);
+  }
+  if (!response.body) {
+    res.end();
+    return;
+  }
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+  } finally {
+    res.end();
+  }
+}
+
+async function proxySharedArtifact(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  if (url.pathname === "/v1/shared-artifacts/" && req.method === "GET") {
+    const grants = listActiveArtifactGrantsForRecipient(db, user.id);
+    sendJson(req, res, {
+      results: grants.map((grant) => ({
+        artifactId: grant.artifact_id,
+        ownerAssistantId: grant.assistant_id,
+        role: grant.role,
+        updatedAt: grant.updated_at,
+      })),
+    });
+    return true;
+  }
+
+  const match =
+    /^\/v1\/shared-artifacts\/([^/]+)(\/snapshot|\/months\/[^/]+\/(?:document|comments))\/?$/.exec(
+      url.pathname,
+    );
+  if (!match) return false;
+  const artifactId = decodeURIComponent(match[1]!);
+  const suffix = match[2]!;
+  const grant = getActiveArtifactGrantForRecipient(db, user.id, artifactId);
+  if (!grant) {
+    sendJson(req, res, { detail: "Shared artifact not found." }, 404);
+    return true;
+  }
+  const assistant = db
+    .query<AssistantRow, [string]>("SELECT * FROM assistants WHERE id = ?")
+    .get(grant.assistant_id);
+  if (!assistant) {
+    sendJson(
+      req,
+      res,
+      { detail: "Shared artifact is no longer available." },
+      410,
+    );
+    return true;
+  }
+  const runtimeStack = ensureRuntimeStackForAssistant(
+    db,
+    assistant,
+    runtimeStackConfig,
+    nowIso,
+  );
+  if (!isRuntimeStackRoutable(runtimeStack)) {
+    sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
+    return true;
+  }
+  const target = new URL(runtimeStack.gateway_url);
+  target.pathname = `/v1/assistants/${encodeURIComponent(assistant.id)}/shared-artifacts/${encodeURIComponent(artifactId)}${suffix}`;
+  target.search = url.search;
+  const headers = copyProxyHeaders(req);
+  headers.set(
+    "Authorization",
+    `Bearer ${mintActorToken(assistant.id, user.id, {
+      artifactId,
+      role: grant.role,
+    })}`,
+  );
+  headers.set("X-Worklin-Assistant-Id", assistant.id);
+  headers.set("X-Worklin-Org-Id", assistant.org_id);
+  headers.set("X-Worklin-User-Id", user.id);
+  const bodyBuffer =
+    req.method === "GET" || req.method === "HEAD"
+      ? undefined
+      : Buffer.isBuffer(req.body)
+        ? req.body
+        : Buffer.from(parseTextBody(req));
+  const response = await fetch(target, {
+    method: req.method,
+    headers,
+    body: bodyBuffer ? new Uint8Array(bodyBuffer) : undefined,
+    redirect: "manual",
+  });
+  await streamRuntimeResponse(req, res, response);
+  return true;
 }
 
 function assistantIdFromProxyPath(pathname: string): string | null {
@@ -1065,7 +1517,8 @@ async function proxyLiveVoiceProviderCallback(
       normalized === "host" ||
       normalized === "cookie" ||
       normalized === "content-length"
-    ) continue;
+    )
+      continue;
     if (Array.isArray(value)) {
       for (const item of value) headers.append(key, item);
     } else {
@@ -1161,7 +1614,8 @@ async function proxyToGateway(
       normalized === "cookie" ||
       normalized === "content-length" ||
       normalized === "authorization"
-    ) continue;
+    )
+      continue;
     if (Array.isArray(value)) {
       for (const item of value) headers.append(key, item);
     } else {
@@ -1217,7 +1671,9 @@ async function proxyToGateway(
   }
 }
 
-function asyncHandler(handler: (req: Request, res: Response) => Promise<void>): RequestHandler {
+function asyncHandler(
+  handler: (req: Request, res: Response) => Promise<void>,
+): RequestHandler {
   return (req, res, next) => {
     handler(req, res).catch(next);
   };
@@ -1281,7 +1737,12 @@ app.get(
   asyncHandler(async (req, res) => {
     try {
       const gateway = await fetch(`${env.gatewayUrl}/readyz`);
-      sendJson(req, res, { ok: gateway.ok, gatewayStatus: gateway.status }, gateway.ok ? 200 : 503);
+      sendJson(
+        req,
+        res,
+        { ok: gateway.ok, gatewayStatus: gateway.status },
+        gateway.ok ? 200 : 503,
+      );
     } catch {
       sendJson(req, res, { ok: false, gatewayStatus: null }, 503);
     }
@@ -1289,7 +1750,9 @@ app.get(
 );
 app.get("/_allauth/browser/v1/auth/session", asyncHandler(handleSession));
 app.delete("/_allauth/browser/v1/auth/session", asyncHandler(handleSession));
-app.get("/_allauth/browser/v1/config", (req, res) => sendJson(req, res, authConfigPayload()));
+app.get("/_allauth/browser/v1/config", (req, res) =>
+  sendJson(req, res, authConfigPayload()),
+);
 
 app.use(
   asyncHandler(async (req, res) => {
@@ -1327,6 +1790,9 @@ app.use(
       handleBilling(req, res);
       return;
     }
+
+    if (await handleArtifactInvitations(req, res, url, user)) return;
+    if (await proxySharedArtifact(req, res, url, user)) return;
 
     if (url.pathname.startsWith("/v1/assistants/")) {
       const handled = await handleAssistants(req, res, url, user);

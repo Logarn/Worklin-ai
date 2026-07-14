@@ -5,7 +5,9 @@ import {
   acceptArtifactInvitation,
   createArtifactInvitation,
   ensureArtifactSharingSchema,
+  getActiveArtifactGrantForRecipient,
   getActiveInvitationByTokenHash,
+  listActiveArtifactGrantsForRecipient,
   normalizeInviteEmail,
 } from "./artifact-sharing-store.js";
 
@@ -66,5 +68,22 @@ describe("artifact sharing store", () => {
       revoked_at: null,
     });
     expect(getActiveInvitationByTokenHash(db, "hash-123", 1_000)).toBeNull();
+    expect(
+      getActiveArtifactGrantForRecipient(
+        db,
+        "recipient-123",
+        "copybook:copybook-123",
+      ),
+    ).toMatchObject({ id: grant.id, role: "editor" });
+    expect(
+      listActiveArtifactGrantsForRecipient(db, "recipient-123"),
+    ).toHaveLength(1);
+    expect(
+      getActiveArtifactGrantForRecipient(
+        db,
+        "someone-else",
+        "copybook:copybook-123",
+      ),
+    ).toBeNull();
   });
 });
