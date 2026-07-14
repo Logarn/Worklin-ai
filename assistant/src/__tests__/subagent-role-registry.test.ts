@@ -110,9 +110,13 @@ describe("SUBAGENT_ROLE_REGISTRY", () => {
     }
   });
 
-  test("every role has empty skillIds (no skill preactivation)", () => {
-    for (const [_role, config] of Object.entries(SUBAGENT_ROLE_REGISTRY)) {
-      expect(config.skillIds).toEqual([]);
+  test("preactivates orchestration instructions only for supervisors", () => {
+    expect(SUBAGENT_ROLE_REGISTRY.supervisor.skillIds).toEqual(["subagent"]);
+
+    for (const [role, config] of Object.entries(SUBAGENT_ROLE_REGISTRY)) {
+      if (role !== "supervisor") {
+        expect(config.skillIds).toEqual([]);
+      }
     }
   });
 
