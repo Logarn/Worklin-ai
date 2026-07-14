@@ -198,6 +198,16 @@ describe("normalizeOnboardingContext", () => {
     expect(result.websiteUrl).toBe("https://acme.example");
   });
 
+  test("preserves unique first-run skill cues", () => {
+    const result = normalizeOnboardingContext({
+      tools: [],
+      tasks: [],
+      tone: "friendly",
+      skills: ["worklin-brand-research", "worklin-brand-research"],
+    });
+    expect(result.skills).toEqual(["worklin-brand-research"]);
+  });
+
   test("normalizes tools and tasks together", () => {
     const ctx: OnboardingContext = {
       tools: ["github", "trello"],

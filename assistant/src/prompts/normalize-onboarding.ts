@@ -94,6 +94,7 @@ export interface NormalizedOnboarding {
   cohort?: string;
   websiteUrl?: string;
   contentSourceUrl?: string;
+  skills?: string[];
 }
 
 const SCOPE_SERVICE_MAP: Record<string, string> = {
@@ -150,5 +151,6 @@ export function normalizeOnboardingContext(
       typeof ctx.contentSourceUrl === "string"
         ? ctx.contentSourceUrl.trim().replace(/[\r\n\t]/g, "") || undefined
         : undefined,
+    skills: ctx.skills?.length ? [...new Set(ctx.skills)] : undefined,
   };
 }

@@ -1815,6 +1815,15 @@ async function drainSingleMessage(
   // from a desktop source that skips runAgentLoop) can't leak CU preactivation
   // into the next queued message.
   conversation.preactivatedSkillIds = undefined;
+  // Onboarding skill cues are intentionally one-shot. Re-add them after the
+  // reset for the first message so the initial LLM turn can project their
+  // tools, while later turns return to normal conversation-driven activation.
+  if (conversation.messages.length === 0) {
+    const onboardingSkills = conversation.getOnboardingContext()?.skills;
+    if (onboardingSkills?.length) {
+      conversation.setPreactivatedSkillIds([...new Set(onboardingSkills)]);
+    }
+  }
 
   if (isRetentionAuditSubagentNotification(next.content)) {
     log.info(
