@@ -11,9 +11,13 @@ mock.module("@/lib/local-mode", () => ({
 import { authMiddleware } from "./auth-middleware";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import { useAuthStore, type AuthUser } from "@/stores/auth-store";
+import { useClientFeatureFlagStore } from "@/stores/client-feature-flag-store";
+import { useOnboardingStore } from "@/domains/onboarding/onboarding-store";
 import { routes } from "@/utils/routes";
 
 const initialAuthState = useAuthStore.getState();
+const initialClientFeatureFlagState = useClientFeatureFlagStore.getState();
+const initialOnboardingState = useOnboardingStore.getState();
 const fakeUser = { id: "user-123" } as AuthUser;
 
 async function runMiddleware(pathname: string): Promise<Response> {
@@ -41,11 +45,15 @@ beforeEach(() => {
   isLocalModeMock.mockImplementation(() => true);
   hasAssistantsMock.mockImplementation(() => false);
   useAuthStore.setState(initialAuthState, true);
+  useClientFeatureFlagStore.setState(initialClientFeatureFlagState, true);
+  useOnboardingStore.setState(initialOnboardingState, true);
   useAssistantLifecycleStore.setState({ assistantState: { kind: "error", message: "no assistant" } });
 });
 
 afterEach(() => {
   useAuthStore.setState(initialAuthState, true);
+  useClientFeatureFlagStore.setState(initialClientFeatureFlagState, true);
+  useOnboardingStore.setState(initialOnboardingState, true);
 });
 
 describe("authMiddleware — local-mode onboarding fork", () => {
@@ -97,5 +105,34 @@ describe("authMiddleware — local-mode onboarding fork", () => {
     const res = await runMiddleware(routes.home);
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe(routes.onboarding.hosting);
+  });
+});
+
+describe("authMiddleware — hosted activation-arm wait", () => {
+  test("waits for the activation arm to settle before routing a consented no-assistant user", async () => {
+    isLocalModeMock.mockImplementation(() => false);
+    hasAssistantsMock.mockImplementation(() => false);
+    useAuthStore.setState({
+      sessionStatus: "authenticated",
+      user: fakeUser,
+      platformSession: "present",
+    });
+    useClientFeatureFlagStore.setState({ loaded: false });
+    useOnboardingStore.setState({ tosAccepted: true, aiDataConsent: true });
+
+    let settled: Response | null = null;
+    const pending = runMiddleware(routes.assistant).then((res) => {
+      settled = res;
+    });
+
+    await tick();
+    expect(settled).toBeNull();
+
+    useClientFeatureFlagStore.getState().setLoaded();
+    await pending;
+
+    expect(settled).not.toBeNull();
+    expect(settled!.status).toBe(302);
+    expect(settled!.headers.get("Location")).toBe(routes.onboarding.hatching);
   });
 });

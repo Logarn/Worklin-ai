@@ -6,7 +6,7 @@
     "redirects": [
       {
         "source": "/",
-        "destination": "/web/main/",
+        "destination": "https://worklin-ai.vercel.app/assistant",
         "type": 302
       }
     ],
