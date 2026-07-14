@@ -11,14 +11,14 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `17d2e6e` (`Document UI consistency rollout boundary`), including the system-access fix and assistant/live-voice UI consistency pass
+- Current production application commit: `b7d9943` (`Bundle first-party skills for every user`), including the system-access fix, bundled first-party catalog, and assistant/live-voice UI consistency pass
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
 ## Current Skills And System-Access Fix
 
-The existing Worklin system-access settings remain the single permission model. The current local fix does not add a second permissions UI or a new account type.
+The existing Worklin system-access settings remain the single permission model. The deployed fix does not add a second permissions UI or a new account type.
 
 - Plain skill discovery, catalog installation, and loading are setup operations and are allowed under every system-access preset, including Strict.
 - Read-only `brand_brain_read` context injection is allowed under every preset so persisted onboarding Brand Brain data can load without a misleading approval popup.
@@ -53,7 +53,7 @@ Passed locally on 2026-07-14:
 - Production-mode web build using `VITE_PLATFORM_MODE=true bun run build`.
 - `git diff --check`.
 
-Deployment status: pushed and deployed through `17d2e6e` on 2026-07-14. Railway recovered with healthy gateway readiness, and a fresh production text turn returned `Worklin is ready.`, confirming the configured LLM credential survived the restart.
+Deployment status: pushed and deployed through `b7d9943` on 2026-07-14. Vercel and Railway both reported success; Railway `/healthz` and `/readyz` returned HTTP 200 with gateway status 200. A fresh production text turn succeeded after the earlier `17d2e6e`/`12e8567` restart. Run one fresh authenticated text turn before relying on LLM credential persistence across the later `b7d9943` restart.
 
 ## Default Skill Availability
 
@@ -85,6 +85,8 @@ Core files:
 - `assistant/Dockerfile`
 - `.github/workflows/release.yml`
 - `skills/catalog.json`
+
+Deployment status: `b7d9943` completed successfully on both Vercel and Railway. Production still needs a direct catalog/load verification confirming that all first-party skills appear as bundled and activate without a per-user install flow. The macOS workflow did not reach compilation because its GitHub App token step is missing the App ID secret; this is a CI configuration failure, not evidence that the packaged skills failed to build.
 
 ## Assistant And Live-Voice UI Consistency Pass
 
@@ -136,10 +138,14 @@ The current external blocker is Hume billing, not Worklin connectivity:
 
 Verified on 2026-07-14:
 
-- Application changes through `17d2e6e` were pushed to `main` and `origin/main`.
+- `main` and `origin/main` resolved to deployed commit `b7d9943`.
 - `GET https://worklin-ai-production.up.railway.app/healthz` returned HTTP 200 with `{"ok":true}`.
 - `GET https://worklin-ai-production.up.railway.app/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}`.
 - `GET https://worklin-ai.vercel.app/assistant` returned HTTP 200.
+- Vercel deployment `worklin-kjstmkc4o-sautionlineai-3596s-projects.vercel.app` completed successfully for `b7d9943`.
+- Railway reported a successful production deployment for `b7d9943`.
+- The OpenAPI Spec Check passed for `b7d9943`.
+- The macOS Build check failed before compilation because `actions/create-github-app-token` had no App ID configured (`appId option is required`).
 - Vercel deployment `worklin-exmunv6fv-sautionlineai-3596s-projects.vercel.app` completed successfully for `17d2e6e`.
 - The stale `worklin-ai.vercel.app` alias was repointed to that deployment and verified to serve the same main asset bundle.
 - A fresh post-restart production text turn returned `Worklin is ready.`, confirming LLM generation and credential persistence.
@@ -153,6 +159,10 @@ Verified on 2026-07-14:
 
 Recent production commits relevant to this pilot include:
 
+- `b7d9943` — bundle the complete first-party skill catalog for every user.
+- `12e8567` — refresh generated OpenAPI output and production handoff evidence.
+- `17d2e6e` — deploy the system-access and assistant/live-voice UI rollout stack.
+- `5653385` — unify assistant identity and live voice around the royal-blue Worklin orb.
 - `7971b05` — scope shared runtime to the pilot assistant.
 - `eb1ff26` — unblock guarded Hume pilot setup.
 - `af12c21` — preserve providers on billing errors.
@@ -181,7 +191,7 @@ No raw pilot audio was written to Worklin, the repo, or this handoff. Only trans
 
 The production app did receive Hume's billing error and moved the live-voice store to `failed`. The composer intentionally unmounted the shared voice panel for every `failed` state, so the actionable error vanished and the normal start button reappeared. To the user this looked as if the Hume interface had simply disappeared.
 
-A local fix now:
+The deployed fix:
 
 - keeps the shared voice panel mounted for `failed`,
 - displays the existing `Voice unavailable` label and provider error,
@@ -220,14 +230,14 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ## Next Execution Steps
 
-### 0. Deploy the skills and terminology fix after restart confirmation
+### 0. Finish post-deploy verification for skills and system access
 
-1. Commit only the reviewed skills/system-access/terminology files and this handoff.
-2. Get explicit confirmation immediately before pushing because Railway will restart the shared runtime.
-3. Push `main`, watch Vercel and Railway deployment health separately, then verify `/healthz`, `/readyz`, and `/assistant`.
-4. Confirm the Kimi connection still exists after the runtime restart without exposing or re-entering the key on the user's behalf.
-5. Run an authenticated copy task and confirm Brand Brain context and the copywriting skill load without an approval popup.
-6. Confirm Contacts and approval/channel copy contain no user-facing `Guardian` or `non-guardian` account labels.
+1. Run one fresh authenticated text turn to confirm the configured LLM connection survived the `b7d9943` Railway restart without exposing or re-entering the key.
+2. Query the production skills surface and confirm the complete first-party catalog appears as bundled rather than user-installed.
+3. Load representative product skills and confirm activation does not create a workspace installation or approval prompt.
+4. Run an authenticated copy task and confirm Brand Brain context and the copywriting skill load without an approval popup.
+5. Confirm Contacts and approval/channel copy contain no user-facing `Guardian` or `non-guardian` account labels.
+6. Restore the missing GitHub App ID secret for the macOS workflow, then rerun that check before treating release packaging as verified.
 
 ### 1. User action: restore Hume credits
 
@@ -306,9 +316,9 @@ Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKL
 
 The private Hume pilot is configured through Worklin and production connectivity is proven: Worklin bootstrap returned 200, Hume WebSocket returned 101, session_settings/chat_metadata exchanged, Chrome granted the built-in microphone, Worklin showed Listening, and 16 kHz audio_input frames streamed. The current external blocker is Hume error E0300: exhausted credit balance. Stop at that billing gate; the user must add credits.
 
-The app also hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. A tested fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Verify the commit/deploy status first and preserve all unrelated worktree changes.
+The app previously hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. The deployed fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Preserve all unrelated worktree changes.
 
-A separate tested local fix now reuses Worklin's existing system-access settings: plain/catalog skill installation and loading plus read-only Brand Brain access do not ask for approval, while inline-command skill loads and tools/actions still follow the selected access level. User-facing legacy Guardian terminology has been replaced with You/account owner/account verification; internal identifiers remain only for compatibility. This fix is not deployed yet. Confirm the Railway restart before pushing, then verify Kimi credential persistence and run a live authenticated copy test.
+Production `main` is deployed through `b7d9943`. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while inline-command skill loads and tools/actions still follow the selected access level. User-facing legacy Guardian terminology has been replaced with You/account owner/account verification; internal identifiers remain only for compatibility. The complete first-party catalog is bundled for every user. Vercel and Railway are healthy, but production catalog/load behavior, a fresh post-`b7d9943` LLM turn, Brand Brain copy behavior, and the user-facing terminology sweep still need direct authenticated verification. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
 
 After credits exist, run the documented three-turn Hume test, real-time transcript check, output-driven speaking visualization check, barge-in latency measurement, end-session and refresh persistence checks, duplicate-session rejection, approval safety test, and no-raw-audio confirmation. Use the authenticated Chrome profile requested by the user; do not switch to Safari or the in-app browser. Never repeat or expose provider credentials.
 ```
