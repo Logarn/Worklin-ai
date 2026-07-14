@@ -50,9 +50,13 @@ describe("SUBAGENT_ROLE_REGISTRY", () => {
     }
   });
 
-  test('no role includes "skill_execute" (replaced by core tools)', () => {
-    for (const [_role, config] of Object.entries(SUBAGENT_ROLE_REGISTRY)) {
-      if (config.allowedTools !== undefined) {
+  test('only the preactivated supervisor exposes "skill_execute"', () => {
+    expect(SUBAGENT_ROLE_REGISTRY.supervisor.allowedTools).toContain(
+      "skill_execute",
+    );
+
+    for (const [role, config] of Object.entries(SUBAGENT_ROLE_REGISTRY)) {
+      if (role !== "supervisor" && config.allowedTools !== undefined) {
         expect(config.allowedTools).not.toContain("skill_execute");
       }
     }
