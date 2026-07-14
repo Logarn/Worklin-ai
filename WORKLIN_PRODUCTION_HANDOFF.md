@@ -24,6 +24,7 @@ The current external blocker is Hume billing, not Worklin connectivity:
 
 - Hume accepted Worklin's production WebSocket connection.
 - Hume then returned error `E0300`: `Exhausted credit balance. Visit platform.hume.ai/billing to manage your account.`
+- Hume Billing now shows `0 minutes remaining` and `EVI limit exceeded` on the active free plan. The account had five free EVI minutes at the start of this test; the continuously connected listening session consumed that allowance while the microphone/connection path was being diagnosed.
 - The spoken multi-turn, interruption, transcript-persistence, and latency gates cannot be completed until the user adds Hume credits.
 - Do not select a plan, add payment information, or alter Hume billing on the user's behalf.
 
@@ -35,6 +36,9 @@ Verified on 2026-07-14:
 - `GET https://worklin-ai-production.up.railway.app/healthz` returned HTTP 200 with `{"ok":true}`.
 - `GET https://worklin-ai-production.up.railway.app/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}`.
 - `GET https://worklin-ai.vercel.app/assistant` returned HTTP 200.
+- Vercel deployment `dpl_2Cup8MVp5966L4g5Yf5yaCgPKYjB` completed successfully for the error-visibility commit.
+- The stale `worklin-ai.vercel.app` alias was repointed from its older deployment to that Ready production deployment.
+- The corrected production UI was verified in Chrome: `Voice unavailable` and Hume's exhausted-credit message remain visible, while `Start voice mode` stays retryable.
 - The production Worklin account resolves a persisted assistant; the prior zero-assistant state is fixed.
 - The production Live Voice setup panel is available for the allowlisted user and stores Hume credentials through Worklin's server-side credential path.
 - Hume configuration completed successfully in Worklin without exposing provider secrets to the renderer or repository.
@@ -46,7 +50,7 @@ Recent production commits relevant to this pilot include:
 - `af12c21` — preserve providers on billing errors.
 - `29c7cd9` — bundle the feature-flag registry in the runtime image.
 - `a7ba866` — update provider test SDK mocks.
-- `Keep live voice provider errors visible` — keep terminal provider failures visible and retryable in the composer.
+- `5aa7e5f` — keep terminal provider failures visible and retryable in the composer.
 
 The shared runtime is internal-pilot-only. Customer onboarding must remain gated until isolated per-assistant runtimes and their safety suite are restored.
 
@@ -114,15 +118,15 @@ The user must manage the Hume account's billing/credits. Stop at that gate. Do n
 
 The user also planned to rotate the temporary Hume credential after testing. Never repeat the credential previously shared in chat, and never place it in source, logs, commands, or documentation.
 
-### 2. Deploy and verify the error-state fix
+### 2. Error-state deployment completed
 
-After the error-visibility commit is deployed:
+Completed on 2026-07-14:
 
-1. wait for the Vercel deployment to become ready,
-2. confirm the production alias points to the new deployment rather than an older pinned build,
-3. start voice with insufficient credits once if needed,
-4. verify the panel stays visible with `Voice unavailable` and the provider error, and
-5. verify the retry button is available while the microphone and session lease are released.
+1. Vercel built `5aa7e5f` successfully.
+2. The production alias was corrected to the new Ready deployment.
+3. One zero-credit voice attempt returned Hume `E0300`.
+4. The shared panel stayed visible with `Voice unavailable` and the provider error.
+5. `Start voice mode` stayed available while the microphone and session lease were released.
 
 Do not repeatedly spend provider credits or create overlapping microphone sessions while checking the failure state.
 
