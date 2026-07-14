@@ -42,4 +42,22 @@ describe("shouldAttemptProviderProfileRepair", () => {
       }),
     ).toBe(false);
   });
+
+  test("does not replace the selected provider after a billing failure", () => {
+    expect(
+      shouldAttemptProviderProfileRepair({
+        code: "PROVIDER_BILLING",
+        errorCategory: "provider_billing",
+        status: 402,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not replace the selected provider after a rate limit", () => {
+    expect(
+      shouldAttemptProviderProfileRepair({
+        status: 429,
+      }),
+    ).toBe(false);
+  });
 });
