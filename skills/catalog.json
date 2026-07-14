@@ -1231,7 +1231,8 @@
             "The user asks for private competitor data, account access, or unauthorized scraping"
           ]
         }
-      }
+      },
+      "updatedAt": "2026-07-14T23:06:02.000Z"
     },
     {
       "id": "write-brand-copy",
