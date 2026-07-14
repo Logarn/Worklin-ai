@@ -36,6 +36,7 @@ import type { CommentAnchor } from "@/domains/chat/utils/tiptap-position-map";
 import { useAssistantQuery } from "@/assistant/queries";
 import { documentsPost } from "@/generated/daemon/sdk.gen";
 import type { DocumentsByIdCommentsPostResponse } from "@/generated/daemon/types.gen";
+import { useAssistantAvatar } from "@/hooks/use-assistant-avatar";
 import { useAssistantIdentityStore } from "@/stores/assistant-identity-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import {
@@ -95,6 +96,7 @@ export function DocumentViewerContainer({
   const assistants = useResolvedAssistantsStore.use.assistants();
   const selectedAssistantId =
     useResolvedAssistantsStore.use.selectedAssistantId();
+  const { characterProfile } = useAssistantAvatar(assistantId);
   const { data: assistantResult } = useAssistantQuery({
     enabled: true,
     selectedPlatformAssistantId: selectedAssistantId ?? assistantId,
@@ -107,6 +109,7 @@ export function DocumentViewerContainer({
     assistants.find((assistant) => assistant.id === selectedAssistantId) ??
     (assistants.length === 1 ? assistants[0] : undefined);
   const assistantName =
+    characterProfile?.assistantName?.trim() ||
     identityName?.trim() ||
     platformAssistantName?.trim() ||
     resolvedAssistant?.name?.trim() ||
