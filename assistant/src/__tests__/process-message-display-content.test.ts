@@ -287,6 +287,29 @@ describe("processMessage displayContent", () => {
     expect(conversation.runAgentLoop.mock.calls[0]![0]).toBe(modelContent);
   });
 
+  test("routes natural-language onboarding, connection, audit, and copy tasks through the LLM", async () => {
+    const prompts = [
+      "I want to onboard a new brand. Please guide me one question at a time.",
+      "Connect Klaviyo for Dr. Rachael Institute.",
+      "Run a full retention audit for Dr. Rachael Institute.",
+      "Use my saved Brand Brain to write a concise email to Dr Rachael.",
+    ];
+
+    for (const prompt of prompts) {
+      addMessageCalls.length = 0;
+      const conversation = makeTestConversation();
+      activeConversation = conversation;
+
+      await processMessage("conv-display-content", prompt, {
+        sourceChannel: "vellum",
+        sourceInterface: "web",
+      });
+
+      expect(conversation.runAgentLoop).toHaveBeenCalledTimes(1);
+      expect(conversation.runAgentLoop.mock.calls[0]![0]).toBe(prompt);
+    }
+  });
+
   test("persists explicit empty displayContent while keeping model content in memory", async () => {
     const conversation = makeTestConversation();
     activeConversation = conversation;

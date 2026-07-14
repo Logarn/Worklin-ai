@@ -19,7 +19,6 @@ import {
   parseInterfaceId,
   supportsHostProxy,
 } from "../../channels/types.js";
-import { isAssistantFeatureFlagEnabled } from "../../config/assistant-feature-flags.js";
 import { isHttpAuthDisabled } from "../../config/env.js";
 import { getConfig } from "../../config/loader.js";
 import {
@@ -34,16 +33,7 @@ import {
   formatCleanResult,
   formatCompactResult,
   isModelSlashCommand,
-  isRetentionOnboardingWebsiteReply,
-  runDirectRetentionAuditTurn,
-  runRetentionKlaviyoConnectionTurn,
-  runRetentionOnboardingTurn,
 } from "../../daemon/conversation-process.js";
-import {
-  isDirectRetentionAuditIntent,
-  isRetentionKlaviyoConnectionIntent,
-  isRetentionOnboardingIntent,
-} from "../../daemon/retention-audit-intent.js";
 import {
   buildSlashContextForContent,
   resolveSlash,
@@ -53,7 +43,6 @@ import { canonicalizeTimeZone } from "../../daemon/date-context.js";
 import {
   buildScanFirstMessage,
   buildSelfIntroMessage,
-  getCannedFirstGreeting,
   isWakeUpGreeting,
 } from "../../daemon/first-greeting.js";
 import {
@@ -285,8 +274,6 @@ function alignAttachments(
 }
 
 /** Feature flag gating the self-intro first message (see first-greeting.ts). */
-const SELF_INTRO_GREETING_FLAG = "self-intro-greeting" as const;
-
 const SUGGESTION_CACHE_MAX = 100;
 const VALID_RISK_THRESHOLDS = ["none", "low", "medium", "high"] as const;
 type RiskThreshold = (typeof VALID_RISK_THRESHOLDS)[number];
@@ -1387,10 +1374,9 @@ export async function handleSendMessage(
   }
 
   // Store pre-chat onboarding context on the conversation when this is the
-  // very first message (no prior messages loaded). Artifact persistence
-  // (IDENTITY.md, USER.md, sidecar) runs before either the canned greeting
-  // broadcast or normal LLM inference so client-side identity reads observe
-  // the selected assistant name.
+  // very first message (no prior messages loaded). Artifact persistence runs
+  // before LLM inference so client-side identity reads observe the selected
+  // assistant name.
   const isFirstOnboarding =
     !!body.onboarding && conversation.messages.length === 0;
   if (isFirstOnboarding) {
@@ -1522,11 +1508,9 @@ export async function handleSendMessage(
     );
   }
 
-  // ── URL scan path: rewrite first message for scan onboarding ──
-  // When onboarding provides a websiteUrl or contentSourceUrl and the
-  // first message is the macOS wake-up greeting, bypass the canned
-  // greeting and rewrite the user message to a scan instruction so real
-  // LLM inference runs against the URL.
+  // Rewrite the transport-only wake-up message into useful model input when
+  // the user supplied explicit pre-chat context. Every branch still reaches
+  // the agent loop; this route never authors a conversational response.
   const sanitizeUrl = (u?: string) =>
     u?.trim().replace(/[\r\n\t]/g, "") || undefined;
   const websiteUrl = sanitizeUrl(body.onboarding?.websiteUrl);
@@ -1537,14 +1521,7 @@ export async function handleSendMessage(
     conversation.getMessages().length,
   );
   const isScanPath = !!scanUrl && isWakeUp;
-  // Self-intro path: when we know a name, send a natural introduction on the
-  // user's behalf instead of the canned greeting, so the assistant generates a
-  // real first response. Gated behind the `self-intro-greeting` flag (default
-  // off); `undefined` (flag off or no names) falls back to the canned path.
-  const selfIntroGreetingEnabled =
-    isWakeUp &&
-    isAssistantFeatureFlagEnabled(SELF_INTRO_GREETING_FLAG, getConfig());
-  const selfIntro = selfIntroGreetingEnabled
+  const selfIntro = isWakeUp
     ? buildSelfIntroMessage(body.onboarding ?? undefined)
     : undefined;
 
@@ -1555,112 +1532,10 @@ export async function handleSendMessage(
       : ("content-source" as const);
     effectiveContent = buildScanFirstMessage(scanUrl, scanVariant);
     // Fall through to normal inference path below
-  } else if (selfIntroGreetingEnabled && body.onboarding?.initialMessage) {
+  } else if (isWakeUp && body.onboarding?.initialMessage) {
     effectiveContent = body.onboarding.initialMessage;
   } else if (isWakeUp && selfIntro) {
-    // Rewrite to the self-introduction and fall through to real inference
-    // (mirrors the scan path above).
     effectiveContent = selfIntro;
-  } else if (isWakeUp) {
-    const cannedGreeting = getCannedFirstGreeting(body.onboarding ?? undefined);
-
-    conversation.setProcessing(true);
-    let cleanupDeferred = false;
-    try {
-      const rawContent = content ?? "";
-      const attachments = hasAttachments
-        ? smDeps.resolveAttachments(attachmentIds)
-        : [];
-      const greetingMeta = {
-        userMessageChannel: sourceChannel,
-        assistantMessageChannel: sourceChannel,
-        userMessageInterface: sourceInterface,
-        assistantMessageInterface: sourceInterface,
-      };
-      const persisted = await persistQueuedMessageBody(conversation, {
-        content: rawContent,
-        attachments,
-        requestId: crypto.randomUUID(),
-        metadata: greetingMeta,
-      });
-
-      const conversationId = mapping.conversationId;
-      const channelMeta = buildChannelMetadata(sourceChannel, sourceInterface, {
-        trustContext: conversation.trustContext,
-      });
-
-      const assistantMsg = createAssistantMessage(cannedGreeting);
-      const persistedAssistant = await addMessage(
-        mapping.conversationId,
-        "assistant",
-        JSON.stringify(assistantMsg.content),
-        { metadata: channelMeta },
-      );
-      conversation.getMessages().push(assistantMsg);
-
-      const response = {
-        accepted: true,
-        messageId: persisted.id,
-        conversationId,
-      };
-
-      if (isFirstOnboarding) {
-        persistOnboardingArtifacts(body.onboarding!);
-        try {
-          recordOnboardingEvent({
-            screen: "complete",
-            tools: body.onboarding!.tools,
-            tasks: body.onboarding!.tasks,
-            tone: body.onboarding!.tone,
-            googleConnected: body.onboarding!.googleConnected,
-            googleScopes: body.onboarding!.googleScopes,
-            priorAssistants: body.onboarding!.priorAssistants,
-          });
-        } catch (err) {
-          log.warn({ err }, "Failed to record onboarding telemetry event");
-        }
-      }
-
-      setTimeout(() => {
-        broadcastMessage({
-          type: "user_message_echo",
-          text: rawContent,
-          conversationId,
-          messageId: persisted.id,
-          clientMessageId,
-        });
-        broadcastMessage({
-          type: "assistant_text_delta",
-          text: cannedGreeting,
-          conversationId,
-        });
-        emitCannedMessageComplete(
-          broadcastMessage,
-          conversationId,
-          persistedAssistant.id,
-        );
-        publishConversationMessagesChanged(conversationId, originClientId);
-        conversation.setProcessing(false);
-        silentlyWithLog(
-          conversation.drainQueue(),
-          "canned-greeting queue drain",
-        );
-
-        conversation.warmPromptCache();
-      }, 0);
-
-      log.info(
-        { conversationId, personalized: !!body.onboarding },
-        "Served canned first greeting — skipped LLM inference",
-      );
-      cleanupDeferred = true;
-      return response;
-    } finally {
-      if (!cleanupDeferred && conversation.isProcessing()) {
-        conversation.setProcessing(false);
-        silentlyWithLog(conversation.drainQueue(), "error-path queue drain");
-      }
-    }
   }
 
   if (isFirstOnboarding) {
@@ -2198,81 +2073,6 @@ export async function handleSendMessage(
     clientMessageId,
   });
   publishConversationMessagesChanged(mapping.conversationId, originClientId);
-
-  if (isRetentionKlaviyoConnectionIntent(resolvedContent)) {
-    log.info(
-      { conversationId: mapping.conversationId, requestId },
-      "Retention Klaviyo connection intent intercepted in POST /messages",
-    );
-    void runRetentionKlaviyoConnectionTurn(conversation, {
-      content: resolvedContent,
-      requestId,
-      userMessageId: messageId,
-      onEvent: broadcastMessage,
-    }).catch((err) => {
-      log.error(
-        { err, conversationId: mapping.conversationId },
-        "Retention Klaviyo connection failed (POST /messages)",
-      );
-    });
-
-    return {
-      accepted: true,
-      messageId,
-      conversationId: mapping.conversationId,
-    };
-  }
-
-  if (isDirectRetentionAuditIntent(resolvedContent)) {
-    log.info(
-      { conversationId: mapping.conversationId, requestId },
-      "Direct retention audit intent intercepted in POST /messages",
-    );
-    void runDirectRetentionAuditTurn(conversation, {
-      content: resolvedContent,
-      requestId,
-      userMessageId: messageId,
-      onEvent: broadcastMessage,
-    }).catch((err) => {
-      log.error(
-        { err, conversationId: mapping.conversationId },
-        "Direct retention audit failed (POST /messages)",
-      );
-    });
-
-    return {
-      accepted: true,
-      messageId,
-      conversationId: mapping.conversationId,
-    };
-  }
-
-  if (
-    isRetentionOnboardingIntent(resolvedContent) ||
-    isRetentionOnboardingWebsiteReply(conversation, resolvedContent)
-  ) {
-    log.info(
-      { conversationId: mapping.conversationId, requestId },
-      "Retention onboarding intent intercepted in POST /messages",
-    );
-    void runRetentionOnboardingTurn(conversation, {
-      content: resolvedContent,
-      requestId,
-      userMessageId: messageId,
-      onEvent: broadcastMessage,
-    }).catch((err) => {
-      log.error(
-        { err, conversationId: mapping.conversationId },
-        "Retention onboarding failed (POST /messages)",
-      );
-    });
-
-    return {
-      accepted: true,
-      messageId,
-      conversationId: mapping.conversationId,
-    };
-  }
 
   // Fire-and-forget the agent loop; events flow to the hub via broadcastMessage.
   conversation

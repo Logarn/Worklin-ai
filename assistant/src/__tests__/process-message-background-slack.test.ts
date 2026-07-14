@@ -339,4 +339,19 @@ describe("processMessageInBackground Slack option propagation", () => {
 
     activeConversation.__loopDeferred.resolve();
   });
+
+  test("routes background onboarding requests through the LLM", async () => {
+    const prompt =
+      "Use my saved Brand Brain to write a concise email to Dr Rachael.";
+
+    await processMessageInBackground("conv-background-slack", prompt, {
+      sourceChannel: "vellum",
+      sourceInterface: "web",
+    });
+
+    expect(activeConversation.runAgentLoop).toHaveBeenCalledTimes(1);
+    expect(activeConversation.runAgentLoop.mock.calls[0][0]).toBe(prompt);
+
+    activeConversation.__loopDeferred.resolve();
+  });
 });

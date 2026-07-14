@@ -352,6 +352,44 @@ describe("HTTP POST /v1/messages does not intercept recording intents (by design
   });
 });
 
+describe("HTTP POST /v1/messages routes natural language through the LLM", () => {
+  beforeEach(() => {
+    routeGuardianReplyMock.mockClear();
+    listPendingByDestinationMock.mockClear();
+    listCanonicalMock.mockClear();
+    addMessageMock.mockClear();
+  });
+
+  test("does not replace onboarding, connection, audit, or copy tasks with saved responses", async () => {
+    const prompts = [
+      "wake up, my friend",
+      "Onboard a new brand for me",
+      "Connect my Klaviyo account",
+      "Run a retention audit",
+      "Use my saved Brand Brain to write a concise email to Dr Rachael",
+    ];
+
+    for (const prompt of prompts) {
+      const persistUserMessage = mock(async () => ({
+        id: "persisted-msg-id",
+        deduplicated: false,
+      }));
+      const runAgentLoop = mock(async () => undefined);
+      const conversation = makeConversation({
+        persistUserMessage,
+        runAgentLoop,
+      });
+
+      const res = await sendMessage(prompt, conversation);
+
+      expect(res.status).toBe(202);
+      expect(persistUserMessage).toHaveBeenCalledTimes(1);
+      expect(runAgentLoop).toHaveBeenCalledTimes(1);
+      expect((runAgentLoop as any).mock.calls[0][0]).toBe(prompt);
+    }
+  });
+});
+
 // ============================================================================
 // CLIENT TIMEZONE — optional HTTP metadata
 // ============================================================================

@@ -73,12 +73,7 @@ import type {
   UiSurfaceShow,
   UserMessageAttachment,
 } from "./message-protocol.js";
-import {
-  isDirectRetentionAuditIntent,
-  isRetentionAuditSubagentNotification,
-  isRetentionKlaviyoConnectionIntent,
-  isRetentionOnboardingIntent,
-} from "./retention-audit-intent.js";
+import { isRetentionAuditSubagentNotification } from "./retention-audit-intent.js";
 import { buildTransportHints } from "./transport-hints.js";
 import { resolveTrustClass } from "./trust-context.js";
 import { resolveVerificationSessionIntent } from "./verification-session-intent.js";
@@ -1650,18 +1645,6 @@ async function buildPassthroughBatch(
     // skill preactivation isn't leaked into batched tail messages.
     return [];
   }
-  if (isDirectRetentionAuditIntent(head.content)) {
-    // Deep retention audits own their own progress surfaces and long-running
-    // child-agent merge. Keep them out of the generic batched agent path so
-    // the retention runner is not cut off by ordinary tool-call timeouts.
-    return [];
-  }
-  if (
-    isRetentionKlaviyoConnectionIntent(head.content) ||
-    isRetentionOnboardingIntent(head.content) ||
-    isRetentionOnboardingWebsiteReply(conversation, head.content)
-  )
-    return [];
   if (isRetentionAuditSubagentNotification(head.content)) return [];
   // Surface-action messages rely on per-message `activeSurfaceId` and
   // `surfaceActionRequestIds` semantics that last-wins batching would
@@ -1692,13 +1675,6 @@ async function buildPassthroughBatch(
     if (
       resolveVerificationSessionIntent(candidate.content).kind ===
       "direct_setup"
-    )
-      break;
-    if (
-      isDirectRetentionAuditIntent(candidate.content) ||
-      isRetentionKlaviyoConnectionIntent(candidate.content) ||
-      isRetentionOnboardingIntent(candidate.content) ||
-      isRetentionOnboardingWebsiteReply(conversation, candidate.content)
     )
       break;
     if (isRetentionAuditSubagentNotification(candidate.content)) break;
@@ -2363,60 +2339,6 @@ async function drainSingleMessage(
   conversation.currentActiveSurfaceId = next.activeSurfaceId;
   conversation.currentPage = next.currentPage;
 
-  if (isDirectRetentionAuditIntent(resolvedContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId: next.requestId,
-      },
-      "Direct retention audit intent intercepted in queue",
-    );
-    void runDirectRetentionAuditTurn(conversation, {
-      content: resolvedContent,
-      requestId: next.requestId,
-      userMessageId,
-      onEvent: next.onEvent,
-    });
-    return;
-  }
-
-  if (isRetentionKlaviyoConnectionIntent(resolvedContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId: next.requestId,
-      },
-      "Retention Klaviyo connection intent intercepted in queue",
-    );
-    void runRetentionKlaviyoConnectionTurn(conversation, {
-      content: resolvedContent,
-      requestId: next.requestId,
-      userMessageId,
-      onEvent: next.onEvent,
-    });
-    return;
-  }
-
-  if (
-    isRetentionOnboardingIntent(resolvedContent) ||
-    isRetentionOnboardingWebsiteReply(conversation, resolvedContent)
-  ) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId: next.requestId,
-      },
-      "Retention onboarding intent intercepted in queue",
-    );
-    void runRetentionOnboardingTurn(conversation, {
-      content: resolvedContent,
-      requestId: next.requestId,
-      userMessageId,
-      onEvent: next.onEvent,
-    });
-    return;
-  }
-
   // Fire-and-forget: detect notification preferences in the queued message
   // and persist any that are found, mirroring the logic in processMessage.
   if (conversation.assistantId) {
@@ -2870,60 +2792,6 @@ async function drainBatch(
       : undefined;
   if (lastSuccessfulBatchEntry?.isInteractive !== undefined)
     drainLoopOptions.isInteractive = lastSuccessfulBatchEntry.isInteractive;
-
-  if (isDirectRetentionAuditIntent(lastSuccessfulContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId: lastSuccessfulRequestId,
-        batchSize: batch.length,
-      },
-      "Direct retention audit intent intercepted in batch",
-    );
-    void runDirectRetentionAuditTurn(conversation, {
-      content: lastSuccessfulContent,
-      requestId: lastSuccessfulRequestId,
-      userMessageId: lastUserMessageId,
-      onEvent: fanOutOnEvent,
-    });
-    return;
-  }
-
-  if (isRetentionKlaviyoConnectionIntent(lastSuccessfulContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId: lastSuccessfulRequestId,
-        batchSize: batch.length,
-      },
-      "Retention Klaviyo connection intent intercepted in batch",
-    );
-    void runRetentionKlaviyoConnectionTurn(conversation, {
-      content: lastSuccessfulContent,
-      requestId: lastSuccessfulRequestId,
-      userMessageId: lastUserMessageId,
-      onEvent: fanOutOnEvent,
-    });
-    return;
-  }
-
-  if (isRetentionOnboardingIntent(lastSuccessfulContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId: lastSuccessfulRequestId,
-        batchSize: batch.length,
-      },
-      "Retention onboarding intent intercepted in batch",
-    );
-    void runRetentionOnboardingTurn(conversation, {
-      content: lastSuccessfulContent,
-      requestId: lastSuccessfulRequestId,
-      userMessageId: lastUserMessageId,
-      onEvent: fanOutOnEvent,
-    });
-    return;
-  }
 
   // Fire-and-forget: runAgentLoop's finally block recursively calls drainQueue
   // when this run completes. Mirrors drainSingleMessage.
@@ -3428,60 +3296,6 @@ export async function processMessage(
   }
 
   const userMessageId = pmResult.id;
-
-  if (isDirectRetentionAuditIntent(resolvedContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId,
-      },
-      "Direct retention audit intent intercepted",
-    );
-    await runDirectRetentionAuditTurn(conversation, {
-      content: resolvedContent,
-      requestId,
-      userMessageId,
-      onEvent,
-    });
-    return userMessageId;
-  }
-
-  if (isRetentionKlaviyoConnectionIntent(resolvedContent)) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId,
-      },
-      "Retention Klaviyo connection intent intercepted",
-    );
-    await runRetentionKlaviyoConnectionTurn(conversation, {
-      content: resolvedContent,
-      requestId,
-      userMessageId,
-      onEvent,
-    });
-    return userMessageId;
-  }
-
-  if (
-    isRetentionOnboardingIntent(resolvedContent) ||
-    isRetentionOnboardingWebsiteReply(conversation, resolvedContent)
-  ) {
-    log.info(
-      {
-        conversationId: conversation.conversationId,
-        requestId,
-      },
-      "Retention onboarding intent intercepted",
-    );
-    await runRetentionOnboardingTurn(conversation, {
-      content: resolvedContent,
-      requestId,
-      userMessageId,
-      onEvent,
-    });
-    return userMessageId;
-  }
 
   // Fire-and-forget: detect notification preferences in the user message
   // and persist any that are found. Runs in the background so it doesn't

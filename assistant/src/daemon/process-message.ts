@@ -41,17 +41,8 @@ import {
 import {
   formatCleanResult,
   formatCompactResult,
-  isRetentionOnboardingWebsiteReply,
-  runDirectRetentionAuditTurn,
-  runRetentionKlaviyoConnectionTurn,
-  runRetentionOnboardingTurn,
 } from "./conversation-process.js";
 import { resolveChannelCapabilities } from "./conversation-runtime-assembly.js";
-import {
-  isDirectRetentionAuditIntent,
-  isRetentionKlaviyoConnectionIntent,
-  isRetentionOnboardingIntent,
-} from "./retention-audit-intent.js";
 import {
   buildSlashContextForContent,
   resolveSlash,
@@ -537,78 +528,6 @@ export async function processMessage(
     getSubagentManager().updateParentSender(conversationId, broadcastMessage);
   }
 
-  if (isDirectRetentionAuditIntent(resolvedContent)) {
-    log.info(
-      { conversationId, requestId },
-      "Direct retention audit intent intercepted in message route",
-    );
-    try {
-      await runDirectRetentionAuditTurn(conversation, {
-        content: resolvedContent,
-        requestId,
-        userMessageId: messageId,
-        onEvent: emitEvent,
-      });
-    } finally {
-      if (
-        options?.isInteractive === true &&
-        conversation.getCurrentSender() === broadcastMessage
-      ) {
-        conversation.updateClient(() => {}, true);
-      }
-    }
-    return { messageId };
-  }
-
-  if (isRetentionKlaviyoConnectionIntent(resolvedContent)) {
-    log.info(
-      { conversationId, requestId },
-      "Retention Klaviyo connection intent intercepted in message route",
-    );
-    try {
-      await runRetentionKlaviyoConnectionTurn(conversation, {
-        content: resolvedContent,
-        requestId,
-        userMessageId: messageId,
-        onEvent: emitEvent,
-      });
-    } finally {
-      if (
-        options?.isInteractive === true &&
-        conversation.getCurrentSender() === broadcastMessage
-      ) {
-        conversation.updateClient(() => {}, true);
-      }
-    }
-    return { messageId };
-  }
-
-  if (
-    isRetentionOnboardingIntent(resolvedContent) ||
-    isRetentionOnboardingWebsiteReply(conversation, resolvedContent)
-  ) {
-    log.info(
-      { conversationId, requestId },
-      "Retention onboarding intent intercepted in message route",
-    );
-    try {
-      await runRetentionOnboardingTurn(conversation, {
-        content: resolvedContent,
-        requestId,
-        userMessageId: messageId,
-        onEvent: emitEvent,
-      });
-    } finally {
-      if (
-        options?.isInteractive === true &&
-        conversation.getCurrentSender() === broadcastMessage
-      ) {
-        conversation.updateClient(() => {}, true);
-      }
-    }
-    return { messageId };
-  }
-
   try {
     await conversation.runAgentLoop(resolvedContent, messageId, {
       onEvent: emitEvent,
@@ -667,90 +586,6 @@ export async function processMessageInBackground(
   if (options?.isInteractive === true) {
     conversation.updateClient(broadcastMessage, false);
     getSubagentManager().updateParentSender(conversationId, broadcastMessage);
-  }
-
-  if (isDirectRetentionAuditIntent(content)) {
-    log.info(
-      { conversationId, requestId },
-      "Direct retention audit intent intercepted in background message route",
-    );
-    runDirectRetentionAuditTurn(conversation, {
-      content,
-      requestId,
-      userMessageId: messageId,
-      onEvent: emitEvent,
-    })
-      .finally(() => {
-        if (
-          options?.isInteractive === true &&
-          conversation.getCurrentSender() === broadcastMessage
-        ) {
-          conversation.updateClient(() => {}, true);
-        }
-      })
-      .catch((err) => {
-        log.error({ err, conversationId }, "Background retention audit failed");
-      });
-    return { messageId };
-  }
-
-  if (isRetentionKlaviyoConnectionIntent(content)) {
-    log.info(
-      { conversationId, requestId },
-      "Retention Klaviyo connection intent intercepted in background message route",
-    );
-    runRetentionKlaviyoConnectionTurn(conversation, {
-      content,
-      requestId,
-      userMessageId: messageId,
-      onEvent: emitEvent,
-    })
-      .finally(() => {
-        if (
-          options?.isInteractive === true &&
-          conversation.getCurrentSender() === broadcastMessage
-        ) {
-          conversation.updateClient(() => {}, true);
-        }
-      })
-      .catch((err) => {
-        log.error(
-          { err, conversationId },
-          "Background retention Klaviyo connection failed",
-        );
-      });
-    return { messageId };
-  }
-
-  if (
-    isRetentionOnboardingIntent(content) ||
-    isRetentionOnboardingWebsiteReply(conversation, content)
-  ) {
-    log.info(
-      { conversationId, requestId },
-      "Retention onboarding intent intercepted in background message route",
-    );
-    runRetentionOnboardingTurn(conversation, {
-      content,
-      requestId,
-      userMessageId: messageId,
-      onEvent: emitEvent,
-    })
-      .finally(() => {
-        if (
-          options?.isInteractive === true &&
-          conversation.getCurrentSender() === broadcastMessage
-        ) {
-          conversation.updateClient(() => {}, true);
-        }
-      })
-      .catch((err) => {
-        log.error(
-          { err, conversationId },
-          "Background retention onboarding failed",
-        );
-      });
-    return { messageId };
   }
 
   conversation
