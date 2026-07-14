@@ -19,6 +19,7 @@ interface TimerRecord {
 
 interface TestState {
   containerized: boolean;
+  embeddingsDisabled: boolean;
   skillGraphSeedCount: number;
   uninstalledCatalogSeedCount: number;
   v2SkillSeedCount: number;
@@ -30,6 +31,7 @@ interface TestState {
 
 const state: TestState = {
   containerized: false,
+  embeddingsDisabled: false,
   skillGraphSeedCount: 0,
   uninstalledCatalogSeedCount: 0,
   v2SkillSeedCount: 0,
@@ -40,6 +42,7 @@ const state: TestState = {
 };
 
 mock.module("../config/env-registry.js", () => ({
+  getDisableEmbeddings: (): boolean => state.embeddingsDisabled,
   getIsContainerized: (): boolean => state.containerized,
 }));
 
@@ -99,6 +102,7 @@ async function flushMicrotasks(): Promise<void> {
 
 function resetState(): void {
   state.containerized = false;
+  state.embeddingsDisabled = false;
   state.skillGraphSeedCount = 0;
   state.uninstalledCatalogSeedCount = 0;
   state.v2SkillSeedCount = 0;
@@ -174,6 +178,18 @@ describe("skill-memory-refresh", () => {
     expect(state.v2SkillSeedCount).toBe(1);
     expect(state.v2CliCommandSeedCount).toBe(1);
     expect(state.timers).toHaveLength(0);
+  });
+
+  test("skips v2 capability seeds when embeddings are disabled", async () => {
+    state.embeddingsDisabled = true;
+
+    refreshSkillCapabilityMemories(makeConfig(true));
+    await flushMicrotasks();
+
+    expect(state.skillGraphSeedCount).toBe(2);
+    expect(state.uninstalledCatalogSeedCount).toBe(1);
+    expect(state.v2SkillSeedCount).toBe(0);
+    expect(state.v2CliCommandSeedCount).toBe(0);
   });
 
   test("startup refresh defers only the v2 seeding in containers", async () => {

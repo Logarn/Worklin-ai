@@ -26,6 +26,11 @@ set -euo pipefail
 : "${CES_MODE:=managed}"
 : "${WORKLIN_REQUIRE_ISOLATED_RUNTIME:=true}"
 : "${WORKLIN_RUNTIME_MODE:=combined}"
+# The combined free-tier runtime cannot safely load the local ONNX embedding
+# worker alongside the gateway, control plane, CES, and assistant. Keep dense
+# embeddings inert unless an operator explicitly opts in after provisioning
+# enough memory or an approved external embedding backend.
+: "${VELLUM_DISABLE_EMBEDDINGS:=true}"
 
 if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ]]; then
   : "${GATEWAY_PORT:=${PORT}}"
@@ -67,6 +72,7 @@ export IS_CONTAINERIZED
 export CES_MODE
 export WORKLIN_REQUIRE_ISOLATED_RUNTIME
 export WORKLIN_RUNTIME_MODE
+export VELLUM_DISABLE_EMBEDDINGS
 export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 
 mkdir -p \

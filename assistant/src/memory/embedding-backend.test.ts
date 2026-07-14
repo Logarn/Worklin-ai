@@ -38,8 +38,24 @@ const LOCAL_CONFIG = {
 } as unknown as AssistantConfig;
 
 describe("embedding backend cache invalidation", () => {
+  const originalDisableEmbeddings = process.env.VELLUM_DISABLE_EMBEDDINGS;
+
   afterEach(() => {
     clearEmbeddingBackendCache();
+    if (originalDisableEmbeddings === undefined) {
+      delete process.env.VELLUM_DISABLE_EMBEDDINGS;
+    } else {
+      process.env.VELLUM_DISABLE_EMBEDDINGS = originalDisableEmbeddings;
+    }
+  });
+
+  test("returns a degraded selection when embeddings are disabled", async () => {
+    process.env.VELLUM_DISABLE_EMBEDDINGS = "true";
+
+    const selection = await selectEmbeddingBackend(LOCAL_CONFIG);
+
+    expect(selection.backend).toBeNull();
+    expect(selection.reason).toContain("VELLUM_DISABLE_EMBEDDINGS");
   });
 
   test("clearEmbeddingBackendCache disposes cached backends before clearing", async () => {
