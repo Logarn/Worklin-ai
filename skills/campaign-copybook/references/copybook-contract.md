@@ -39,11 +39,11 @@ Use stable identifiers when the host supports them. Never infer approval from th
 
 When the host provides the included Copybook Records skill, use it as the write path for annual copybook, month, campaign, and approval state. Keep these responsibilities separate:
 
-| Surface | Responsibility |
-| --- | --- |
-| Structured copybook records | Stable IDs, stage, revision, approval history, and immutable snapshots |
-| Editable month document | Human editing, comments, strategy, briefs, copy, and designer directions |
-| Chat | Concise progress, blockers, warnings, and explicit approval requests |
+| Surface                     | Responsibility                                                           |
+| --------------------------- | ------------------------------------------------------------------------ |
+| Structured copybook records | Stable IDs, stage, revision, approval history, and immutable snapshots   |
+| Editable month document     | Human editing, comments, strategy, briefs, copy, and designer directions |
+| Chat                        | Concise progress, blockers, warnings, and explicit approval requests     |
 
 `copybook_month_create` returns the month record with `documentSurfaceId`. Treat that value as the canonical editable surface for the lifetime of the month:
 
@@ -147,11 +147,11 @@ inputs_draft
 
 Required gates:
 
-| Transition | Requirement |
-| --- | --- |
-| `strategy_review` -> `strategy_approved` | Explicit human approval of a named strategy revision |
-| `brief_review` -> `briefs_approved` | Explicit human approval of the included brief revision |
-| `copy_review` -> `ready_for_design` | Blocking QA passed, no open blocking comments, explicit human approval of a named copy revision |
+| Transition                               | Requirement                                                                                     |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `strategy_review` -> `strategy_approved` | Explicit human approval of a named strategy revision                                            |
+| `brief_review` -> `briefs_approved`      | Explicit human approval of the included brief revision                                          |
+| `copy_review` -> `ready_for_design`      | Blocking QA passed, no open blocking comments, explicit human approval of a named copy revision |
 
 Do not combine these into one blanket approval.
 

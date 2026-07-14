@@ -74,6 +74,7 @@
           "includes": [
             "worklin-brand-brain",
             "worklin-copybook",
+            "document-editor",
             "write-brand-copy"
           ],
           "activation-hints": [
@@ -88,7 +89,8 @@
           ]
         }
       },
-      "compatibility": "Designed for Worklin assistants with a rich-text document editor"
+      "compatibility": "Designed for Worklin assistants with a rich-text document editor",
+      "updatedAt": "2026-07-14T16:28:35.000Z"
     },
     {
       "id": "chatgpt-import",
@@ -1230,7 +1232,7 @@
           ]
         }
       },
-      "updatedAt": "2026-07-13T21:46:07.000Z"
+      "updatedAt": "2026-07-14T14:47:47.000Z"
     }
   ]
 }
