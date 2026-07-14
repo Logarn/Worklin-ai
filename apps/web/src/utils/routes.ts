@@ -113,6 +113,21 @@ export const routes = {
     app: (slug: string) => dyn(r("/assistant/library"), slug),
   },
 
+  work: {
+    root: r("/assistant/work"),
+    brandArtifacts: (brandId: string) =>
+      `${r("/assistant/work/brands")}/${brandId}/artifacts`,
+    app: (brandId: string, appId: string) =>
+      `${r("/assistant/work/brands")}/${brandId}/artifacts/apps/${appId}`,
+    copybookMonth: (
+      brandId: string,
+      copybookId: string,
+      year: number,
+      month: number,
+    ) =>
+      `${r("/assistant/work/brands")}/${brandId}/artifacts/copybooks/${copybookId}/${year}/${month}`,
+  },
+
   copybooks: {
     root: r("/assistant/copybooks"),
     month: (copybookId: string, year: number, month: number) =>

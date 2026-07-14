@@ -1432,6 +1432,307 @@ paths:
                 required:
                   - message
                 additionalProperties: false
+  /v1/artifacts:
+    get:
+      operationId: artifacts_get
+      summary: List artifacts
+      description: Return artifacts across canonical sources. Use brandId=unassigned for artifacts without a brand.
+      tags:
+        - artifacts
+      parameters:
+        - name: brandId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - active
+              - archived
+        - name: favorite
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        brandId:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        resourceType:
+                          type: string
+                        resourceId:
+                          type: string
+                        artifactType:
+                          type: string
+                        parentArtifactId:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        projectId:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        metadata:
+                          anyOf:
+                            - type: object
+                              propertyNames:
+                                type: string
+                              additionalProperties: {}
+                            - type: "null"
+                        favorite:
+                          type: boolean
+                        archived:
+                          type: boolean
+                        createdAt:
+                          type: number
+                        updatedAt:
+                          type: number
+                        title:
+                          type: string
+                        sourceExists:
+                          type: boolean
+                        childCount:
+                          type: number
+                      required:
+                        - id
+                        - brandId
+                        - resourceType
+                        - resourceId
+                        - artifactType
+                        - parentArtifactId
+                        - projectId
+                        - metadata
+                        - favorite
+                        - archived
+                        - createdAt
+                        - updatedAt
+                        - title
+                        - sourceExists
+                        - childCount
+                      additionalProperties: false
+                required:
+                  - artifacts
+                additionalProperties: false
+  /v1/artifacts/{id}:
+    get:
+      operationId: artifacts_by_id_get
+      summary: Get an artifact
+      tags:
+        - artifacts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  brandId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  resourceType:
+                    type: string
+                  resourceId:
+                    type: string
+                  artifactType:
+                    type: string
+                  parentArtifactId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  projectId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  metadata:
+                    anyOf:
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                      - type: "null"
+                  favorite:
+                    type: boolean
+                  archived:
+                    type: boolean
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                  title:
+                    type: string
+                  sourceExists:
+                    type: boolean
+                  childCount:
+                    type: number
+                required:
+                  - id
+                  - brandId
+                  - resourceType
+                  - resourceId
+                  - artifactType
+                  - parentArtifactId
+                  - projectId
+                  - metadata
+                  - favorite
+                  - archived
+                  - createdAt
+                  - updatedAt
+                  - title
+                  - sourceExists
+                  - childCount
+                additionalProperties: false
+        "404":
+          description: Artifact not found
+    patch:
+      operationId: artifacts_by_id_patch
+      summary: Update artifact organization
+      description:
+        Update an artifact's brand, classification, favorite, archive, or metadata state without changing canonical
+        content.
+      tags:
+        - artifacts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                brandId:
+                  anyOf:
+                    - type: string
+                      minLength: 1
+                    - type: "null"
+                artifactType:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                favorite:
+                  type: boolean
+                archived:
+                  type: boolean
+                metadata:
+                  anyOf:
+                    - type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties: {}
+                    - type: "null"
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  brandId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  resourceType:
+                    type: string
+                  resourceId:
+                    type: string
+                  artifactType:
+                    type: string
+                  parentArtifactId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  projectId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  metadata:
+                    anyOf:
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                      - type: "null"
+                  favorite:
+                    type: boolean
+                  archived:
+                    type: boolean
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                  title:
+                    type: string
+                  sourceExists:
+                    type: boolean
+                  childCount:
+                    type: number
+                required:
+                  - id
+                  - brandId
+                  - resourceType
+                  - resourceId
+                  - artifactType
+                  - parentArtifactId
+                  - projectId
+                  - metadata
+                  - favorite
+                  - archived
+                  - createdAt
+                  - updatedAt
+                  - title
+                  - sourceExists
+                  - childCount
+                additionalProperties: false
+        "400":
+          description: Invalid artifact update
+        "404":
+          description: Artifact or brand not found
   /v1/attachments:
     delete:
       operationId: attachments_delete
@@ -3105,6 +3406,46 @@ paths:
       responses:
         "200":
           description: Successful response
+  /v1/brands:
+    get:
+      operationId: brands_get
+      summary: List artifact brands
+      description: Return brand summaries with active artifact counts.
+      tags:
+        - artifacts
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  brands:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        artifactCount:
+                          type: number
+                        updatedAt:
+                          type: number
+                      required:
+                        - id
+                        - name
+                        - artifactCount
+                        - updatedAt
+                      additionalProperties: false
+                  unassignedArtifactCount:
+                    type: number
+                required:
+                  - brands
+                  - unassignedArtifactCount
+                additionalProperties: false
   /v1/browser/execute:
     post:
       operationId: browser_execute_post

@@ -20,7 +20,10 @@ interface LoadedApp {
 }
 
 export function LibraryDetailPage() {
-  const { appId } = useParams<{ appId: string }>();
+  const { appId, brandId = "unassigned" } = useParams<{
+    appId: string;
+    brandId: string;
+  }>();
   const assistantId = useActiveAssistantId();
   const navigate = useNavigate();
 
@@ -60,8 +63,8 @@ export function LibraryDetailPage() {
   }, [assistantId, appId]);
 
   const handleClose = useCallback(() => {
-    void navigate(routes.library.root);
-  }, [navigate]);
+    void navigate(routes.work.brandArtifacts(brandId));
+  }, [brandId, navigate]);
 
   const editApp = useEditApp();
   const handleEdit = useCallback(() => {
@@ -96,7 +99,7 @@ export function LibraryDetailPage() {
           onClick={handleClose}
           className="text-body-medium-default text-[var(--primary-base)] underline"
         >
-          Back to Library
+          Back to artifacts
         </button>
       </div>
     );

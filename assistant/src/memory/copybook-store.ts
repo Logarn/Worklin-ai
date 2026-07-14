@@ -5,6 +5,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { getDb } from "./db-connection.js";
 import { rawGet } from "./raw-query.js";
 import {
+  artifacts,
   conversations,
   retentionBrandBrains,
   retentionBrands,
@@ -176,7 +177,21 @@ export function createCopybook(params: {
     createdAt: now,
     updatedAt: now,
   };
-  db.insert(retentionCopybooks).values(row).run();
+  db.transaction((tx) => {
+    tx.insert(retentionCopybooks).values(row).run();
+    tx.insert(artifacts)
+      .values({
+        id: `copybook:${row.id}`,
+        brandId: row.brandId,
+        resourceType: "copybook",
+        resourceId: row.id,
+        artifactType: "copy",
+        metadataJson: JSON.stringify({ year: row.year }),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })
+      .run();
+  });
   return mapCopybook(row as typeof retentionCopybooks.$inferSelect);
 }
 

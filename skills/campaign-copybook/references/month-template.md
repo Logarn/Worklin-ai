@@ -34,9 +34,9 @@ Copy revision: {n}
 
 {Explain the email/SMS mix, sequence, and how campaigns avoid repetition or fatigue.}
 
-| Date | Channel | Campaign | Objective | Audience | Offer/content | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| YYYY-MM-DD | Email | {title} | {objective} | {segment} | {focus} | Proposed |
+| Date       | Channel | Campaign | Objective   | Audience  | Offer/content | Status   |
+| ---------- | ------- | -------- | ----------- | --------- | ------------- | -------- |
+| YYYY-MM-DD | Email   | {title}  | {objective} | {segment} | {focus}       | Proposed |
 
 ### Assumptions, Conflicts & Missing Inputs
 
@@ -140,7 +140,7 @@ This is direction for a human designer, not a generated design.
 ## Approval History
 
 | Scope | Revision | Decision | Reviewer | Date | Notes |
-| --- | --- | --- | --- | --- | --- |
+| ----- | -------- | -------- | -------- | ---- | ----- |
 ```
 
 ## Rendering Rules

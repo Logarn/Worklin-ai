@@ -10,6 +10,7 @@ metadata:
     includes:
       - "worklin-brand-brain"
       - "worklin-copybook"
+      - "document-editor"
       - "write-brand-copy"
     activation-hints:
       - "Plan this month's email and SMS campaigns"
@@ -38,7 +39,7 @@ Run a staged, human-reviewed campaign production workflow while preserving the f
 1. Read [copybook-contract.md](references/copybook-contract.md) before starting or resuming a copybook.
 2. Read [month-template.md](references/month-template.md) when creating or updating the month document.
 3. Read [review-and-qa.md](references/review-and-qa.md) for QA, comments, revisions, approval, or handoff.
-4. Use the included Brand Brain skill for persisted context, the included Copybook Records skill for workflow state and immutable approval snapshots, and the included Brand Copywriter for each approved campaign brief.
+4. Use the included Brand Brain skill for persisted context, the included Copybook Records skill for workflow state and immutable approval snapshots, the included Document Editor for the linked month document, and the included Brand Copywriter for each approved campaign brief.
 
 Do not load an entire annual copybook into one generation prompt. Work one month at a time, and one campaign per copywriting call. Pass structured, approved inputs between stages.
 
@@ -61,11 +62,15 @@ Load durable voice, audience, offer, CTA, claim, and compliance rules from Brand
 
 Label unknown facts and conflicts. Ask only when a missing answer changes the offer, audience, compliance posture, core argument, or calendar.
 
-Select or create the annual copybook and month record before strategy drafting. Link the month to the current conversation and editable document when the host supports those identifiers.
+Select or create the annual copybook and month record before strategy drafting. `copybook_month_create` creates the editable month document. Capture the returned `month.documentSurfaceId`; this is the only document surface for that month. If it is absent, stop and report that the month document could not be prepared.
+
+Call `document_open` with that surface ID before writing. Stream the month content into the same surface with multiple `document_update` calls in `append` mode. Never call `document_create`, `file_write`, `host_file_write`, or another workspace-file tool for copybook content. Never use a Markdown file or the chat transcript as the persistence fallback.
 
 ### 2. Draft monthly strategy and calendar
 
-Create or update one editable document for the month using the month template. Produce the objective, strategic narrative, message pillars, sequencing rationale, channel cadence, and proposed campaign calendar.
+Create or update the month content in its existing linked document using the month template. Produce the objective, strategic narrative, message pillars, sequencing rationale, channel cadence, and proposed campaign calendar.
+
+If `document_open` or `document_update` fails, retry the same operation against the same `month.documentSurfaceId`. Do not create a replacement document, advance the structured stage, claim that the draft was saved, or paste the full draft into chat. Report the unsaved section concisely and keep the generated section available for a retry.
 
 Set the stage to `strategy_review` and stop. Do not draft campaign briefs or copy until a human explicitly approves the strategy. Direct edits are not approval by themselves.
 
@@ -75,7 +80,7 @@ Persist the named strategy revision before requesting review. After explicit app
 
 After strategy approval, create one structured brief per calendar item. Briefs may be drafted independently in parallel, but one synthesis pass must check the month as a whole for duplication, cadence, sequencing, offer conflicts, and audience fatigue.
 
-Render the briefs into the existing month document. Set the stage to `brief_review` and stop. Do not write final copy for an unapproved brief.
+Render the briefs into the existing month document with `document_update`. Set the stage to `brief_review` only after those document updates succeed, then stop. Do not write final copy for an unapproved brief.
 
 Create or update one campaign record per brief, preserving stable campaign identifiers across revisions. Record brief approval only after explicit human approval of the named revision.
 
@@ -89,7 +94,7 @@ After brief approval, call the included Brand Copywriter separately for each cam
 - relevant source material and proof
 - the channel-specific constraints
 
-Require the automated output contract in the Brand Copywriter's `copy-contracts.md`. Render finished copy and designer directions into the month document. A designer direction describes intended hierarchy, placement, or asset need; it is not visual design generation.
+Require the automated output contract in the Brand Copywriter's `copy-contracts.md`. Render finished copy and designer directions into the existing month surface with `document_update`; never create one document per campaign. A designer direction describes intended hierarchy, placement, or asset need; it is not visual design generation.
 
 Persist each campaign's copy and design-handoff fields against its existing record. A persistence failure leaves that campaign in its prior stage and must be surfaced before review.
 
@@ -127,3 +132,4 @@ Keep chat concise. Put the full strategy, briefs, copy, directions, and revision
 - what Worklin will do after approval
 
 Never bury the approval request beneath the generated copy.
+Never expose internal planning narration, tool-selection reasoning, or self-talk. If document persistence fails, give only the affected stage or section and a retry-oriented status; do not dump the deliverable into chat.

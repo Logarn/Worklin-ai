@@ -7,21 +7,27 @@ import {
     useState,
     type ReactNode,
 } from "react";
-import { Outlet, useLocation, useNavigate, useNavigationType } from "react-router";
+import {
+  Outlet,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+} from "react-router";
 
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { useAssistantIdentityInit } from "@/hooks/use-assistant-identity-init";
 import { MOBILE_MEDIA_QUERY, useIsMobile } from "@/hooks/use-is-mobile";
-import { getLocalBool, getLocalNumber, setLocalBool, setLocalNumber } from "@/utils/local-settings";
+import {
+  getLocalBool,
+  getLocalNumber,
+  setLocalBool,
+  setLocalNumber,
+} from "@/utils/local-settings";
 import { routes } from "@/utils/routes";
 
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { useElectronDockSync } from "@/domains/chat/hooks/use-electron-dock-sync";
-import {
-    chooseSidebarOpenAppDestination,
-    useOpenAppFromChat,
-} from "@/domains/chat/hooks/use-open-app-from-chat";
 import { useHomeUnreadBadge } from "@/hooks/use-home-unread-badge";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
 
@@ -48,7 +54,6 @@ import { openPopoutWindow } from "@/runtime/popout-window";
 import { useVellumCommands } from "@/runtime/vellum-commands";
 import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
 import { useConversationStore } from "@/stores/conversation-store";
-import { useViewerStore } from "@/stores/viewer-store";
 import type { Conversation } from "@/types/conversation-types";
 import { requestComposerFocus } from "./composer-focus";
 
@@ -127,7 +132,8 @@ export function ChatLayout() {
   // chat-layout child route (home, library, contacts, identity, chat)
   // inherits a populated sidebar on direct navigation — not just /assistant.
   // TanStack Query handles dedup with any other consumer using the same key.
-  const conversationGroupsUI = useAssistantFeatureFlagStore.use.conversationGroupsUI();
+  const conversationGroupsUI =
+    useAssistantFeatureFlagStore.use.conversationGroupsUI();
   const { conversations } = useConversationListQuery(
     assistantId,
     isAssistantActive,
@@ -151,8 +157,7 @@ export function ChatLayout() {
   // create/rename/delete affordances are rendered here, not in ChatPage.
   // The hook is self-sufficient (cache invalidation handles rollback), so
   // it can live wherever the sidebar lives.
-  const { handleRenameGroup, handleDeleteGroup } =
-    useConversationGroupActions({
+  const { handleRenameGroup, handleDeleteGroup } = useConversationGroupActions({
       assistantId,
       conversationGroups,
     });
@@ -165,7 +170,6 @@ export function ChatLayout() {
     assistantId,
     assistantStateKind,
   });
-
 
   // Home page unread indicator — drives the red dot on the Home button in
   // the layout header.
@@ -211,7 +215,9 @@ export function ChatLayout() {
     setHistoryIndex(idx);
     // Only PUSH clears forward entries (pushState). REPLACE (replaceState)
     // and POP preserve them, so max must not reset.
-    setMaxHistoryIndex(navigationType === "PUSH" ? idx : (prev) => Math.max(prev, idx));
+    setMaxHistoryIndex(
+      navigationType === "PUSH" ? idx : (prev) => Math.max(prev, idx),
+    );
   }
 
   const canGoBack = historyIndex > 0;
@@ -285,8 +291,10 @@ export function ChatLayout() {
   });
 
   const activeConversationId = useConversationStore.use.activeConversationId();
-  const processingConversationIds = useConversationStore.use.processingConversationIds();
-  const attentionConversationIds = useConversationStore.use.attentionConversationIds();
+  const processingConversationIds =
+    useConversationStore.use.processingConversationIds();
+  const attentionConversationIds =
+    useConversationStore.use.attentionConversationIds();
 
   const handleSelectConversation = useCallback(
     (key: string) => {
@@ -333,11 +341,15 @@ export function ChatLayout() {
   });
 
   const activeConversation = useMemo(
-    () => conversations.find((c) => c.conversationId === activeConversationId) ?? null,
+    () =>
+      conversations.find((c) => c.conversationId === activeConversationId) ??
+      null,
     [conversations, activeConversationId],
   );
 
-  const topBarCenter = topBarCenterSlot ?? (headerSupplements ? (
+  const topBarCenter =
+    topBarCenterSlot ??
+    (headerSupplements ? (
     <ChatConversationHeader
       assistantId={assistantId}
       activeConversation={activeConversation}
@@ -440,7 +452,7 @@ export function ChatLayout() {
       }
     },
     openLibrary: () => {
-      void navigate(routes.library.root);
+      void navigate(routes.work.root);
     },
     openIdentity: () => {
       void navigate(routes.identity);
@@ -472,20 +484,22 @@ export function ChatLayout() {
     },
   });
 
-  const handleOpenLibrary = useCallback(() => {
-    navigate(routes.library.root);
+  const handleOpenWork = useCallback(() => {
+    const lastBrandId = window.localStorage.getItem(
+      "worklin:last-artifact-brand",
+    );
+    navigate(
+      lastBrandId ? routes.work.brandArtifacts(lastBrandId) : routes.work.root,
+    );
   }, [navigate]);
 
-  const isLibraryActive = location.pathname.startsWith(routes.library.root);
-
-  const handleOpenCopybooks = useCallback(() => {
-    navigate(routes.copybooks.root);
-  }, [navigate]);
-
-  const isCopybooksActive = location.pathname.startsWith(routes.copybooks.root);
+  const isWorkActive =
+    location.pathname.startsWith(routes.work.root) ||
+    location.pathname.startsWith(routes.library.root) ||
+    location.pathname.startsWith(routes.copybooks.root);
 
   // Only highlight a conversation row in the sidebar when the user is
-  // actually viewing it. On non-conversation routes (Identity, Library,
+  // actually viewing it. On non-conversation routes (Identity, Work,
   // Home, etc.) no conversation row should appear active. The store value
   // is intentionally left intact — many other consumers (SSE streams,
   // attention tracking, message reconciliation) rely on it persisting
@@ -497,28 +511,6 @@ export function ChatLayout() {
   const sidebarActiveConversationId = isOnConversationRoute
     ? (activeConversationId ?? undefined)
     : undefined;
-
-  // Sidebar pinned-app open. The viewer panel only renders under ChatPage
-  // (mounted at `/assistant` index + `/assistant/conversations/:id`), so a
-  // pinned-app click from home / library / identity / inspector etc. would
-  // mutate the viewer store with no surface to display against. Navigate
-  // to a chat route first when off-chat, then run the shared open flow.
-  //
-  // See `use-open-app-from-chat.ts` for the loadApp → enterAppEditing flow
-  // shared with the transcript / assets-pill open path.
-  const openAppFromChat = useOpenAppFromChat();
-  const activeAppId = useViewerStore.use.activeAppId();
-  const handleOpenAppFromSidebar = useCallback(
-    async (appId: string) => {
-      const dest = chooseSidebarOpenAppDestination(
-        location.pathname,
-        activeConversationId,
-      );
-      if (dest) void navigate(dest);
-      await openAppFromChat(appId);
-    },
-    [location.pathname, navigate, activeConversationId, openAppFromChat],
-  );
 
   // Inspector affordance for the sidebar context menu. The topbar variant
   // (in `chat-page.tsx`) uses `useConversationSecondaryActions` so it can
@@ -533,16 +525,13 @@ export function ChatLayout() {
     [navigate],
   );
 
-  const handleOpenInNewWindow = useCallback(
-    (conversation: Conversation) => {
+  const handleOpenInNewWindow = useCallback((conversation: Conversation) => {
       if (isElectron()) {
         void openPopoutWindow(conversation.conversationId);
       } else {
         window.open(routes.conversation(conversation.conversationId), "_blank");
       }
-    },
-    [],
-  );
+  }, []);
 
   const renderSideMenu = (args: SideMenuRenderArgs): ReactNode => (
     <AssistantSideMenu
@@ -561,12 +550,8 @@ export function ChatLayout() {
       onStartNewConversation={startNewConversation}
       isIntelligenceActive={isIdentityActive}
       onOpenIntelligence={handleOpenIdentity}
-      isLibraryActive={isLibraryActive}
-      onOpenLibrary={handleOpenLibrary}
-      isCopybooksActive={isCopybooksActive}
-      onOpenCopybooks={handleOpenCopybooks}
-      activeAppId={activeAppId ?? undefined}
-      onOpenApp={handleOpenAppFromSidebar}
+      isWorkActive={isWorkActive}
+      onOpenWork={handleOpenWork}
       onPinConversation={handleTogglePinConversation}
       onReorderConversations={handleReorderConversations}
       onRenameConversation={handleRenameConversation}
@@ -661,7 +646,12 @@ export function ChatLayout() {
             className="shrink-0"
             aria-label="Navigation"
           >
-            {renderSideMenu({ collapsed, variant: "rail", width: sidebarWidth, onWidthChange: handleSidebarWidthChange })}
+            {renderSideMenu({
+              collapsed,
+              variant: "rail",
+              width: sidebarWidth,
+              onWidthChange: handleSidebarWidthChange,
+            })}
           </aside>
           <main className="flex min-w-0 flex-1 min-h-0 flex-col overflow-hidden">
             <Outlet />
