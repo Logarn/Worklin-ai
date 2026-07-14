@@ -31,11 +31,11 @@ const MIGRATABLE_BOOTSTRAP_METHODS = new Set([
  *
  * This function detects that scenario and updates the binding to match the
  * JWT's principal. The incoming principal must use the platform-owner
- * namespace. The stored vellum binding must either use that same generated
- * namespace or carry bootstrap provenance, which covers legacy Worklin web
- * owners created before the namespace was introduced. Challenge-verified and
- * other external bindings are never rewritten. The JWT's signature proves the
- * incoming principal was minted by this deployment's trusted control plane.
+ * namespace. The stored vellum binding must use that same generated namespace,
+ * carry bootstrap provenance, or be explicitly marked as an import from the
+ * retired guardian table. Challenge-verified and other external bindings are
+ * never rewritten. The JWT's signature proves the incoming principal was
+ * minted by this deployment's trusted control plane.
  *
  * Returns true if healing occurred, false otherwise.
  */
@@ -51,9 +51,12 @@ export function healGuardianBindingDrift(incomingPrincipalId: string): boolean {
   const wasBootstrapped =
     guardianResult.channel.verifiedVia !== null &&
     MIGRATABLE_BOOTSTRAP_METHODS.has(guardianResult.channel.verifiedVia);
+  const wasLegacyGuardianImport =
+    guardianResult.contact.id.startsWith("legacy-guardian-");
   if (
     !currentPrincipalId?.startsWith("vellum-principal-") &&
-    !wasBootstrapped
+    !wasBootstrapped &&
+    !wasLegacyGuardianImport
   ) {
     return false;
   }

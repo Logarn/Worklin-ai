@@ -81,6 +81,24 @@ describe("healGuardianBindingDrift", () => {
     expect(guardian!.channel.externalUserId).toBe(ownerPrincipalId);
   });
 
+  test("heals a challenge-defaulted guardian imported from the legacy table", () => {
+    createGuardianBinding({
+      contactId: "legacy-guardian-production-binding",
+      channel: "vellum",
+      guardianExternalUserId: "legacy-platform-owner-id",
+      guardianDeliveryChatId: "local",
+      guardianPrincipalId: "legacy-platform-owner-id",
+      verifiedVia: "challenge",
+    });
+
+    const ownerPrincipalId = "vellum-principal-platform-owner-id";
+    expect(healGuardianBindingDrift(ownerPrincipalId)).toBe(true);
+
+    const guardian = findGuardianForChannel("vellum");
+    expect(guardian!.contact.principalId).toBe(ownerPrincipalId);
+    expect(guardian!.channel.externalUserId).toBe(ownerPrincipalId);
+  });
+
   test("no-op when principals already match", () => {
     createGuardianBinding({
       channel: "vellum",
