@@ -1847,6 +1847,8 @@ export class Conversation {
        * this value via {@link SubagentManager.spawn}.
        */
       overrideProfile?: string;
+      /** Float the inherited profile above non-main call-site defaults. */
+      forceOverrideProfile?: boolean;
     },
   ): Promise<void> {
     const { onEvent, ...rest } = options ?? {};

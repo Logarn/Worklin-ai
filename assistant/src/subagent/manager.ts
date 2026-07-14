@@ -238,6 +238,8 @@ export class SubagentManager {
 
     // ── Build conversation dependencies ─────────────────────────────
     const appConfig = getConfig();
+    const effectiveOverrideProfile =
+      config.overrideProfile ?? appConfig.llm.activeProfile;
     // Connection-aware default-provider resolution. Throws
     // `ConnectionResolutionError` if `llm.default.provider_connection` is
     // unset or the connection row is missing/mismatched (config bugs).
@@ -288,10 +290,14 @@ export class SubagentManager {
         config.systemPromptOverride ??
         buildSubagentSystemPrompt({ ...config, id: subagentId }, role, depth);
     }
-    const maxTokens = resolveCallSiteConfig(
-      "subagentSpawn",
-      appConfig.llm,
-    ).maxTokens;
+    const maxTokens = resolveCallSiteConfig("subagentSpawn", appConfig.llm, {
+      ...(effectiveOverrideProfile
+        ? {
+            overrideProfile: effectiveOverrideProfile,
+            forceOverrideProfile: true,
+          }
+        : {}),
+    }).maxTokens;
     const workingDir = getSandboxWorkingDir();
 
     // ── Initialise state ────────────────────────────────────────────
@@ -308,6 +314,9 @@ export class SubagentManager {
         id: subagentId,
         role,
         sendResultToUser: resolvedSendResultToUser,
+        ...(effectiveOverrideProfile
+          ? { overrideProfile: effectiveOverrideProfile }
+          : {}),
       },
       status: "pending",
       conversationId: conversationRecord.id,
@@ -516,7 +525,10 @@ export class SubagentManager {
       await conversation.runAgentLoop(message, messageId, {
         callSite: "subagentSpawn",
         ...(managed.state.config.overrideProfile
-          ? { overrideProfile: managed.state.config.overrideProfile }
+          ? {
+              overrideProfile: managed.state.config.overrideProfile,
+              forceOverrideProfile: true,
+            }
           : {}),
       });
 
@@ -728,7 +740,10 @@ export class SubagentManager {
         .runAgentLoop(trimmed, messageId, {
           callSite: "subagentSpawn",
           ...(managed.state.config.overrideProfile
-            ? { overrideProfile: managed.state.config.overrideProfile }
+            ? {
+                overrideProfile: managed.state.config.overrideProfile,
+                forceOverrideProfile: true,
+              }
             : {}),
         })
         .catch((err) => {
@@ -849,7 +864,10 @@ export class SubagentManager {
       await conversation.runAgentLoop(next.message, messageId, {
         callSite: "subagentSpawn",
         ...(managed.state.config.overrideProfile
-          ? { overrideProfile: managed.state.config.overrideProfile }
+          ? {
+              overrideProfile: managed.state.config.overrideProfile,
+              forceOverrideProfile: true,
+            }
           : {}),
       });
       managed.state.usage = { ...conversation.usageStats };

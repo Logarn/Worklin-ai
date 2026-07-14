@@ -62,12 +62,11 @@ export interface SubagentConfig {
    */
   parentSystemPrompt?: string;
   /**
-   * Optional ad-hoc inference-profile override the parent inherits down to this
-   * subagent. When set, every LLM call the subagent issues carries
-   * `SendMessageOptions.config.overrideProfile = <name>` so the resolver layers
-   * `llm.profiles[<name>]` between the workspace's `activeProfile` and the
-   * call-site's named profile. If a parent conversation is pinned to a
-   * profile, every spawned subagent inherits it automatically.
+   * Inference profile inherited from the parent conversation or workspace.
+   * Every LLM call the subagent issues treats this profile as authoritative
+   * over the background call-site default, preventing a child from combining
+   * one provider's connection with another provider's model. Nested workers
+   * inherit the same profile automatically.
    */
   overrideProfile?: string;
   /**
