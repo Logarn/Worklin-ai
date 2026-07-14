@@ -157,7 +157,9 @@ export const SUBAGENT_ROLE_REGISTRY: Record<SubagentRole, SubagentRoleConfig> =
         "recall",
         "notify_parent",
       ],
-      skillIds: [],
+      // Supervisors must receive the orchestration contract without trying to
+      // discover its files from a headless child conversation.
+      skillIds: ["subagent"],
       systemPromptPreamble: [
         "You are a supervisor subagent responsible for decomposing a complex objective into independent worker tasks.",
         "Spawn focused workers, continue useful coordination while they run, and rely on automatic completion notifications instead of polling.",

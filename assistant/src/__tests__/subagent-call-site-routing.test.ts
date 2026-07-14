@@ -25,6 +25,7 @@ interface CapturedConversationState {
   trustContext: unknown;
   authContext: unknown;
   assistantId: string | undefined;
+  preactivatedSkillIds: string[];
 }
 
 const capturedConversations: CapturedConversationState[] = [];
@@ -48,6 +49,7 @@ class FakeConversation {
       trustContext: undefined,
       authContext: undefined,
       assistantId: undefined,
+      preactivatedSkillIds: [],
     };
     capturedConversations.push(this.capturedState);
   }
@@ -67,7 +69,9 @@ class FakeConversation {
   }
   hasSystemPromptOverride = false;
   setSubagentAllowedTools() {}
-  setPreactivatedSkillIds() {}
+  setPreactivatedSkillIds(ids: string[]) {
+    this.capturedState.preactivatedSkillIds = [...ids];
+  }
   preactivateSkills() {}
   preactivateSkillsAsync() {}
   setSpawnHints() {}
@@ -390,6 +394,32 @@ describe("SubagentManager — provider call-site routing", () => {
     expect(createdConversation.assistantId).toBe("self");
     expect(createdConversation.trustContext).not.toBe(parentTrustContext);
     expect(createdConversation.authContext).not.toBe(parentAuthContext);
+  });
+
+  test("preactivates the bundled orchestration skill for supervisors", async () => {
+    setLlmConfig({
+      default: {
+        provider: "anthropic",
+        provider_connection: "anthropic-conn",
+        model: "claude-opus-4-7",
+      },
+    });
+
+    capturedConversations.length = 0;
+    const manager = new SubagentManager();
+    await manager.spawn(
+      {
+        parentConversationId: "parent-supervisor-skill",
+        label: "Supervisor",
+        objective: "Coordinate two workers",
+        role: "supervisor",
+      },
+      () => {},
+    );
+
+    expect(capturedConversations[0]?.preactivatedSkillIds).toEqual([
+      "subagent",
+    ]);
   });
 });
 
