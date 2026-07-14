@@ -47,6 +47,23 @@ describe("healGuardianBindingDrift", () => {
     expect(guardian!.channel.externalUserId).toBe("vellum-principal-old-uuid");
   });
 
+  test("heals a generated guardian to the authenticated platform owner", () => {
+    createGuardianBinding({
+      channel: "vellum",
+      guardianExternalUserId: "vellum-principal-generated-runtime-id",
+      guardianDeliveryChatId: "local",
+      guardianPrincipalId: "vellum-principal-generated-runtime-id",
+      verifiedVia: "startup-migration",
+    });
+
+    const ownerPrincipalId = "vellum-principal-platform-owner-id";
+    expect(healGuardianBindingDrift(ownerPrincipalId)).toBe(true);
+
+    const guardian = findGuardianForChannel("vellum");
+    expect(guardian!.contact.principalId).toBe(ownerPrincipalId);
+    expect(guardian!.channel.externalUserId).toBe(ownerPrincipalId);
+  });
+
   test("no-op when principals already match", () => {
     createGuardianBinding({
       channel: "vellum",

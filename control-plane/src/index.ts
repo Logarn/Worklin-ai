@@ -41,6 +41,7 @@ import {
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
 } from "./railway-runtime-provisioner.js";
+import { platformOwnerPrincipalId } from "./platform-owner-principal.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -486,7 +487,7 @@ function mintActorToken(assistantId: string, userId: string): string {
   const claims = {
     iss: "vellum-auth",
     aud: "vellum-gateway",
-    sub: `actor:${assistantId}:${userId}`,
+    sub: `actor:${assistantId}:${platformOwnerPrincipalId(userId)}`,
     scope_profile: "actor_client_v1",
     exp: now + ACTOR_TOKEN_TTL_SECONDS,
     policy_epoch: POLICY_EPOCH,
