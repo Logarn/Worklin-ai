@@ -26,7 +26,7 @@ concurrency:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
@@ -67,7 +67,7 @@ jobs:
 
   typecheck:
     name: Type Check
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
@@ -105,7 +105,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
@@ -142,7 +142,7 @@ jobs:
         run: bun run test
         env:
           EXCLUDE_EXPERIMENTAL: 'true'
-          TEST_WORKERS: '8'
+          TEST_WORKERS: '4'
 
       # Smoke-run the meet-join manifest emitter so an assistant-side
       # change that breaks the `SkillHost` contract or `register(host)`
