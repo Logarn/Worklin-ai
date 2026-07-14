@@ -26,6 +26,7 @@ interface CapturedConversationState {
   authContext: unknown;
   assistantId: string | undefined;
   preactivatedSkillIds: string[];
+  allowedToolNames: string[];
 }
 
 const capturedConversations: CapturedConversationState[] = [];
@@ -50,6 +51,7 @@ class FakeConversation {
       authContext: undefined,
       assistantId: undefined,
       preactivatedSkillIds: [],
+      allowedToolNames: [],
     };
     capturedConversations.push(this.capturedState);
   }
@@ -68,7 +70,9 @@ class FakeConversation {
     this.capturedState.assistantId = assistantId ?? undefined;
   }
   hasSystemPromptOverride = false;
-  setSubagentAllowedTools() {}
+  setSubagentAllowedTools(names: Set<string>) {
+    this.capturedState.allowedToolNames = [...names];
+  }
   setPreactivatedSkillIds(ids: string[]) {
     this.capturedState.preactivatedSkillIds = [...ids];
   }
@@ -420,6 +424,15 @@ describe("SubagentManager — provider call-site routing", () => {
     expect(capturedConversations[0]?.preactivatedSkillIds).toEqual([
       "subagent",
     ]);
+    expect(capturedConversations[0]?.allowedToolNames).toContain(
+      "skill_execute",
+    );
+    expect(capturedConversations[0]?.allowedToolNames).toContain(
+      "subagent_spawn",
+    );
+    expect(capturedConversations[0]?.allowedToolNames).not.toContain(
+      "web_search",
+    );
   });
 });
 

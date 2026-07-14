@@ -145,6 +145,7 @@ export const SUBAGENT_ROLE_REGISTRY: Record<SubagentRole, SubagentRoleConfig> =
     },
     supervisor: {
       allowedTools: [
+        "skill_execute",
         "subagent_spawn",
         "subagent_status",
         "subagent_message",
