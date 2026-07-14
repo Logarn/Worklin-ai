@@ -51,6 +51,7 @@ RUN set -eu; for pkg in /app/skills/*/package.json; do \
     done
 
 COPY assistant ./assistant
+COPY skills/write-brand-copy ./assistant/src/config/bundled-skills/write-brand-copy
 COPY control-plane ./control-plane
 COPY gateway ./gateway
 COPY meta/feature-flags/feature-flag-registry.json ./assistant/src/config/feature-flag-registry.json

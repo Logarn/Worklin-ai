@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 describe("Railway runtime brand-copy skill packaging", () => {
-  test("includes the production brand-copy skill in the Docker context", async () => {
+  test("installs the production brand-copy skill in the bundled catalog", async () => {
     const dockerignore = await Bun.file(
       new URL("../../../.dockerignore", import.meta.url),
     ).text();
@@ -10,6 +10,8 @@ describe("Railway runtime brand-copy skill packaging", () => {
     ).text();
 
     expect(dockerignore).toContain("!skills/write-brand-copy/**");
-    expect(dockerfile).toContain("COPY skills ./skills");
+    expect(dockerfile).toContain(
+      "COPY skills/write-brand-copy ./assistant/src/config/bundled-skills/write-brand-copy",
+    );
   });
 });
