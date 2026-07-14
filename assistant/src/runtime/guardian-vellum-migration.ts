@@ -18,7 +18,6 @@ import { getLogger } from "../util/logger.js";
 const log = getLogger("guardian-vellum-migration");
 
 const MIGRATABLE_BOOTSTRAP_METHODS = new Set([
-  "authenticated-owner-bootstrap",
   "bootstrap",
   "startup-migration",
 ]);
@@ -101,6 +100,13 @@ export function healGuardianBindingDrift(
   }
 
   const currentPrincipalId = guardianResult.contact.principalId;
+  if (
+    currentPrincipalId !== incomingPrincipalId &&
+    guardianResult.channel.verifiedVia === "authenticated-owner-bootstrap"
+  ) {
+    return false;
+  }
+
   const wasBootstrapped =
     guardianResult.channel.verifiedVia !== null &&
     MIGRATABLE_BOOTSTRAP_METHODS.has(guardianResult.channel.verifiedVia);

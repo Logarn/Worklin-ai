@@ -37,13 +37,21 @@ function setupDb(): Database {
     );
   `);
   ensureRuntimeStackSchema(db);
-  db.query(`
-    INSERT INTO users (id, email) VALUES ('user-1', 'pilot@example.com')
-  `).run();
-  db.query(`
+  db.query(
+    `
+    INSERT INTO users (id, email) VALUES
+      ('user-1', 'pilot@example.com'),
+      ('user-2', 'another@example.com')
+  `,
+  ).run();
+  db.query(
+    `
     INSERT INTO assistants (id, user_id, org_id, name, created_at, updated_at)
-    VALUES ('asst-1', 'user-1', 'org-1', 'Worklin', '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z')
-  `).run();
+    VALUES
+      ('asst-1', 'user-1', 'org-1', 'Worklin', '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z'),
+      ('asst-2', 'user-2', 'org-2', 'Worklin Two', '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z')
+  `,
+  ).run();
   return db;
 }
 
@@ -81,7 +89,12 @@ const NOW = () => "2026-07-11T12:00:00.000Z";
 describe("runtime stack provisioning defaults", () => {
   test("new assistants fail closed when no isolated stack URL is configured", () => {
     const db = setupDb();
-    const stack = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
 
     expect(stack.status).toBe("provisioning");
     expect(stack.gateway_url).toBeNull();
@@ -90,55 +103,49 @@ describe("runtime stack provisioning defaults", () => {
     expect(operationalStateForRuntimeStack(stack)).toBe("provisioning");
 
     const row = db
-      .query<{ runtime_stack_id: string | null }, []>(
-        "SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'",
-      )
+      .query<
+        { runtime_stack_id: string | null },
+        []
+      >("SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'")
       .get();
     expect(row?.runtime_stack_id).toBe(stack.id);
   });
 
-  test("explicit legacy mode routes to the shared gateway for local smoke tests", () => {
+  test("explicit legacy mode fails closed when no pilot assistant ID is configured", () => {
     const db = setupDb();
-    const stack = ensureRuntimeStackForAssistant(
+    const sharedConfig = runtimeStackConfigFromEnv(
+      {
+        WORKLIN_REQUIRE_ISOLATED_RUNTIME: "false",
+        WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "true",
+        WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS: " , ",
+        WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES: "",
+      },
+      "http://gateway.test",
+      "https://worklin.example.com",
+    );
+    const first = ensureRuntimeStackForAssistant(
       db,
       assistant(),
-      config({
-        requireIsolatedRuntime: false,
-        allowLegacySharedRuntime: true,
-      }),
+      sharedConfig,
+      NOW,
+    );
+    const second = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ id: "asst-2", user_id: "user-2", org_id: "org-2" }),
+      sharedConfig,
       NOW,
     );
 
-    expect(stack.status).toBe("active");
-    expect(stack.provider).toBe("legacy_shared");
-    expect(stack.gateway_url).toBe("http://gateway.test");
-    expect(isRuntimeStackRoutable(stack)).toBe(true);
-    expect(assistantApiStatusForRuntimeStack(stack)).toBe("active");
+    for (const stack of [first, second]) {
+      expect(stack.status).toBe("provisioning");
+      expect(stack.provider).toBe("railway");
+      expect(stack.gateway_url).toBeNull();
+      expect(isRuntimeStackRoutable(stack)).toBe(false);
+      expect(assistantApiStatusForRuntimeStack(stack)).toBe("initializing");
+    }
   });
 
-  test("explicit legacy mode fails closed outside a configured pilot allowlist", () => {
-    const db = setupDb();
-    const stack = ensureRuntimeStackForAssistant(
-      db,
-      assistant(),
-      config({
-        requireIsolatedRuntime: false,
-        allowLegacySharedRuntime: true,
-        legacySharedRuntimeUserEmailHashes: [
-          createHash("sha256")
-            .update("another@example.com")
-            .digest("hex"),
-        ],
-      }),
-      NOW,
-    );
-
-    expect(stack.status).toBe("provisioning");
-    expect(stack.provider).toBe("railway");
-    expect(stack.gateway_url).toBeNull();
-  });
-
-  test("explicit legacy mode routes a user whose normalized email hash is allowlisted", () => {
+  test("explicit legacy mode fails closed with only a matching user email hash", () => {
     const db = setupDb();
     const stack = ensureRuntimeStackForAssistant(
       db,
@@ -153,29 +160,65 @@ describe("runtime stack provisioning defaults", () => {
       NOW,
     );
 
-    expect(stack.status).toBe("active");
-    expect(stack.provider).toBe("legacy_shared");
+    expect(stack.status).toBe("provisioning");
+    expect(stack.provider).toBe("railway");
+    expect(stack.gateway_url).toBeNull();
   });
 
-  test("explicit legacy mode routes an allowlisted pilot assistant", () => {
+  test("explicit legacy mode fails closed when multiple pilot assistant IDs are configured", () => {
     const db = setupDb();
-    const stack = ensureRuntimeStackForAssistant(
+    const sharedConfig = config({
+      requireIsolatedRuntime: false,
+      allowLegacySharedRuntime: true,
+      legacySharedRuntimeAssistantIds: ["asst-1", "asst-2"],
+    });
+    const pilotStack = ensureRuntimeStackForAssistant(
       db,
       assistant(),
-      config({
-        requireIsolatedRuntime: false,
-        allowLegacySharedRuntime: true,
-        legacySharedRuntimeAssistantIds: ["asst-1"],
-        legacySharedRuntimeUserEmailHashes: ["not-the-user-email-hash"],
-      }),
+      sharedConfig,
+      NOW,
+    );
+    const otherStack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ id: "asst-2", user_id: "user-2", org_id: "org-2" }),
+      sharedConfig,
       NOW,
     );
 
-    expect(stack.status).toBe("active");
-    expect(stack.provider).toBe("legacy_shared");
+    for (const stack of [pilotStack, otherStack]) {
+      expect(stack.status).toBe("provisioning");
+      expect(stack.provider).toBe("railway");
+      expect(stack.gateway_url).toBeNull();
+    }
   });
 
-  test("explicit legacy mode fails closed outside an assistant-only pilot allowlist", () => {
+  test("explicit legacy mode routes exactly one matching pilot assistant ID", () => {
+    const db = setupDb();
+    const sharedConfig = config({
+      requireIsolatedRuntime: false,
+      allowLegacySharedRuntime: true,
+      legacySharedRuntimeAssistantIds: ["asst-1"],
+    });
+    const pilotStack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      sharedConfig,
+      NOW,
+    );
+    const otherStack = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ id: "asst-2", user_id: "user-2", org_id: "org-2" }),
+      sharedConfig,
+      NOW,
+    );
+
+    expect(pilotStack.status).toBe("active");
+    expect(pilotStack.provider).toBe("legacy_shared");
+    expect(otherStack.status).toBe("provisioning");
+    expect(otherStack.provider).toBe("railway");
+  });
+
+  test("explicit legacy mode fails closed for one nonmatching pilot assistant ID", () => {
     const db = setupDb();
     const stack = ensureRuntimeStackForAssistant(
       db,
@@ -215,7 +258,12 @@ describe("runtime stack provisioning defaults", () => {
 
   test("explicit legacy mode recovers an unallocated provisioning Railway stack", () => {
     const db = setupDb();
-    const first = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const first = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
     const second = ensureRuntimeStackForAssistant(
       db,
       assistant({ runtime_stack_id: first.id }),
@@ -229,9 +277,10 @@ describe("runtime stack provisioning defaults", () => {
     );
 
     const count = db
-      .query<{ count: number }, []>(
-        "SELECT COUNT(*) AS count FROM runtime_stacks",
-      )
+      .query<
+        { count: number },
+        []
+      >("SELECT COUNT(*) AS count FROM runtime_stacks")
       .get();
     expect(second.id).toBe(first.id);
     expect(second).toMatchObject({
@@ -249,11 +298,17 @@ describe("runtime stack provisioning defaults", () => {
 
   test("explicit legacy mode recovers an unallocated failed Railway stack idempotently", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
     markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
     const sharedConfig = config({
       requireIsolatedRuntime: false,
       allowLegacySharedRuntime: true,
+      legacySharedRuntimeAssistantIds: ["asst-1"],
     });
 
     const recovered = ensureRuntimeStackForAssistant(
@@ -280,9 +335,86 @@ describe("runtime stack provisioning defaults", () => {
     expect(repeated).toEqual(recovered);
   });
 
+  test("a persisted active legacy stack remains active for the single matching pilot assistant", () => {
+    const db = setupDb();
+    const sharedConfig = config({
+      requireIsolatedRuntime: false,
+      allowLegacySharedRuntime: true,
+      legacySharedRuntimeAssistantIds: ["asst-1"],
+    });
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      sharedConfig,
+      NOW,
+    );
+
+    const existing = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      sharedConfig,
+      NOW,
+    );
+
+    expect(existing).toEqual(initial);
+    expect(existing).toMatchObject({
+      status: "active",
+      provider: "legacy_shared",
+      gateway_url: "http://gateway.test",
+      workspace_volume_ref: "/data",
+      service_ref: "legacy-shared-runtime",
+    });
+    expect(isRuntimeStackRoutable(existing)).toBe(true);
+  });
+
+  test("a persisted active legacy stack becomes isolated provisioning when its pilot assistant no longer matches", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
+      }),
+      NOW,
+    );
+
+    const revalidated = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      config({
+        requireIsolatedRuntime: false,
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-2"],
+      }),
+      NOW,
+    );
+
+    expect(revalidated).toMatchObject({
+      id: initial.id,
+      status: "provisioning",
+      provider: "railway",
+      gateway_url: null,
+      public_ingress_url: "https://worklin.example.com",
+      workspace_volume_ref: null,
+      service_ref: null,
+      last_health_status: null,
+      last_error: null,
+    });
+    expect(isRuntimeStackRoutable(revalidated)).toBe(false);
+    expect(assistantApiStatusForRuntimeStack(revalidated)).toBe("initializing");
+    expect(countAllocatedRuntimeServices(db)).toBe(0);
+  });
+
   test("legacy recovery refuses a Railway stack with an allocated service", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
     recordRuntimeStackService(db, initial.id, "service-1", NOW);
     markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
 
@@ -292,6 +424,7 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
       }),
       NOW,
     );
@@ -307,7 +440,12 @@ describe("runtime stack provisioning defaults", () => {
 
   test("legacy recovery refuses a Railway stack with an allocated volume", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
     recordRuntimeStackVolume(db, initial.id, "volume-1", NOW);
     markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
 
@@ -317,6 +455,7 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
       }),
       NOW,
     );
@@ -332,12 +471,19 @@ describe("runtime stack provisioning defaults", () => {
 
   test("legacy recovery refuses a Railway stack with an existing gateway", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
-    db.query(`
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    db.query(
+      `
       UPDATE runtime_stacks
       SET gateway_url = 'http://allocated-runtime.test', status = 'failed'
       WHERE id = ?
-    `).run(initial.id);
+    `,
+    ).run(initial.id);
 
     const stack = ensureRuntimeStackForAssistant(
       db,
@@ -345,6 +491,7 @@ describe("runtime stack provisioning defaults", () => {
       config({
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
       }),
       NOW,
     );
@@ -360,13 +507,21 @@ describe("runtime stack provisioning defaults", () => {
 
   test("shared recovery requires isolated mode to be explicitly disabled", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
     markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
 
     const stack = ensureRuntimeStackForAssistant(
       db,
       assistant({ runtime_stack_id: initial.id }),
-      config({ allowLegacySharedRuntime: true }),
+      config({
+        allowLegacySharedRuntime: true,
+        legacySharedRuntimeAssistantIds: ["asst-1"],
+      }),
       NOW,
     );
 
@@ -382,7 +537,12 @@ describe("runtime stack provisioning defaults", () => {
 
   test("shared recovery fails closed outside the configured pilot allowlist", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
     markRuntimeStackFailed(db, initial.id, "provisioning unavailable", NOW);
 
     const stack = ensureRuntimeStackForAssistant(
@@ -392,9 +552,7 @@ describe("runtime stack provisioning defaults", () => {
         requireIsolatedRuntime: false,
         allowLegacySharedRuntime: true,
         legacySharedRuntimeUserEmailHashes: [
-          createHash("sha256")
-            .update("another@example.com")
-            .digest("hex"),
+          createHash("sha256").update("another@example.com").digest("hex"),
         ],
       }),
       NOW,
@@ -411,7 +569,12 @@ describe("runtime stack provisioning defaults", () => {
 
   test("persists resumable Railway provisioning state", () => {
     const db = setupDb();
-    const initial = ensureRuntimeStackForAssistant(db, assistant(), config(), NOW);
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
 
     recordRuntimeStackService(db, initial.id, "service-1", NOW);
     recordRuntimeStackVolume(db, initial.id, "volume-1", NOW);
