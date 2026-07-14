@@ -11,14 +11,14 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `a80ce3e` (`fix: surface ElevenLabs voice disconnects`), including the ElevenLabs public upstream proxy from `90c9e2d`, LLM-first conversational routing, the system-access fix, bundled first-party catalog, and assistant/live-voice UI consistency pass
+- Current production application commit: `aca7f272` (`Add collaborative brand artifacts (#82)`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, and assistant/live-voice UI consistency pass
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
-## Collaborative Artifacts Implementation (In Flight)
+## Collaborative Artifacts Implementation — Production
 
-Branch `assistant/collaborative-artifacts` implements the brand-first Work destination and the first production-capable collaboration slice. It is not deployed yet.
+PR `#82` merged as `aca7f272` on 2026-07-14 and is deployed to production. Vercel deployment `worklin-q4uu3h5rs-sautionlineai-3596s-projects.vercel.app` completed successfully, and the manually pinned `worklin-ai.vercel.app` alias was repointed to it. Railway completed successfully; `/healthz` and `/readyz` return HTTP 200 with gateway status 200.
 
 - The Campaign Copybook skill now requires the document editor, reuses the month creation result's `documentSurfaceId`, opens that document, and persists with `document_update`. It explicitly forbids duplicate documents, `file_write`, `host_file_write`, Markdown workspace files, and full-copy chat fallbacks. Persistence failure retains retry state and does not advance approval gates.
 - Migration 293 adds an additive artifact registry. Copybooks are registered deterministically, ordinary documents inherit only explicit conversation brand scope, Copybook month documents are excluded from root results, and ambiguous resources remain Unassigned.
@@ -26,7 +26,17 @@ Branch `assistant/collaborative-artifacts` implements the brand-first Work desti
 - The web sidebar replaces Library and Copybooks with Work. `/assistant/work` chooses a brand and `/assistant/work/brands/:brandId/artifacts` renders the mixed Artifacts collection. Legacy Library and Copybook routes replace-redirect to the canonical Work routes.
 - Copybook documents remain directly human-editable with anchored comments. “Work with Worklin” opens the same document beside its conversation and supplies the active month, campaign, selected target, and unresolved-comment context for targeted revisions.
 
-Verified locally: 21 focused assistant tests, 23 focused web tests, assistant and web TypeScript, focused lint, OpenAPI freshness, `git diff --check`, and a production-mode web build. The ordinary local-mode Vite build path hit a Bun/Vite config-runner shutdown while dynamically loading the local-mode plugin; the production-mode build with `VITE_PLATFORM_MODE=true` completed successfully. Authenticated Chrome acceptance remains required before deployment. True multi-user live cursors/presence and persisted four-role team enforcement still require a team/realtime collaboration service and must not be represented as shipped by this slice.
+Verified before merge: 21 focused assistant tests, 23 focused web tests, assistant and web TypeScript, focused lint, OpenAPI freshness, `git diff --check`, production-mode web build, the full web workflow, Campaign Copybook skill checks, catalog validation, and Vercel preview. The full assistant suite still has unrelated baseline failures across untouched guard/runtime files, while every new Copybook and Artifact test passes. True multi-user live cursors/presence and persisted four-role team enforcement still require a team/realtime collaboration service and must not be represented as shipped by this slice.
+
+Authenticated Chrome acceptance on the user-selected Profile 2 confirmed:
+
+- The global sidebar contains `Work` and no standalone Library or Copybooks entries.
+- `/assistant/work` auto-opens Seamossonly at `/assistant/work/brands/brand_b56bab4e813e4dc3cf731750/artifacts`.
+- The Artifacts page exposes All, Copy, Design, Images, Video, Social, Apps, and Documents filters plus search and `Create with Worklin`.
+- Legacy `/assistant/library` and `/assistant/copybooks` routes replace-redirect to `/assistant/work`.
+- The live August 2026 Copybook request reached the hardened workflow, but `copybook_list` and document creation failed closed because the authenticated session is still classified as unknown/unverified owner. Worklin did not call `file_write`, create a duplicate document, or dump 15 emails into chat. It displayed a concise verification error and preserved the requested strategy-first workflow.
+
+Remaining acceptance gate: the user must complete owner verification for this device/session. After verification, resume conversation `3f67e958-4729-4ea8-ba13-672d716ada93`; create the August 2026 month for Seamossonly, persist through `document_open`/`document_update`, and stop at strategy approval before briefs or copy. Do not weaken the fail-closed trust policy.
 
 ## LLM-First Conversation Routing
 
