@@ -1,4 +1,7 @@
-import { getIsContainerized } from "../config/env-registry.js";
+import {
+  getDisableEmbeddings,
+  getIsContainerized,
+} from "../config/env-registry.js";
 import { getConfig } from "../config/loader.js";
 import type { AssistantConfig } from "../config/schema.js";
 import {
@@ -16,6 +19,12 @@ const CONTAINERIZED_MEMORY_V2_SEED_DELAY_MS = 20_000;
 let deferredMemoryV2SeedTimer: ReturnType<typeof setTimeout> | null = null;
 
 function runMemoryV2CapabilitySeeds(config: AssistantConfig): void {
+  if (getDisableEmbeddings()) {
+    log.info(
+      "Skipping dense capability seeding because embedding backends are disabled",
+    );
+    return;
+  }
   maybeSeedMemoryV2Skills(config);
   maybeSeedMemoryV2CliCommands(config);
 }

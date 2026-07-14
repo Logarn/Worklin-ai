@@ -84,6 +84,16 @@ export function getDisablePlatform(): boolean {
 }
 
 /**
+ * VELLUM_DISABLE_EMBEDDINGS — boolean, default: false
+ * Prevents local and remote dense-embedding backends from being selected.
+ * Sparse and file-backed memory remain available, while dense retrieval
+ * reports a degraded backend instead of loading a model or calling a provider.
+ */
+export function getDisableEmbeddings(): boolean {
+  return flag("VELLUM_DISABLE_EMBEDDINGS");
+}
+
+/**
  * VELLUM_DEVICE_ID — string, default: undefined
  * Host-stable device id injected by the CLI into containerized deployments,
  * where the container fs cannot persist device.json across recreation.
@@ -213,6 +223,7 @@ const KNOWN_VELLUM_VARS = new Set([
   "VELLUM_DESKTOP_APP",
   "VELLUM_DEV",
   "VELLUM_DEVICE_ID",
+  "VELLUM_DISABLE_EMBEDDINGS",
   "VELLUM_DISABLE_PLATFORM",
   "VELLUM_DOCS_BASE_URL",
   "VELLUM_ENVIRONMENT",

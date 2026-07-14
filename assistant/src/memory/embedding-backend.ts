@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { getOllamaBaseUrlEnv } from "../config/env.js";
+import { getDisableEmbeddings } from "../config/env-registry.js";
 import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import type { AssistantConfig } from "../config/types.js";
 import { PLATFORM_PROVIDER_META } from "../providers/platform-proxy/constants.js";
@@ -324,6 +325,13 @@ export interface EmbeddingBackendSelection {
 export async function selectEmbeddingBackend(
   config: AssistantConfig,
 ): Promise<EmbeddingBackendSelection> {
+  if (getDisableEmbeddings()) {
+    return {
+      backend: null,
+      reason: "Embedding backends are disabled by VELLUM_DISABLE_EMBEDDINGS",
+    };
+  }
+
   const requested = config.memory.embeddings.provider;
   if (requested === "local") {
     return {
