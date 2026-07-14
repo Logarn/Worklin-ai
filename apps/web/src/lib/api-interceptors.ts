@@ -36,6 +36,7 @@ import { ensureCsrfCookie, getCsrfToken } from "@/lib/auth/csrf";
 import {
   authApiBaseUrl,
   daemonApiBaseUrl,
+  normalizeHostedProxyPath,
   platformApiBaseUrl,
 } from "@/lib/api-origins";
 import { ApiError, extractErrorMessage } from "@/utils/api-errors";
@@ -224,7 +225,12 @@ export async function rewriteForSelfHostedIngress(
  */
 function createInterceptor({ skipSegmentAllowlist = false } = {}) {
   return async (request: Request): Promise<Request> => {
-    const newRequest = new Request(request);
+    let newRequest = new Request(request);
+
+    const normalizedUrl = normalizeHostedProxyPath(newRequest.url);
+    if (normalizedUrl !== newRequest.url) {
+      newRequest = new Request(normalizedUrl, newRequest);
+    }
 
     // Per-tab client identity — sent on *every* request (GET included)
     // so SSE-via-fetch readers and short-lived mutations carry the same

@@ -2,11 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 
+import { assistantQueryKey, useAssistantQuery } from "@/assistant/queries";
+import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { hatchAssistant, listPlatformAssistants } from "@/assistant/api";
 import { DetailCard } from "@/components/detail-card";
 import { isLocalMode, syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import {
-    assistantsActiveRetrieveOptions,
     assistantsListOptions,
 } from "@/generated/api/@tanstack/react-query.gen";
 import type { Assistant } from "@/generated/api/types.gen";
@@ -19,14 +20,17 @@ import { toast } from "@vellumai/design-library/components/toast";
 
 export function AssistantLifecyclePanel() {
   const queryClient = useQueryClient();
+  const assistantId = useActiveAssistantId();
   const [hatching, setHatching] = useState(false);
   const [hatchConfirmOpen, setHatchConfirmOpen] = useState(false);
   const isOrgReady = useIsOrgReady();
 
-  const { data: assistant, isLoading: assistantLoading } = useQuery({
-    ...assistantsActiveRetrieveOptions(),
-    enabled: isOrgReady,
-  });
+  const { data: assistantResult, isLoading: assistantLoading } =
+    useAssistantQuery({
+      enabled: isOrgReady,
+      selectedPlatformAssistantId: assistantId,
+    });
+  const assistant = assistantResult?.ok ? assistantResult.data : null;
 
   const { data: assistantsList, isLoading: listLoading } = useQuery({
     ...assistantsListOptions({ query: { hosting: "all" } }),
@@ -77,7 +81,7 @@ export function AssistantLifecyclePanel() {
         // the info + list cards refresh (the previous `["assistants"]` key
         // matched none of them).
         void queryClient.invalidateQueries({
-          queryKey: assistantsActiveRetrieveOptions().queryKey,
+          queryKey: assistantQueryKey(assistantId),
         });
         void queryClient.invalidateQueries({
           queryKey: assistantsListOptions({ query: { hosting: "all" } })
