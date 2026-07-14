@@ -20,7 +20,7 @@ on:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
@@ -58,7 +58,7 @@ jobs:
 
   typecheck:
     name: Type Check
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
@@ -96,7 +96,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
@@ -139,7 +139,7 @@ jobs:
       - name: Test
         run: bun run test:stable
         env:
-          TEST_WORKERS: '16'
+          TEST_WORKERS: '2'
           TEST_DURATIONS_FILE: .test-durations
           TEST_DURATIONS_OUTPUT: .test-durations
 
