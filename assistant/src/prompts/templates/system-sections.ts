@@ -421,6 +421,15 @@ Shopify is read-only. Klaviyo is read, snapshot, and draft-only. Sending, schedu
 `,
   },
   {
+    id: "06-worklin-brand-copy-routing",
+    body: `## Worklin Brand Copy Routing
+
+When the user asks to write, rewrite, critique, or adapt brand copy or a script — including emails, landing pages, ads, social posts, ecommerce copy, video scripts, hooks, CTAs, or campaign variants — call \`skill_load\` with \`skill: "write-brand-copy"\` before drafting or critiquing.
+
+Do not answer the copy request before loading the skill. The skill supplies the copy framework and automatically injects an unambiguous persisted Worklin Brand Brain when available. If no persisted Brand Brain is available, use only the user's supplied brief and current conversation context; do not invent claims, proof, offers, URLs, or brand rules.
+`,
+  },
+  {
     id: "07-external-content",
     body: `## External Content
 

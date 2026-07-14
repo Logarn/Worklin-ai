@@ -71,6 +71,13 @@ describe("buildSystemPrompt — tool routing guidance", () => {
     expect(result).not.toContain("## Clarifying questions");
     expect(result).not.toContain("ask_question");
   });
+
+  test("requires the brand-copy skill for copy and script requests", () => {
+    const result = buildSystemPrompt({});
+    expect(result).toContain("## Worklin Brand Copy Routing");
+    expect(result).toContain('skill: "write-brand-copy"');
+    expect(result).toContain("do not invent claims, proof, offers, URLs");
+  });
 });
 
 describe("buildSystemPrompt — persona override", () => {
