@@ -155,6 +155,13 @@ export async function waitForInlineGrant(
 
 const UI_SURFACE_TOOLS = new Set(["ui_show", "ui_update", "ui_dismiss"]);
 const SAFE_CONTEXT_READ_TOOLS = new Set(["brand_brain_read"]);
+const INTERNAL_ORCHESTRATION_TOOLS = new Set([
+  "subagent_spawn",
+  "subagent_status",
+  "subagent_message",
+  "subagent_read",
+  "subagent_abort",
+]);
 
 function requiresGuardianApprovalForActor(
   toolName: string,
@@ -172,6 +179,14 @@ function requiresGuardianApprovalForActor(
   // already scoped to this Worklin workspace. Mutations remain behind their
   // normal actor and approval gates.
   if (SAFE_CONTEXT_READ_TOOLS.has(toolName)) {
+    return false;
+  }
+
+  // Subagent tools target the host daemon because the supervisor lives in the
+  // assistant process, not because they access the user's device. Their own
+  // bounded-depth, role, and concurrency policies constrain delegation, while
+  // every tool a child invokes is still evaluated by this gate independently.
+  if (INTERNAL_ORCHESTRATION_TOOLS.has(toolName)) {
     return false;
   }
 
