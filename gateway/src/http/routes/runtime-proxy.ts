@@ -124,6 +124,7 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
     // client-facing auth setting.
     //
     let exchangeToken: string;
+    let platformOwnerBound = false;
     const authHeader = req.headers.get("authorization");
 
     if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
@@ -193,6 +194,7 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
           return Response.json({ error: "Forbidden" }, { status: 403 });
         }
         exchangeClaims = boundClaims;
+        platformOwnerBound = true;
       }
       exchangeToken = mintExchangeToken(
         exchangeClaims,
@@ -256,6 +258,10 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
       new Headers(req.headers),
       exchangeToken,
     );
+    reqHeaders.delete("x-vellum-platform-owner");
+    if (platformOwnerBound) {
+      reqHeaders.set("x-vellum-platform-owner", "true");
+    }
 
     // Inject the real client IP so the runtime can rate-limit per-user,
     // overwriting any client-supplied value to prevent spoofing.

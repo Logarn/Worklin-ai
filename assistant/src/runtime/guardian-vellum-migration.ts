@@ -39,7 +39,10 @@ const MIGRATABLE_BOOTSTRAP_METHODS = new Set([
  *
  * Returns true if healing occurred, false otherwise.
  */
-export function healGuardianBindingDrift(incomingPrincipalId: string): boolean {
+export function healGuardianBindingDrift(
+  incomingPrincipalId: string,
+  options: { platformOwnerBound?: boolean } = {},
+): boolean {
   if (!incomingPrincipalId.startsWith("vellum-principal-")) {
     return false;
   }
@@ -56,7 +59,8 @@ export function healGuardianBindingDrift(incomingPrincipalId: string): boolean {
   if (
     !currentPrincipalId?.startsWith("vellum-principal-") &&
     !wasBootstrapped &&
-    !wasLegacyGuardianImport
+    !wasLegacyGuardianImport &&
+    options.platformOwnerBound !== true
   ) {
     return false;
   }
