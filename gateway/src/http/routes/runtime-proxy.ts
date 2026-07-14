@@ -96,6 +96,7 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
   return async (req: Request, clientIp?: string): Promise<Response> => {
     const start = performance.now();
     const url = new URL(req.url);
+    const assistantScopedPath = parseAssistantScopedPath(url.pathname);
 
     // Block forwarding of /webhooks/* paths — these are gateway-only.
     if (WEBHOOK_PATH_RE.test(url.pathname)) {
@@ -150,6 +151,7 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
         return Response.json({ error: "Unauthorized" }, { status: 401 });
       }
       let exchangeClaims = result.claims;
+      let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
       if (config.runtimeAssistantScopeMode === "enforce") {
         let expectedAssistantId: string | null;
         try {
@@ -170,9 +172,18 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
             { status: 503 },
           );
         }
+        if (
+          assistantScopedPath &&
+          assistantScopedPath.assistantId !== expectedAssistantId
+        ) {
+          return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+        actorScopeAssistantId = expectedAssistantId;
+      }
+      if (actorScopeAssistantId) {
         const boundClaims = bindPlatformOwnerClaims(
           result.claims,
-          expectedAssistantId,
+          actorScopeAssistantId,
         );
         if (!boundClaims) {
           log.warn(
@@ -194,7 +205,6 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
     // The daemon uses flat /v1/... paths. Rewrite any legacy
     // /v1/assistants/:assistantId/... requests from clients to flat paths.
     let upstreamPath = url.pathname;
-    const assistantScopedPath = parseAssistantScopedPath(url.pathname);
     if (assistantScopedPath) {
       if (config.runtimeAssistantScopeMode === "enforce") {
         let expectedAssistantId: string | null;
