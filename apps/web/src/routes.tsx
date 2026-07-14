@@ -314,6 +314,8 @@ export const routeTree = [
                 },
                 { path: "library", lazy: { Component: () => import("@/domains/library/library-page").then((m) => m.LibraryPage) } },
                 { path: "library/:appId", lazy: { Component: () => import("@/domains/library/library-detail-page").then((m) => m.LibraryDetailPage) } },
+                { path: "copybooks", lazy: { Component: () => import("@/domains/copybooks/copybooks-page").then((m) => m.CopybooksPage) } },
+                { path: "copybooks/:copybookId/:year/:month", lazy: { Component: () => import("@/domains/copybooks/copybook-page").then((m) => m.CopybookPage) } },
                 { path: "connect", lazy: { Component: () => import("@/domains/contacts/connect-page").then((m) => m.ConnectPage) } },
                 {
                   path: "conversations/:conversationId/inspect",

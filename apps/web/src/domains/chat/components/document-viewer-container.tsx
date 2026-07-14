@@ -24,6 +24,7 @@ import {
     FileText,
     Loader2,
     MessageSquareText,
+    Sparkles,
     X,
 } from "lucide-react";
 
@@ -65,6 +66,8 @@ export interface DocumentViewerContainerProps {
   onClose: () => void;
   onExport?: () => void;
   onSubmitFeedback?: () => void;
+  /** Open the linked conversation with this document ready for collaboration. */
+  onWorkWithAssistant?: () => void;
   /** Imperative handle ref for SSE-driven refresh triggers. */
   handleRef?: Ref<DocumentViewerContainerHandle>;
 }
@@ -102,6 +105,7 @@ export function DocumentViewerContainer({
   onClose,
   onExport,
   onSubmitFeedback,
+  onWorkWithAssistant,
   handleRef,
 }: DocumentViewerContainerProps) {
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
@@ -330,6 +334,17 @@ export function DocumentViewerContainer({
             onClick={onExport}
           >
             Export
+          </Button>
+        ) : null}
+
+        {onWorkWithAssistant ? (
+          <Button
+            variant="outlined"
+            size="compact"
+            leftIcon={<Sparkles />}
+            onClick={onWorkWithAssistant}
+          >
+            Work with Worklin
           </Button>
         ) : null}
 

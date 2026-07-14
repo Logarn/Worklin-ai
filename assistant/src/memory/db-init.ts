@@ -36,6 +36,7 @@ import {
   createOAuthTables,
   createOnboardingEventsTable,
   createRetentionBrandBrainTables,
+  createRetentionCopybookTables,
   createRetentionTables,
   createScopedApprovalGrantsTable,
   createSequenceTables,
@@ -520,6 +521,7 @@ export function initializeDb(): void {
     migrateContactChannelsUniqueExtUser,
     createRetentionTables,
     createRetentionBrandBrainTables,
+    createRetentionCopybookTables,
   ];
 
   // Run each migration step, catching and logging individual failures so one

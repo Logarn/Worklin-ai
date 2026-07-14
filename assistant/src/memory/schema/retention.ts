@@ -325,3 +325,106 @@ export const retentionExternalDrafts = sqliteTable(
     index("idx_retention_external_drafts_package").on(table.packageId),
   ],
 );
+
+export const retentionCopybooks = sqliteTable(
+  "retention_copybooks",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => retentionBrands.id, { onDelete: "cascade" }),
+    year: integer("year").notNull(),
+    title: text("title").notNull(),
+    status: text("status").notNull().default("active"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_retention_copybooks_brand_year").on(
+      table.brandId,
+      table.year,
+    ),
+  ],
+);
+
+export const retentionCopybookMonths = sqliteTable(
+  "retention_copybook_months",
+  {
+    id: text("id").primaryKey(),
+    copybookId: text("copybook_id")
+      .notNull()
+      .references(() => retentionCopybooks.id, { onDelete: "cascade" }),
+    month: integer("month").notNull(),
+    documentSurfaceId: text("document_surface_id"),
+    strategyStatus: text("strategy_status").notNull().default("draft"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_retention_copybook_months_copybook_month").on(
+      table.copybookId,
+      table.month,
+    ),
+    uniqueIndex("idx_retention_copybook_months_document").on(
+      table.documentSurfaceId,
+    ),
+  ],
+);
+
+export const retentionCopybookCampaigns = sqliteTable(
+  "retention_copybook_campaigns",
+  {
+    id: text("id").primaryKey(),
+    monthId: text("month_id")
+      .notNull()
+      .references(() => retentionCopybookMonths.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    title: text("title").notNull(),
+    status: text("status").notNull().default("brief_draft"),
+    packageId: text("package_id").references(
+      () => retentionMicroCampaignPackages.id,
+      { onDelete: "set null" },
+    ),
+    metadataJson: text("metadata_json"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_retention_copybook_campaigns_position").on(
+      table.monthId,
+      table.channel,
+      table.ordinal,
+    ),
+    index("idx_retention_copybook_campaigns_package").on(table.packageId),
+  ],
+);
+
+export const retentionCopybookSnapshots = sqliteTable(
+  "retention_copybook_snapshots",
+  {
+    id: text("id").primaryKey(),
+    monthId: text("month_id")
+      .notNull()
+      .references(() => retentionCopybookMonths.id, { onDelete: "cascade" }),
+    campaignId: text("campaign_id").references(
+      () => retentionCopybookCampaigns.id,
+      { onDelete: "set null" },
+    ),
+    kind: text("kind").notNull(),
+    revision: integer("revision").notNull(),
+    documentContent: text("document_content").notNull(),
+    documentUpdatedAt: integer("document_updated_at").notNull(),
+    campaignStateJson: text("campaign_state_json").notNull(),
+    actorPrincipalId: text("actor_principal_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_retention_copybook_snapshots_revision").on(
+      table.monthId,
+      table.kind,
+      table.revision,
+    ),
+    index("idx_retention_copybook_snapshots_campaign").on(table.campaignId),
+  ],
+);

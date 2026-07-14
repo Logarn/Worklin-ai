@@ -1,4 +1,5 @@
 import {
+    BookOpenText,
     Brain,
     Clock,
     Hash,
@@ -52,6 +53,8 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onOpenIntelligence?: () => void;
   isLibraryActive?: boolean;
   onOpenLibrary?: () => void;
+  isCopybooksActive?: boolean;
+  onOpenCopybooks?: () => void;
   onOpenApp?: (appId: string) => void;
   activeAppId?: string;
   onStartNewConversation?: () => void;
@@ -133,6 +136,8 @@ export function AssistantSideMenu({
   onOpenIntelligence,
   isLibraryActive = false,
   onOpenLibrary,
+  isCopybooksActive = false,
+  onOpenCopybooks,
   onOpenApp,
   activeAppId,
   onStartNewConversation,
@@ -440,6 +445,15 @@ export function AssistantSideMenu({
             showCollapsedTooltip
             active={isLibraryActive}
             onSelect={onOpenLibrary ? () => { onOpenLibrary(); onClose?.(); } : undefined}
+          />
+        ) : null}
+        {onOpenCopybooks ? (
+          <SideMenu.Item
+            icon={BookOpenText}
+            label="Copybooks"
+            showCollapsedTooltip
+            active={isCopybooksActive}
+            onSelect={() => { onOpenCopybooks(); onClose?.(); }}
           />
         ) : null}
         {pinnedApps.map((app) => (

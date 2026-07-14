@@ -4,6 +4,7 @@
 
 - RIVET
 - Email
+- SMS
 - Organic social
 - Paid social
 - Landing pages and ecommerce
@@ -35,6 +36,21 @@ Use:
 Prioritize behavioral and contextual personalization over first-name insertion. Do not imply knowledge of private thoughts.
 
 Evaluate delivered messages by qualified clicks, conversion, revenue or pipeline, unsubscribe, and spam complaints. Treat opens as a noisy diagnostic.
+
+## SMS
+
+Give SMS a distinct job in the campaign sequence rather than compressing the email into a text message.
+
+Use:
+
+- opening: identify the sender or context when it is not already obvious
+- message: one relevant idea, offer, reminder, or useful update in plain language
+- CTA: one direct action with a verified destination or link placeholder
+- terms: include material conditions and required disclosures within the channel's constraints
+
+Keep the message scannable and choice-preserving. Do not use fake urgency, unexplained all-caps, manufactured intimacy, or language implying private knowledge about the recipient. Never invent opt-in status, a destination URL, a discount code, or offer terms.
+
+Treat character count, encoding, segment count, quiet hours, sender identification, consent, and opt-out language as operational or jurisdiction-specific checks. Report what is unknown rather than claiming compliance. Evaluate qualified clicks, conversion, revenue or pipeline, opt-outs, and complaints.
 
 ## Organic Social
 

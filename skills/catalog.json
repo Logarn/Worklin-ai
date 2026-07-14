@@ -63,6 +63,34 @@
       "updatedAt": "2026-06-29T16:15:25.000Z"
     },
     {
+      "id": "campaign-copybook",
+      "name": "campaign-copybook",
+      "description": "Plan and produce a client-reviewable monthly email and SMS copybook from approved brand context, founder direction, launches, holidays, promotions, content priorities, and prior results. Use for annual copy docs, monthly campaign strategy, campaign calendars, briefs, copy, structured designer directions, comment-led revisions, QA, and ready-for-design approval. This skill never designs, publishes, sends, schedules, or activates campaigns.",
+      "metadata": {
+        "emoji": "📕",
+        "vellum": {
+          "category": "content",
+          "display-name": "Campaign Copybook",
+          "includes": [
+            "worklin-brand-brain",
+            "worklin-copybook",
+            "write-brand-copy"
+          ],
+          "activation-hints": [
+            "Plan this month's email and SMS campaigns",
+            "Create or update an annual campaign copy doc",
+            "Turn founder direction, launches, holidays, offers, or content into campaign briefs and copy",
+            "Address client comments and prepare approved copy for design"
+          ],
+          "avoid-when": [
+            "The user wants a single standalone copy asset with no monthly campaign workflow; use write-brand-copy",
+            "The user wants visual design, publishing, sending, scheduling, flow activation, or account mutation"
+          ]
+        }
+      },
+      "compatibility": "Designed for Worklin assistants with a rich-text document editor"
+    },
+    {
       "id": "chatgpt-import",
       "name": "chatgpt-import",
       "description": "Import conversation history from ChatGPT into Vellum",
@@ -1179,7 +1207,7 @@
     {
       "id": "write-brand-copy",
       "name": "write-brand-copy",
-      "description": "Create, rewrite, or critique evidence-led brand copy and scripts using Worklin onboarding research or another supplied brand profile. Use for emails, landing pages, paid or organic social, ecommerce copy, short-form video, educational video, hooks, CTAs, campaign variants, message testing, and claim review. Also use when copy must match a known brand voice, convert a Brand Brain into writing guidance, or diagnose weak, vague, manipulative, unsupported, or off-brand copy.",
+      "description": "Create, rewrite, or critique evidence-led brand copy and scripts using Worklin onboarding research or another supplied brand profile. Use for email, SMS, landing pages, paid or organic social, ecommerce copy, short-form video, educational video, hooks, CTAs, campaign variants, message testing, and claim review. Also use as the leaf copywriter for an approved Campaign Copybook brief, or when copy must match a known brand voice or needs diagnosis for weak, vague, manipulative, unsupported, or off-brand language.",
       "metadata": {
         "emoji": "✍️",
         "vellum": {
@@ -1191,6 +1219,7 @@
           "activation-hints": [
             "Write or rewrite marketing copy in my brand voice",
             "Create an email, landing page, social post, ad, or video script",
+            "Write email or SMS copy from an approved Campaign Copybook brief",
             "Generate hooks, CTAs, concepts, or test variants",
             "Audit copy for clarity, claims, trust, or brand fit"
           ],

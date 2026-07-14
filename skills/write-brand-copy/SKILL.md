@@ -1,6 +1,6 @@
 ---
 name: write-brand-copy
-description: Create, rewrite, or critique evidence-led brand copy and scripts using Worklin onboarding research or another supplied brand profile. Use for emails, landing pages, paid or organic social, ecommerce copy, short-form video, educational video, hooks, CTAs, campaign variants, message testing, and claim review. Also use when copy must match a known brand voice, convert a Brand Brain into writing guidance, or diagnose weak, vague, manipulative, unsupported, or off-brand copy.
+description: Create, rewrite, or critique evidence-led brand copy and scripts using Worklin onboarding research or another supplied brand profile. Use for email, SMS, landing pages, paid or organic social, ecommerce copy, short-form video, educational video, hooks, CTAs, campaign variants, message testing, and claim review. Also use as the leaf copywriter for an approved Campaign Copybook brief, or when copy must match a known brand voice or needs diagnosis for weak, vague, manipulative, unsupported, or off-brand language.
 metadata:
   emoji: "✍️"
   vellum:
@@ -11,6 +11,7 @@ metadata:
     activation-hints:
       - "Write or rewrite marketing copy in my brand voice"
       - "Create an email, landing page, social post, ad, or video script"
+      - "Write email or SMS copy from an approved Campaign Copybook brief"
       - "Generate hooks, CTAs, concepts, or test variants"
       - "Audit copy for clarity, claims, trust, or brand fit"
     avoid-when:
@@ -37,6 +38,8 @@ Treat word choice as a renderer over semantic functions, not as a power-word dat
 The persisted Brand Brain is injected automatically when exactly one profile is available or the conversation is already bound to a brand. If several profiles exist, use the included Brand Brain skill to select the requested brand. Persist a correction only after the user explicitly approves it, and persist campaign learning only from a confirmed real result with an evidence note.
 
 Do not make the user repeat brand information that Worklin already has. Surface only missing facts that materially affect the strategy, claim scope, or legal safety.
+
+When invoked by Campaign Copybook, treat the approved campaign brief and monthly strategy revision as fixed inputs. Do not silently change the objective, audience, angle, offer, send date, or CTA. Return the automated output contract for that one campaign, including designer-direction fields, then stop. Campaign sequencing, approvals, comments, and month-document updates belong to the Campaign Copybook coordinator.
 
 ## Workflow
 
@@ -125,3 +128,4 @@ Keep internal process compact. Do not bury the deliverable beneath the rubric.
 - Pair threat or pain with a credible, achievable response.
 - Keep CTAs direct and choice-preserving; do not use shame or coercion.
 - Keep publishing, sending, scheduling, and spending as separate approval-bearing actions.
+- Designer direction may describe hierarchy, placement, and required assets, but this skill never generates visual design.

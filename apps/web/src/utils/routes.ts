@@ -113,6 +113,12 @@ export const routes = {
     app: (slug: string) => dyn(r("/assistant/library"), slug),
   },
 
+  copybooks: {
+    root: r("/assistant/copybooks"),
+    month: (copybookId: string, year: number, month: number) =>
+      `${dyn(r("/assistant/copybooks"), copybookId)}/${year}/${month}`,
+  },
+
   document: (surfaceId: string) => dyn(r("/assistant/documents"), surfaceId),
 
   connect: r("/assistant/connect"),

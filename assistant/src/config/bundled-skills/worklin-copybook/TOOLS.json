@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "copybook_list",
+      "description": "List local campaign copybooks by brand/year, or read one complete copybook with its months and campaigns.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "copybook_id": {
+            "type": "string",
+            "description": "When present, return this copybook's complete detail."
+          },
+          "brand_id": {
+            "type": "string",
+            "description": "Optional brand filter for list mode."
+          },
+          "year": {
+            "type": "integer",
+            "description": "Optional year filter for list mode."
+          }
+        }
+      },
+      "executor": "tools/copybook-list.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "copybook_create",
+      "description": "Create one local annual campaign copybook for a persisted brand. Does not create campaigns, designs, or external drafts.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "brand_id": { "type": "string" },
+          "year": { "type": "integer", "minimum": 2000, "maximum": 2200 },
+          "title": { "type": "string" }
+        },
+        "required": ["brand_id", "year"]
+      },
+      "executor": "tools/copybook-create.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "copybook_month_create",
+      "description": "Create a month and its editable Worklin document inside an existing copybook.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "copybook_id": { "type": "string" },
+          "month": { "type": "integer", "minimum": 1, "maximum": 12 },
+          "title": { "type": "string" }
+        },
+        "required": ["copybook_id", "month"]
+      },
+      "executor": "tools/copybook-month-create.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "copybook_month_update",
+      "description": "Move monthly strategy between draft, review, and approved states. Approval requires direct human approval and creates an immutable snapshot.",
+      "category": "content",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "month_id": { "type": "string" },
+          "strategy_status": {
+            "type": "string",
+            "enum": ["draft", "in_review", "approved"]
+          },
+          "explicitly_approved": {
+            "type": "boolean",
+            "description": "Set true only after direct human approval when strategy_status is approved."
+          }
+        },
+        "required": ["month_id", "strategy_status"]
+      },
+      "executor": "tools/copybook-month-update.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "copybook_campaign_create",
+      "description": "Create a structural email or SMS campaign entry in a copybook month. Copy remains in the linked editable document.",
+      "category": "content",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "month_id": { "type": "string" },
+          "channel": { "type": "string", "enum": ["email", "sms"] },
+          "ordinal": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string" },
+          "package_id": { "type": "string" },
+          "metadata": { "type": "object", "additionalProperties": true }
+        },
+        "required": ["month_id", "channel", "ordinal", "title"]
+      },
+      "executor": "tools/copybook-campaign-create.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "copybook_campaign_update",
+      "description": "Update a campaign's local metadata/review state, approve its brief or reviewed copy, or mark approved copy ready for design. Brief approval, copy approval, and design handoff require direct human approval. Never designs, sends, schedules, or publishes.",
+      "category": "content",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "campaign_id": { "type": "string" },
+          "title": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": [
+              "brief_draft",
+              "brief_review",
+              "brief_approved",
+              "copy_draft",
+              "copy_review"
+            ]
+          },
+          "package_id": { "type": ["string", "null"] },
+          "metadata": {
+            "type": ["object", "null"],
+            "additionalProperties": true
+          },
+          "action": {
+            "type": "string",
+            "enum": ["approve", "ready_for_design"]
+          },
+          "explicitly_approved": {
+            "type": "boolean",
+            "description": "Set true only after direct human approval for status brief_approved or when using action."
+          }
+        },
+        "required": ["campaign_id"]
+      },
+      "executor": "tools/copybook-campaign-update.ts",
+      "execution_target": "host"
+    }
+  ]
+}

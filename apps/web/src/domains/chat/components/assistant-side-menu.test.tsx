@@ -50,6 +50,7 @@ function renderMenu(props: {
   collapsed?: boolean;
   variant?: "rail" | "overlay";
   includeFooterAction?: boolean;
+  includeCopybooks?: boolean;
 }): string {
   const includeFooterAction = props.includeFooterAction ?? true;
   return renderToStaticMarkup(
@@ -60,6 +61,8 @@ function renderMenu(props: {
       conversations: props.conversations,
       activeConversationId: props.activeConversationId,
       onSelectConversation: () => {},
+      onOpenCopybooks: props.includeCopybooks ? () => {} : undefined,
+      isCopybooksActive: props.includeCopybooks,
       footerAction: includeFooterAction
         ? createElement("span", null, "Preferences")
         : undefined,
@@ -68,6 +71,13 @@ function renderMenu(props: {
 }
 
 describe("AssistantSideMenu · Conversations category rows", () => {
+  test("shows a discoverable Copybooks destination when configured", () => {
+    const html = renderMenu({ conversations: [], includeCopybooks: true });
+
+    expect(html).toContain(">Copybooks<");
+    expect(html).toContain('aria-current="page"');
+  });
+
   test("renders Pinned above Conversations with bucket rows after recents", () => {
     const conversations = [
       makeConversation({ conversationId: "p1", isPinned: true }),
@@ -304,5 +314,4 @@ describe("AssistantSideMenu · overlay close affordance", () => {
     expect(railHtml).not.toContain('aria-label="Close navigation"');
   });
 });
-
 

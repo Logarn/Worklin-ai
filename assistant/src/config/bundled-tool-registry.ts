@@ -133,6 +133,13 @@ import * as transcribeMedia from "./bundled-skills/transcribe/tools/transcribe-m
 import * as brandBrainApplyCorrection from "./bundled-skills/worklin-brand-brain/tools/brand-brain-apply-correction.js";
 import * as brandBrainRead from "./bundled-skills/worklin-brand-brain/tools/brand-brain-read.js";
 import * as brandBrainRecordCampaignOutcome from "./bundled-skills/worklin-brand-brain/tools/brand-brain-record-campaign-outcome.js";
+// ── worklin-copybook ───────────────────────────────────────────────────────────
+import * as copybookCampaignCreate from "./bundled-skills/worklin-copybook/tools/copybook-campaign-create.js";
+import * as copybookCampaignUpdate from "./bundled-skills/worklin-copybook/tools/copybook-campaign-update.js";
+import * as copybookCreate from "./bundled-skills/worklin-copybook/tools/copybook-create.js";
+import * as copybookList from "./bundled-skills/worklin-copybook/tools/copybook-list.js";
+import * as copybookMonthCreate from "./bundled-skills/worklin-copybook/tools/copybook-month-create.js";
+import * as copybookMonthUpdate from "./bundled-skills/worklin-copybook/tools/copybook-month-update.js";
 // ── worklin-retention ──────────────────────────────────────────────────────────
 import * as retentionAudit from "./bundled-skills/worklin-retention/tools/retention-audit.js";
 import * as retentionAuditStatus from "./bundled-skills/worklin-retention/tools/retention-audit-status.js";
@@ -312,6 +319,20 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
   [
     "worklin-brand-brain:tools/brand-brain-record-campaign-outcome.ts",
     brandBrainRecordCampaignOutcome,
+  ],
+
+  // worklin-copybook
+  ["worklin-copybook:tools/copybook-list.ts", copybookList],
+  ["worklin-copybook:tools/copybook-create.ts", copybookCreate],
+  ["worklin-copybook:tools/copybook-month-create.ts", copybookMonthCreate],
+  ["worklin-copybook:tools/copybook-month-update.ts", copybookMonthUpdate],
+  [
+    "worklin-copybook:tools/copybook-campaign-create.ts",
+    copybookCampaignCreate,
+  ],
+  [
+    "worklin-copybook:tools/copybook-campaign-update.ts",
+    copybookCampaignUpdate,
   ],
 
   // worklin-retention

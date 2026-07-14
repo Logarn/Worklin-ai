@@ -8755,6 +8755,780 @@ paths:
                   - deletedSummaries
                   - cancelledJobs
                 additionalProperties: false
+  /v1/copybook-campaigns/{id}:
+    patch:
+      operationId: copybookcampaigns_by_id_patch
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                status:
+                  type: string
+                  enum:
+                    - brief_draft
+                    - brief_review
+                    - brief_approved
+                    - copy_draft
+                    - copy_review
+                packageId:
+                  anyOf:
+                    - type: string
+                      minLength: 1
+                    - type: "null"
+                metadata:
+                  anyOf:
+                    - type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties: {}
+                    - type: "null"
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  monthId:
+                    type: string
+                  channel:
+                    type: string
+                    enum:
+                      - email
+                      - sms
+                  ordinal:
+                    type: number
+                  title:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - brief_draft
+                      - brief_review
+                      - brief_approved
+                      - copy_draft
+                      - copy_review
+                      - approved
+                      - ready_for_design
+                  packageId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  metadata:
+                    anyOf:
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                      - type: "null"
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - monthId
+                  - channel
+                  - ordinal
+                  - title
+                  - status
+                  - packageId
+                  - metadata
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/copybook-campaigns/{id}/approve:
+    post:
+      operationId: copybookcampaigns_by_id_approve_post
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  monthId:
+                    type: string
+                  channel:
+                    type: string
+                    enum:
+                      - email
+                      - sms
+                  ordinal:
+                    type: number
+                  title:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - brief_draft
+                      - brief_review
+                      - brief_approved
+                      - copy_draft
+                      - copy_review
+                      - approved
+                      - ready_for_design
+                  packageId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  metadata:
+                    anyOf:
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                      - type: "null"
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - monthId
+                  - channel
+                  - ordinal
+                  - title
+                  - status
+                  - packageId
+                  - metadata
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/copybook-campaigns/{id}/ready-for-design:
+    post:
+      operationId: copybookcampaigns_by_id_readyfordesign_post
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  monthId:
+                    type: string
+                  channel:
+                    type: string
+                    enum:
+                      - email
+                      - sms
+                  ordinal:
+                    type: number
+                  title:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - brief_draft
+                      - brief_review
+                      - brief_approved
+                      - copy_draft
+                      - copy_review
+                      - approved
+                      - ready_for_design
+                  packageId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  metadata:
+                    anyOf:
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                      - type: "null"
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - monthId
+                  - channel
+                  - ordinal
+                  - title
+                  - status
+                  - packageId
+                  - metadata
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/copybook-months/{id}:
+    patch:
+      operationId: copybookmonths_by_id_patch
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                strategyStatus:
+                  type: string
+                  enum:
+                    - draft
+                    - in_review
+                    - approved
+              required:
+                - strategyStatus
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  copybookId:
+                    type: string
+                  month:
+                    type: number
+                  documentSurfaceId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  strategyStatus:
+                    type: string
+                    enum:
+                      - draft
+                      - in_review
+                      - approved
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - copybookId
+                  - month
+                  - documentSurfaceId
+                  - strategyStatus
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/copybook-months/{id}/campaigns:
+    post:
+      operationId: copybookmonths_by_id_campaigns_post
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  type: string
+                  enum:
+                    - email
+                    - sms
+                ordinal:
+                  type: integer
+                  exclusiveMinimum: 0
+                  maximum: 9007199254740991
+                title:
+                  type: string
+                  minLength: 1
+                packageId:
+                  type: string
+                  minLength: 1
+                metadata:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties: {}
+              required:
+                - channel
+                - ordinal
+                - title
+      responses:
+        "201":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  monthId:
+                    type: string
+                  channel:
+                    type: string
+                    enum:
+                      - email
+                      - sms
+                  ordinal:
+                    type: number
+                  title:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - brief_draft
+                      - brief_review
+                      - brief_approved
+                      - copy_draft
+                      - copy_review
+                      - approved
+                      - ready_for_design
+                  packageId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  metadata:
+                    anyOf:
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties: {}
+                      - type: "null"
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - monthId
+                  - channel
+                  - ordinal
+                  - title
+                  - status
+                  - packageId
+                  - metadata
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/copybooks:
+    get:
+      operationId: copybooks_get
+      tags:
+        - copybooks
+      parameters:
+        - name: brandId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: year
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  copybooks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        brandId:
+                          type: string
+                        year:
+                          type: number
+                        title:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                            - active
+                            - archived
+                        createdAt:
+                          type: number
+                        updatedAt:
+                          type: number
+                      required:
+                        - id
+                        - brandId
+                        - year
+                        - title
+                        - status
+                        - createdAt
+                        - updatedAt
+                      additionalProperties: false
+                required:
+                  - copybooks
+                additionalProperties: false
+    post:
+      operationId: copybooks_post
+      tags:
+        - copybooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                brandId:
+                  type: string
+                  minLength: 1
+                year:
+                  type: integer
+                  minimum: 2000
+                  maximum: 2200
+                title:
+                  type: string
+                  minLength: 1
+              required:
+                - brandId
+                - year
+      responses:
+        "201":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  brandId:
+                    type: string
+                  year:
+                    type: number
+                  title:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - active
+                      - archived
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - brandId
+                  - year
+                  - title
+                  - status
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/copybooks/{id}:
+    get:
+      operationId: copybooks_by_id_get
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  copybook:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      brandId:
+                        type: string
+                      year:
+                        type: number
+                      title:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - active
+                          - archived
+                      createdAt:
+                        type: number
+                      updatedAt:
+                        type: number
+                    required:
+                      - id
+                      - brandId
+                      - year
+                      - title
+                      - status
+                      - createdAt
+                      - updatedAt
+                    additionalProperties: false
+                  brand:
+                    anyOf:
+                      - type: object
+                        properties:
+                          id:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                          - id
+                          - name
+                        additionalProperties: false
+                      - type: "null"
+                  brandBrain:
+                    anyOf:
+                      - type: object
+                        properties:
+                          revision:
+                            type: number
+                          updatedAt:
+                            type: number
+                        required:
+                          - revision
+                          - updatedAt
+                        additionalProperties: false
+                      - type: "null"
+                  months:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        copybookId:
+                          type: string
+                        month:
+                          type: number
+                        documentSurfaceId:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        strategyStatus:
+                          type: string
+                          enum:
+                            - draft
+                            - in_review
+                            - approved
+                        createdAt:
+                          type: number
+                        updatedAt:
+                          type: number
+                        campaigns:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              monthId:
+                                type: string
+                              channel:
+                                type: string
+                                enum:
+                                  - email
+                                  - sms
+                              ordinal:
+                                type: number
+                              title:
+                                type: string
+                              status:
+                                type: string
+                                enum:
+                                  - brief_draft
+                                  - brief_review
+                                  - brief_approved
+                                  - copy_draft
+                                  - copy_review
+                                  - approved
+                                  - ready_for_design
+                              packageId:
+                                anyOf:
+                                  - type: string
+                                  - type: "null"
+                              metadata:
+                                anyOf:
+                                  - type: object
+                                    propertyNames:
+                                      type: string
+                                    additionalProperties: {}
+                                  - type: "null"
+                              createdAt:
+                                type: number
+                              updatedAt:
+                                type: number
+                              workItems:
+                                type: array
+                                items:
+                                  type: object
+                                  properties:
+                                    id:
+                                      type: string
+                                    title:
+                                      type: string
+                                    status:
+                                      type: string
+                                    updatedAt:
+                                      type: number
+                                  required:
+                                    - id
+                                    - title
+                                    - status
+                                    - updatedAt
+                                  additionalProperties: false
+                            required:
+                              - id
+                              - monthId
+                              - channel
+                              - ordinal
+                              - title
+                              - status
+                              - packageId
+                              - metadata
+                              - createdAt
+                              - updatedAt
+                              - workItems
+                            additionalProperties: false
+                      required:
+                        - id
+                        - copybookId
+                        - month
+                        - documentSurfaceId
+                        - strategyStatus
+                        - createdAt
+                        - updatedAt
+                        - campaigns
+                      additionalProperties: false
+                required:
+                  - copybook
+                  - brand
+                  - brandBrain
+                  - months
+                additionalProperties: false
+  /v1/copybooks/{id}/months:
+    post:
+      operationId: copybooks_by_id_months_post
+      tags:
+        - copybooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                month:
+                  type: integer
+                  minimum: 1
+                  maximum: 12
+                conversationId:
+                  type: string
+                  minLength: 1
+                title:
+                  type: string
+                  minLength: 1
+              required:
+                - month
+                - conversationId
+      responses:
+        "201":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  copybookId:
+                    type: string
+                  month:
+                    type: number
+                  documentSurfaceId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  strategyStatus:
+                    type: string
+                    enum:
+                      - draft
+                      - in_review
+                      - approved
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - copybookId
+                  - month
+                  - documentSurfaceId
+                  - strategyStatus
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
   /v1/credentials/delete:
     post:
       operationId: credentials_delete_post
