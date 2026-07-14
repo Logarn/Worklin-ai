@@ -9,6 +9,7 @@ import {
 /** All roles defined in the SubagentRole union. */
 const ALL_ROLES: SubagentRole[] = [
   "general",
+  "supervisor",
   "researcher",
   "coder",
   "planner",
@@ -60,6 +61,20 @@ describe("SUBAGENT_ROLE_REGISTRY", () => {
   test('researcher includes "recall" for local information access', () => {
     const tools = SUBAGENT_ROLE_REGISTRY.researcher.allowedTools!;
     expect(tools).toContain("recall");
+  });
+
+  test("supervisor can delegate, inspect workers, and notify its parent", () => {
+    const tools = SUBAGENT_ROLE_REGISTRY.supervisor.allowedTools!;
+    expect(tools).toContain("subagent_spawn");
+    expect(tools).toContain("subagent_read");
+    expect(tools).toContain("subagent_abort");
+    expect(tools).toContain("notify_parent");
+  });
+
+  test("supervisor preamble requires a synthesized result", () => {
+    const preamble = SUBAGENT_ROLE_REGISTRY.supervisor.systemPromptPreamble;
+    expect(preamble).toContain("Spawn focused workers");
+    expect(preamble).toContain("synthesis");
   });
 
   test('coder includes "recall" for local information access', () => {

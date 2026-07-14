@@ -28,6 +28,7 @@ interface CapturedConversationState {
 }
 
 const capturedConversations: CapturedConversationState[] = [];
+let runAgentLoopImpl: () => Promise<void> = () => Promise.resolve();
 
 // Stub Conversation so spawn() doesn't try to actually run an agent loop —
 // we only care about what provider it was constructed with.
@@ -90,7 +91,13 @@ class FakeConversation {
     return { id: "msg-id", deduplicated: false };
   }
   runAgentLoop() {
-    return Promise.resolve();
+    return runAgentLoopImpl();
+  }
+  isProcessing() {
+    return false;
+  }
+  hasQueuedMessages() {
+    return false;
   }
   getCurrentSystemPrompt() {
     return "system";
@@ -306,6 +313,12 @@ describe("SubagentManager — provider call-site routing", () => {
       getAuthContext: () => parentAuthContext,
       assistantId: "self",
       getCurrentSystemPrompt: () => "parent system",
+      enqueueMessage: () => ({ queued: true, rejected: false }),
+      persistUserMessage: async () => ({
+        id: "parent-message",
+        deduplicated: false,
+      }),
+      runAgentLoop: async () => {},
     } as any);
 
     await manager.spawn(
@@ -327,6 +340,172 @@ describe("SubagentManager — provider call-site routing", () => {
     expect(createdConversation.assistantId).toBe("self");
     expect(createdConversation.trustContext).not.toBe(parentTrustContext);
     expect(createdConversation.authContext).not.toBe(parentAuthContext);
+  });
+});
+
+describe("SubagentManager — bounded nested delegation", () => {
+  test("an active supervisor can spawn one worker layer", async () => {
+    setLlmConfig({
+      default: {
+        provider: "anthropic",
+        provider_connection: "anthropic-conn",
+        model: "claude-opus-4-7",
+      },
+    });
+
+    let resolveWorker!: () => void;
+    runAgentLoopImpl = () =>
+      new Promise<void>((resolve) => {
+        resolveWorker = resolve;
+      });
+
+    const manager = new SubagentManager();
+    const internals = manager as unknown as {
+      subagents: Map<string, unknown>;
+      parentToChildren: Map<string, Set<string>>;
+    };
+    internals.subagents.set("supervisor-1", {
+      conversation: new FakeConversation(
+        "supervisor-conv",
+        anthropicStub,
+        "system",
+        0,
+        () => {},
+      ),
+      state: {
+        config: {
+          id: "supervisor-1",
+          parentConversationId: "root-conv",
+          label: "Supervisor",
+          objective: "Coordinate research",
+          role: "supervisor",
+        },
+        status: "awaiting_children",
+        conversationId: "supervisor-conv",
+        isFork: false,
+        depth: 1,
+        rootConversationId: "root-conv",
+        createdAt: Date.now(),
+        usage: { inputTokens: 0, outputTokens: 0, estimatedCost: 0 },
+      },
+      parentSendToClient: () => {},
+    });
+    internals.parentToChildren.set("root-conv", new Set(["supervisor-1"]));
+
+    try {
+      const workerId = await manager.spawn(
+        {
+          parentConversationId: "supervisor-conv",
+          label: "Worker",
+          objective: "Research one channel",
+          role: "supervisor",
+        },
+        () => {},
+      );
+      const worker = manager.getState(workerId)!;
+      expect(worker.depth).toBe(2);
+      expect(worker.parentSubagentId).toBe("supervisor-1");
+      expect(worker.rootConversationId).toBe("root-conv");
+
+      await expect(
+        manager.spawn(
+          {
+            parentConversationId: worker.conversationId,
+            label: "Too deep",
+            objective: "Try a third delegation layer",
+            role: "researcher",
+          },
+          () => {},
+        ),
+      ).rejects.toThrow("maximum delegation depth is 2");
+
+      resolveWorker();
+      await Promise.resolve();
+    } finally {
+      runAgentLoopImpl = () => Promise.resolve();
+      manager.disposeAll();
+    }
+  });
+
+  test("non-supervisor subagents cannot spawn workers", async () => {
+    setLlmConfig({
+      default: {
+        provider: "anthropic",
+        provider_connection: "anthropic-conn",
+        model: "claude-opus-4-7",
+      },
+    });
+
+    const manager = new SubagentManager();
+    const internals = manager as unknown as {
+      subagents: Map<string, unknown>;
+    };
+    internals.subagents.set("researcher-1", {
+      conversation: new FakeConversation(
+        "researcher-conv",
+        anthropicStub,
+        "system",
+        0,
+        () => {},
+      ),
+      state: {
+        config: {
+          id: "researcher-1",
+          parentConversationId: "root-conv",
+          label: "Researcher",
+          objective: "Research",
+          role: "researcher",
+        },
+        status: "running",
+        conversationId: "researcher-conv",
+        isFork: false,
+        depth: 1,
+        rootConversationId: "root-conv",
+        createdAt: Date.now(),
+        usage: { inputTokens: 0, outputTokens: 0, estimatedCost: 0 },
+      },
+      parentSendToClient: () => {},
+    });
+
+    await expect(
+      manager.spawn(
+        {
+          parentConversationId: "researcher-conv",
+          label: "Worker",
+          objective: "Nested work",
+        },
+        () => {},
+      ),
+    ).rejects.toThrow('parent role "researcher" is not allowed to delegate');
+
+    manager.disposeAll();
+  });
+
+  test("forks persist the forced general role", async () => {
+    setLlmConfig({
+      default: {
+        provider: "anthropic",
+        provider_connection: "anthropic-conn",
+        model: "claude-opus-4-7",
+      },
+    });
+
+    const manager = new SubagentManager();
+    const subagentId = await manager.spawn(
+      {
+        parentConversationId: "fork-root",
+        label: "Fork",
+        objective: "Review context",
+        role: "supervisor",
+        fork: true,
+        parentMessages: [],
+        parentSystemPrompt: "Parent system prompt",
+      },
+      () => {},
+    );
+
+    expect(manager.getState(subagentId)?.config.role).toBe("general");
+    manager.disposeAll();
   });
 });
 

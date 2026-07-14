@@ -15,6 +15,7 @@ import { getConfig } from "../config/loader.js";
 import { Conversation } from "../daemon/conversation.js";
 import {
   findConversation,
+  findConversationOrSubagent,
   removeSubagentConversation,
   setSubagentConversation,
 } from "../daemon/conversation-registry.js";
@@ -63,6 +64,7 @@ export function mergeSkillIds(
 function buildSubagentSystemPrompt(
   config: SubagentConfig,
   role: SubagentRole,
+  depth: number,
 ): string {
   const roleConfig = SUBAGENT_ROLE_REGISTRY[role];
   const sections: string[] = [
@@ -78,7 +80,12 @@ function buildSubagentSystemPrompt(
     "",
     "## Constraints",
     `- Role: ${role}`,
-    "- You cannot spawn nested subagents.",
+    `- Delegation depth: ${depth} of ${SUBAGENT_LIMITS.maxDepth}.`,
+    ...(role === "supervisor" && depth < SUBAGENT_LIMITS.maxDepth
+      ? [
+          `- You may spawn up to ${SUBAGENT_LIMITS.maxActiveChildrenPerParent} focused workers and must synthesize their results before finishing.`,
+        ]
+      : ["- You cannot spawn nested subagents."]),
     "- Use notify_parent to report important findings or if you are blocked.",
   );
   return sections.join("\n");
@@ -110,6 +117,17 @@ interface ManagedSubagent {
    * the release to the TTL sweep rather than tearing down mid-drain.
    */
   hadEnqueuedMessages?: boolean;
+  /** Debounces hierarchy-aware finalization after an agent-loop idle event. */
+  finalizeTimer?: ReturnType<typeof setTimeout>;
+  /** Worker lifecycle messages waiting for this supervisor's next turn. */
+  pendingParentNotifications?: Array<{
+    message: string;
+    metadata?: Record<string, unknown>;
+  }>;
+  /** True while the supervisor is processing one queued worker notification. */
+  processingParentNotification?: boolean;
+  /** Retries notification delivery after the supervisor's current turn settles. */
+  notificationDrainTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface SubagentNotificationInfo {
@@ -145,19 +163,10 @@ export class SubagentManager {
     config: Omit<SubagentConfig, "id">,
     parentSendToClient: (msg: ServerMessage) => void,
   ): Promise<string> {
-    // ── Limit checks ────────────────────────────────────────────────
-
-    // Depth check: prevent subagents from spawning nested subagents.
-    const isParentASubagent = [...this.subagents.values()].some(
-      (s) => s.state.conversationId === config.parentConversationId,
-    );
-    if (isParentASubagent) {
-      throw new Error(
-        `Cannot spawn subagent: parent is itself a subagent (max depth ${SUBAGENT_LIMITS.maxDepth}).`,
-      );
-    }
-
     // ── Resolve role ─────────────────────────────────────────────────
+    const parentManaged = this.findManagedByConversationId(
+      config.parentConversationId,
+    );
     const isFork = config.fork === true;
     let role: SubagentRole = (config.role as SubagentRole) ?? "general";
     if (isFork && role !== "general") {
@@ -177,6 +186,46 @@ export class SubagentManager {
       );
     }
     const roleConfig = SUBAGENT_ROLE_REGISTRY[role];
+
+    // ── Hierarchy and fan-out limits ─────────────────────────────────
+    const depth = (parentManaged?.state.depth ?? 0) + 1;
+    const rootConversationId =
+      parentManaged?.state.rootConversationId ?? config.parentConversationId;
+    if (parentManaged) {
+      if (
+        TERMINAL_STATUSES.has(parentManaged.state.status) ||
+        !parentManaged.conversation
+      ) {
+        throw new Error(
+          "Cannot spawn nested subagent: parent supervisor is no longer active.",
+        );
+      }
+      const parentRole = parentManaged.state.config.role ?? "general";
+      if (parentRole !== "supervisor") {
+        throw new Error(
+          `Cannot spawn nested subagent: parent role "${parentRole}" is not allowed to delegate. Use role "supervisor" for coordinated child workers.`,
+        );
+      }
+    }
+    if (depth > SUBAGENT_LIMITS.maxDepth) {
+      throw new Error(
+        `Cannot spawn nested subagent: maximum delegation depth is ${SUBAGENT_LIMITS.maxDepth}.`,
+      );
+    }
+    const activeChildren = this.countActiveChildren(
+      config.parentConversationId,
+    );
+    if (activeChildren >= SUBAGENT_LIMITS.maxActiveChildrenPerParent) {
+      throw new Error(
+        `Cannot spawn subagent: parent already has ${activeChildren} active children (limit ${SUBAGENT_LIMITS.maxActiveChildrenPerParent}).`,
+      );
+    }
+    const activeInRoot = this.countActiveInRoot(rootConversationId);
+    if (activeInRoot >= SUBAGENT_LIMITS.maxActiveDescendantsPerRoot) {
+      throw new Error(
+        `Cannot spawn subagent: root delegation tree already has ${activeInRoot} active agents (limit ${SUBAGENT_LIMITS.maxActiveDescendantsPerRoot}).`,
+      );
+    }
 
     // ── Create conversation ─────────────────────────────────────────
     const subagentId = uuid();
@@ -215,7 +264,9 @@ export class SubagentManager {
       );
     }
 
-    const parentConversation = findConversation(config.parentConversationId);
+    const parentConversation =
+      findConversation(config.parentConversationId) ??
+      findConversationOrSubagent(config.parentConversationId);
 
     let systemPrompt: string;
     if (isFork) {
@@ -235,7 +286,7 @@ export class SubagentManager {
     } else {
       systemPrompt =
         config.systemPromptOverride ??
-        buildSubagentSystemPrompt({ ...config, id: subagentId }, role);
+        buildSubagentSystemPrompt({ ...config, id: subagentId }, role, depth);
     }
     const maxTokens = resolveCallSiteConfig(
       "subagentSpawn",
@@ -255,11 +306,17 @@ export class SubagentManager {
       config: {
         ...config,
         id: subagentId,
+        role,
         sendResultToUser: resolvedSendResultToUser,
       },
       status: "pending",
       conversationId: conversationRecord.id,
       isFork,
+      depth,
+      rootConversationId,
+      ...(parentManaged
+        ? { parentSubagentId: parentManaged.state.config.id }
+        : {}),
       createdAt: now,
       usage: { inputTokens: 0, outputTokens: 0, estimatedCost: 0 },
     };
@@ -271,7 +328,10 @@ export class SubagentManager {
       // any code reads this field. Using null! avoids the `as unknown as` cast.
       conversation: null! as Conversation,
       state,
-      parentSendToClient,
+      // Nested workers publish lifecycle events to the root sender instead of
+      // nesting subagent_event envelopes inside their supervisor's stream.
+      parentSendToClient:
+        parentManaged?.parentSendToClient ?? parentSendToClient,
     };
 
     // Wrap sendToClient to envelope all events with the subagent ID.
@@ -283,6 +343,9 @@ export class SubagentManager {
         conversationId: config.parentConversationId,
         event: msg,
       } as ServerMessage);
+      if (msg.type === "assistant_activity_state" && msg.phase === "idle") {
+        this.scheduleFinalization(subagentId, 50);
+      }
     };
 
     const conversation = new Conversation(
@@ -367,7 +430,7 @@ export class SubagentManager {
     this.parentToChildren.get(config.parentConversationId)!.add(subagentId);
 
     // Notify client that a subagent was spawned.
-    parentSendToClient({
+    managed.parentSendToClient({
       type: "subagent_spawned",
       subagentId,
       parentConversationId: config.parentConversationId,
@@ -382,6 +445,8 @@ export class SubagentManager {
         subagentId,
         parentConversationId: config.parentConversationId,
         label: config.label,
+        depth,
+        rootConversationId,
       },
       "Subagent spawned",
     );
@@ -455,18 +520,13 @@ export class SubagentManager {
           : {}),
       });
 
-      // Agent loop completed successfully.
-      // Copy usage stats from the conversation before sending status (which includes usage).
+      // Agent loop completed successfully. A supervisor may still own running
+      // children, so hierarchy-aware finalization decides whether to complete
+      // now or remain alive in awaiting_children until worker notifications
+      // have been processed and synthesized.
       managed.state.usage = { ...conversation.usageStats };
-      // Only update state + notify if still non-terminal (guards against abort race).
       if (!TERMINAL_STATUSES.has(managed.state.status)) {
-        managed.state.completedAt = Date.now();
-        this.setStatus(subagentId, "completed", getSender());
-
-        log.info({ subagentId }, "Subagent completed");
-
-        // Notify the parent conversation so the LLM can call subagent_read.
-        this.notifyParentTerminal(managed, "completed");
+        this.finalizeWhenSettled(subagentId);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -478,6 +538,11 @@ export class SubagentManager {
 
       // Only update status if not already terminal (e.g. aborted).
       if (!TERMINAL_STATUSES.has(managed.state.status)) {
+        this.abortAllForParent(
+          managed.state.conversationId,
+          managed.parentSendToClient,
+          { suppressNotifications: true },
+        );
         this.setStatus(subagentId, "failed", getSender(), errorMsg);
         this.notifyParentTerminal(managed, "failed");
       }
@@ -495,6 +560,15 @@ export class SubagentManager {
       // is a sticky monotonic marker that any queued work existed during this
       // run, letting us defer the release to the TTL sweep rather than
       // tearing down mid-drain.
+      if (!TERMINAL_STATUSES.has(managed.state.status)) {
+        // Supervisors stay live while children run. Completion notifications
+        // will wake this conversation and the idle event will re-run
+        // hierarchy-aware finalization.
+        return;
+      }
+      if (!managed.conversation) {
+        return;
+      }
       if (managed.hadEnqueuedMessages) {
         log.debug(
           { subagentId },
@@ -535,6 +609,14 @@ export class SubagentManager {
       return false;
     }
 
+    // Cancellation is hierarchical: a supervisor cannot leave detached
+    // workers running after it has been stopped.
+    this.abortAllForParent(
+      managed.state.conversationId,
+      managed.parentSendToClient,
+      { suppressNotifications: true },
+    );
+
     managed.conversation?.abort(
       createAbortReason(
         "subagent_aborted",
@@ -543,37 +625,34 @@ export class SubagentManager {
       ),
     );
     managed.state.completedAt = Date.now();
-    if (parentSendToClient) {
-      // Route the status update through the stored parent sender so the
-      // owning conversation's UI chip updates, even when the abort comes from a
-      // different socket (e.g. after conversation switching). Fall back to the
-      // caller-provided sender if no stored sender exists.
-      const statusSender = managed.parentSendToClient ?? parentSendToClient;
-      this.setStatus(subagentId, "aborted", statusSender);
-      // Notify parent that the subagent was explicitly aborted — tell it NOT to re-spawn.
-      // Skip when the parent LLM itself called subagent_abort (it already has the tool result).
-      if (!options?.suppressNotification) {
-        const label = managed.state.config.label;
-        const prefix = managed.state.isFork ? "Fork" : "Subagent";
-        const message =
-          `[${prefix} "${label}" was explicitly aborted]\n\n` +
-          `This ${prefix.toLowerCase()} was cancelled on purpose. Do NOT re-spawn or retry it.`;
-        this.injectMessageIntoParent(
-          managed.state.config.parentConversationId,
-          message,
-          {
-            subagentNotification: {
-              subagentId,
-              label,
-              status: "aborted" as const,
-              conversationId: managed.state.conversationId,
-            },
+    // Route the status update through the stored root sender. It may be a
+    // no-op in a headless run, but state and parent-context notification still
+    // proceed without requiring an attached UI client.
+    const statusSender = managed.parentSendToClient ?? parentSendToClient;
+    this.setStatus(subagentId, "aborted", statusSender);
+    // Notify parent that the subagent was explicitly aborted — tell it NOT to re-spawn.
+    // Skip when the parent LLM itself called subagent_abort (it already has the tool result).
+    if (!options?.suppressNotification) {
+      const label = managed.state.config.label;
+      const prefix = managed.state.isFork ? "Fork" : "Subagent";
+      const message =
+        `[${prefix} "${label}" was explicitly aborted]\n\n` +
+        `This ${prefix.toLowerCase()} was cancelled on purpose. Do NOT re-spawn or retry it.`;
+      this.injectMessageIntoParent(
+        managed.state.config.parentConversationId,
+        message,
+        {
+          subagentNotification: {
+            subagentId,
+            label,
+            status: "aborted" as const,
+            conversationId: managed.state.conversationId,
           },
-        );
-      }
-    } else {
-      managed.state.status = "aborted";
+        },
+      );
     }
+
+    this.releaseConversation(managed);
 
     log.info({ subagentId }, "Subagent aborted");
     return true;
@@ -586,13 +665,23 @@ export class SubagentManager {
   abortAllForParent(
     parentConversationId: string,
     parentSendToClient?: (msg: ServerMessage) => void,
+    options?: { suppressNotifications?: boolean },
   ): number {
     const children = this.parentToChildren.get(parentConversationId);
     if (!children) return 0;
 
     let count = 0;
     for (const childId of children) {
-      if (this.abort(childId, parentSendToClient)) {
+      if (
+        this.abort(
+          childId,
+          parentSendToClient,
+          undefined,
+          options?.suppressNotifications
+            ? { suppressNotification: true }
+            : undefined,
+        )
+      ) {
         count++;
       }
     }
@@ -649,6 +738,214 @@ export class SubagentManager {
     return "sent";
   }
 
+  // ── Hierarchy coordination ───────────────────────────────────────────
+
+  private findManagedByConversationId(
+    conversationId: string,
+  ): ManagedSubagent | undefined {
+    for (const managed of this.subagents.values()) {
+      if (managed.state.conversationId === conversationId) return managed;
+    }
+    return undefined;
+  }
+
+  private countActiveChildren(parentConversationId: string): number {
+    return this.getChildrenOf(parentConversationId).filter(
+      (child) => !TERMINAL_STATUSES.has(child.status),
+    ).length;
+  }
+
+  private countActiveInRoot(rootConversationId: string): number {
+    let count = 0;
+    for (const managed of this.subagents.values()) {
+      const stateRoot =
+        managed.state.rootConversationId ??
+        managed.state.config.parentConversationId;
+      if (
+        stateRoot === rootConversationId &&
+        !TERMINAL_STATUSES.has(managed.state.status)
+      ) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private scheduleFinalization(subagentId: string, delayMs = 0): void {
+    const managed = this.subagents.get(subagentId);
+    if (!managed || TERMINAL_STATUSES.has(managed.state.status)) return;
+    if (managed.finalizeTimer) return;
+    managed.finalizeTimer = setTimeout(() => {
+      managed.finalizeTimer = undefined;
+      this.finalizeWhenSettled(subagentId);
+    }, delayMs);
+    if (
+      managed.finalizeTimer &&
+      typeof managed.finalizeTimer === "object" &&
+      "unref" in managed.finalizeTimer
+    ) {
+      (managed.finalizeTimer as { unref: () => void }).unref();
+    }
+  }
+
+  private scheduleParentNotificationDrain(
+    subagentId: string,
+    delayMs = 0,
+  ): void {
+    const managed = this.subagents.get(subagentId);
+    if (!managed || TERMINAL_STATUSES.has(managed.state.status)) return;
+    if (managed.notificationDrainTimer) return;
+    managed.notificationDrainTimer = setTimeout(() => {
+      managed.notificationDrainTimer = undefined;
+      void this.drainParentNotifications(subagentId);
+    }, delayMs);
+    if (
+      managed.notificationDrainTimer &&
+      typeof managed.notificationDrainTimer === "object" &&
+      "unref" in managed.notificationDrainTimer
+    ) {
+      (managed.notificationDrainTimer as { unref: () => void }).unref();
+    }
+  }
+
+  /**
+   * Run worker notifications as explicit supervisor turns. Keeping these out
+   * of Conversation's general message queue gives the manager a deterministic
+   * completion barrier and preserves the subagent call-site/profile routing.
+   */
+  private async drainParentNotifications(subagentId: string): Promise<void> {
+    const managed = this.subagents.get(subagentId);
+    if (
+      !managed ||
+      TERMINAL_STATUSES.has(managed.state.status) ||
+      !managed.conversation ||
+      managed.processingParentNotification
+    ) {
+      return;
+    }
+
+    const conversation = managed.conversation;
+    if (conversation.isProcessing() || conversation.hasQueuedMessages()) {
+      this.scheduleParentNotificationDrain(subagentId, 25);
+      return;
+    }
+
+    const next = managed.pendingParentNotifications?.shift();
+    if (!next) {
+      this.finalizeWhenSettled(subagentId);
+      return;
+    }
+
+    managed.processingParentNotification = true;
+    if (managed.state.status !== "running") {
+      this.setStatus(subagentId, "running", managed.parentSendToClient);
+    }
+
+    try {
+      const { id: messageId } = await conversation.persistUserMessage({
+        content: next.message,
+        metadata: next.metadata,
+      });
+      await conversation.runAgentLoop(next.message, messageId, {
+        callSite: "subagentSpawn",
+        ...(managed.state.config.overrideProfile
+          ? { overrideProfile: managed.state.config.overrideProfile }
+          : {}),
+      });
+      managed.state.usage = { ...conversation.usageStats };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      managed.state.error = errorMsg;
+      managed.state.completedAt = Date.now();
+      managed.state.usage = { ...conversation.usageStats };
+      if (!TERMINAL_STATUSES.has(managed.state.status)) {
+        this.abortAllForParent(
+          managed.state.conversationId,
+          managed.parentSendToClient,
+          { suppressNotifications: true },
+        );
+        this.setStatus(
+          subagentId,
+          "failed",
+          managed.parentSendToClient,
+          errorMsg,
+        );
+        this.notifyParentTerminal(managed, "failed");
+        this.releaseConversation(managed);
+      }
+      log.error(
+        { subagentId, err },
+        "Supervisor failed to process worker notification",
+      );
+      return;
+    } finally {
+      managed.processingParentNotification = false;
+    }
+
+    if ((managed.pendingParentNotifications?.length ?? 0) > 0) {
+      this.scheduleParentNotificationDrain(subagentId);
+    } else {
+      this.finalizeWhenSettled(subagentId);
+    }
+  }
+
+  /**
+   * Complete a subagent only after its own turn is idle, its message queue is
+   * drained, and all direct workers are terminal. This keeps supervisors alive
+   * long enough to receive worker results and produce their final synthesis.
+   */
+  private finalizeWhenSettled(subagentId: string): void {
+    const managed = this.subagents.get(subagentId);
+    if (!managed || TERMINAL_STATUSES.has(managed.state.status)) return;
+    const conversation = managed.conversation;
+    if (!conversation) return;
+
+    const activeChildren = this.countActiveChildren(
+      managed.state.conversationId,
+    );
+    if (
+      managed.processingParentNotification ||
+      (managed.pendingParentNotifications?.length ?? 0) > 0
+    ) {
+      this.scheduleParentNotificationDrain(subagentId, 25);
+      return;
+    }
+    if (activeChildren > 0) {
+      if (managed.state.status !== "awaiting_children") {
+        this.setStatus(
+          subagentId,
+          "awaiting_children",
+          managed.parentSendToClient,
+        );
+      }
+      return;
+    }
+
+    if (conversation.isProcessing() || conversation.hasQueuedMessages()) {
+      this.scheduleFinalization(subagentId, 25);
+      return;
+    }
+
+    managed.state.usage = { ...conversation.usageStats };
+    managed.state.completedAt = Date.now();
+    this.setStatus(subagentId, "completed", managed.parentSendToClient);
+    log.info(
+      {
+        subagentId,
+        depth: managed.state.depth ?? 1,
+        parentSubagentId: managed.state.parentSubagentId,
+      },
+      "Subagent completed",
+    );
+    this.notifyParentTerminal(managed, "completed");
+    if (managed.hadEnqueuedMessages) {
+      managed.retainedUntil = Date.now() + TERMINAL_RETENTION_MS;
+      this.ensureSweepRunning();
+    } else {
+      this.releaseConversation(managed);
+    }
+  }
+
   // ── Queries ───────────────────────────────────────────────────────────
 
   getState(subagentId: string): SubagentState | undefined {
@@ -687,12 +984,14 @@ export class SubagentManager {
     parentConversationId: string,
     newSendToClient: (msg: ServerMessage) => void,
   ): void {
-    const children = this.parentToChildren.get(parentConversationId);
-    if (!children) return;
-
-    for (const childId of children) {
-      const managed = this.subagents.get(childId);
-      if (managed && !TERMINAL_STATUSES.has(managed.state.status)) {
+    for (const managed of this.subagents.values()) {
+      const rootConversationId =
+        managed.state.rootConversationId ??
+        managed.state.config.parentConversationId;
+      if (
+        rootConversationId === parentConversationId &&
+        !TERMINAL_STATUSES.has(managed.state.status)
+      ) {
         managed.parentSendToClient = newSendToClient;
       }
     }
@@ -707,6 +1006,14 @@ export class SubagentManager {
    */
   private releaseConversation(managed: ManagedSubagent): void {
     if (!managed.conversation) return;
+    if (managed.finalizeTimer) {
+      clearTimeout(managed.finalizeTimer);
+      managed.finalizeTimer = undefined;
+    }
+    if (managed.notificationDrainTimer) {
+      clearTimeout(managed.notificationDrainTimer);
+      managed.notificationDrainTimer = undefined;
+    }
     const conversation = managed.conversation;
     removeSubagentConversation(conversation.conversationId, conversation);
     conversation.dispose();
@@ -728,6 +1035,22 @@ export class SubagentManager {
   dispose(subagentId: string): void {
     const managed = this.subagents.get(subagentId);
     if (!managed) return;
+
+    // Dispose the full descendant tree before removing the parent indexes.
+    this.abortAllForParent(
+      managed.state.conversationId,
+      managed.parentSendToClient,
+      { suppressNotifications: true },
+    );
+
+    if (managed.finalizeTimer) {
+      clearTimeout(managed.finalizeTimer);
+      managed.finalizeTimer = undefined;
+    }
+    if (managed.notificationDrainTimer) {
+      clearTimeout(managed.notificationDrainTimer);
+      managed.notificationDrainTimer = undefined;
+    }
 
     if (managed.conversation) {
       const conversation = managed.conversation;
@@ -994,7 +1317,9 @@ export class SubagentManager {
     message: string,
     metadata?: Record<string, unknown>,
   ): void {
-    const parentConversation = findConversation(parentConversationId);
+    const parentConversation =
+      findConversation(parentConversationId) ??
+      findConversationOrSubagent(parentConversationId);
     if (!parentConversation) {
       log.warn(
         { parentConversationId },
@@ -1002,6 +1327,20 @@ export class SubagentManager {
       );
       return;
     }
+    const managedParent =
+      this.findManagedByConversationId(parentConversationId);
+    if (managedParent && !TERMINAL_STATUSES.has(managedParent.state.status)) {
+      if (!managedParent.pendingParentNotifications) {
+        managedParent.pendingParentNotifications = [];
+      }
+      managedParent.pendingParentNotifications.push({ message, metadata });
+      this.scheduleParentNotificationDrain(
+        managedParent.state.config.id,
+        parentConversation.isProcessing() ? 25 : 0,
+      );
+      return;
+    }
+
     const enqueueResult = parentConversation.enqueueMessage({
       content: message,
       metadata,

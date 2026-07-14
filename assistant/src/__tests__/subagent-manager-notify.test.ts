@@ -46,6 +46,8 @@ interface FakeManagedSubagent {
     loadFromDb?: () => Promise<void>;
     persistUserMessage?: () => { id: string; deduplicated: boolean };
     runAgentLoop?: () => Promise<void>;
+    isProcessing: () => boolean;
+    hasQueuedMessages: () => boolean;
     usageStats: {
       inputTokens: number;
       outputTokens: number;
@@ -83,6 +85,8 @@ function injectFakeSubagent(
     dispose: () => {},
     messages: [],
     sendToClient: () => {},
+    isProcessing: () => false,
+    hasQueuedMessages: () => false,
     usageStats: { inputTokens: 100, outputTokens: 50, estimatedCost: 0.005 },
   };
 
@@ -217,7 +221,7 @@ describe("SubagentManager abort notification", () => {
     expect(result).toBe(false);
   });
 
-  test("abort without sendToClient sets status but does not notify", () => {
+  test("abort without a live client still injects the parent notification", () => {
     clearCaptured();
     const manager = new SubagentManager();
     const subagentId = "sub-1";
@@ -228,8 +232,7 @@ describe("SubagentManager abort notification", () => {
 
     expect(result).toBe(true);
     expect(state.status).toBe("aborted");
-    // Without parentSendToClient, abort skips both the status update and notification.
-    expect(capturedNotifications).toHaveLength(0);
+    expect(capturedNotifications).toHaveLength(1);
   });
 
   test("abort rejects when callerConversationId does not match parent", () => {

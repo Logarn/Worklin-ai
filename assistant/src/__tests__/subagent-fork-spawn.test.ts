@@ -23,6 +23,8 @@ interface FakeManagedSubagent {
     injectInheritedContext?: (messages: Message[]) => void;
     setSubagentAllowedTools?: (tools: Set<string>) => void;
     getCurrentSystemPrompt?: () => string;
+    isProcessing: () => boolean;
+    hasQueuedMessages: () => boolean;
     usageStats: {
       inputTokens: number;
       outputTokens: number;
@@ -56,6 +58,8 @@ function makeFakeConversation(): NonNullable<
     dispose: () => {},
     messages: [],
     sendToClient: () => {},
+    isProcessing: () => false,
+    hasQueuedMessages: () => false,
     usageStats: { inputTokens: 100, outputTokens: 50, estimatedCost: 0.005 },
   };
 }

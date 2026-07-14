@@ -8,7 +8,12 @@ import type { SubagentStatus } from "@vellumai/assistant-api";
 
 /** Whether the subagent is in an active (non-terminal) state. */
 export function isActiveStatus(status: SubagentStatus): boolean {
-  return status === "running" || status === "pending" || status === "awaiting_input";
+  return (
+    status === "running" ||
+    status === "pending" ||
+    status === "awaiting_input" ||
+    status === "awaiting_children"
+  );
 }
 
 /** Map a SubagentStatus to a semantic color token. */
@@ -33,6 +38,8 @@ export function statusLabel(status: SubagentStatus): string {
       return "Running";
     case "awaiting_input":
       return "Awaiting Input";
+    case "awaiting_children":
+      return "Coordinating Workers";
     case "completed":
       return "Completed";
     case "failed":

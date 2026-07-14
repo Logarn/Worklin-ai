@@ -29,15 +29,13 @@ export async function executeSubagentSpawn(
   }
 
   const manager = getSubagentManager();
-  const sendToClient = context.sendToClient as
-    | ((msg: { type: string; [key: string]: unknown }) => void)
-    | undefined;
-  if (!sendToClient) {
-    return {
-      content: "No client connected - cannot spawn subagent.",
-      isError: true,
-    };
-  }
+  // Scheduled and background turns may have no attached UI client. State and
+  // parent-context notifications still work; live events are simply dropped
+  // until a client reconnects and replaces the root sender.
+  const sendToClient =
+    (context.sendToClient as
+      | ((msg: { type: string; [key: string]: unknown }) => void)
+      | undefined) ?? (() => {});
 
   // ── Fork mode: resolve parent context ────────────────────────────
   let forkFields:

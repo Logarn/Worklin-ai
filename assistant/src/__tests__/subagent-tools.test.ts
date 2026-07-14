@@ -100,6 +100,8 @@ function injectSubagent(
     enqueueMessage: () => ({ queued: false }),
     persistUserMessage: async () => ({ id: "msg-1", deduplicated: false }),
     runAgentLoop: async () => {},
+    isProcessing: () => false,
+    hasQueuedMessages: () => false,
   };
   internals.subagents.set(subagentId, {
     conversation: fakeConversation,
@@ -174,13 +176,29 @@ describe("Subagent tool definitions", () => {
 // ── Input validation ────────────────────────────────────────────────
 
 describe("Subagent tool execute validation", () => {
-  test("spawn returns error when no sendToClient", async () => {
-    const result = await executeSubagentSpawn(
-      { label: "test", objective: "do something" },
-      makeContext("sess-1"),
-    );
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("No client connected");
+  test("spawn works headlessly when no sendToClient is attached", async () => {
+    const manager = getSubagentManager();
+    const originalSpawn = manager.spawn.bind(manager);
+    let capturedSender: ((msg: unknown) => void) | undefined;
+    manager.spawn = async (_config, sendToClient) => {
+      capturedSender = sendToClient as (msg: unknown) => void;
+      return "headless-subagent-id";
+    };
+
+    try {
+      const result = await executeSubagentSpawn(
+        { label: "test", objective: "do something" },
+        makeContext("sess-1"),
+      );
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.content).subagentId).toBe(
+        "headless-subagent-id",
+      );
+      expect(capturedSender).toBeFunction();
+      expect(() => capturedSender?.({ type: "test" })).not.toThrow();
+    } finally {
+      manager.spawn = originalSpawn;
+    }
   });
 
   test("spawn returns error when missing label", async () => {
@@ -1322,6 +1340,7 @@ describe("Subagent role-based spawn", () => {
     expect(def.input_schema.properties.role.type).toBe("string");
     expect(def.input_schema.properties.role.enum).toEqual([
       "general",
+      "supervisor",
       "researcher",
       "coder",
       "planner",

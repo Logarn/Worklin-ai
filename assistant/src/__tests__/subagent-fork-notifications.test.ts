@@ -46,6 +46,8 @@ interface FakeManagedSubagent {
     loadFromDb?: () => Promise<void>;
     persistUserMessage?: () => { id: string; deduplicated: boolean };
     runAgentLoop?: () => Promise<void>;
+    isProcessing: () => boolean;
+    hasQueuedMessages: () => boolean;
     usageStats: {
       inputTokens: number;
       outputTokens: number;
@@ -79,6 +81,8 @@ function injectFakeSubagent(
     dispose: () => {},
     messages: [],
     sendToClient: () => {},
+    isProcessing: () => false,
+    hasQueuedMessages: () => false,
     usageStats: { inputTokens: 100, outputTokens: 50, estimatedCost: 0.005 },
   };
 
