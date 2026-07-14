@@ -112,6 +112,23 @@ describe("healGuardianBindingDrift", () => {
     expect(guardian!.contact.principalId).toBe("verified-phone-guardian");
   });
 
+  test("heals a legacy platform bootstrap binding to the authenticated owner", () => {
+    createGuardianBinding({
+      channel: "vellum",
+      guardianExternalUserId: "legacy-platform-owner",
+      guardianDeliveryChatId: "local",
+      guardianPrincipalId: "legacy-platform-owner",
+      verifiedVia: "bootstrap",
+    });
+
+    const ownerPrincipalId = "vellum-principal-platform-owner-id";
+    expect(healGuardianBindingDrift(ownerPrincipalId)).toBe(true);
+
+    const guardian = findGuardianForChannel("vellum");
+    expect(guardian!.contact.principalId).toBe(ownerPrincipalId);
+    expect(guardian!.channel.externalUserId).toBe(ownerPrincipalId);
+  });
+
   test("returns false when no guardian binding exists", () => {
     const healed = healGuardianBindingDrift("vellum-principal-orphan");
     expect(healed).toBe(false);

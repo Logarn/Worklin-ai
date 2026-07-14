@@ -41,7 +41,12 @@ export function healGuardianBindingDrift(incomingPrincipalId: string): boolean {
   if (!guardianResult) return false;
 
   const currentPrincipalId = guardianResult.contact.principalId;
-  if (!currentPrincipalId?.startsWith("vellum-principal-")) return false;
+  const isGeneratedPrincipal =
+    currentPrincipalId?.startsWith("vellum-principal-");
+  const isPlatformBootstrapBinding =
+    guardianResult.channel.verifiedVia === "bootstrap" ||
+    guardianResult.channel.verifiedVia === "startup-migration";
+  if (!isGeneratedPrincipal && !isPlatformBootstrapBinding) return false;
   if (currentPrincipalId === incomingPrincipalId) return false;
 
   const updated = updateContactPrincipalAndChannel(
