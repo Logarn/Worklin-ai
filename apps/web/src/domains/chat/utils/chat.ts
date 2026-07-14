@@ -140,13 +140,13 @@ const VOICE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
     "Speech recognition couldn\u2019t reach its service. Check your network and try again.",
   aborted: "Recording was interrupted. Try again.",
   "stt-not-configured":
-    "Speech-to-text isn\u2019t set up for this assistant. Open Settings \u2192 Voice to choose a provider.",
+    "Speech-to-text isn\u2019t set up for this assistant. Open Settings \u2192 Models & Services to choose a Speech-to-Text provider.",
   "stt-audio-rejected":
     "We couldn\u2019t transcribe that recording. Try recording again or speaking more clearly.",
   "stt-rate-limited":
     "Too many transcription requests. Please wait a moment and try again.",
   "stt-auth-failed":
-    "The speech-to-text provider rejected the assistant\u2019s credentials. Update the API key in Settings \u2192 Voice.",
+    "The speech-to-text provider rejected the assistant\u2019s credentials. Update its API key in Settings \u2192 Models & Services.",
   "stt-provider-error":
     "The speech-to-text provider is having trouble right now. Try again in a moment.",
   "stt-unavailable":

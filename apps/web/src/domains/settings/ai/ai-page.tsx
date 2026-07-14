@@ -7,6 +7,7 @@ import { EmailServiceCard } from "@/domains/settings/ai/email-service-card";
 import { ImageGenerationCard } from "@/domains/settings/ai/image-generation-card";
 import { TextToSpeechCard } from "@/domains/settings/ai/text-to-speech-card";
 import { SpeechToTextCard } from "@/domains/settings/ai/speech-to-text-card";
+import { LiveVoiceCard } from "@/domains/settings/ai/live-voice-card";
 
 // ---------------------------------------------------------------------------
 // AiPage — layout shell
@@ -46,6 +47,7 @@ export function AiPage() {
       <WebSearchCard />
       <EmailServiceCard />
       <ImageGenerationCard />
+      <LiveVoiceCard />
       <TextToSpeechCard />
       <SpeechToTextCard />
     </div>

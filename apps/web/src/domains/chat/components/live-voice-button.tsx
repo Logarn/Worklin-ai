@@ -7,18 +7,19 @@
  * (mic streaming + TTS playback + barge-in). The button is gated behind the
  * `voice-mode` assistant flag and renders nothing when the flag is off.
  *
- * Appearance reflects the {@link useLiveVoice} session phase:
- *   - `idle`/`failed`     → Worklin orb, click to start
- *   - `connecting`        → spinning loader, disabled (token mint / socket open)
- *   - any other (active)  → stop-circle icon, click to stop; the live
- *                           `inputAmplitude` drives a subtle pulse so the user
- *                           sees the mic is hearing them.
- *
- * Wiring into the composer happens in a later PR; this is the standalone control.
+ * The expanded card owns explicit start/end controls. When that card is
+ * dismissed, this component paints a compact orb that only reopens it; it does
+ * not activate the microphone or provider. The component remains mounted while
+ * hidden because it owns the single live-voice controller instance.
  */
 
 import { Loader2, StopCircle } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+} from "react";
 
 import { Button } from "@vellumai/design-library";
 
@@ -35,6 +36,17 @@ interface LiveVoiceButtonProps {
   conversationId?: string;
   /** Disable the control (e.g. while the composer is otherwise busy). */
   disabled?: boolean;
+  /** Whether the shared transcript/start card is currently expanded. */
+  panelOpen?: boolean;
+  /** Reopen the card without activating the microphone or provider. */
+  onOpenPanel?: () => void;
+}
+
+export interface LiveVoiceButtonHandle {
+  /** Explicitly start live voice (used by the large orb in the card). */
+  start: () => void;
+  /** End live voice and release provider/audio resources. */
+  stop: () => void;
 }
 
 const VOICE_DISCLOSURE_KEY = "worklin.voice-disclosure.v1";
@@ -50,11 +62,19 @@ function confirmVoiceDisclosure(): boolean {
   return accepted;
 }
 
-export function LiveVoiceButton({
-  assistantId,
-  conversationId,
-  disabled = false,
-}: LiveVoiceButtonProps) {
+export const LiveVoiceButton = forwardRef<
+  LiveVoiceButtonHandle,
+  LiveVoiceButtonProps
+>(function LiveVoiceButton(
+  {
+    assistantId,
+    conversationId,
+    disabled = false,
+    panelOpen = true,
+    onOpenPanel,
+  },
+  ref,
+) {
   const voiceMode = useAssistantFeatureFlagStore.use.voiceMode();
   const {
     state,
@@ -77,9 +97,29 @@ export function LiveVoiceButton({
     state !== "idle" && state !== "failed" && state !== "connecting";
 
   const startWithDisclosure = useCallback(() => {
+    if (connecting || active || disabled) return;
     if (!confirmVoiceDisclosure()) return;
+    onOpenPanel?.();
     void start(assistantId, conversationId);
-  }, [assistantId, conversationId, start]);
+  }, [
+    active,
+    assistantId,
+    connecting,
+    conversationId,
+    disabled,
+    onOpenPanel,
+    start,
+  ]);
+
+  const stopSession = useCallback(() => {
+    void stop();
+  }, [stop]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ start: startWithDisclosure, stop: stopSession }),
+    [startWithDisclosure, stopSession],
+  );
 
   const handleClick = useCallback(() => {
     if (connecting) return;
@@ -87,21 +127,23 @@ export function LiveVoiceButton({
       // An active session must always be stoppable, even if the parent has
       // raised `disabled` in the meantime — otherwise the user is stuck with a
       // live mic/socket until some automatic teardown.
-      void stop();
+      stopSession();
     } else {
-      // Only the start path honours the external `disabled` prop.
+      // The compact orb is a disclosure affordance, not a second start
+      // control. Reopening the UI does not activate the microphone or create a
+      // billable provider session; the large orb inside the card does that.
       if (disabled) return;
-      startWithDisclosure();
+      onOpenPanel?.();
     }
-  }, [active, connecting, disabled, startWithDisclosure, stop]);
+  }, [active, connecting, disabled, onOpenPanel, stopSession]);
 
   useVellumCommands({
     toggleVoiceConversation: () => {
       if (connecting) return;
-      if (active) void stop();
+      if (active) stopSession();
       else if (!disabled) startWithDisclosure();
     },
-    endVoiceConversation: () => void stop(),
+    endVoiceConversation: stopSession,
     toggleVoiceMute: () => toggleMute(),
   });
 
@@ -136,19 +178,23 @@ export function LiveVoiceButton({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      void stop();
+      stopSession();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [active, stop]);
+  }, [active, stopSession]);
 
   if (!voiceMode) return null;
+
+  // Keep the controller mounted while the expanded card owns the interaction,
+  // but do not paint a competing tiny start/stop target beside the send button.
+  if (panelOpen) return null;
 
   const label = connecting
     ? "Connecting live voice"
     : active
       ? "Stop voice mode"
-      : "Start voice mode";
+      : "Show live voice";
 
   return (
     <Button
@@ -184,4 +230,4 @@ export function LiveVoiceButton({
       }
     />
   );
-}
+});

@@ -93,7 +93,7 @@ function SpeechServicesBanner() {
     <div className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--field-bg)] px-3 py-2">
       <Info className="h-3.5 w-3.5 shrink-0 text-[var(--primary-base)]" />
       <span className="text-body-medium-lighter text-[var(--content-tertiary)]">
-        Looking to configure Speech-to-Text or Text-to-Speech models?
+        Looking to configure Live Voice, Speech-to-Text, or Text-to-Speech?
       </span>
       <Link
         to={routes.settings.ai}

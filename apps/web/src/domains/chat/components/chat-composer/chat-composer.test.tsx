@@ -16,6 +16,7 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import type { ChatAttachment } from "@/domains/chat/composer-store";
 import type { VoiceInputButtonHandle } from "@/domains/chat/components/voice-input-button";
 import { INITIAL_TURN_STATE, useTurnStore } from "@/domains/chat/turn-store";
+import { useLiveVoiceUiStore } from "@/domains/chat/voice/live-voice/live-voice-ui-store";
 
 // Pure helpers live in `chat-composer-utils` (no mocks needed), so import them
 // statically. `ChatComposer` itself is imported dynamically *after* the mocks
@@ -145,6 +146,7 @@ function resetLiveVoiceMocks() {
   setAudioLevelSpy.mockClear();
   liveStartSpy.mockClear();
   liveStopSpy.mockClear();
+  useLiveVoiceUiStore.setState({ panelOpen: true });
 }
 
 // Imported after the mocks so the component (and its transitive flag-store /
@@ -726,7 +728,7 @@ describe("ChatComposer — live-voice integration", () => {
     );
 
     expect(getByLabelText("End live voice demo")).toBeTruthy();
-    expect(queryByLabelText("Start voice mode")).toBeNull();
+    expect(queryByLabelText("Start live voice")).toBeNull();
     expect(getByText("Preview user turn")).toBeTruthy();
     expect(getByText("Preview assistant turn")).toBeTruthy();
     expect(queryByLabelText("Start voice input")).toBeNull();
@@ -741,7 +743,7 @@ describe("ChatComposer — live-voice integration", () => {
     const { queryByLabelText } = renderVoiceComposer();
 
     // THEN the live-voice control is absent and dictation is unaffected
-    expect(queryByLabelText("Start voice mode")).toBeNull();
+    expect(queryByLabelText("Start live voice")).toBeNull();
     expect(queryByLabelText("Stop voice mode")).toBeNull();
     const dictation = queryByLabelText(
       "Start voice input",
@@ -760,11 +762,12 @@ describe("ChatComposer — live-voice integration", () => {
     const { getByLabelText, getByText, queryByLabelText } =
       renderVoiceComposer();
 
-    // THEN live voice is the composer's only voice entry point
-    expect(getByLabelText("Start voice mode")).toBeTruthy();
+    // THEN the large orb is the composer's only voice start entry point
+    expect(getByLabelText("Start live voice")).toBeTruthy();
     expect(getByLabelText("Live voice transcript")).toBeTruthy();
     expect(getByText("Ready")).toBeTruthy();
-    expect(getByText("Start a live conversation.")).toBeTruthy();
+    expect(getByText("Click the orb to start live voice.")).toBeTruthy();
+    expect(queryByLabelText("Show live voice")).toBeNull();
     expect(queryByLabelText("Start voice input")).toBeNull();
   });
 
@@ -777,9 +780,9 @@ describe("ChatComposer — live-voice integration", () => {
     // WHEN the composer renders
     const { getByLabelText, queryByLabelText } = renderVoiceComposer();
 
-    // THEN the live-voice control is a stop affordance and dictation remains
-    // absent rather than appearing as a second, disabled microphone
-    expect(getByLabelText("Stop voice mode")).toBeTruthy();
+    // THEN the panel exposes an explicit end-and-hide affordance and dictation
+    // remains absent rather than appearing as a second microphone.
+    expect(getByLabelText("End and hide live voice")).toBeTruthy();
     expect(queryByLabelText("Start voice input")).toBeNull();
   });
 
@@ -810,7 +813,9 @@ describe("ChatComposer — live-voice integration", () => {
     const { getByLabelText } = renderVoiceComposer({ typingDisabled: true });
 
     // THEN the stop control is still actionable and clicking it stops
-    const stop = getByLabelText("Stop voice mode") as HTMLButtonElement;
+    const stop = getByLabelText(
+      "End and hide live voice",
+    ) as HTMLButtonElement;
     expect(stop.disabled).toBe(false);
     fireEvent.click(stop);
     expect(liveStopSpy).toHaveBeenCalledTimes(1);
@@ -831,6 +836,34 @@ describe("ChatComposer — live-voice integration", () => {
     );
   });
 
+  test("the close button collapses the card and the compact orb only reopens it", () => {
+    useTurnStore.setState(INITIAL_TURN_STATE);
+    mockVoiceMode = true;
+    mockLiveVoiceState = "idle";
+
+    const view = renderVoiceComposer();
+    fireEvent.click(view.getByLabelText("Hide live voice"));
+
+    expect(view.queryByLabelText("Live voice transcript")).toBeNull();
+    const reopen = view.getByLabelText("Show live voice");
+    fireEvent.click(reopen);
+
+    expect(view.getByLabelText("Live voice transcript")).toBeTruthy();
+    expect(liveStartSpy).not.toHaveBeenCalled();
+  });
+
+  test("clicking the large orb starts the provider session", () => {
+    useTurnStore.setState(INITIAL_TURN_STATE);
+    mockVoiceMode = true;
+    mockLiveVoiceState = "idle";
+    window.localStorage.setItem("worklin.voice-disclosure.v1", "accepted");
+
+    const view = renderVoiceComposer();
+    fireEvent.click(view.getByLabelText("Start live voice"));
+
+    expect(liveStartSpy).toHaveBeenCalledWith("asst_test", "conv_test");
+  });
+
   test("dictation active disables the live-voice button (reverse mutual exclusion)", () => {
     // GIVEN the flag is on, no live session, but dictation is active.
     // `processing` is one of the two phases that make the composer's
@@ -848,7 +881,7 @@ describe("ChatComposer — live-voice integration", () => {
 
     // THEN the live-voice start affordance is disabled so it can't open a
     // second mic/voice session alongside the dictation recorder
-    const liveVoice = getByLabelText("Start voice mode") as HTMLButtonElement;
+    const liveVoice = getByLabelText("Start live voice") as HTMLButtonElement;
     expect(liveVoice.disabled).toBe(true);
   });
 
@@ -866,7 +899,7 @@ describe("ChatComposer — live-voice integration", () => {
     // THEN the shared top-center dictation overlay owns the visual treatment,
     // so the composer-specific preview is absent while mutual exclusion stays.
     expect(queryByLabelText("Transcribing")).toBeNull();
-    const liveVoice = getByLabelText("Start voice mode") as HTMLButtonElement;
+    const liveVoice = getByLabelText("Start live voice") as HTMLButtonElement;
     expect(liveVoice.disabled).toBe(true);
   });
 

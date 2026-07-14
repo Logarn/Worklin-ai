@@ -39,6 +39,31 @@ mock.module("@vellumai/design-library/components/button", () => ({
     </button>
   ),
 }));
+mock.module("@vellumai/design-library/components/dropdown", () => ({
+  Dropdown: ({
+    "aria-label": ariaLabel,
+    onChange,
+    options,
+    value,
+  }: {
+    "aria-label"?: string;
+    onChange: (value: string) => void;
+    options: Array<{ label: string; value: string }>;
+    value: string;
+  }) => (
+    <select
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 
 const { LiveVoicePilotPanel } = await import("./live-voice-pilot-panel");
 
@@ -80,6 +105,48 @@ describe("LiveVoicePilotPanel", () => {
             engine: "hume",
             pilotAllowlist: ["user-1"],
             providers: { hume: { configId: "config-1", voiceId: "" } },
+          },
+        },
+      },
+    });
+  });
+
+  test("configures ElevenLabs with one server-side key and an agent ID", async () => {
+    render(<LiveVoicePilotPanel />);
+
+    fireEvent.change(screen.getByLabelText("Live Voice provider"), {
+      target: { value: "elevenlabs" },
+    });
+    fireEvent.change(screen.getByLabelText("ElevenLabs API key"), {
+      target: { value: "eleven-api-key" },
+    });
+    fireEvent.change(screen.getByLabelText("ElevenLabs agent ID"), {
+      target: { value: "agent-1" },
+    });
+
+    fireEvent.click(screen.getByText("Configure ElevenLabs"));
+
+    await waitFor(() => {
+      expect(postMock).toHaveBeenCalledTimes(1);
+      expect(patchMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(postMock.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        service: "elevenlabs",
+        field: "api_key",
+        value: "eleven-api-key",
+      },
+    });
+    expect(patchMock.mock.calls[0]?.[0]).toMatchObject({
+      body: {
+        services: {
+          voice: {
+            engine: "elevenlabs",
+            pilotAllowlist: ["user-1"],
+            providers: {
+              elevenlabs: { agentId: "agent-1", voiceId: "" },
+            },
           },
         },
       },

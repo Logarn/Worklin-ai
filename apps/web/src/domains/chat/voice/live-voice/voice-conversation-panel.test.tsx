@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { mock } from "bun:test";
 
 import { VoiceConversationPanel } from "./voice-conversation-panel";
 
@@ -59,6 +60,34 @@ describe("VoiceConversationPanel", () => {
     const { getByText } = render(<VoiceConversationPanel state="idle" />);
 
     expect(getByText("Ready")).toBeTruthy();
-    expect(getByText("Start a live conversation.")).toBeTruthy();
+    expect(getByText("Click the orb to start live voice.")).toBeTruthy();
+    expect(
+      getByText("Your microphone and voice provider connect only after you click."),
+    ).toBeTruthy();
+  });
+
+  test("makes the large orb the explicit start control", () => {
+    const onStart = mock(() => {});
+    const { getByLabelText } = render(
+      <VoiceConversationPanel state="idle" onStart={onStart} />,
+    );
+
+    fireEvent.click(getByLabelText("Start live voice"));
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  test("provides a close affordance with safe state-specific labeling", () => {
+    const onClose = mock(() => {});
+    const view = render(
+      <VoiceConversationPanel state="idle" onClose={onClose} />,
+    );
+
+    fireEvent.click(view.getByLabelText("Hide live voice"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <VoiceConversationPanel state="listening" onClose={onClose} />,
+    );
+    expect(view.getByLabelText("End and hide live voice")).toBeTruthy();
   });
 });

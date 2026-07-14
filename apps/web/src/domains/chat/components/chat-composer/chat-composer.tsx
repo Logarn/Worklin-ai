@@ -23,13 +23,17 @@ import {
   useComposerStore,
 } from "@/domains/chat/composer-store";
 import { StreamingWaveform } from "@/domains/chat/components/chat-composer/streaming-waveform";
-import { LiveVoiceButton } from "@/domains/chat/components/live-voice-button";
+import {
+  LiveVoiceButton,
+  type LiveVoiceButtonHandle,
+} from "@/domains/chat/components/live-voice-button";
 import {
   VoiceInputButton,
   type VoiceInputButtonHandle,
 } from "@/domains/chat/components/voice-input-button";
 import { type TurnPhase, useTurnStore } from "@/domains/chat/turn-store";
 import { useLiveVoiceStore } from "@/domains/chat/voice/live-voice/live-voice-store";
+import { useLiveVoiceUiStore } from "@/domains/chat/voice/live-voice/live-voice-ui-store";
 import {
   VoiceConversationPanel,
   type VoiceConversationPanelProps,
@@ -143,7 +147,12 @@ export interface ChatComposerProps {
     | "inputAmplitude"
     | "outputAmplitude"
     | "error"
-  > & { control: ReactNode };
+  > & {
+    control: ReactNode;
+    panelOpen?: boolean;
+    onStart?: () => void;
+    onClose?: () => void;
+  };
 
   /**
    * Whether the currently-active inference model accepts image input.
@@ -251,6 +260,10 @@ export function ChatComposer({
   const liveVoiceEligible =
     liveVoicePreview !== undefined ||
     (voiceMode && showVoiceInput && !!assistantId);
+  const liveVoiceButtonRef = useRef<LiveVoiceButtonHandle | null>(null);
+  const liveVoicePanelOpen = useLiveVoiceUiStore.use.panelOpen();
+  const openLiveVoicePanel = useLiveVoiceUiStore.use.openPanel();
+  const closeLiveVoicePanel = useLiveVoiceUiStore.use.closePanel();
   // Read session state via the store's per-field selectors rather than mounting
   // a second `useLiveVoice()` controller. The single controller instance lives
   // in `LiveVoiceButton` (which drives start/stop + owns the unmount-teardown
@@ -280,7 +293,24 @@ export function ChatComposer({
   // The shared panel is the stable live-voice entry surface. Idle sessions
   // remain visible as Ready, while terminal failures retain the provider's
   // actionable error message and a retryable start control.
-  const showLiveVoicePanel = liveVoiceEligible;
+  const showLiveVoicePanel =
+    liveVoiceEligible &&
+    (liveVoicePreview !== undefined
+      ? (liveVoicePreview.panelOpen ?? true)
+      : liveVoicePanelOpen);
+
+  const handleCloseLiveVoicePanel = useCallback(() => {
+    // Hiding a live microphone would make its state invisible. End active or
+    // connecting sessions first; idle/error cards simply collapse.
+    if (
+      liveVoicePreview === undefined &&
+      liveVoiceState !== "idle" &&
+      liveVoiceState !== "failed"
+    ) {
+      liveVoiceButtonRef.current?.stop();
+    }
+    closeLiveVoicePanel();
+  }, [closeLiveVoicePanel, liveVoicePreview, liveVoiceState]);
 
   const pointerCoarse = useMemo(() => isPointerCoarse(), []);
   const isMobile = useIsMobile();
@@ -622,6 +652,19 @@ export function ChatComposer({
                 inputAmplitude={liveVoiceInputAmplitude}
                 outputAmplitude={liveVoiceOutputAmplitude}
                 error={liveVoiceError}
+                onStart={
+                  liveVoicePreview?.onStart ??
+                  (liveVoicePreview === undefined
+                    ? () => liveVoiceButtonRef.current?.start()
+                    : undefined)
+                }
+                startDisabled={typingDisabled || isVoiceActive}
+                onClose={
+                  liveVoicePreview?.onClose ??
+                  (liveVoicePreview === undefined
+                    ? handleCloseLiveVoicePanel
+                    : undefined)
+                }
               />
             )}
             <div className="flex items-center justify-between px-2 pb-2">
@@ -709,9 +752,12 @@ export function ChatComposer({
                         liveVoicePreview.control
                       ) : (
                         <LiveVoiceButton
+                          ref={liveVoiceButtonRef}
                           assistantId={assistantId}
                           conversationId={conversationId ?? undefined}
                           disabled={typingDisabled || isVoiceActive}
+                          panelOpen={liveVoicePanelOpen}
+                          onOpenPanel={openLiveVoicePanel}
                         />
                       ))}
                     {/* macOS parity: the send button is hidden during recording

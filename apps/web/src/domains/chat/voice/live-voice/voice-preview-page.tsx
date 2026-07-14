@@ -1,4 +1,4 @@
-import { Sparkles, Square } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import {
   type CSSProperties,
   type FormEvent,
@@ -94,6 +94,7 @@ const PREVIEW_THEME = {
 
 export function VoicePreviewPage() {
   const [phaseIndex, setPhaseIndex] = useState(-1);
+  const [panelOpen, setPanelOpen] = useState(true);
   const [amplitude, setAmplitude] = useState(0.3);
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -102,9 +103,8 @@ export function VoicePreviewPage() {
   const active = phaseIndex >= 0;
   const phase = active ? DEMO_SEQUENCE[phaseIndex] : undefined;
   const state = phase?.state ?? "idle";
-  const voiceButtonClass = active
-    ? "flex h-8 items-center gap-2 rounded-full bg-white/8 px-3 text-xs font-medium text-[#9ab2ff] ring-1 ring-white/12 transition-all"
-    : "flex h-8 items-center gap-2 rounded-full bg-white/6 px-3 text-xs font-medium text-zinc-200 ring-1 ring-white/10 transition-all hover:bg-white/10";
+  const voiceButtonClass =
+    "flex h-8 items-center gap-2 rounded-full bg-white/6 px-3 text-xs font-medium text-zinc-200 ring-1 ring-white/10 transition-all hover:bg-white/10";
 
   useEffect(() => {
     if (!phase?.duration) return;
@@ -134,27 +134,19 @@ export function VoicePreviewPage() {
     state === "listening" || state === "interrupted" ? amplitude : 0;
   const outputAmplitude = state === "speaking" ? amplitude : 0;
 
-  const toggleDemo = () => {
-    setPhaseIndex((current) => (current >= 0 ? -1 : 0));
-  };
-
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
   };
 
-  const voiceControl = (
+  const voiceControl = panelOpen ? null : (
     <button
       type="button"
-      onClick={toggleDemo}
+      onClick={() => setPanelOpen(true)}
       className={voiceButtonClass}
-      aria-label={active ? "End live voice demo" : "Start live voice demo"}
+      aria-label="Show live voice demo"
     >
-      {active ? (
-        <Square size={11} fill="currentColor" />
-      ) : (
-        <WorklinOrb size={16} />
-      )}
-      {active ? "End voice" : "Live voice"}
+      <WorklinOrb size={16} />
+      Live voice
     </button>
   );
 
@@ -255,10 +247,16 @@ export function VoicePreviewPage() {
                   inputAmplitude,
                   outputAmplitude,
                   control: voiceControl,
+                  panelOpen,
+                  onStart: () => setPhaseIndex(0),
+                  onClose: () => {
+                    setPhaseIndex(-1);
+                    setPanelOpen(false);
+                  },
                 }}
               />
               <p className="mt-3 text-center text-[11px] text-[var(--content-tertiary)]">
-                Click Live voice to play the two-turn conversation.
+                Click the large orb to play the two-turn conversation.
               </p>
             </div>
           </div>

@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render } from "@testing-library/react";
+import { createRef } from "react";
 
 import type { LiveVoiceSessionState } from "@/domains/chat/voice/live-voice/live-voice-store";
 
@@ -48,6 +49,8 @@ mock.module("@/domains/chat/voice/live-voice/use-live-voice", () => ({
 // Imported after the mocks so the component picks up the mocked modules.
 const { LiveVoiceButton } =
   await import("@/domains/chat/components/live-voice-button");
+type LiveVoiceButtonHandle =
+  import("@/domains/chat/components/live-voice-button").LiveVoiceButtonHandle;
 
 beforeEach(() => {
   mockVoiceMode = false;
@@ -74,46 +77,59 @@ describe("LiveVoiceButton", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  test("renders a start control when the flag is on and idle", () => {
-    // GIVEN the flag is enabled and no session is active
+  test("renders no competing compact control while the voice card is open", () => {
     mockVoiceMode = true;
     mockState = "idle";
 
-    // WHEN the button renders
-    const { getByLabelText } = render(
-      <LiveVoiceButton assistantId="a1" />,
-    );
+    const { container } = render(<LiveVoiceButton assistantId="a1" />);
 
-    // THEN it offers to start voice mode and is not pressed
-    const button = getByLabelText("Start voice mode");
-    expect(button).toBeTruthy();
-    expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(button.innerHTML).toContain("#4169e1");
-    expect(button.querySelector("svg")).toBeNull();
+    expect(container.firstChild).toBeNull();
   });
 
-  test("starts a session on click when idle", () => {
-    // GIVEN an idle, flag-enabled button with a conversation
+  test("the compact orb reopens the card without starting a provider session", () => {
     mockVoiceMode = true;
     mockState = "idle";
+    const onOpenPanel = mock(() => {});
     const { getByLabelText } = render(
-      <LiveVoiceButton assistantId="a1" conversationId="c1" />,
+      <LiveVoiceButton
+        assistantId="a1"
+        conversationId="c1"
+        panelOpen={false}
+        onOpenPanel={onOpenPanel}
+      />,
     );
 
-    // WHEN the user clicks it
-    fireEvent.click(getByLabelText("Start voice mode"));
+    fireEvent.click(getByLabelText("Show live voice"));
 
-    // THEN it starts a live-voice session for the assistant + conversation
-    expect(startSpy).toHaveBeenCalledTimes(1);
-    expect(startSpy).toHaveBeenCalledWith("a1", "c1");
+    expect(onOpenPanel).toHaveBeenCalledTimes(1);
+    expect(startSpy).not.toHaveBeenCalled();
     expect(stopSpy).not.toHaveBeenCalled();
+  });
+
+  test("starts only through the explicit card action", () => {
+    mockVoiceMode = true;
+    mockState = "idle";
+    const ref = createRef<LiveVoiceButtonHandle>();
+    render(
+      <LiveVoiceButton
+        ref={ref}
+        assistantId="a1"
+        conversationId="c1"
+      />,
+    );
+
+    ref.current?.start();
+
+    expect(startSpy).toHaveBeenCalledWith("a1", "c1");
   });
 
   test("stops the session on click when active", () => {
     // GIVEN an active session (listening)
     mockVoiceMode = true;
     mockState = "listening";
-    const { getByLabelText } = render(<LiveVoiceButton assistantId="a1" />);
+    const { getByLabelText } = render(
+      <LiveVoiceButton assistantId="a1" panelOpen={false} />,
+    );
 
     // THEN the control reflects the live session
     const button = getByLabelText("Stop voice mode");
@@ -131,7 +147,9 @@ describe("LiveVoiceButton", () => {
     // GIVEN a session that is still connecting
     mockVoiceMode = true;
     mockState = "connecting";
-    const { getByLabelText } = render(<LiveVoiceButton assistantId="a1" />);
+    const { getByLabelText } = render(
+      <LiveVoiceButton assistantId="a1" panelOpen={false} />,
+    );
 
     // THEN the control is busy and disabled
     const button = getByLabelText("Connecting live voice") as HTMLButtonElement;
@@ -149,7 +167,7 @@ describe("LiveVoiceButton", () => {
     mockVoiceMode = true;
     mockState = "listening";
     const { getByLabelText } = render(
-      <LiveVoiceButton assistantId="a1" disabled />,
+      <LiveVoiceButton assistantId="a1" disabled panelOpen={false} />,
     );
 
     // THEN the stop control remains enabled despite the external disabled prop
@@ -167,11 +185,11 @@ describe("LiveVoiceButton", () => {
     mockVoiceMode = true;
     mockState = "idle";
     const { getByLabelText } = render(
-      <LiveVoiceButton assistantId="a1" disabled />,
+      <LiveVoiceButton assistantId="a1" disabled panelOpen={false} />,
     );
 
-    // THEN the start control is disabled
-    const button = getByLabelText("Start voice mode") as HTMLButtonElement;
+    // THEN the reopen control is disabled
+    const button = getByLabelText("Show live voice") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
 
     // WHEN the user clicks it, no session is started
@@ -185,7 +203,9 @@ describe("LiveVoiceButton", () => {
     mockVoiceMode = true;
     mockState = "listening";
     mockInputAmplitude = 1;
-    const { getByLabelText } = render(<LiveVoiceButton assistantId="a1" />);
+    const { getByLabelText } = render(
+      <LiveVoiceButton assistantId="a1" panelOpen={false} />,
+    );
 
     // THEN the control carries an amplitude-driven transform
     const button = getByLabelText("Stop voice mode");
