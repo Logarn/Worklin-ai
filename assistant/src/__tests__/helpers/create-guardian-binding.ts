@@ -29,6 +29,7 @@ function parseDisplayNameFromMetadata(
 }
 
 export function createGuardianBinding(params: {
+  contactId?: string;
   channel: string;
   guardianExternalUserId: string;
   guardianDeliveryChatId: string;
@@ -47,6 +48,7 @@ export function createGuardianBinding(params: {
     params.guardianExternalUserId;
 
   const contact = upsertContact({
+    id: params.contactId,
     displayName,
     role: "guardian",
     notes: "guardian",
