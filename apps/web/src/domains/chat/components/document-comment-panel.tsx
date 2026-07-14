@@ -1,21 +1,21 @@
 import { Button, Tag, Typography } from "@vellumai/design-library";
 import { MessageSquareText, Send, X } from "lucide-react";
 import {
-    useCallback,
-    useEffect,
-    useImperativeHandle,
-    useMemo,
-    useRef,
-    useState,
-    type Ref,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
 } from "react";
 
 import {
-    createComment,
-    deleteComment,
-    fetchComments,
-    reopenComment,
-    resolveComment,
+  createComment,
+  deleteComment,
+  fetchComments,
+  reopenComment,
+  resolveComment,
 } from "@/domains/chat/api/document-comments";
 import type { DocumentsByIdCommentsPostResponse } from "@/generated/daemon/types.gen";
 import { DocumentCommentForm } from "./document-comment-form";
@@ -36,6 +36,7 @@ export interface DocumentCommentPanelProps {
   onClose: () => void;
   onCommentSelect?: (comment: DocumentsByIdCommentsPostResponse) => void;
   onSubmitFeedback?: () => void;
+  assistantName?: string | null;
   /** Imperative handle for SSE-driven refresh triggers. */
   handleRef?: Ref<DocumentCommentPanelHandle>;
 }
@@ -56,6 +57,7 @@ export function DocumentCommentPanel({
   onClose,
   onCommentSelect,
   onSubmitFeedback,
+  assistantName,
   handleRef,
 }: DocumentCommentPanelProps) {
   const [comments, setComments] = useState<DocumentsByIdCommentsPostResponse[]>(
@@ -122,8 +124,23 @@ export function DocumentCommentPanel({
         conversationId,
       });
       await loadComments();
+      const normalized = content.toLocaleLowerCase();
+      if (
+        normalized.includes("@worklin") ||
+        (assistantName != null &&
+          normalized.includes(`@${assistantName.toLocaleLowerCase()}`))
+      ) {
+        onSubmitFeedback?.();
+      }
     },
-    [assistantId, surfaceId, conversationId, loadComments],
+    [
+      assistantId,
+      surfaceId,
+      conversationId,
+      loadComments,
+      assistantName,
+      onSubmitFeedback,
+    ],
   );
 
   const handleResolve = useCallback(
@@ -238,7 +255,7 @@ export function DocumentCommentPanel({
       <div className="flex shrink-0 flex-col gap-3 border-t border-[var(--border-base)] p-4">
         <DocumentCommentForm
           onSubmit={handleCreate}
-          placeholder="Add a comment…"
+          placeholder={`Add a comment or tag @${assistantName ?? "Worklin"}…`}
         />
         {onSubmitFeedback && hasOpenComments ? (
           <Button
