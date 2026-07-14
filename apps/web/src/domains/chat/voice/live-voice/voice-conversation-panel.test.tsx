@@ -54,4 +54,11 @@ describe("VoiceConversationPanel", () => {
     expect(container.innerHTML).not.toContain("violet");
     expect(container.innerHTML).not.toContain("fuchsia");
   });
+
+  test("keeps the ready surface visible before a session starts", () => {
+    const { getByText } = render(<VoiceConversationPanel state="idle" />);
+
+    expect(getByText("Ready")).toBeTruthy();
+    expect(getByText("Start a live conversation.")).toBeTruthy();
+  });
 });

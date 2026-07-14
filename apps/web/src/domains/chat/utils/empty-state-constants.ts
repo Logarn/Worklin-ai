@@ -1,13 +1,11 @@
 /**
  * Copy constants for the chat empty state.
  *
- * Mirrors the macOS desktop reference at `ChatEmptyStateView.swift:64-70`
- * so that web and native surfaces share a single voice. Pure additive
- * scaffolding — wired up by later PRs.
+ * Shared by the web and native chat surfaces.
  */
 
 export const DEFAULT_EMPTY_STATE_GREETING =
-  "One Assistant To Rule Them All 💍";
+  "What should we work on?";
 
 export const EMPTY_STATE_PLACEHOLDERS: readonly string[] = [
   "Paste your brand website...",

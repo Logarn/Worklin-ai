@@ -8,7 +8,7 @@
  * `voice-mode` assistant flag and renders nothing when the flag is off.
  *
  * Appearance reflects the {@link useLiveVoice} session phase:
- *   - `idle`/`failed`     → mic icon, click to start
+ *   - `idle`/`failed`     → Worklin orb, click to start
  *   - `connecting`        → spinning loader, disabled (token mint / socket open)
  *   - any other (active)  → stop-circle icon, click to stop; the live
  *                           `inputAmplitude` drives a subtle pulse so the user
@@ -17,11 +17,12 @@
  * Wiring into the composer happens in a later PR; this is the standalone control.
  */
 
-import { Loader2, Mic, StopCircle } from "lucide-react";
+import { Loader2, StopCircle } from "lucide-react";
 import { useCallback, useEffect } from "react";
 
 import { Button } from "@vellumai/design-library";
 
+import { WorklinOrb } from "@/components/worklin-orb";
 import { useLiveVoice } from "@/domains/chat/voice/live-voice/use-live-voice";
 import { publishVoiceOverlayState } from "@/runtime/voice-overlay";
 import { useVellumCommands } from "@/runtime/vellum-commands";
@@ -158,7 +159,11 @@ export function LiveVoiceButton({
         ) : active ? (
           <StopCircle strokeWidth={2} />
         ) : (
-          <Mic strokeWidth={2} />
+          <WorklinOrb
+            state={state}
+            inputAmplitude={inputAmplitude}
+            size={18}
+          />
         )
       }
       onClick={handleClick}

@@ -371,7 +371,7 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
   const resolvedCharacter = resolveAssistantCharacter(characterProfile);
   const assistantIdentityLabel =
     characterProfile?.avatarStyle === "abstract"
-      ? "Classic avatar"
+      ? "Worklin orb"
       : resolvedCharacter
         ? assistantName === resolvedCharacter.shortName
           ? resolvedCharacter.subtitle
@@ -428,11 +428,7 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
         open={modalOpen}
         onClose={handleCloseModal}
         assistantId={assistantId}
-        components={components}
-        traits={traits}
-        customImageUrl={customImageUrl}
         characterProfile={characterProfile}
-        onSaveCharacter={handleAvatarChange}
         onUploadImage={handleAvatarChange}
         onSaveProfile={handleAvatarChange}
         onGenerateWithAI={onOpenThread ? handleGenerateWithAI : undefined}

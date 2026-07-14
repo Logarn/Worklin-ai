@@ -32,10 +32,6 @@ mock.module("@/components/avatar/tv-character-avatar", () => ({
   ),
 }));
 
-mock.module("./animated-avatar", () => ({
-  AnimatedAvatar: () => <div data-testid="animated-avatar">animated</div>,
-}));
-
 const { ChatAvatar } = await import("./chat-avatar");
 
 const components: CharacterComponents = {
@@ -100,7 +96,7 @@ describe("ChatAvatar", () => {
     expect(screen.queryByTestId("portrait-avatar")).toBeNull();
   });
 
-  test("renders classic abstract mode from traits before portrait branches", () => {
+  test("maps legacy abstract profiles to the Worklin orb", () => {
     render(
       <ChatAvatar
         components={components}
@@ -110,7 +106,9 @@ describe("ChatAvatar", () => {
       />,
     );
 
-    expect(screen.getByTestId("animated-avatar")).toBeTruthy();
+    expect(
+      screen.getByRole("img", { name: "Worklin assistant" }),
+    ).toBeTruthy();
     expect(screen.queryByTestId("portrait-avatar")).toBeNull();
   });
 });

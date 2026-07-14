@@ -5,9 +5,9 @@ import { resolveAssistantCharacter } from "@/components/avatar/assistant-charact
 import { FaceBuilderAvatar } from "@/components/avatar/face-builder-avatar";
 import { PortraitAssetAvatar } from "@/components/avatar/portrait-asset-avatar";
 import { TvCharacterAvatar } from "@/components/avatar/tv-character-avatar";
+import { WorklinOrb } from "@/components/worklin-orb";
 import type { AssistantCharacterProfile } from "@/types/assistant-character-profile";
 import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
-import { AnimatedAvatar } from "./animated-avatar";
 
 export interface ChatAvatarProps {
   components: CharacterComponents | null;
@@ -28,8 +28,7 @@ const RING_GAP_RATIO = 0.04; // gap between avatar edge and ring inner edge / si
 /**
  * Spinning semicircular ring traced just outside the avatar's circular edge,
  * shown while the assistant is streaming/loading. Only used for custom
- * uploaded-image avatars — character avatars already signal streaming through
- * their morph animation. The arc + rotation live in CSS (`.avatar-streaming-ring`);
+ * uploaded-image avatars. The arc + rotation live in CSS (`.avatar-streaming-ring`);
  * thickness/inset are inline so the ring scales with `size`. It sits in a gap
  * outside the image (negative inset) so it reads as a ring around the avatar
  * rather than covering the picture.
@@ -58,25 +57,19 @@ function AvatarStreamingRing({ size }: { size: number }) {
  * Displays the assistant's avatar in chat messages.
  *
  * Priority:
- * 1. Explicit classic-avatar mode from the saved identity profile
+ * 1. Custom uploaded image
  * 2. Saved Worklin portrait asset from the identity profile
  * 3. Saved character-rendered avatar from the identity profile
- * 4. Animated character avatar from saved traits
- * 5. Custom uploaded image
- * 6. Default animated character avatar from first component of each type
- * 7. Worklin "W" fallback
+ * 4. Royal-blue Worklin orb for legacy abstract profiles and default identity
  *
  * Animation:
  *   - Mount plays an entrance spring (scale 0.6 → 1, opacity 0 → 1).
  *   - When `interactive`, click triggers a spring bounce.
  *   - `prefers-reduced-motion` short-circuits both.
  *   - For custom uploaded-image avatars, a spinning semicircular ring traces
- *     just outside the avatar's edge while `isStreaming`/`isProcessing` is on
- *     (character avatars already signal streaming via their morph animation).
+ *     just outside the avatar's edge while `isStreaming`/`isProcessing` is on.
  */
 function ChatAvatarComponent({
-  components,
-  traits,
   customImageUrl,
   characterProfile,
   size = 28,
@@ -100,19 +93,6 @@ function ChatAvatarComponent({
 
   const handleClick = interactive ? triggerBounce : undefined;
 
-  const effectiveTraits = useMemo(() => {
-    if (traits) return traits;
-    if (!components) return null;
-    const body = components.bodyShapes[0];
-    const eyes = components.eyeStyles[0];
-    const color = components.colors[0];
-    if (!body || !eyes || !color) return null;
-    return { bodyShape: body.id, eyeStyle: eyes.id, color: color.id };
-  }, [traits, components]);
-
-  const hasCharacter = !!components && !!effectiveTraits;
-  const preferCharacter = hasCharacter && (!!traits || !customImageUrl);
-
   const wrapperStyle: CSSProperties = {
     width: size,
     height: size,
@@ -130,26 +110,6 @@ function ChatAvatarComponent({
     ? { scale: 1, opacity: 1 }
     : { scale: 0.6, opacity: 0 };
   const animate = { scale: isPoking ? 1.15 : 1, opacity: 1 };
-
-  if (characterProfile?.avatarStyle === "abstract" && preferCharacter) {
-    return (
-      <motion.div
-        className={className}
-        style={wrapperStyle}
-        onClick={handleClick}
-        initial={initial}
-        animate={animate}
-        transition={transition}
-      >
-        <AnimatedAvatar
-          components={components}
-          traits={effectiveTraits}
-          size={size}
-          isStreaming={isStreaming}
-        />
-      </motion.div>
-    );
-  }
 
   if (customImageUrl) {
     return (
@@ -176,6 +136,26 @@ function ChatAvatarComponent({
           style={{ width: size, height: size, flexShrink: 0 }}
         />
         {(isStreaming || isProcessing) && <AvatarStreamingRing size={size} />}
+      </motion.div>
+    );
+  }
+
+  if (characterProfile?.avatarStyle === "abstract") {
+    return (
+      <motion.div
+        className={className}
+        style={wrapperStyle}
+        onClick={handleClick}
+        initial={initial}
+        animate={animate}
+        transition={transition}
+      >
+        <WorklinOrb
+          state={isStreaming ? "speaking" : isProcessing ? "thinking" : "idle"}
+          outputAmplitude={isStreaming ? 0.45 : 0}
+          size={size}
+          decorative={false}
+        />
       </motion.div>
     );
   }
@@ -250,36 +230,21 @@ function ChatAvatarComponent({
     );
   }
 
-  if (preferCharacter) {
-    return (
-      <motion.div
-        className={className}
-        style={wrapperStyle}
-        onClick={handleClick}
-        initial={initial}
-        animate={animate}
-        transition={transition}
-      >
-        <AnimatedAvatar
-          components={components}
-          traits={effectiveTraits}
-          size={size}
-          isStreaming={isStreaming}
-        />
-      </motion.div>
-    );
-  }
-
   return (
     <motion.div
-      className={`flex items-center justify-center rounded-full bg-[var(--primary-base)] text-[var(--content-inset)] ${className ?? ""}`}
-      style={{ ...wrapperStyle, fontSize: size * 0.45 }}
+      className={className}
+      style={wrapperStyle}
       onClick={handleClick}
       initial={initial}
       animate={animate}
       transition={transition}
     >
-      W
+      <WorklinOrb
+        state={isStreaming ? "speaking" : isProcessing ? "thinking" : "idle"}
+        outputAmplitude={isStreaming ? 0.45 : 0}
+        size={size}
+        decorative={false}
+      />
     </motion.div>
   );
 }

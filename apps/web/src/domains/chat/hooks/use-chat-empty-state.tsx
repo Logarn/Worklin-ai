@@ -109,18 +109,17 @@ export function useChatEmptyState({
       : null;
 
   const emptyStateProps: ChatEmptyStateProps = {
-    avatarSlot:
-      characterProfile || avatarComponents || avatarImageUrl ? (
-        <ChatAvatar
-          components={avatarComponents}
-          traits={avatarTraits}
-          customImageUrl={avatarImageUrl}
-          characterProfile={characterProfile}
-          size={40}
-          interactive
-          isProcessing={activeConversationIsProcessing}
-        />
-      ) : null,
+    avatarSlot: (
+      <ChatAvatar
+        components={avatarComponents}
+        traits={avatarTraits}
+        customImageUrl={avatarImageUrl}
+        characterProfile={characterProfile}
+        size={40}
+        interactive
+        isProcessing={activeConversationIsProcessing}
+      />
+    ),
     greeting: editingApp
       ? buildEditAppGreeting(editingApp)
       : DEFAULT_EMPTY_STATE_GREETING,
@@ -146,20 +145,18 @@ export function useChatEmptyState({
   // re-renders only when its inputs actually change.
   const renderAvatar = useMemo(
     () =>
-      characterProfile || avatarComponents || avatarImageUrl
-        ? () => (
-            <ChatAvatar
-              components={avatarComponents}
-              traits={avatarTraits}
-              customImageUrl={avatarImageUrl}
-              characterProfile={characterProfile}
-              size={28}
-              interactive
-              isStreaming={isAssistantStreaming}
-              isProcessing={activeConversationIsProcessing}
-            />
-          )
-        : undefined,
+      () => (
+        <ChatAvatar
+          components={avatarComponents}
+          traits={avatarTraits}
+          customImageUrl={avatarImageUrl}
+          characterProfile={characterProfile}
+          size={28}
+          interactive
+          isStreaming={isAssistantStreaming}
+          isProcessing={activeConversationIsProcessing}
+        />
+      ),
     [
       avatarComponents,
       avatarImageUrl,

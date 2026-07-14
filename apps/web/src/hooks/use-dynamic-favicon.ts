@@ -1,44 +1,24 @@
 import { useEffect } from "react";
 
-import { resolveAvatarRender } from "@/utils/avatar-render";
 import { publicAsset } from "@/utils/public-asset";
-import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
 
-const FAVICON_SIZE = 32;
 const DEFAULT_FAVICON = publicAsset("/favicon-32x32.png");
 
 /**
- * Dynamically replaces the document favicon with the assistant's avatar.
- *
- * Source precedence (character SVG → custom image → default) is owned by
- * `resolveAvatarRender`, shared with the Electron dock/menu-bar icon pipeline
- * so the two surfaces always render the same avatar.
+ * Uses an uploaded assistant identity image as the favicon when present.
+ * Character-rendered identities keep the stable Worklin product mark.
  */
 export function useDynamicFavicon(
   customImageUrl: string | null,
-  components: CharacterComponents | null,
-  traits: CharacterTraits | null,
 ): void {
   useEffect(() => {
     const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (!link) return;
 
-    const render = resolveAvatarRender(
-      customImageUrl,
-      components,
-      traits,
-      FAVICON_SIZE,
-    );
-
-    link.href =
-      render.kind === "character"
-        ? render.dataUri
-        : render.kind === "image"
-          ? render.url
-          : DEFAULT_FAVICON;
+    link.href = customImageUrl ?? DEFAULT_FAVICON;
 
     return () => {
       link.href = DEFAULT_FAVICON;
     };
-  }, [customImageUrl, components, traits]);
+  }, [customImageUrl]);
 }

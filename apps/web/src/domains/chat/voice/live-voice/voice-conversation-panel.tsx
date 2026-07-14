@@ -1,5 +1,6 @@
 import { ExternalLink, Mic, MicOff, X } from "lucide-react";
-import { useMemo } from "react";
+
+import { WorklinOrb } from "@/components/worklin-orb";
 
 import type { LiveVoiceSessionState } from "./live-voice-store";
 
@@ -30,51 +31,6 @@ const STATE_LABELS: Record<LiveVoiceSessionState, string> = {
   failed: "Voice unavailable",
 };
 
-function VoiceOrb({
-  state,
-  inputAmplitude,
-  outputAmplitude,
-}: Pick<
-  VoiceConversationPanelProps,
-  "state" | "inputAmplitude" | "outputAmplitude"
->) {
-  const amplitude =
-    state === "speaking" ? (outputAmplitude ?? 0) : (inputAmplitude ?? 0);
-  const bars = useMemo(
-    () => Array.from({ length: 36 }, (_, index) => index),
-    [],
-  );
-  const active =
-    state === "listening" || state === "speaking" || state === "interrupted";
-
-  return (
-    <div className="relative h-24 w-24 shrink-0" aria-hidden="true">
-      <div
-        className={`absolute inset-[19px] rounded-full border border-[#9ab2ff]/65 bg-[radial-gradient(circle_at_35%_30%,#e9efff,#4169e1_48%,#142f8f)] shadow-[0_0_30px_rgba(65,105,225,.58)] motion-reduce:transition-none ${
-          state === "thinking" ? "animate-pulse motion-reduce:animate-none" : ""
-        }`}
-        style={{ transform: `scale(${1 + Math.min(amplitude, 1) * 0.12})` }}
-      />
-      {bars.map((index) => {
-        const phase = Math.sin(index * 1.71) * 0.16 + 0.84;
-        const height = active ? 5 + Math.min(amplitude, 1) * 19 * phase : 4;
-        return (
-          <span
-            key={index}
-            className={`absolute left-1/2 top-1/2 block w-[2px] origin-[50%_48px] rounded-full bg-gradient-to-t from-[#4169e1] to-[#9ab2ff] transition-[height,opacity] duration-75 motion-reduce:transition-none ${
-              state === "thinking" ? "opacity-45" : "opacity-90"
-            }`}
-            style={{
-              height: `${height}px`,
-              transform: `translate(-50%, -48px) rotate(${index * 10}deg)`,
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
 /** Shared in-composer and Electron-overlay voice surface. */
 export function VoiceConversationPanel({
   state,
@@ -103,7 +59,7 @@ export function VoiceConversationPanel({
       aria-label="Live voice transcript"
       aria-live="polite"
     >
-      <VoiceOrb
+      <WorklinOrb
         state={state}
         inputAmplitude={inputAmplitude}
         outputAmplitude={outputAmplitude}
@@ -118,7 +74,13 @@ export function VoiceConversationPanel({
           <>
             <p className="truncate text-sm text-[var(--content-primary,#f5f3ff)]">
               {userText ||
-                (state === "listening" ? "Go ahead — I’m listening." : "")}
+                (state === "idle"
+                  ? "Start a live conversation."
+                  : state === "connecting"
+                    ? "Connecting to voice…"
+                    : state === "listening"
+                      ? "Go ahead — I’m listening."
+                      : "")}
             </p>
             {assistantTranscript && (
               <p className="mt-1 line-clamp-2 text-xs text-[var(--content-secondary,#c4b5d6)]">

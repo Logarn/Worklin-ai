@@ -1,5 +1,4 @@
 import {
-  ChevronLeft,
   Image as ImageIcon,
   Shuffle,
   Sparkles,
@@ -25,29 +24,20 @@ import {
   resolveAssistantCharacter,
   type AssistantCharacter,
 } from "@/components/avatar/assistant-character-packs";
-import { AvatarCustomizationPanel } from "@/components/avatar/avatar-customization-panel";
-import { ChatAvatar } from "@/components/avatar/chat-avatar";
 import { PortraitAssetAvatar } from "@/components/avatar/portrait-asset-avatar";
 import { TvCharacterAvatar } from "@/components/avatar/tv-character-avatar";
+import { WorklinOrb } from "@/components/worklin-orb";
 import {
   saveAssistantCharacterProfile,
-  saveCharacterTraits,
   uploadAvatarImage,
 } from "@/assistant/avatar-api";
 import type { AssistantCharacterProfile } from "@/types/assistant-character-profile";
-import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
-
-type ModalView = "identity-studio" | "character-builder";
 
 interface AvatarManagementModalProps {
   open: boolean;
   onClose: () => void;
   assistantId: string;
-  components: CharacterComponents | null;
-  traits: CharacterTraits | null;
-  customImageUrl: string | null;
   characterProfile: AssistantCharacterProfile | null;
-  onSaveCharacter: (traits: CharacterTraits) => void;
   onUploadImage: () => void;
   onSaveProfile: () => void;
   onGenerateWithAI?: () => void;
@@ -100,7 +90,6 @@ function createDraftProfile(
 function buildSavedProfile(
   selectedCharacter: AssistantCharacter,
   draftProfile: AssistantCharacterProfile,
-  avatarStyleOverride?: AssistantCharacterProfile["avatarStyle"],
 ): AssistantCharacterProfile {
   const baseProfile = profileFromCharacter(selectedCharacter, draftProfile);
 
@@ -109,10 +98,7 @@ function buildSavedProfile(
     ...draftProfile,
     assistantName:
       draftProfile.assistantName.trim() || selectedCharacter.shortName,
-    avatarStyle:
-      avatarStyleOverride ??
-      draftProfile.avatarStyle ??
-      baseProfile.avatarStyle,
+    avatarStyle: draftProfile.avatarStyle ?? baseProfile.avatarStyle,
     faceBuilder: draftProfile.faceBuilder ?? baseProfile.faceBuilder,
     portraitAssetUrl:
       selectedCharacter.portraitAssetUrl ??
@@ -174,11 +160,7 @@ export function AvatarManagementModal({
   open,
   onClose,
   assistantId,
-  components,
-  traits,
-  customImageUrl,
   characterProfile,
-  onSaveCharacter,
   onUploadImage,
   onSaveProfile,
   onGenerateWithAI,
@@ -187,7 +169,6 @@ export function AvatarManagementModal({
   const overlayRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [view, setView] = useState<ModalView>("identity-studio");
   const [draftProfile, setDraftProfile] = useState<AssistantCharacterProfile>(
     () => createDraftProfile(characterProfile),
   );
@@ -200,7 +181,6 @@ export function AvatarManagementModal({
       return;
     }
     setDraftProfile(createDraftProfile(characterProfile));
-    setView("identity-studio");
     setSaveError(null);
     closeButtonRef.current?.focus();
   }, [characterProfile, open]);
@@ -221,21 +201,16 @@ export function AvatarManagementModal({
   );
 
   const handleClose = useCallback(() => {
-    setView("identity-studio");
     onClose();
   }, [onClose]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (view !== "identity-studio") {
-          setView("identity-studio");
-        } else {
-          handleClose();
-        }
+        handleClose();
       }
     },
-    [handleClose, view],
+    [handleClose],
   );
 
   const handleBackdropClick = useCallback(
@@ -246,16 +221,6 @@ export function AvatarManagementModal({
     },
     [handleClose],
   );
-
-  const handleBack = useCallback(() => {
-    setSaveError(null);
-    setView("identity-studio");
-  }, []);
-
-  const handleBuildCharacter = useCallback(() => {
-    setSaveError(null);
-    setView("character-builder");
-  }, []);
 
   const handleProfileChange = useCallback(
     <K extends keyof AssistantCharacterProfile>(
@@ -284,6 +249,14 @@ export function AvatarManagementModal({
   const handleRandomize = useCallback(() => {
     handleCharacterSelect(pickRandomCharacter());
   }, [handleCharacterSelect]);
+
+  const handleUseWorklinOrb = useCallback(() => {
+    setDraftProfile((current) => ({
+      ...current,
+      avatarStyle: "abstract",
+    }));
+    setSaveError(null);
+  }, []);
 
   const handleFileSelect = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
@@ -316,41 +289,6 @@ export function AvatarManagementModal({
     handleClose();
     onGenerateWithAI?.();
   }, [handleClose, onGenerateWithAI]);
-
-  const handleCharacterSave = useCallback(
-    async (savedTraits: CharacterTraits) => {
-      setIsSavingProfile(true);
-      setSaveError(null);
-      const savedProfile = await saveAssistantCharacterProfile(
-        assistantId,
-        buildSavedProfile(selectedCharacter, draftProfile, "abstract"),
-      );
-
-      if (!savedProfile) {
-        setIsSavingProfile(false);
-        setSaveError("Could not save the classic avatar selection.");
-        return;
-      }
-
-      const savedTraitsOk = await saveCharacterTraits(assistantId, savedTraits);
-      setIsSavingProfile(false);
-
-      if (!savedTraitsOk) {
-        setSaveError("Could not save the classic avatar selection.");
-        return;
-      }
-
-      onSaveCharacter(savedTraits);
-      handleClose();
-    },
-    [
-      assistantId,
-      draftProfile,
-      handleClose,
-      onSaveCharacter,
-      selectedCharacter,
-    ],
-  );
 
   const handleSaveProfile = useCallback(async () => {
     setIsSavingProfile(true);
@@ -400,41 +338,24 @@ export function AvatarManagementModal({
           style={{ borderColor: "var(--border-base)" }}
         >
           <div className="flex min-w-0 items-center gap-2">
-            {view !== "identity-studio" && (
-              <button
-                type="button"
-                onClick={handleBack}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-[var(--surface-base)]"
-                aria-label="Back"
-              >
-                <ChevronLeft
-                  className="h-4 w-4"
-                  style={{ color: "var(--content-secondary)" }}
-                />
-              </button>
-            )}
             <div className="min-w-0">
               <h2
                 id={titleId}
                 className="truncate text-title-small"
                 style={{ color: "var(--content-default)" }}
               >
-                {view === "character-builder"
-                  ? "Classic Builder"
-                  : "Assistant Identity"}
+                Assistant Identity
               </h2>
-              {view === "identity-studio" && (
-                <p
-                  className="truncate text-body-small-default"
-                  style={labelStyle()}
-                >
-                  {draftProfile.avatarStyle === "abstract"
-                    ? "Classic avatar · Legacy blob builder"
-                    : selectedCharacter
-                      ? `${selectedCharacter.name} · ${selectedCharacter.subtitle}`
-                      : "Choose a character"}
-                </p>
-              )}
+              <p
+                className="truncate text-body-small-default"
+                style={labelStyle()}
+              >
+                {draftProfile.avatarStyle === "abstract"
+                  ? "Worklin orb · Royal blue"
+                  : selectedCharacter
+                    ? `${selectedCharacter.name} · ${selectedCharacter.subtitle}`
+                    : "Choose a character"}
+              </p>
             </div>
           </div>
           <button
@@ -452,47 +373,11 @@ export function AvatarManagementModal({
         </div>
 
         <div className="min-h-0 overflow-y-auto p-5">
-          {view === "character-builder" ? (
-            <div className="space-y-4">
-              <div className="rounded-xl border p-4" style={modalPanelStyle()}>
-                <p
-                  className="text-title-small"
-                  style={{ color: "var(--content-default)" }}
-                >
-                  Classic avatars
-                </p>
-                <p
-                  className="mt-1 text-body-small-default"
-                  style={labelStyle()}
-                >
-                  This is the original blob-style builder. Save here only when
-                  you want the classic avatar instead of the newer Worklin
-                  portraits.
-                </p>
-              </div>
-
-              <AvatarCustomizationPanel
-                assistantId={assistantId}
-                initialTraits={traits}
-                onSave={handleCharacterSave}
-                onCancel={handleBack}
-              />
-
-              {saveError && (
-                <p
-                  className="text-body-small-default"
-                  style={{ color: "var(--system-negative-strong)" }}
-                >
-                  {saveError}
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
-              <section
-                className="flex flex-col gap-4 rounded-xl border p-4"
-                style={modalPanelStyle()}
-              >
+          <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+            <section
+              className="flex flex-col gap-4 rounded-xl border p-4"
+              style={modalPanelStyle()}
+            >
                 <div>
                   <p
                     className="text-title-small"
@@ -505,20 +390,16 @@ export function AvatarManagementModal({
                     style={labelStyle()}
                   >
                     {draftProfile.avatarStyle === "abstract"
-                      ? "Classic avatar"
+                      ? "Worklin orb"
                       : selectedCharacter?.subtitle ?? "Choose one style"}
                   </p>
                 </div>
 
                 <div className="flex justify-center py-3">
                   {draftProfile.avatarStyle === "abstract" ? (
-                    <ChatAvatar
-                      components={components}
-                      traits={traits}
-                      customImageUrl={customImageUrl}
-                      characterProfile={draftProfile}
+                    <WorklinOrb
                       size={164}
-                      interactive
+                      decorative={false}
                     />
                   ) : draftProfile.portraitAssetUrl ? (
                     <PortraitAssetAvatar
@@ -547,7 +428,7 @@ export function AvatarManagementModal({
                     style={{ color: "var(--content-default)" }}
                   >
                     {draftProfile.avatarStyle === "abstract"
-                      ? "Classic avatar"
+                      ? "Worklin orb"
                       : selectedCharacter?.name ?? draftProfile.assistantName}
                   </p>
                   <p
@@ -555,7 +436,7 @@ export function AvatarManagementModal({
                     style={{ color: "var(--content-tertiary)" }}
                   >
                     {draftProfile.avatarStyle === "abstract"
-                      ? "The original Worklin blob builder."
+                      ? "Royal-blue Worklin assistant presence."
                       : selectedCharacter?.defaults.tone ?? draftProfile.tone}
                   </p>
                 </div>
@@ -595,6 +476,21 @@ export function AvatarManagementModal({
                 <div className="flex flex-wrap gap-2 pt-1">
                   <button
                     type="button"
+                    onClick={handleUseWorklinOrb}
+                    className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-body-small-default transition-colors hover:bg-[var(--surface-lift)]"
+                    style={{
+                      borderColor:
+                        draftProfile.avatarStyle === "abstract"
+                          ? "#4169e1"
+                          : "var(--border-base)",
+                      color: "var(--content-default)",
+                    }}
+                  >
+                    <WorklinOrb size={16} />
+                    Worklin orb
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleRandomize}
                     className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-body-small-default transition-colors hover:bg-[var(--surface-lift)]"
                     style={{
@@ -604,17 +500,6 @@ export function AvatarManagementModal({
                   >
                     <Shuffle className="h-4 w-4" />
                     Randomize
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleBuildCharacter}
-                    className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-body-small-default transition-colors hover:bg-[var(--surface-lift)]"
-                    style={{
-                      borderColor: "var(--border-base)",
-                      color: "var(--content-secondary)",
-                    }}
-                  >
-                    Classic avatars
                   </button>
                   <button
                     type="button"
@@ -667,9 +552,9 @@ export function AvatarManagementModal({
                     {isSavingProfile ? "Saving..." : "Save avatar"}
                   </button>
                 </div>
-              </section>
+            </section>
 
-              <section className="min-w-0">
+            <section className="min-w-0">
                 <div className="mb-4">
                   <p
                     className="text-title-medium"
@@ -681,8 +566,7 @@ export function AvatarManagementModal({
                     className="mt-1 text-body-small-default"
                     style={labelStyle()}
                   >
-                    Pick a Worklin avatar. Classic stays available below when
-                    you want the original blob builder.
+                    Keep the royal-blue Worklin orb or choose a character.
                   </p>
                 </div>
 
@@ -744,9 +628,8 @@ export function AvatarManagementModal({
                     );
                   })}
                 </div>
-              </section>
-            </div>
-          )}
+            </section>
+          </div>
         </div>
       </div>
 

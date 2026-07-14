@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 
+import { WorklinOrb } from "@/components/worklin-orb";
 import { ChatLayoutHeader } from "@/domains/chat/chat-layout-header";
 import { ChatComposer } from "@/domains/chat/components/chat-composer/chat-composer";
 import type { VoiceInputButtonHandle } from "@/domains/chat/components/voice-input-button";
@@ -151,10 +152,7 @@ export function VoicePreviewPage() {
       {active ? (
         <Square size={11} fill="currentColor" />
       ) : (
-        <span className="relative flex h-4 w-4 items-center justify-center">
-          <span className="absolute inset-0 rounded-full bg-[#4169e1]/20" />
-          <span className="relative h-2 w-2 rounded-full border border-[#9ab2ff]" />
-        </span>
+        <WorklinOrb size={16} />
       )}
       {active ? "End voice" : "Live voice"}
     </button>

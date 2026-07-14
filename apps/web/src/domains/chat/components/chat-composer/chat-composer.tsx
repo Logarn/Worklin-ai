@@ -277,10 +277,10 @@ export function ChatComposer({
   const liveVoiceOutputAmplitude =
     liveVoicePreview?.outputAmplitude ?? storedLiveVoiceOutputAmplitude;
   const liveVoiceError = liveVoicePreview?.error ?? storedLiveVoiceError;
-  // Keep terminal failures visible in the shared panel. The failed session is
-  // inactive/retryable (the button returns to its start action), but hiding the
-  // panel would also hide the provider's actionable error message.
-  const showLiveVoicePanel = liveVoiceEligible && liveVoiceState !== "idle";
+  // The shared panel is the stable live-voice entry surface. Idle sessions
+  // remain visible as Ready, while terminal failures retain the provider's
+  // actionable error message and a retryable start control.
+  const showLiveVoicePanel = liveVoiceEligible;
 
   const pointerCoarse = useMemo(() => isPointerCoarse(), []);
   const isMobile = useIsMobile();

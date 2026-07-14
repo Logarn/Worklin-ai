@@ -757,10 +757,14 @@ describe("ChatComposer — live-voice integration", () => {
     mockLiveVoiceState = "idle";
 
     // WHEN the composer renders
-    const { getByLabelText, queryByLabelText } = renderVoiceComposer();
+    const { getByLabelText, getByText, queryByLabelText } =
+      renderVoiceComposer();
 
     // THEN live voice is the composer's only voice entry point
     expect(getByLabelText("Start voice mode")).toBeTruthy();
+    expect(getByLabelText("Live voice transcript")).toBeTruthy();
+    expect(getByText("Ready")).toBeTruthy();
+    expect(getByText("Start a live conversation.")).toBeTruthy();
     expect(queryByLabelText("Start voice input")).toBeNull();
   });
 
@@ -812,17 +816,19 @@ describe("ChatComposer — live-voice integration", () => {
     expect(liveStopSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("flag ON but no transcript content: surface stays empty when idle", () => {
+  test("flag ON keeps the ready voice surface visible when idle", () => {
     // GIVEN the flag is on but the session is idle
     useTurnStore.setState(INITIAL_TURN_STATE);
     mockVoiceMode = true;
     mockLiveVoiceState = "idle";
 
     // WHEN the composer renders
-    const { queryByLabelText } = renderVoiceComposer();
+    const { getByLabelText } = renderVoiceComposer();
 
-    // THEN no transcript surface is rendered (idle = nothing to show)
-    expect(queryByLabelText("Live voice transcript")).toBeNull();
+    // THEN the stable voice entry surface remains visible before recording.
+    expect(getByLabelText("Live voice transcript").textContent).toContain(
+      "Ready",
+    );
   });
 
   test("dictation active disables the live-voice button (reverse mutual exclusion)", () => {

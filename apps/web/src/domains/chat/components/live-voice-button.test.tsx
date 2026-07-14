@@ -80,12 +80,16 @@ describe("LiveVoiceButton", () => {
     mockState = "idle";
 
     // WHEN the button renders
-    const { getByLabelText } = render(<LiveVoiceButton assistantId="a1" />);
+    const { getByLabelText } = render(
+      <LiveVoiceButton assistantId="a1" />,
+    );
 
     // THEN it offers to start voice mode and is not pressed
     const button = getByLabelText("Start voice mode");
     expect(button).toBeTruthy();
     expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(button.innerHTML).toContain("#4169e1");
+    expect(button.querySelector("svg")).toBeNull();
   });
 
   test("starts a session on click when idle", () => {

@@ -77,9 +77,7 @@ describe("ChatScrollArea — empty-state layout (LUM-1566)", () => {
       <ChatScrollArea {...baseProps({ showEmptyState: true })} />,
     );
     // Default Worklin retention greeting from ChatEmptyState
-    expect(html).toContain(
-      "One Assistant To Rule Them All 💍",
-    );
+    expect(html).toContain("What should we work on?");
   });
 
   test("does not render ChatEmptyState when showEmptyState is false", () => {
@@ -88,8 +86,6 @@ describe("ChatScrollArea — empty-state layout (LUM-1566)", () => {
         {...baseProps({ showEmptyState: false, messageCount: 1 })}
       />,
     );
-    expect(html).not.toContain(
-      "One Assistant To Rule Them All 💍",
-    );
+    expect(html).not.toContain("What should we work on?");
   });
 });

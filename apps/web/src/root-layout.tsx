@@ -108,15 +108,12 @@ export function RootLayout() {
   useDocumentEditorSync();
   useBookmarksSync();
 
-  // Keep the browser favicon in sync with the assistant's avatar across
-  // every authenticated route (chat, settings, logs, etc.). Mounted here
-  // so the favicon persists when navigating between sibling layouts.
+  // Keep a user-uploaded identity image in sync with browser and Electron
+  // icon surfaces. Character traits fall back to the stable Worklin mark.
   const avatar = useAssistantAvatar(assistantId);
-  useDynamicFavicon(avatar.customImageUrl, avatar.components, avatar.traits);
+  useDynamicFavicon(avatar.customImageUrl);
 
-  // Feed the same avatar to the Electron Dock + menu-bar icons, and publish
-  // the live connection status to the menu-bar dot. Both no-op off Electron.
-  useElectronIconSync(avatar.customImageUrl, avatar.components, avatar.traits);
+  useElectronIconSync(avatar.customImageUrl);
   useElectronStatusSync();
   useElectronFeatureFlagBridge();
 

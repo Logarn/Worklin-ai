@@ -2,8 +2,6 @@ import { useEffect } from "react";
 
 import { isElectron } from "@/runtime/is-electron";
 import { setAssistantIcon } from "@/runtime/icon";
-import { resolveAvatarRender } from "@/utils/avatar-render";
-import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
 
 /**
  * Square the avatar is rasterized to before publishing. 512px covers the
@@ -90,17 +88,9 @@ async function rasterizeAvatar(
 }
 
 /**
- * Publish the assistant's avatar to the Electron host so the main process can
- * drive both icon surfaces — the macOS Dock icon and the menu-bar Tray base
- * image — from one source, mirroring the native app where the same avatar
- * feeds `applicationIconImage` and the menu-bar item.
- *
- * Source precedence (character SVG → custom image → none) is shared with the
- * browser favicon via `resolveAvatarRender`, so the two surfaces never drift.
- * The renderer rasterizes because Electron's `nativeImage` only decodes
- * PNG/JPEG, not the trait-composited SVG; main owns per-surface masking and
- * the bundled-Vellum-mark fallback. Publishing `null` (no avatar, or a
- * rasterization failure) tells main to restore that fallback.
+ * Publishes an uploaded assistant identity image to the Electron Dock and
+ * menu-bar icon surfaces. Character identities keep the bundled Worklin mark.
+ * Publishing `null` tells main to restore that stable fallback.
  *
  * Everything no-ops off Electron — `rasterizeAvatar` is gated behind
  * `isElectron()` so web/iOS hosts never do the canvas work. Mounted in
@@ -108,26 +98,17 @@ async function rasterizeAvatar(
  */
 export function useElectronIconSync(
   customImageUrl: string | null,
-  components: CharacterComponents | null,
-  traits: CharacterTraits | null,
 ): void {
   useEffect(() => {
     if (!isElectron()) return;
 
-    const render = resolveAvatarRender(
-      customImageUrl,
-      components,
-      traits,
-      ICON_SIZE,
-    );
-    if (render.kind === "none") {
+    if (!customImageUrl) {
       setAssistantIcon(null);
       return;
     }
 
     let cancelled = false;
-    const src = render.kind === "character" ? render.dataUri : render.url;
-    void rasterizeAvatar(src, ICON_SIZE)
+    void rasterizeAvatar(customImageUrl, ICON_SIZE)
       .then((bytes) => {
         if (!cancelled) setAssistantIcon(bytes);
       })
@@ -138,5 +119,5 @@ export function useElectronIconSync(
     return () => {
       cancelled = true;
     };
-  }, [customImageUrl, components, traits]);
+  }, [customImageUrl]);
 }
