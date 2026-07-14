@@ -33,6 +33,7 @@ import {
   fetchComments,
 } from "@/domains/chat/api/document-comments";
 import type { CommentAnchor } from "@/domains/chat/utils/tiptap-position-map";
+import { useAssistantQuery } from "@/assistant/queries";
 import { documentsPost } from "@/generated/daemon/sdk.gen";
 import type { DocumentsByIdCommentsPostResponse } from "@/generated/daemon/types.gen";
 import { useAssistantIdentityStore } from "@/stores/assistant-identity-store";
@@ -94,12 +95,22 @@ export function DocumentViewerContainer({
   const assistants = useResolvedAssistantsStore.use.assistants();
   const selectedAssistantId =
     useResolvedAssistantsStore.use.selectedAssistantId();
+  const { data: assistantResult } = useAssistantQuery({
+    enabled: true,
+    selectedPlatformAssistantId: selectedAssistantId ?? assistantId,
+  });
+  const platformAssistantName = assistantResult?.ok
+    ? assistantResult.data.name
+    : null;
   const resolvedAssistant =
     assistants.find((assistant) => assistant.id === assistantId) ??
     assistants.find((assistant) => assistant.id === selectedAssistantId) ??
     (assistants.length === 1 ? assistants[0] : undefined);
   const assistantName =
-    identityName?.trim() || resolvedAssistant?.name?.trim() || "Worklin";
+    identityName?.trim() ||
+    platformAssistantName?.trim() ||
+    resolvedAssistant?.name?.trim() ||
+    "Worklin";
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
   const [addingInlineComment, setAddingInlineComment] = useState(false);
   const [commentAnchors, setCommentAnchors] = useState<CommentAnchor[]>([]);
