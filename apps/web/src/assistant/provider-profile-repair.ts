@@ -2,14 +2,17 @@ import {
   getDefaultModelForProvider,
   PROVIDER_DISPLAY_NAMES,
 } from "@/assistant/llm-model-catalog";
+import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
 import {
   configGet,
   configPatch,
   inferenceProviderconnectionsGet,
+  secretsGet,
 } from "@/generated/daemon/sdk.gen";
 import type {
   ConfigGetResponse,
   ProviderConnection,
+  SecretsGetResponse,
 } from "@/generated/daemon/types.gen";
 
 const AUTO_PROFILE_NAME = "custom-balanced";
@@ -103,20 +106,17 @@ function providerLabel(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 }
 
-function isUserOwnedConnection(connection: ProviderConnection): boolean {
-  return connection.auth.type !== "platform" && !connection.isManaged;
-}
-
 function connectionLastChangedAt(connection: ProviderConnection): number {
   return Math.max(connection.updatedAt, connection.createdAt);
 }
 
 function selectRepairConnection(
   connections: readonly ProviderConnection[],
+  secrets: readonly SecretsGetResponse["secrets"][number][],
 ): ProviderConnection | null {
   const runnable = connections.filter(
     (connection) =>
-      isUserOwnedConnection(connection) &&
+      isProviderConnectionReady(connection, secrets) &&
       Boolean(defaultModelForConnection(connection)),
   );
   if (runnable.length === 1) return runnable[0];
@@ -221,16 +221,25 @@ export async function ensureRunnableProfileForConnection(
 export async function ensureRunnableProfileFromStoredConnection(
   assistantId: string,
 ): Promise<ProviderProfileRepairResult> {
-  const { data } = await inferenceProviderconnectionsGet({
-    path: { assistant_id: assistantId },
-    throwOnError: true,
-  });
-  const connections = data?.connections ?? [];
+  const [{ data: connectionsData }, { data: secretsData }] = await Promise.all([
+    inferenceProviderconnectionsGet({
+      path: { assistant_id: assistantId },
+      throwOnError: true,
+    }),
+    secretsGet({
+      path: { assistant_id: assistantId },
+      throwOnError: true,
+    }),
+  ]);
+  const connections = connectionsData?.connections ?? [];
   if (connections.length === 0) {
     return { repaired: false, reason: "no-connections" };
   }
 
-  const connection = selectRepairConnection(connections);
+  const connection = selectRepairConnection(
+    connections,
+    secretsData?.secrets ?? [],
+  );
   if (!connection) {
     return { repaired: false, reason: "ambiguous" };
   }

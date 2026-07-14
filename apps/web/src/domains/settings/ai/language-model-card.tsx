@@ -24,6 +24,7 @@ import {
   providerSupportsPlatformAuth,
   PROVIDER_DISPLAY_NAMES,
 } from "@/assistant/llm-model-catalog";
+import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
 import { CallSiteOverridesModal } from "@/domains/settings/ai/call-site-overrides-modal";
@@ -43,6 +44,7 @@ import {
   configGetOptions,
   configGetSetQueryData,
   inferenceProviderconnectionsGetOptions,
+  secretsGetOptions,
   useConfigPatchMutation,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import type {
@@ -154,6 +156,7 @@ function getConnectionStatus(
   auth: Auth | undefined,
 ): string {
   if (powerSource === "worklin-credits") return "Using Worklin credits";
+  if (!auth) return "Key required";
   if (auth?.type === "oauth_subscription") return "ChatGPT connected";
   if (auth?.type === "none") return "Local connection";
   return "Key connected";
@@ -247,6 +250,14 @@ export function LanguageModelCard() {
     () => connectionsData?.connections ?? [],
     [connectionsData?.connections],
   );
+  const { data: secretsData } = useQuery({
+    ...secretsGetOptions({ path: { assistant_id: assistantId } }),
+    staleTime: 30_000,
+  });
+  const secrets = useMemo(
+    () => secretsData?.secrets ?? [],
+    [secretsData?.secrets],
+  );
 
   const activeProfile = config?.llm?.activeProfile ?? null;
   const callSites = config?.llm?.callSites ?? {};
@@ -316,7 +327,9 @@ export function LanguageModelCard() {
   const selectedProvider = selectedProfile?.provider ?? null;
   const selectedStatus = getConnectionStatus(
     selectedPowerSource,
-    selectedConnection?.auth,
+    selectedConnection && isProviderConnectionReady(selectedConnection, secrets)
+      ? selectedConnection.auth
+      : undefined,
   );
 
   const handleProfileSave = useCallback(async () => {
@@ -498,7 +511,9 @@ export function LanguageModelCard() {
               <div className="grid gap-3 border-t border-[var(--border-subtle)] p-4 sm:grid-cols-2 xl:grid-cols-3">
                 {LANGUAGE_MODEL_PROVIDERS.map((provider) => {
                   const providerConnections = connections.filter(
-                    (connection) => connection.provider === provider,
+                    (connection) =>
+                      connection.provider === provider &&
+                      isProviderConnectionReady(connection, secrets),
                   );
                   const hasConnection = providerConnections.length > 0;
                   const isActive = selectedProvider === provider;

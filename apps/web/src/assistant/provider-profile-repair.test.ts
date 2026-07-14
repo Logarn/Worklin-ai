@@ -21,6 +21,10 @@ interface ConnectionsGetCall {
 
 let configGetData: ConfigGetResponse;
 let connections: ProviderConnection[] = [];
+let secrets: Array<{
+  type: "api_key" | "credential";
+  name: string;
+}> = [];
 let configGetCalls: ConfigGetCall[] = [];
 let configPatchCalls: ConfigPatchCall[] = [];
 let connectionsGetCalls: ConnectionsGetCall[] = [];
@@ -42,6 +46,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       response: { ok: true },
     });
   },
+  secretsGet: () =>
+    Promise.resolve({
+      data: { secrets, accounts: secrets },
+      response: { ok: true },
+    }),
 }));
 
 const { ensureRunnableProfileFromStoredConnection } = await import(
@@ -122,6 +131,7 @@ beforeEach(() => {
   configPatchCalls = [];
   connectionsGetCalls = [];
   connections = [];
+  secrets = [];
   configGetData = {
     llm: {
       activeProfile: "balanced",
@@ -140,6 +150,7 @@ beforeEach(() => {
 
 describe("ensureRunnableProfileFromStoredConnection", () => {
   test("ignores managed seed connections when exactly one API-key connection can answer", async () => {
+    secrets = [{ type: "api_key", name: "anthropic" }];
     connections = [
       platformConnection("anthropic-managed", "anthropic"),
       platformConnection("openai-managed", "openai"),
@@ -171,6 +182,10 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
   });
 
   test("prefers the most recently changed user provider over older user providers", async () => {
+    secrets = [
+      { type: "api_key", name: "openai" },
+      { type: "api_key", name: "gemini" },
+    ];
     connections = [
       platformConnection("anthropic-managed", "anthropic"),
       apiKeyConnection("openai-personal", "openai", {
@@ -204,6 +219,10 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
   });
 
   test("uses a ChatGPT subscription model when activating OAuth subscription auth", async () => {
+    secrets = [
+      { type: "api_key", name: "openai" },
+      { type: "credential", name: "chatgpt:access_token" },
+    ];
     connections = [
       platformConnection("openai-managed", "openai"),
       apiKeyConnection("openai-personal", "openai", {
@@ -267,6 +286,10 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
   });
 
   test("stays ambiguous when multiple non-managed API-key providers are equally eligible", async () => {
+    secrets = [
+      { type: "api_key", name: "anthropic" },
+      { type: "api_key", name: "openai" },
+    ];
     connections = [
       platformConnection("anthropic-managed", "anthropic"),
       apiKeyConnection("anthropic-personal", "anthropic"),
@@ -276,6 +299,19 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
     const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("does not activate a personal connection whose credential is missing", async () => {
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal", "anthropic"),
+    ];
+
+    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+
+    expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(configGetCalls).toHaveLength(0);
     expect(configPatchCalls).toHaveLength(0);
   });
 });

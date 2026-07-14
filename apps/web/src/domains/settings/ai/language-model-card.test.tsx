@@ -7,6 +7,7 @@ import { createElement, type ReactNode } from "react";
 import {
   configGetQueryKey,
   inferenceProviderconnectionsGetQueryKey,
+  secretsGetQueryKey,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { ConfigGetResponse, ProviderConnection } from "@/generated/daemon/types.gen";
 
@@ -32,7 +33,13 @@ const { LanguageModelCard } = await import(
   "@/domains/settings/ai/language-model-card"
 );
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({
+  children,
+  hasKimiSecret = true,
+}: {
+  children: ReactNode;
+  hasKimiSecret?: boolean;
+}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -76,6 +83,13 @@ function Wrapper({ children }: { children: ReactNode }) {
     }),
     { connections: [connection] },
   );
+  client.setQueryData(
+    secretsGetQueryKey({ path: { assistant_id: "asst-1" } }),
+    {
+      secrets: hasKimiSecret ? [{ type: "api_key", name: "kimi" }] : [],
+      accounts: hasKimiSecret ? [{ type: "api_key", name: "kimi" }] : [],
+    },
+  );
 
   return createElement(QueryClientProvider, { client }, children);
 }
@@ -100,5 +114,16 @@ describe("LanguageModelCard", () => {
     expect(getByText("Key connected")).toBeTruthy();
     expect(getByText("Available services")).toBeTruthy();
     expect(getByText("Advanced model settings")).toBeTruthy();
+  });
+
+  test("does not report a connection whose credential is missing", () => {
+    const { getByText, queryByText } = render(
+      <Wrapper hasKimiSecret={false}>
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(getByText("Key required")).toBeTruthy();
+    expect(queryByText("Key connected")).toBeNull();
   });
 });

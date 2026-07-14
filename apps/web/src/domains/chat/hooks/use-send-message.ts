@@ -226,7 +226,7 @@ export function useSendMessage({
         });
 
         return {
-          message: `${repair.providerLabel ?? "Your AI provider"} is connected now. Send your message again.`,
+          message: `${repair.providerLabel ?? "Your AI provider"} is selected for this assistant now. Send your message again.`,
           code: "PROVIDER_PROFILE_REPAIRED",
         };
       } catch (err) {
