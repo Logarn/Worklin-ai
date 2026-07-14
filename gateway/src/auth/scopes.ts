@@ -40,6 +40,13 @@ const PROFILE_SCOPES: Record<ScopeProfile, ReadonlySet<Scope>> = {
   ]),
   local_v1: new Set<Scope>(["local.all"]),
   ui_page_v1: new Set<Scope>(["settings.read"]),
+  artifact_viewer_v1: new Set<Scope>(["artifact.read"]),
+  artifact_commenter_v1: new Set<Scope>(["artifact.read", "artifact.comment"]),
+  artifact_editor_v1: new Set<Scope>([
+    "artifact.read",
+    "artifact.comment",
+    "artifact.write",
+  ]),
 };
 
 // ---------------------------------------------------------------------------

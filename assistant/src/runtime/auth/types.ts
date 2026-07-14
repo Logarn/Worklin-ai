@@ -14,7 +14,10 @@ export type ScopeProfile =
   | "gateway_ingress_v1"
   | "gateway_service_v1"
   | "local_v1"
-  | "ui_page_v1";
+  | "ui_page_v1"
+  | "artifact_viewer_v1"
+  | "artifact_commenter_v1"
+  | "artifact_editor_v1";
 
 // ---------------------------------------------------------------------------
 // Individual scope strings
@@ -35,7 +38,10 @@ export type Scope =
   | "internal.write"
   | "feature_flags.read"
   | "feature_flags.write"
-  | "local.all";
+  | "local.all"
+  | "artifact.read"
+  | "artifact.comment"
+  | "artifact.write";
 
 // ---------------------------------------------------------------------------
 // Principal types — derived from the sub pattern
@@ -62,6 +68,8 @@ export interface TokenClaims {
   policy_epoch: number;
   iat?: number;
   jti?: string;
+  artifact_id?: string;
+  collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
 }
 
 // ---------------------------------------------------------------------------
@@ -77,4 +85,6 @@ export interface AuthContext {
   scopeProfile: ScopeProfile;
   scopes: ReadonlySet<Scope>;
   policyEpoch: number;
+  artifactId?: string;
+  collaborationRole?: "viewer" | "commenter" | "editor" | "owner";
 }

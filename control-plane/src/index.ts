@@ -42,6 +42,7 @@ import {
   railwayProvisionerConfigFromEnv,
 } from "./railway-runtime-provisioner.js";
 import { platformOwnerPrincipalId } from "./platform-owner-principal.js";
+import { ensureArtifactSharingSchema } from "./artifact-sharing-store.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -171,6 +172,7 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 `);
+ensureArtifactSharingSchema(db);
 ensureRuntimeStackSchema(db);
 
 const useSecureCookies = env.apiOrigin.startsWith("https://") && env.auth0BaseUrl.startsWith("https://");

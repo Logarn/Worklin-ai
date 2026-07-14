@@ -139,6 +139,8 @@ export function mintToken(params: {
   scope_profile: ScopeProfile;
   policy_epoch: number;
   ttlSeconds: number;
+  artifact_id?: string;
+  collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
 }): string {
   const now = Math.floor(Date.now() / 1000);
   const claims: TokenClaims = {
@@ -148,6 +150,10 @@ export function mintToken(params: {
     scope_profile: params.scope_profile,
     exp: now + params.ttlSeconds,
     policy_epoch: params.policy_epoch,
+    ...(params.artifact_id ? { artifact_id: params.artifact_id } : {}),
+    ...(params.collaboration_role
+      ? { collaboration_role: params.collaboration_role }
+      : {}),
     iat: now,
     jti: randomBytes(16).toString("hex"),
   };

@@ -5,6 +5,7 @@
 import type { z } from "zod";
 
 import type { RoutePolicy } from "../auth/route-policy.js";
+import type { AuthContext } from "../auth/types.js";
 
 export interface RouteQueryParam {
   name: string;
@@ -101,6 +102,7 @@ export interface RouteHandlerArgs {
   body?: Record<string, unknown>;
   rawBody?: Uint8Array;
   headers?: Record<string, string>;
+  authContext?: AuthContext;
   /**
    * Abort signal tied to the client connection. Fired when the client
    * disconnects (e.g. SSE stream closed). The IPC adapter may pass
