@@ -9,9 +9,10 @@ describe("Railway runtime brand-copy skill packaging", () => {
       new URL("../../../runtime/Dockerfile", import.meta.url),
     ).text();
 
-    expect(dockerignore).toContain("!skills/write-brand-copy/**");
+    expect(dockerignore).toContain("!skills/**");
+    expect(dockerfile).toContain("COPY skills ./skills");
     expect(dockerfile).toContain(
-      "COPY skills/write-brand-copy ./assistant/src/config/bundled-skills/write-brand-copy",
+      "ENV VELLUM_FIRST_PARTY_SKILLS_DIR=/app/skills",
     );
   });
 });
