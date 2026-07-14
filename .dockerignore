@@ -8,6 +8,9 @@
 !credential-executor/**
 !gateway/
 !gateway/**
+!meta/
+!meta/feature-flags/
+!meta/feature-flags/feature-flag-registry.json
 !packages/
 !packages/**
 !runtime/

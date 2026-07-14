@@ -53,6 +53,8 @@ RUN set -eu; for pkg in /app/skills/*/package.json; do \
 COPY assistant ./assistant
 COPY control-plane ./control-plane
 COPY gateway ./gateway
+COPY meta/feature-flags/feature-flag-registry.json ./assistant/src/config/feature-flag-registry.json
+COPY meta/feature-flags/feature-flag-registry.json ./gateway/src/feature-flag-registry.json
 COPY credential-executor ./credential-executor
 COPY runtime ./runtime
 
