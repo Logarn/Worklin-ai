@@ -64,6 +64,7 @@ let mockLiveVoiceState: MockLiveVoiceState = "idle";
 let mockLivePartial = "";
 let mockLiveFinal = "";
 let mockLiveAssistant = "";
+let mockLiveError: string | null = null;
 const liveStartSpy = mock(
   async (_assistantId: string, _conversationId?: string) => {},
 );
@@ -81,6 +82,7 @@ mock.module("@/domains/chat/voice/live-voice/live-voice-store", () => ({
       assistantTranscript: () => mockLiveAssistant,
       inputAmplitude: () => 0,
       outputAmplitude: () => 0,
+      error: () => mockLiveError,
     },
   },
 }));
@@ -93,7 +95,7 @@ mock.module("@/domains/chat/voice/live-voice/use-live-voice", () => ({
     inputAmplitude: 0,
     outputAmplitude: 0,
     muted: false,
-    error: null,
+    error: mockLiveError,
     start: liveStartSpy,
     stop: liveStopSpy,
     toggleMute: () => {},
@@ -138,6 +140,7 @@ function resetLiveVoiceMocks() {
   mockLivePartial = "";
   mockLiveFinal = "";
   mockLiveAssistant = "";
+  mockLiveError = null;
   mockVoicePhase = "idle";
   setAudioLevelSpy.mockClear();
   liveStartSpy.mockClear();
@@ -861,18 +864,21 @@ describe("ChatComposer — live-voice integration", () => {
     expect(liveVoice.disabled).toBe(true);
   });
 
-  test("failed live-voice state is inactive: dictation stays hidden, no transcript surface", () => {
+  test("failed live-voice state stays visible with its actionable error", () => {
     // GIVEN the flag is on and a live-voice start attempt has failed
     useTurnStore.setState(INITIAL_TURN_STATE);
     mockVoiceMode = true;
     mockLiveVoiceState = "failed";
+    mockLiveError = "Hume credits are exhausted.";
 
     // WHEN the composer renders (dictation idle)
-    const { queryByLabelText } = renderVoiceComposer();
+    const { getByLabelText, queryByLabelText } = renderVoiceComposer();
 
-    // THEN the single voice entry point remains live voice, while the
-    // transcript surface is unmounted rather than left hanging.
+    // THEN the single voice entry point remains live voice and the failed
+    // panel explains why the session disappeared instead of silently hiding.
     expect(queryByLabelText("Start voice input")).toBeNull();
-    expect(queryByLabelText("Live voice transcript")).toBeNull();
+    const surface = getByLabelText("Live voice transcript");
+    expect(surface.textContent).toContain("Voice unavailable");
+    expect(surface.textContent).toContain("Hume credits are exhausted.");
   });
 });

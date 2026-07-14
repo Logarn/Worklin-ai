@@ -142,6 +142,7 @@ export interface ChatComposerProps {
     | "assistantTranscript"
     | "inputAmplitude"
     | "outputAmplitude"
+    | "error"
   > & { control: ReactNode };
 
   /**
@@ -263,6 +264,7 @@ export function ChatComposer({
   const storedLiveVoiceInputAmplitude = useLiveVoiceStore.use.inputAmplitude();
   const storedLiveVoiceOutputAmplitude =
     useLiveVoiceStore.use.outputAmplitude();
+  const storedLiveVoiceError = useLiveVoiceStore.use.error();
   const liveVoiceState = liveVoicePreview?.state ?? storedLiveVoiceState;
   const liveVoicePartial =
     liveVoicePreview?.partialTranscript ?? storedLiveVoicePartial;
@@ -274,14 +276,11 @@ export function ChatComposer({
     liveVoicePreview?.inputAmplitude ?? storedLiveVoiceInputAmplitude;
   const liveVoiceOutputAmplitude =
     liveVoicePreview?.outputAmplitude ?? storedLiveVoiceOutputAmplitude;
-  // Anything but idle/failed counts as an active session.
-  // `failed` is a retryable/inactive state in `useLiveVoice`/`LiveVoiceButton`,
-  // so we must treat it as inactive — otherwise the empty transcript surface
-  // stays mounted after a failed start.
-  const isLiveVoiceActive =
-    liveVoiceEligible &&
-    liveVoiceState !== "idle" &&
-    liveVoiceState !== "failed";
+  const liveVoiceError = liveVoicePreview?.error ?? storedLiveVoiceError;
+  // Keep terminal failures visible in the shared panel. The failed session is
+  // inactive/retryable (the button returns to its start action), but hiding the
+  // panel would also hide the provider's actionable error message.
+  const showLiveVoicePanel = liveVoiceEligible && liveVoiceState !== "idle";
 
   const pointerCoarse = useMemo(() => isPointerCoarse(), []);
   const isMobile = useIsMobile();
@@ -614,7 +613,7 @@ export function ChatComposer({
                 )}
               </div>
             )}
-            {isLiveVoiceActive && (
+            {showLiveVoicePanel && (
               <VoiceConversationPanel
                 state={liveVoiceState}
                 partialTranscript={liveVoicePartial}
@@ -622,6 +621,7 @@ export function ChatComposer({
                 assistantTranscript={liveVoiceAssistant}
                 inputAmplitude={liveVoiceInputAmplitude}
                 outputAmplitude={liveVoiceOutputAmplitude}
+                error={liveVoiceError}
               />
             )}
             <div className="flex items-center justify-between px-2 pb-2">
