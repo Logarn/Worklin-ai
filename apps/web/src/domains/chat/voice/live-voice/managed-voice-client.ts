@@ -6,7 +6,11 @@ import type {
 } from "@/domains/chat/voice/live-voice/live-voice-client";
 import type { VoiceSessionBootstrap } from "@/domains/chat/voice/live-voice/bootstrap";
 import { bindVoiceProviderConversation } from "@/domains/chat/voice/live-voice/bootstrap";
-import { Conversation, type VoiceConversation } from "@elevenlabs/client";
+import {
+  Conversation,
+  type DisconnectionDetails,
+  type VoiceConversation,
+} from "@elevenlabs/client";
 
 type Listener = (payload: never) => void;
 
@@ -233,8 +237,13 @@ export class ManagedVoiceChannelClient {
           message,
         });
       },
-      onDisconnect: () => {
-        if (!this.closed) this.emit("closed", undefined);
+      onDisconnect: (details) => {
+        if (!this.closed) {
+          this.emit("error", {
+            reason: "connection-failed",
+            message: elevenLabsDisconnectMessage(details),
+          });
+        }
       },
     });
     this.elevenConversation = conversation;
@@ -438,6 +447,21 @@ export class ManagedVoiceChannelClient {
       listener(payload as never);
     }
   }
+}
+
+export function elevenLabsDisconnectMessage(
+  details: DisconnectionDetails,
+): string {
+  if (details.reason === "error") {
+    return details.message || "ElevenLabs voice connection failed";
+  }
+  if (details.reason === "agent") {
+    const providerReason = details.closeReason || details.context?.reason;
+    return providerReason
+      ? `ElevenLabs ended the voice session: ${providerReason}`
+      : "ElevenLabs ended the voice session unexpectedly";
+  }
+  return "ElevenLabs voice connection disconnected";
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
