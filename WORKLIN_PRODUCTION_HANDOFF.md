@@ -118,6 +118,15 @@ Core files:
 
 Deployment status: `b7d9943` completed successfully on both Vercel and Railway. Production still needs a direct catalog/load verification confirming that all first-party skills appear as bundled and activate without a per-user install flow. The macOS workflow did not reach compilation because its GitHub App token step is missing the App ID secret; this is a CI configuration failure, not evidence that the packaged skills failed to build.
 
+### Post-Deploy Verification Attempt On 2026-07-14
+
+- The user-selected authenticated Chrome profile currently stops at `/assistant/review-terms?returnTo=%2Fassistant` with an `Updated Terms` re-acceptance screen. Both policy checkboxes are unchecked and `Continue` is disabled.
+- No terms or policies were accepted on the user's behalf, and the gate was not bypassed. The authenticated production catalog/load sampling cannot continue until the user reviews and accepts or declines the updated terms.
+- A source-level terminology sweep found no rendered `Guardian`, `non-guardian`, or `non guardian` account label in the Contacts UI. The legacy internal owner role is rendered as `You`; internal schema, protocol, compatibility, comments, and symbol names still retain `guardian` as intended.
+- `apps/web/src/domains/contacts/components/contact-type-badge.test.tsx` passed (`1` test).
+- `assistant/src/__tests__/approval-hardcoded-copy-guard.test.ts`, `assistant/src/__tests__/verification-session-intent-routing.test.ts`, and `assistant/src/channels/__tests__/types.test.ts` passed (`88` tests).
+- The broader authenticated production terminology check remains pending behind the updated-terms gate.
+
 ## Assistant And Live-Voice UI Consistency Pass
 
 Production commit `5653385` unifies the assistant and live-voice visual language around the black-and-royal-blue Worklin orb. It shipped as part of application deployment `17d2e6e` on 2026-07-14.
@@ -152,6 +161,57 @@ Verified in authenticated production Chrome on 2026-07-14:
 - the avatar modal offers `Worklin orb`, modern character choices, uploads, and generation without the classic/blob builder, and
 - the production alias serves the same `index-D6Lb41Zo.js` bundle as the successful Vercel deployment.
 
+## Live-Voice Discoverability And Provider Consistency — Production
+
+Application commit `bb46a82` deployed successfully on 2026-07-14. Vercel production deployment `worklin-qdcd145zu-sautionlineai-3596s-projects.vercel.app` is ready, and the canonical `worklin-ai.vercel.app` alias now points to it.
+
+Composer interaction changes:
+
+- The inline voice card now has an explicit top-right close control.
+- The large royal-blue orb is the primary `Start live voice` / retry action.
+- The card states clearly that the microphone and provider connect only after the large orb is clicked.
+- Dismissing an idle or failed card only hides it. Dismissing an active or connecting card ends the session first so a live microphone is never hidden.
+- Once dismissed, the compact composer orb only reopens the card; it never starts a microphone or provider session by itself.
+- The visual-review route now uses the same large-orb start, close, compact-reopen, and active-end behavior as the real composer instead of its stale bottom start control.
+
+Settings and terminology changes:
+
+- `Live Voice` is now a separate, private-pilot card in Models & Services with `Hume`, `ElevenLabs`, and `Worklin Native` engines.
+- `Speech-to-Text` remains dictation/transcription, and `Text-to-Speech` remains read-aloud/output. Hume was not added to either unrelated catalog.
+- The Developer `Live Voice Pilot` panel can securely configure either Hume or ElevenLabs. It writes provider keys to the server-side credential service and writes only provider IDs/configuration to assistant config.
+- The Voice settings banner and dictation error copy now route users to the correct Models & Services terminology.
+
+ElevenLabs readiness:
+
+- Worklin already contains the provider-neutral ElevenLabs bootstrap, server-side `credential/elevenlabs/api_key` lookup, short-lived conversation-token minting, WebRTC client adapter, transcript events, input/output amplitude sampling, and interruption handling.
+- That is implementation readiness, not a completed production voice test. ElevenLabs still needs a user-created account, an Agent or Speech Engine ID, a scoped API key, and the same continuous-turn, interruption, persistence, approval, and latency gates.
+- ElevenLabs currently advertises a Free ElevenAgents tier with 15 included call minutes and four concurrent calls. Account creation, terms acceptance, billing choices, and key creation remain user actions.
+
+Implementation and production verification on 2026-07-14:
+
+- 77 focused tests passed in separate Bun processes with zero failures.
+- Web TypeScript passed.
+- Targeted ESLint reported zero errors and one pre-existing `slash` dependency warning in `chat-composer.tsx`.
+- The default Vite runner loader failed before application compilation with `Vite module runner has been closed`; the equivalent production build passed with `bun --bun vite build --configLoader bundle` (6,746 modules transformed).
+- Chrome visual QA passed against the real dashboard preview for idle close, compact reopen without provider start, large-orb start, live transcript/Listening state, and active end-and-hide.
+- `git diff --check` passed.
+- Commit hooks passed secret scanning, lint, generated API clients, and web TypeScript. Lint retained only the same pre-existing `slash` dependency warning.
+- GitHub's full web workflow passed lint, tests, type-checking, its aggregate gate, and notification; the Storybook build/deploy workflow also passed.
+- The deployed production asset changed to `index-DhcR_r7D.js`, and the canonical production bundle contains both `Click the orb to start live voice.` and `Your microphone and voice provider connect only after you click.`
+- Railway correctly skipped a new service deployment because no watched backend files changed. Its live `/healthz` and `/readyz` endpoints remained HTTP 200 with gateway status 200.
+- `worklin-ai.vercel.app` was a manually pinned alias and did not move with the otherwise successful `main` deployment. It was explicitly repointed to the ready `bb46a82` deployment and reverified against the new bundle.
+
+Primary files:
+
+- `apps/web/src/domains/chat/components/chat-composer/chat-composer.tsx`
+- `apps/web/src/domains/chat/components/live-voice-button.tsx`
+- `apps/web/src/domains/chat/voice/live-voice/live-voice-ui-store.ts`
+- `apps/web/src/domains/chat/voice/live-voice/voice-conversation-panel.tsx`
+- `apps/web/src/domains/chat/voice/live-voice/voice-preview-page.tsx`
+- `apps/web/src/domains/settings/ai/live-voice-card.tsx`
+- `apps/web/src/domains/settings/components/panels/live-voice-pilot-panel.tsx`
+- `apps/web/src/domains/settings/pages/voice-page.tsx`
+
 ## Current Objective And Blocker
 
 The private Hume live-voice pilot is wired through the real production Worklin composer. Worklin remains the canonical agent brain for memory, tools, permissions, and transcript persistence.
@@ -168,10 +228,11 @@ The current external blocker is Hume billing, not Worklin connectivity:
 
 Verified on 2026-07-14:
 
-- `main` and `origin/main` resolved to deployed commit `919abb2` before this handoff-only refresh.
+- The repository `main` and `origin/main` include production application commit `bb46a82`; this handoff refresh follows it.
 - `GET https://worklin-ai-production.up.railway.app/healthz` returned HTTP 200 with `{"ok":true}`.
 - `GET https://worklin-ai-production.up.railway.app/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}`.
 - `GET https://worklin-ai.vercel.app/assistant` returned HTTP 200.
+- A second direct health pass after resuming from this handoff again returned HTTP 200 for `/healthz`, `/readyz`, and the frontend `/assistant` route.
 - Vercel deployment `worklin-kjstmkc4o-sautionlineai-3596s-projects.vercel.app` completed successfully for `b7d9943`.
 - Railway reported a successful production deployment for `b7d9943`.
 - The OpenAPI Spec Check passed for `b7d9943`.
@@ -180,6 +241,8 @@ Verified on 2026-07-14:
 - The stale `worklin-ai.vercel.app` alias was repointed to that deployment and verified to serve the same main asset bundle.
 - A fresh post-restart production text turn returned `Worklin is ready.`, confirming LLM generation and credential persistence.
 - The updated assistant identity, empty-chat, voice Ready panel, orb entry control, and avatar picker were verified in authenticated Chrome.
+- Vercel deployment `worklin-qdcd145zu-sautionlineai-3596s-projects.vercel.app` completed successfully for `bb46a82`; `worklin-ai.vercel.app` was repointed to it and verified to serve `index-DhcR_r7D.js` with the new large-orb start guidance.
+- GitHub's full web and Storybook workflows passed for `bb46a82`. Railway required no new deployment for this web-only change, and its health/readiness endpoints remained green.
 - Vercel deployment `dpl_2Cup8MVp5966L4g5Yf5yaCgPKYjB` completed successfully for the error-visibility commit.
 - The stale `worklin-ai.vercel.app` alias was repointed from its older deployment to that Ready production deployment.
 - The corrected production UI was verified in Chrome: `Voice unavailable` and Hume's exhausted-credit message remain visible, while `Start voice mode` stays retryable.
@@ -264,11 +327,12 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ### 0. Finish post-deploy verification for skills and system access
 
-1. Query the production skills surface and confirm the complete first-party catalog appears as bundled rather than user-installed.
-2. Load additional representative product skills and confirm activation does not create a workspace installation or approval prompt.
-3. Create or import a Worklin-specific Brand Brain only if the user wants future Worklin copy to use persisted Worklin voice rules; the current persisted profile belongs to Seamossonly.
-4. Confirm Contacts and approval/channel copy contain no user-facing `Guardian` or `non-guardian` account labels.
-5. Restore the missing GitHub App ID secret for the macOS workflow, then rerun that check before treating release packaging as verified.
+1. User action: review the `Updated Terms` screen in the selected authenticated Chrome profile and accept or decline the policies. Do not make that choice on the user's behalf.
+2. After the user has accepted the terms, query the production skills surface and confirm the complete first-party catalog appears as bundled rather than user-installed.
+3. Load additional representative product skills and confirm activation does not create a workspace installation or approval prompt.
+4. Complete the authenticated live terminology sweep. The source-level Contacts and approval/channel checks already passed with `89` focused tests.
+5. Create or import a Worklin-specific Brand Brain only if the user wants future Worklin copy to use persisted Worklin voice rules; the current persisted profile belongs to Seamossonly.
+6. Restore the missing GitHub App ID secret for the macOS workflow, then rerun that check before treating release packaging as verified.
 
 ### 1. User action: restore Hume credits
 
@@ -312,7 +376,7 @@ Targets:
 
 ### 4. Release B
 
-ElevenLabs remains deferred until Hume Release A passes the same-conversation in-app and overlay gates. It must use the same provider-neutral UI/session bridge and server-side signed connection model.
+ElevenLabs remains disabled for general users. Because Hume testing is externally blocked by its exhausted credits, a private ElevenLabs parity test may proceed without declaring Release B complete. The user must create the account and accept ElevenLabs terms, then supply a scoped API key and Agent or Speech Engine ID through Worklin's secure pilot panel. Do not paste provider secrets into source, documentation, logs, or renderer-visible config. ElevenLabs must pass the same same-conversation in-app/overlay, continuous-turn, interruption, persistence, approval, and latency gates before release.
 
 ## Important Product State
 
@@ -349,7 +413,7 @@ The private Hume pilot is configured through Worklin and production connectivity
 
 The app previously hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. The deployed fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Preserve all unrelated worktree changes.
 
-Production `main` is deployed through `919abb2`. Natural-language messages, including first-turn wake-up, onboarding, connection, audit, and copy requests, now reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The authenticated Dr Rachael production test completed through three Kimi calls, loaded `write-brand-copy`, read Brand Brain without denial, reported the truthful Seamossonly-versus-Worklin profile mismatch, and returned the requested email. The complete first-party catalog is bundled for every user. Vercel and Railway are healthy, but broader production catalog/load sampling and the user-facing terminology sweep still need direct verification. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
+Production application behavior is verified through `bb46a82`; repository `main` includes that application commit and this handoff refresh. Natural-language messages, including first-turn wake-up, onboarding, connection, audit, and copy requests, now reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The authenticated Dr Rachael production test completed through three Kimi calls, loaded `write-brand-copy`, read Brand Brain without denial, reported the truthful Seamossonly-versus-Worklin profile mismatch, and returned the requested email. The complete first-party catalog is bundled for every user. The live-voice card now has explicit close/reopen behavior, large-orb start guidance, and Hume/ElevenLabs/Native settings consistency in production. Vercel and Railway are healthy. The source-level Contacts and approval/channel terminology checks passed with `89` focused tests, but broader production catalog/load sampling and the live terminology sweep are blocked by the authenticated Chrome profile's `Updated Terms` re-acceptance screen. Stop there until the user reviews and accepts or declines the policies. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
 
 After credits exist, run the documented three-turn Hume test, real-time transcript check, output-driven speaking visualization check, barge-in latency measurement, end-session and refresh persistence checks, duplicate-session rejection, approval safety test, and no-raw-audio confirmation. Use the authenticated Chrome profile requested by the user; do not switch to Safari or the in-app browser. Never repeat or expose provider credentials.
 ```
