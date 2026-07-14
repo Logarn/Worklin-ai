@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
@@ -31,12 +31,33 @@ export function ReviewTermsScreen() {
   const [aiDataConsent, setAiDataConsent] = useAiDataConsent();
   const [shareAnalytics] = useShareAnalytics();
   const [shareDiagnostics] = useShareDiagnostics();
+  const [isSavingConsent, setIsSavingConsent] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
 
-  const onContinue = useCallback(() => {
-    saveConsent({ userId, tos: tosAccepted, ai: aiDataConsent, shareAnalytics, shareDiagnostics, hasPlatformSession });
+  const onContinue = useCallback(async () => {
+    setIsSavingConsent(true);
+    setConsentError(null);
+    try {
+      await saveConsent({
+        userId,
+        tos: tosAccepted,
+        ai: aiDataConsent,
+        shareAnalytics,
+        shareDiagnostics,
+        hasPlatformSession,
+      });
 
-    const destination = sanitizeReturnTo(searchParams.get("returnTo"), routes.assistant);
-    hardNavigate(destination);
+      const destination = sanitizeReturnTo(
+        searchParams.get("returnTo"),
+        routes.assistant,
+      );
+      hardNavigate(destination);
+    } catch {
+      setConsentError(
+        "Worklin could not save your consent. Please try again.",
+      );
+      setIsSavingConsent(false);
+    }
   }, [
     aiDataConsent,
     hasPlatformSession,
@@ -141,12 +162,20 @@ export function ReviewTermsScreen() {
             variant="primary"
             size="regular"
             fullWidth
-            disabled={!tosAccepted || !aiDataConsent}
-            onClick={onContinue}
+            disabled={!tosAccepted || !aiDataConsent || isSavingConsent}
+            onClick={() => void onContinue()}
             className={electron ? undefined : "h-11 text-base"}
           >
-            Continue
+            {isSavingConsent ? "Saving…" : "Continue"}
           </Button>
+          {consentError && (
+            <p
+              role="alert"
+              className="text-center text-body-small-default text-[var(--system-danger-strong)]"
+            >
+              {consentError}
+            </p>
+          )}
           <Button
             variant="outlined"
             size="regular"

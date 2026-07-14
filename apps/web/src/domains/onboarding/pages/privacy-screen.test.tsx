@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { routes } from "@/utils/routes";
 
@@ -23,7 +23,7 @@ mock.module("@/domains/onboarding/prefs", () => ({
   useAiDataConsent: () => [true, setAiDataConsent],
 }));
 
-const saveConsentMock = mock((_args: unknown) => {});
+const saveConsentMock = mock(async (_args: unknown) => {});
 mock.module("@/utils/onboarding-cleanup", () => ({
   saveConsent: saveConsentMock,
 }));
@@ -125,42 +125,48 @@ describe("PrivacyScreen — Start navigation", () => {
     expect(emitFunnelStepCompletedMock).not.toHaveBeenCalled();
   });
 
-  test("normal mode persists consent and advances to provider selection", () => {
+  test("normal mode persists consent before advancing to provider selection", async () => {
     searchParamsValue = new URLSearchParams();
     render(<PrivacyScreen />);
 
     clickStart();
 
-    expect(saveConsentMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith(
-      `${routes.onboarding.provider}?next=hatching`,
-    );
+    await waitFor(() => {
+      expect(saveConsentMock).toHaveBeenCalledTimes(1);
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.provider}?next=hatching`,
+      );
+    });
   });
 
-  test("cast arm still advances through provider selection before hatching", () => {
+  test("cast arm still advances through provider selection before hatching", async () => {
     searchParamsValue = new URLSearchParams();
     activationArm = "personal-page";
     render(<PrivacyScreen />);
 
     clickStart();
 
-    expect(saveConsentMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith(
-      `${routes.onboarding.provider}?next=hatching`,
-    );
-    expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.hatching);
+    await waitFor(() => {
+      expect(saveConsentMock).toHaveBeenCalledTimes(1);
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.provider}?next=hatching`,
+      );
+      expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.hatching);
+    });
   });
 
-  test("hosting choice keeps the direct hatching route", () => {
+  test("hosting choice keeps the direct hatching route", async () => {
     searchParamsValue = new URLSearchParams("hosting=docker");
     render(<PrivacyScreen />);
 
     clickStart();
 
-    expect(saveConsentMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith(
-      `${routes.onboarding.hatching}?hosting=docker`,
-    );
+    await waitFor(() => {
+      expect(saveConsentMock).toHaveBeenCalledTimes(1);
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.hatching}?hosting=docker`,
+      );
+    });
   });
 
   test("Start is disabled until the activation arm settles", () => {

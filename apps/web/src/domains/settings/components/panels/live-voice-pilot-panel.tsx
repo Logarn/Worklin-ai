@@ -4,6 +4,8 @@ import { useNavigate } from "react-router";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { DetailCard } from "@/components/detail-card";
 import { client } from "@/generated/api/client.gen";
+import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
+import { useAuthStore } from "@/stores/auth-store";
 import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
 
@@ -23,6 +25,8 @@ async function requireOk(
 
 export function LiveVoicePilotPanel() {
   const assistantId = useActiveAssistantId();
+  const userId = useAuthStore.use.user()?.id ?? "";
+  const voiceModeEnabled = useAssistantFeatureFlagStore.use.voiceMode();
   const navigate = useNavigate();
   const [apiKey, setApiKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
@@ -34,7 +38,7 @@ export function LiveVoicePilotPanel() {
     apiKey.trim().length > 0 &&
     secretKey.trim().length > 0 &&
     configId.trim().length > 0 &&
-    voiceId.trim().length > 0 &&
+    userId.length > 0 &&
     status.kind !== "saving";
 
   const configurePilot = async () => {
@@ -84,7 +88,7 @@ export function LiveVoicePilotPanel() {
             services: {
               voice: {
                 engine: "hume",
-                pilotAllowlist: ["*"],
+                pilotAllowlist: [userId],
                 providers: {
                   hume: {
                     configId: configId.trim(),
@@ -101,16 +105,18 @@ export function LiveVoicePilotPanel() {
         "The Worklin voice configuration could not be saved.",
       );
 
-      await requireOk(
-        client.patch({
-          url: `/v1/assistants/${assistantId}/feature-flags/voice-mode`,
-          body: { enabled: true },
-          throwOnError: false,
-        } as Parameters<typeof client.patch>[0]) as Promise<{
-          response?: Response;
-        }>,
-        "Voice mode could not be enabled for this assistant.",
-      );
+      if (!voiceModeEnabled) {
+        await requireOk(
+          client.patch({
+            url: `/v1/assistants/${assistantId}/feature-flags/voice-mode`,
+            body: { enabled: true },
+            throwOnError: false,
+          } as Parameters<typeof client.patch>[0]) as Promise<{
+            response?: Response;
+          }>,
+          "Voice mode could not be enabled for this assistant.",
+        );
+      }
 
       setApiKey("");
       setSecretKey("");
@@ -154,7 +160,11 @@ export function LiveVoicePilotPanel() {
             value={configId}
             onChange={setConfigId}
           />
-          <PilotField label="Voice ID" value={voiceId} onChange={setVoiceId} />
+          <PilotField
+            label="Voice ID (optional)"
+            value={voiceId}
+            onChange={setVoiceId}
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-3">

@@ -1,5 +1,11 @@
 import { EyeOff } from "lucide-react";
-import { useCallback, useEffect, useId, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useState,
+  type ReactNode,
+} from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
@@ -87,6 +93,8 @@ export function PrivacyScreen() {
   const [tosAccepted, setTosAcceptedReal] = useTosAccepted();
   const [aiDataConsent, setAiDataConsentReal] = useAiDataConsent();
   const hasPlatformSession = useHasPlatformSession();
+  const [isSavingConsent, setIsSavingConsent] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isNative) {
@@ -101,7 +109,7 @@ export function PrivacyScreen() {
   const setTosAccepted = isPreview ? noop : setTosAcceptedReal;
   const setAiDataConsent = isPreview ? noop : setAiDataConsentReal;
 
-  const onStart = useCallback(() => {
+  const onStart = useCallback(async () => {
     if (isPreview) {
       // Developer "Replay Onboarding": advance through the sandboxed flow
       // (privacy → prechat) rather than exiting here. Hatching is intentionally
@@ -111,7 +119,24 @@ export function PrivacyScreen() {
       return;
     }
 
-    saveConsent({ userId, tos: tosAccepted, ai: aiDataConsent, shareAnalytics, shareDiagnostics, hasPlatformSession });
+    setIsSavingConsent(true);
+    setConsentError(null);
+    try {
+      await saveConsent({
+        userId,
+        tos: tosAccepted,
+        ai: aiDataConsent,
+        shareAnalytics,
+        shareDiagnostics,
+        hasPlatformSession,
+      });
+    } catch {
+      setConsentError(
+        "Worklin could not save your consent. Please try again.",
+      );
+      setIsSavingConsent(false);
+      return;
+    }
     if (!isNative) {
       const variant = resolveOnboardingFunnelVariant(preferredFunnelVariant);
       emitOnboardingFunnelStepCompleted(ONBOARDING_FUNNEL_STEPS.privacyTos, {
@@ -271,15 +296,24 @@ export function PrivacyScreen() {
             disabled={
               !tosAccepted ||
               !aiDataConsent ||
+              isSavingConsent ||
               // Don't act on a provisional activation flag. Preview doesn't
               // branch on the arm, so it isn't gated.
               (!isPreview && !activationSettled)
             }
-            onClick={onStart}
+            onClick={() => void onStart()}
             className={electron ? undefined : "h-11 text-base"}
           >
-            Start
+            {isSavingConsent ? "Saving…" : "Start"}
           </Button>
+          {consentError && (
+            <p
+              role="alert"
+              className="text-center text-body-small-default text-[var(--system-danger-strong)]"
+            >
+              {consentError}
+            </p>
+          )}
           <Button
             variant="outlined"
             size="regular"

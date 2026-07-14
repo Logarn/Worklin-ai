@@ -105,7 +105,7 @@ export function saveConsent(opts: {
   shareAnalytics: boolean;
   shareDiagnostics: boolean;
   hasPlatformSession: boolean;
-}): void {
+}): Promise<void> {
   const store = useOnboardingStore.getState();
   store.setTosAccepted(opts.tos);
   store.setAiDataConsent(opts.ai);
@@ -115,14 +115,16 @@ export function saveConsent(opts: {
   persistConsentForUser(opts.userId, opts.tos, opts.ai);
 
   if (opts.hasPlatformSession) {
-    void patchConsent({
+    return patchConsent({
       tos_accepted_version: opts.tos ? CONSENT_VERSION : "",
       privacy_policy_accepted_version: opts.tos ? CONSENT_VERSION : "",
       ai_data_sharing_accepted_version: opts.ai ? CONSENT_VERSION : "",
       share_analytics: opts.shareAnalytics,
       share_diagnostics: opts.shareDiagnostics,
-    }).catch(() => {});
+    });
   }
+
+  return Promise.resolve();
 }
 
 export function savePreferenceToggle(
