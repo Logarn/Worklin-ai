@@ -10,7 +10,12 @@ describe("Railway runtime port wiring", () => {
     ).text();
 
     expect(entrypoint).toContain(': "${PORT:=8080}"');
-    expect(entrypoint).toContain(': "${WORKLIN_CONTROL_PLANE_PORT:=${PORT}}"');
+    expect(entrypoint).toContain(
+      ': "${WORKLIN_CONTROL_PLANE_INTERNAL_PORT:=8082}"',
+    );
+    expect(entrypoint).toContain(
+      ': "${WORKLIN_CONTROL_PLANE_PORT:=${WORKLIN_CONTROL_PLANE_INTERNAL_PORT}}"',
+    );
     expect(entrypoint).toContain(': "${WORKLIN_RUNTIME_MODE:=combined}"');
     expect(entrypoint).toContain(': "${GATEWAY_PORT:=${PORT}}"');
     expect(entrypoint).toContain(': "${GATEWAY_PORT:=7830}"');
