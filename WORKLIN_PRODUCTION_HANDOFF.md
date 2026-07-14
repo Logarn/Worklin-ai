@@ -11,8 +11,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Latest deployed voice change: `Keep live voice provider errors visible`
-- Current local changes: approval-free skill setup/Brand Brain reads, removal of user-facing legacy guardian terminology, and the assistant/live-voice UI consistency pass
+- Current production application commit: `17d2e6e` (`Document UI consistency rollout boundary`), including the system-access fix and assistant/live-voice UI consistency pass
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
@@ -54,11 +53,11 @@ Passed locally on 2026-07-14:
 - Production-mode web build using `VITE_PLATFORM_MODE=true bun run build`.
 - `git diff --check`.
 
-Deployment status: tested locally, not yet pushed or deployed. Pushing `main` will redeploy the Vercel frontend and Railway runtime, briefly restart the shared runtime, and test whether the recently re-entered Kimi credential persisted on its attached volume. Confirm that production restart before pushing.
+Deployment status: pushed and deployed through `17d2e6e` on 2026-07-14. Railway recovered with healthy gateway readiness, and a fresh production text turn returned `Worklin is ready.`, confirming the configured LLM credential survived the restart.
 
 ## Assistant And Live-Voice UI Consistency Pass
 
-Local commit `5653385` unifies the assistant and live-voice visual language around the black-and-royal-blue Worklin orb. It is committed locally but is not pushed or deployed because `main` also contains the unrelated, intentionally unpushed system-access commit described above.
+Production commit `5653385` unifies the assistant and live-voice visual language around the black-and-royal-blue Worklin orb. It shipped as part of application deployment `17d2e6e` on 2026-07-14.
 
 The consistency pass:
 
@@ -81,7 +80,14 @@ Verified locally on 2026-07-14:
 - Chrome visual verification passed on the full black Worklin dashboard preview: Ready, Listening, Thinking, Speaking, Interrupted, transcripts, and End Voice all use the shared royal-blue treatment without a microphone glyph.
 - `git diff --check` passed.
 
-Before production verification, resolve the deployment boundary above. Do not push the unrelated system-access commit merely to ship this visual change. After an authorized deployment, recheck the authenticated production new-conversation screen, Your Assistant page, avatar modal, visible voice Ready/error panel, and absence of the old blob/microphone UI.
+Verified in authenticated production Chrome on 2026-07-14:
+
+- the new-conversation screen shows the Worklin orb and `What should we work on?`,
+- the live-voice transcript region remains present in `Ready` with `Start a live conversation.`,
+- the voice entry control contains 19 orb bars and zero SVG/microphone glyphs,
+- the Your Assistant identity card and capability graph use the Worklin orb instead of the legacy green blob,
+- the avatar modal offers `Worklin orb`, modern character choices, uploads, and generation without the classic/blob builder, and
+- the production alias serves the same `index-D6Lb41Zo.js` bundle as the successful Vercel deployment.
 
 ## Current Objective And Blocker
 
@@ -99,10 +105,14 @@ The current external blocker is Hume billing, not Worklin connectivity:
 
 Verified on 2026-07-14:
 
-- `main` and `origin/main` both resolved to `a7ba866` before the local error-visibility fix was committed.
+- Application changes through `17d2e6e` were pushed to `main` and `origin/main`.
 - `GET https://worklin-ai-production.up.railway.app/healthz` returned HTTP 200 with `{"ok":true}`.
 - `GET https://worklin-ai-production.up.railway.app/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}`.
 - `GET https://worklin-ai.vercel.app/assistant` returned HTTP 200.
+- Vercel deployment `worklin-exmunv6fv-sautionlineai-3596s-projects.vercel.app` completed successfully for `17d2e6e`.
+- The stale `worklin-ai.vercel.app` alias was repointed to that deployment and verified to serve the same main asset bundle.
+- A fresh post-restart production text turn returned `Worklin is ready.`, confirming LLM generation and credential persistence.
+- The updated assistant identity, empty-chat, voice Ready panel, orb entry control, and avatar picker were verified in authenticated Chrome.
 - Vercel deployment `dpl_2Cup8MVp5966L4g5Yf5yaCgPKYjB` completed successfully for the error-visibility commit.
 - The stale `worklin-ai.vercel.app` alias was repointed from its older deployment to that Ready production deployment.
 - The corrected production UI was verified in Chrome: `Voice unavailable` and Hume's exhausted-credit message remain visible, while `Start voice mode` stays retryable.

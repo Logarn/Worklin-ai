@@ -98,9 +98,9 @@ paths:
       description:
         "Send a steering instruction to an ACP session. Sessions no longer in memory (completed, or lost to a
         daemon restart) are transparently resumed from persisted history first, when the agent supports ACP session
-        loading. Resuming a terminal session re-spawns the host agent, so it requires guardian approval: the route acks
-        immediately with approvalPending=true and performs the resume in the background once approved, streaming results
-        over SSE."
+        loading. Resuming a terminal session re-spawns the host agent, so it requires account-owner approval: the route
+        acks immediately with approvalPending=true and performs the resume in the background once approved, streaming
+        results over SSE."
       tags:
         - acp
       parameters:
@@ -3697,7 +3697,7 @@ paths:
                   type: string
                 purpose:
                   type: string
-                  description: guardian or trusted_contact
+                  description: Internal verification purpose for owner or trusted contact
                 contactChannelId:
                   type: string
               required:
@@ -3738,7 +3738,7 @@ paths:
     post:
       operationId: channelverificationsessions_revoke_post
       summary: Revoke verification binding
-      description: Cancel all sessions and revoke the guardian binding.
+      description: Cancel all sessions and revoke the account-owner binding.
       tags:
         - channel-verification
       requestBody:
@@ -3759,7 +3759,7 @@ paths:
     get:
       operationId: channelverificationsessions_status_get
       summary: Get verification status
-      description: Check guardian binding and verification session status.
+      description: Check account binding and verification session status.
       tags:
         - channel-verification
       parameters:
@@ -4788,7 +4788,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Filter by role (e.g. guardian)
+          description: Filter by internal contact role
         - name: contactType
           in: query
           required: false
@@ -5145,7 +5145,7 @@ paths:
                   description: Friend name for the invite
                 guardianName:
                   type: string
-                  description: Guardian name
+                  description: Account owner name
               required:
                 - contactId
       responses:
