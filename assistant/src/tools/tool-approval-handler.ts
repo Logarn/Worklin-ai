@@ -154,6 +154,7 @@ export async function waitForInlineGrant(
 }
 
 const UI_SURFACE_TOOLS = new Set(["ui_show", "ui_update", "ui_dismiss"]);
+const SAFE_CONTEXT_READ_TOOLS = new Set(["brand_brain_read"]);
 
 function requiresGuardianApprovalForActor(
   toolName: string,
@@ -164,6 +165,13 @@ function requiresGuardianApprovalForActor(
   // tables). User input is voluntary and user-controlled — skip the guardian
   // gate so they work during fresh onboarding before trust is established.
   if (UI_SURFACE_TOOLS.has(toolName)) {
+    return false;
+  }
+
+  // Brand Brain retrieval only reads the persisted onboarding context that is
+  // already scoped to this Worklin workspace. Mutations remain behind their
+  // normal actor and approval gates.
+  if (SAFE_CONTEXT_READ_TOOLS.has(toolName)) {
     return false;
   }
 

@@ -221,6 +221,31 @@ describe("ToolExecutor allowedToolNames gating", () => {
     expect(result.content).toBe("ok");
   });
 
+  test("allows read-only Brand Brain context for an untrusted actor", async () => {
+    getToolOverride = (name) => ({
+      name,
+      description: "test tool",
+      category: "content",
+      defaultRiskLevel: RiskLevel.Low,
+      executionTarget: "host",
+      input_schema: {},
+      execute: async () => fakeToolResult,
+    });
+    const executor = new ToolExecutor(makePrompter());
+
+    const result = await executor.execute(
+      "brand_brain_read",
+      { brand_name: "Worklin" },
+      makeContext({
+        trustClass: "unknown",
+        allowedToolNames: new Set(["brand_brain_read"]),
+      }),
+    );
+
+    expect(result.content).toBe("ok");
+    expect(result.isError).toBe(false);
+  });
+
   test("canonicalizes app-builder create_app alias before active-tool gating", async () => {
     const executor = new ToolExecutor(makePrompter());
     const allowed = new Set(["app_create"]);
