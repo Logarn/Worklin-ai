@@ -24045,6 +24045,350 @@ paths:
       responses:
         "200":
           description: Successful response
+  /v1/shared-artifacts/{artifactId}/months/{monthId}/comments:
+    get:
+      operationId: sharedartifacts_by_artifactId_months_by_monthId_comments_get
+      summary: List comments on a shared Copybook month
+      tags:
+        - shared-artifacts
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: monthId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        surfaceId:
+                          type: string
+                        conversationId:
+                          type: string
+                        author:
+                          type: string
+                        content:
+                          type: string
+                        anchorStart:
+                          anyOf:
+                            - type: number
+                            - type: "null"
+                        anchorEnd:
+                          anyOf:
+                            - type: number
+                            - type: "null"
+                        anchorText:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        parentCommentId:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        status:
+                          type: string
+                          enum:
+                            - open
+                            - resolved
+                        resolvedBy:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        resolvedAt:
+                          anyOf:
+                            - type: number
+                            - type: "null"
+                        createdAt:
+                          type: number
+                        updatedAt:
+                          type: number
+                      required:
+                        - id
+                        - surfaceId
+                        - conversationId
+                        - author
+                        - content
+                        - anchorStart
+                        - anchorEnd
+                        - anchorText
+                        - parentCommentId
+                        - status
+                        - resolvedBy
+                        - resolvedAt
+                        - createdAt
+                        - updatedAt
+                      additionalProperties: false
+                required:
+                  - comments
+                additionalProperties: false
+    post:
+      operationId: sharedartifacts_by_artifactId_months_by_monthId_comments_post
+      summary: Comment on a shared Copybook month
+      tags:
+        - shared-artifacts
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: monthId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  minLength: 1
+                anchorStart:
+                  anyOf:
+                    - type: number
+                    - type: "null"
+                anchorEnd:
+                  anyOf:
+                    - type: number
+                    - type: "null"
+                anchorText:
+                  anyOf:
+                    - type: string
+                    - type: "null"
+                parentCommentId:
+                  anyOf:
+                    - type: string
+                    - type: "null"
+              required:
+                - content
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  surfaceId:
+                    type: string
+                  conversationId:
+                    type: string
+                  author:
+                    type: string
+                  content:
+                    type: string
+                  anchorStart:
+                    anyOf:
+                      - type: number
+                      - type: "null"
+                  anchorEnd:
+                    anyOf:
+                      - type: number
+                      - type: "null"
+                  anchorText:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  parentCommentId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  status:
+                    type: string
+                    enum:
+                      - open
+                      - resolved
+                  resolvedBy:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  resolvedAt:
+                    anyOf:
+                      - type: number
+                      - type: "null"
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - surfaceId
+                  - conversationId
+                  - author
+                  - content
+                  - anchorStart
+                  - anchorEnd
+                  - anchorText
+                  - parentCommentId
+                  - status
+                  - resolvedBy
+                  - resolvedAt
+                  - createdAt
+                  - updatedAt
+                additionalProperties: false
+  /v1/shared-artifacts/{artifactId}/months/{monthId}/document:
+    patch:
+      operationId: sharedartifacts_by_artifactId_months_by_monthId_document_patch
+      summary: Update a shared Copybook month document
+      tags:
+        - shared-artifacts
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: monthId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+              required:
+                - content
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                required:
+                  - success
+                additionalProperties: false
+  /v1/shared-artifacts/{artifactId}/snapshot:
+    get:
+      operationId: sharedartifacts_by_artifactId_snapshot_get
+      summary: Get a shared Copybook snapshot
+      tags:
+        - shared-artifacts
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifactId:
+                    type: string
+                  collaborationRole:
+                    type: string
+                    enum:
+                      - viewer
+                      - commenter
+                      - editor
+                      - owner
+                  copybook:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      title:
+                        type: string
+                      year:
+                        type: number
+                    required:
+                      - id
+                      - title
+                      - year
+                    additionalProperties: false
+                  brand:
+                    anyOf:
+                      - type: object
+                        properties:
+                          id:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                          - id
+                          - name
+                        additionalProperties: false
+                      - type: "null"
+                  months:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        month:
+                          type: number
+                        strategyStatus:
+                          type: string
+                        document:
+                          anyOf:
+                            - type: object
+                              properties:
+                                surfaceId:
+                                  type: string
+                                title:
+                                  type: string
+                                content:
+                                  type: string
+                                updatedAt:
+                                  type: number
+                              required:
+                                - surfaceId
+                                - title
+                                - content
+                                - updatedAt
+                              additionalProperties: false
+                            - type: "null"
+                      required:
+                        - id
+                        - month
+                        - strategyStatus
+                        - document
+                      additionalProperties: false
+                required:
+                  - artifactId
+                  - collaborationRole
+                  - copybook
+                  - brand
+                  - months
+                additionalProperties: false
   /v1/skills:
     get:
       operationId: skills_get
