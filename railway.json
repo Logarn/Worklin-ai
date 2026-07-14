@@ -5,7 +5,7 @@
     "dockerfilePath": "runtime/Dockerfile"
   },
   "deploy": {
-    "startCommand": "env WORKLIN_REQUIRE_ISOLATED_RUNTIME=false WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=true WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES=a8d54b9f03a4a56beed265cd4a7da1c99c993265345ae9ad90273933d07a15e7 /app/runtime/entrypoint.sh",
+    "startCommand": "env WORKLIN_REQUIRE_ISOLATED_RUNTIME=false WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=true WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES=a8d54b9f03a4a56beed265cd4a7da1c99c993265345ae9ad90273933d07a15e7,91bc2f349934240a012d540de6ec36b03ba622d6d883dac94e7813b5791e9209 /app/runtime/entrypoint.sh",
     "healthcheckPath": "/readyz",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
