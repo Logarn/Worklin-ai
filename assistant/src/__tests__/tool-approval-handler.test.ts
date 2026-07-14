@@ -30,9 +30,24 @@ const fakeTool = {
   execute: async () => ({ content: "ok", isError: false }),
 };
 
+const fakeSubagentTools = [
+  "subagent_spawn",
+  "subagent_status",
+  "subagent_message",
+  "subagent_read",
+  "subagent_abort",
+].map((name) => ({
+  ...fakeTool,
+  name,
+  category: "orchestration",
+  defaultRiskLevel: "low",
+}));
+
+const fakeTools = [fakeTool, ...fakeSubagentTools];
+
 mock.module("../tools/registry.js", () => ({
-  getTool: (name: string) => (name === "bash" ? fakeTool : undefined),
-  getAllTools: () => [fakeTool],
+  getTool: (name: string) => fakeTools.find((tool) => tool.name === name),
+  getAllTools: () => fakeTools,
 }));
 
 import {
@@ -158,6 +173,28 @@ describe("ToolApprovalHandler / pre-exec gate grant check", () => {
     // A permission_denied event should have been emitted
     const deniedEvents = events.filter((e) => e.type === "permission_denied");
     expect(deniedEvents.length).toBe(1);
+  });
+
+  test("unverified actors can use internal subagent orchestration without a grant", async () => {
+    const context = makeContext({ trustClass: "unknown" });
+
+    for (const tool of fakeSubagentTools) {
+      const result = await handler.checkPreExecutionGates(
+        tool.name,
+        {},
+        context,
+        "host",
+        "low",
+        Date.now(),
+        emitLifecycleEvent,
+      );
+
+      expect(result.allowed).toBe(true);
+    }
+
+    expect(
+      events.filter((event) => event.type === "permission_denied"),
+    ).toEqual([]);
   });
 
   test("unverified_channel actor + matching grant -> allow", async () => {
