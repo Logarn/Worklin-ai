@@ -252,6 +252,7 @@ export function ProviderCreateForm({
         const profileResult = await ensureRunnableProfileForConnection(
           assistantId,
           created,
+          { activateConnection: true },
         );
         selectedAsDefault = profileResult.repaired;
         if (selectedAsDefault) {

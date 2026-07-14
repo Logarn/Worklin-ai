@@ -24,6 +24,11 @@ export interface ProviderProfileRepairResult {
   reason?: "no-model" | "no-connections" | "ambiguous" | "already-runnable";
 }
 
+export interface EnsureRunnableProfileOptions {
+  /** Select the supplied connection even when another user profile is active. */
+  activateConnection?: boolean;
+}
+
 function profileHasRunnableModel(
   profile:
     | NonNullable<NonNullable<ConfigGetResponse["llm"]>["profiles"]>[string]
@@ -134,6 +139,7 @@ function selectRepairConnection(
 export async function ensureRunnableProfileForConnection(
   assistantId: string,
   connection: ProviderConnection,
+  options: EnsureRunnableProfileOptions = {},
 ): Promise<ProviderProfileRepairResult> {
   const model = defaultModelForConnection(connection);
   if (!model) {
@@ -157,6 +163,7 @@ export async function ensureRunnableProfileForConnection(
     : undefined;
 
   if (
+    !options.activateConnection &&
     activeProfile &&
     profileHasRunnableModel(currentActiveProfile) &&
     !profileUsesManagedProvider(currentActiveProfile)

@@ -183,6 +183,7 @@ export function ChatgptOAuthSection({
       const repair = await ensureRunnableProfileForConnection(
         assistantId,
         connection,
+        { activateConnection: true },
       );
       if (repair.repaired) {
         void queryClient.invalidateQueries({

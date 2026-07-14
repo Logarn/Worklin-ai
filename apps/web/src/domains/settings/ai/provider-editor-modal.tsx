@@ -336,6 +336,7 @@ export function ProviderEditorContent({
           const profileResult = await ensureRunnableProfileForConnection(
             assistantId,
             updated,
+            { activateConnection: true },
           );
           if (profileResult.repaired) {
             void queryClient.invalidateQueries({

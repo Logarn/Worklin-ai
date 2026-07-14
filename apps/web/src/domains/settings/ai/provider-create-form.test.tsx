@@ -528,7 +528,7 @@ describe("ProviderCreateForm submit sequence", () => {
     expect(getInputByPlaceholder("Enter your API key")).toBeDefined();
   });
 
-  test("fires a 'Provider connected' success toast on a successful create", async () => {
+  test("confirms a successful provider is connected and selected", async () => {
     render(
       <ModalWrapper>
         <ProviderCreateForm
@@ -551,7 +551,7 @@ describe("ProviderCreateForm submit sequence", () => {
     fireEvent.click(getButton("Create"));
 
     await waitFor(() => {
-      expect(toastSuccessCalls).toEqual(["Provider connected"]);
+      expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
     });
   });
 
@@ -662,6 +662,63 @@ describe("ProviderCreateForm submit sequence", () => {
         profileOrder: ["balanced", "custom-balanced"],
         profiles: {
           "custom-balanced": {
+            source: "user",
+            label: "Balanced",
+            provider: "kimi",
+            provider_connection: "kimi",
+            model: "kimi-k2.6",
+          },
+        },
+      },
+    });
+    expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
+  });
+
+  test("creating Kimi replaces an older user profile as the active model", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "custom-balanced",
+        profileOrder: ["custom-balanced"],
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            label: "Balanced",
+            provider: "anthropic",
+            provider_connection: "anthropic-personal",
+            model: "claude-opus-4-8",
+          },
+        },
+      },
+    };
+    createdConnection = makeConnection("kimi", "kimi");
+
+    render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={["anthropic-personal"]}
+          defaultProviderType="kimi"
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+      target: { value: "moonshot-test-key" },
+    });
+    fireEvent.click(getButton("Create"));
+
+    await waitFor(() => {
+      expect(configPatchCalls.length).toBe(1);
+    });
+
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced-2",
+        profileOrder: ["custom-balanced", "custom-balanced-2"],
+        profiles: {
+          "custom-balanced-2": {
             source: "user",
             label: "Balanced",
             provider: "kimi",
