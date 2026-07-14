@@ -163,6 +163,8 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
         working-directory: assistant
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - name: Test
         run: bun run test

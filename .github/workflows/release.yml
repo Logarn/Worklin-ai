@@ -3360,6 +3360,8 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
         working-directory: assistant
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - name: Restore test durations cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
