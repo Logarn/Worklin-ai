@@ -216,6 +216,7 @@ describe("runtime proxy auth enforcement", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(capturedHeaders!.get("x-vellum-platform-owner")).toBe("true");
     const exchangeToken = capturedHeaders!
       .get("authorization")!
       .replace(/^Bearer /, "");
