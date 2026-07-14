@@ -412,7 +412,7 @@ jobs:
 
   push-assistant-image:
     needs: [extract-version, ci-assistant]
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
@@ -1020,7 +1020,7 @@ jobs:
       matrix:
         include:
           - service: assistant
-            runs_on: ubuntu-latest-8-cores
+            runs_on: ubuntu-latest
             dockerhub_image_name: vellum-assistant
             context: .
             dockerfile: assistant/Dockerfile
@@ -3335,7 +3335,7 @@ jobs:
   # builds, which in turn blocks npm publish, the macOS DMG, and GitHub Release.
   ci-assistant:
     needs: extract-version
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
