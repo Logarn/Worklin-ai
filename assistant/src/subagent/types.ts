@@ -15,6 +15,7 @@ export type SubagentStatus =
   | "pending"
   | "running"
   | "awaiting_input"
+  | "awaiting_children"
   | "completed"
   | "failed"
   | "aborted";
@@ -86,6 +87,12 @@ export interface SubagentState {
   conversationId: string;
   /** Whether this sub-agent is a fork (inherits parent context). Defaults to `false`. */
   isFork: boolean;
+  /** One-based depth in the delegation tree. Direct children are depth 1. */
+  depth?: number;
+  /** Root user-facing conversation that owns the full delegation tree. */
+  rootConversationId?: string;
+  /** Parent subagent ID when this is a nested worker. */
+  parentSubagentId?: string;
   /** Error message if status is 'failed'. */
   error?: string;
   /** Timestamps (epoch ms). */
@@ -99,14 +106,19 @@ export interface SubagentState {
 // ── Limits ───────────────────────────────────────────────────────────────
 
 export const SUBAGENT_LIMITS = {
-  /** Max nesting depth (1 = no nested subagents). */
-  maxDepth: 1,
+  /** Max nesting depth (2 = root assistant -> supervisor -> worker). */
+  maxDepth: 2,
+  /** Max simultaneously active children owned by one conversation. */
+  maxActiveChildrenPerParent: 8,
+  /** Max simultaneously active subagents in one root delegation tree. */
+  maxActiveDescendantsPerRoot: 24,
 } as const;
 
 // ── Roles ───────────────────────────────────────────────────────────────
 
 export type SubagentRole =
   | "general"
+  | "supervisor"
   | "researcher"
   | "coder"
   | "planner"
@@ -131,6 +143,28 @@ export const SUBAGENT_ROLE_REGISTRY: Record<SubagentRole, SubagentRoleConfig> =
       skillIds: [],
       systemPromptPreamble:
         "You are a general-purpose subagent. Complete the delegated task thoroughly and concisely.",
+    },
+    supervisor: {
+      allowedTools: [
+        "subagent_spawn",
+        "subagent_status",
+        "subagent_message",
+        "subagent_read",
+        "subagent_abort",
+        "web_search",
+        "web_fetch",
+        "file_read",
+        "file_list",
+        "recall",
+        "notify_parent",
+      ],
+      skillIds: [],
+      systemPromptPreamble: [
+        "You are a supervisor subagent responsible for decomposing a complex objective into independent worker tasks.",
+        "Spawn focused workers, continue useful coordination while they run, and rely on automatic completion notifications instead of polling.",
+        "Read every worker result, reconcile conflicts and missing evidence, then return one coherent final synthesis to your parent.",
+        "You may delegate one level down only. Your workers cannot create further subagents.",
+      ].join(" "),
     },
     researcher: {
       allowedTools: [

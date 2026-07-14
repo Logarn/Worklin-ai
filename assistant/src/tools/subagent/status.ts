@@ -35,6 +35,9 @@ export async function executeSubagentStatus(
         label: state.config.label,
         status: state.status,
         isFork: state.isFork,
+        depth: state.depth,
+        rootConversationId: state.rootConversationId,
+        parentSubagentId: state.parentSubagentId,
         error: state.error,
         createdAt: state.createdAt,
         startedAt: state.startedAt,
@@ -59,6 +62,8 @@ export async function executeSubagentStatus(
     label: s.config.label,
     status: s.status,
     isFork: s.isFork,
+    depth: s.depth,
+    parentSubagentId: s.parentSubagentId,
     error: s.error,
   }));
 

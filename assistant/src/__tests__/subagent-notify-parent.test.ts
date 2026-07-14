@@ -36,15 +36,22 @@ mock.module("../memory/conversation-crud.js", () => ({
  */
 const capturedMessages: string[] = [];
 
+const findMockConversation = (_id: string) => ({
+  enqueueMessage: (options: { content: string }) => {
+    capturedMessages.push(options.content);
+    return { queued: true };
+  },
+  persistUserMessage: async () => ({ id: "mock-msg", deduplicated: false }),
+  runAgentLoop: async () => {},
+  getAuthContext: () => undefined,
+  getCurrentSystemPrompt: () => "mock system prompt",
+  trustContext: undefined,
+  assistantId: undefined,
+});
+
 mock.module("../daemon/conversation-registry.js", () => ({
-  findConversation: (_id: string) => ({
-    enqueueMessage: (options: { content: string }) => {
-      capturedMessages.push(options.content);
-      return { queued: true };
-    },
-    persistUserMessage: async () => ({ id: "mock-msg", deduplicated: false }),
-    runAgentLoop: async () => {},
-  }),
+  findConversation: findMockConversation,
+  findConversationOrSubagent: findMockConversation,
 }));
 
 mock.module("../runtime/assistant-event-hub.js", () => ({
@@ -107,6 +114,8 @@ function injectSubagent(
     enqueueMessage: () => ({ queued: false }),
     persistUserMessage: async () => ({ id: "msg-1", deduplicated: false }),
     runAgentLoop: async () => {},
+    isProcessing: () => false,
+    hasQueuedMessages: () => false,
   };
   internals.subagents.set(subagentId, {
     conversation: fakeConversation,

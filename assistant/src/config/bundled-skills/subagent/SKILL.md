@@ -36,12 +36,21 @@ Each subagent is spawned with a role that determines its tool access. Choose the
 | Role | Tools | When to use |
 |---|---|---|
 | `general` | Full tool access | Task genuinely needs unrestricted capabilities (rare -- prefer a specialized role) |
+| `supervisor` | Read-only research plus subagent orchestration tools | Own a multi-agent program: decompose work, spawn focused workers, reconcile their findings, and return one synthesis |
 | `researcher` | `web_search`, `web_fetch`, `file_read`, `file_list`, `recall`, `notify_parent` | Information gathering, web research, codebase exploration, reading documentation |
 | `coder` | `bash`, `file_read`, `file_write`, `file_edit`, `web_search`, `recall`, `notify_parent` | Code changes, file editing, running commands, build/test tasks |
 | `planner` | `file_read`, `file_list`, `web_search`, `web_fetch`, `recall`, `notify_parent` | Analysis, planning, synthesizing information, reviewing approaches |
 | `investigator` | `bash`, `file_read`, `file_list`, `web_search`, `web_fetch`, `recall`, `notify_parent` | Root-cause analysis: debugging, log forensics, tracing behavior across many files. Shell access is for read-only investigation (grep/find/reading logs); returns a compact root-cause report |
 
-All specialized roles (`researcher`, `coder`, `planner`) include `notify_parent` for mid-run communication with the parent.
+All specialized roles include `notify_parent` for mid-run communication with the parent.
+
+## Nested Delegation
+
+Use `role: "supervisor"` when one delegated objective needs several specialist workers. A supervisor may spawn one level of children, receives their completion notifications, reads their outputs, resolves disagreements, and returns one final synthesis. Workers cannot spawn another level.
+
+Delegation is bounded per root task: depth 2, at most 8 active children per parent, and at most 24 active descendants across the tree. Do not attempt to work around these limits.
+
+The supervisor must not finish after merely spawning workers. It should wait for completion notifications, call `subagent_read` for each worker, and synthesize the complete result.
 
 ## Parent Communication
 
@@ -100,4 +109,4 @@ Rule of thumb: "Does this task need to know what we've been talking about?" If y
 - Default to spawning subagents for any task that involves web research, multi-file exploration, or independent coding work. Serial execution should be the exception, not the rule.
 - Delegate root-cause investigations ("why is X happening?", debugging, log forensics) to an `investigator` instead of grepping inline. A long investigation done inline floods your own context with file slices and grep output, crowding out the conversation; the investigator does the digging in its own context and returns a compact root-cause report.
 - When a user request has both an information-gathering component and an action component, spawn a researcher immediately rather than doing the research inline yourself.
-- Prefer spawning 2-3 focused subagents over one large general-purpose subagent. Smaller scopes finish faster and fail more gracefully.
+- Prefer spawning 2-3 focused subagents over one large general-purpose subagent. For a larger coordinated program, spawn one supervisor and let it own the worker roster and final synthesis.

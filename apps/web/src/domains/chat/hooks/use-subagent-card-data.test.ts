@@ -74,6 +74,13 @@ describe("computeSubagentCardData — state derivation", () => {
     expect(data.state).toBe("loading");
   });
 
+  test("awaiting_children entry → loading state", () => {
+    const data = computeSubagentCardData(
+      makeEntry({ status: "awaiting_children" }),
+    );
+    expect(data.state).toBe("loading");
+  });
+
   test("completed entry → complete state", () => {
     const data = computeSubagentCardData(makeEntry({ status: "completed" }));
     expect(data.state).toBe("complete");

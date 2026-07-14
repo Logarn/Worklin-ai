@@ -15,16 +15,19 @@ describe("SubagentStatus terminal states", () => {
     expect(TERMINAL_STATUSES.has("aborted")).toBe(true);
   });
 
-  test("pending, running, and awaiting_input are NOT terminal", () => {
+  test("active and waiting states are NOT terminal", () => {
     expect(TERMINAL_STATUSES.has("pending")).toBe(false);
     expect(TERMINAL_STATUSES.has("running")).toBe(false);
     expect(TERMINAL_STATUSES.has("awaiting_input")).toBe(false);
+    expect(TERMINAL_STATUSES.has("awaiting_children")).toBe(false);
   });
 });
 
 describe("SUBAGENT_LIMITS", () => {
   test("has expected defaults", () => {
-    expect(SUBAGENT_LIMITS.maxDepth).toBe(1);
+    expect(SUBAGENT_LIMITS.maxDepth).toBe(2);
+    expect(SUBAGENT_LIMITS.maxActiveChildrenPerParent).toBe(8);
+    expect(SUBAGENT_LIMITS.maxActiveDescendantsPerRoot).toBe(24);
   });
 });
 

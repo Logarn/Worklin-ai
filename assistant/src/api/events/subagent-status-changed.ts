@@ -28,6 +28,7 @@ export const SubagentStatusSchema = z.enum([
   "pending",
   "running",
   "awaiting_input",
+  "awaiting_children",
   "completed",
   "failed",
   "aborted",

@@ -173,8 +173,8 @@ function findMatchingInFlightToolIndex(
 
 /**
  * Translate the subagent's status to a shell-compatible visual state.
- * `awaiting_input` is treated as `"loading"` (the subagent is waiting on
- * a human reply but the card chrome still reads as in-flight). `aborted`
+ * Waiting states are treated as `"loading"` (the subagent is waiting on
+ * a human reply or coordinating child workers). `aborted`
  * surfaces as `"error"` so the card doesn't read as a clean completion.
  */
 function deriveCardState(status: SubagentStatus): ToolCallCardData["state"] {
@@ -182,6 +182,7 @@ function deriveCardState(status: SubagentStatus): ToolCallCardData["state"] {
     case "running":
     case "pending":
     case "awaiting_input":
+    case "awaiting_children":
       return "loading";
     case "completed":
       return "complete";
@@ -210,9 +211,7 @@ export function computeSubagentCardData(
   // originating `toolName` (so the resting "Used <Tool>" header can
   // re-humanise the name without re-parsing the title string). Indexed
   // by `steps` position; `undefined` for non-tool entries.
-  const toolMeta: Array<
-    { startTs: number; toolName: string } | undefined
-  > = [];
+  const toolMeta: Array<{ startTs: number; toolName: string } | undefined> = [];
 
   for (const event of entry.events) {
     if (event.type === "text") {

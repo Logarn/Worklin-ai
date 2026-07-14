@@ -17,6 +17,8 @@ interface FakeManagedSubagent {
     persistUserMessage?: () => { id: string; deduplicated: boolean };
     runAgentLoop?: () => Promise<void>;
     enqueueMessage?: () => { rejected: boolean; queued: boolean };
+    isProcessing: () => boolean;
+    hasQueuedMessages: () => boolean;
     usageStats: {
       inputTokens: number;
       outputTokens: number;
@@ -27,6 +29,10 @@ interface FakeManagedSubagent {
   parentSendToClient: (msg: ServerMessage) => void;
   retainedUntil?: number;
   hadEnqueuedMessages?: boolean;
+  pendingParentNotifications?: Array<{
+    message: string;
+    metadata?: Record<string, unknown>;
+  }>;
 }
 
 /** Type-safe accessor for SubagentManager's private internals via bracket notation. */
@@ -34,6 +40,8 @@ interface ManagerInternals {
   subagents: Map<string, FakeManagedSubagent>;
   parentToChildren: Map<string, Set<string>>;
   runSubagent: (subagentId: string, objective: string) => Promise<void>;
+  finalizeWhenSettled: (subagentId: string) => void;
+  drainParentNotifications: (subagentId: string) => Promise<void>;
   sweepTerminal: () => void;
   stopSweep: () => void;
 }
@@ -50,6 +58,8 @@ function makeFakeConversation(): NonNullable<
     dispose: () => {},
     messages: [],
     sendToClient: () => {},
+    isProcessing: () => false,
+    hasQueuedMessages: () => false,
     usageStats: { inputTokens: 100, outputTokens: 50, estimatedCost: 0.005 },
   };
 }
@@ -98,6 +108,101 @@ function makeState(
 }
 
 describe("SubagentManager terminal disposal", () => {
+  test("supervisor processes worker notifications before completing", async () => {
+    const manager = new SubagentManager();
+    const state = makeState("supervisor-1", {
+      config: {
+        id: "supervisor-1",
+        parentConversationId: "root-conv",
+        label: "Supervisor",
+        objective: "Coordinate workers",
+        role: "supervisor",
+        overrideProfile: "quality",
+      },
+      status: "awaiting_children",
+      conversationId: "supervisor-conv",
+      depth: 1,
+      rootConversationId: "root-conv",
+    });
+    const conversation = makeFakeConversation();
+    let persistedContent = "";
+    let runOptions: Record<string, unknown> | undefined;
+    conversation.persistUserMessage = ((options: { content: string }) => {
+      persistedContent = options.content;
+      return { id: "worker-notice", deduplicated: false };
+    }) as typeof conversation.persistUserMessage;
+    conversation.runAgentLoop = (async (
+      _content: string,
+      _messageId: string,
+      options: Record<string, unknown>,
+    ) => {
+      runOptions = options;
+    }) as typeof conversation.runAgentLoop;
+    injectFakeSubagent(manager, "supervisor-1", state, undefined, conversation);
+
+    const managed = asInternals(manager).subagents.get("supervisor-1")!;
+    managed.pendingParentNotifications = [
+      {
+        message: '[Subagent "Researcher" completed]\nUse subagent_read.',
+      },
+    ];
+
+    await asInternals(manager).drainParentNotifications("supervisor-1");
+
+    expect(persistedContent).toContain('Subagent "Researcher" completed');
+    expect(runOptions?.callSite).toBe("subagentSpawn");
+    expect(runOptions?.overrideProfile).toBe("quality");
+    expect(state.status).toBe("completed");
+    expect(managed.conversation).toBeNull();
+
+    asInternals(manager).stopSweep();
+  });
+
+  test("supervisor remains live until its workers are terminal", () => {
+    const manager = new SubagentManager();
+    const supervisorState = makeState("supervisor-1", {
+      config: {
+        id: "supervisor-1",
+        parentConversationId: "root-conv",
+        label: "Supervisor",
+        objective: "Coordinate workers",
+        role: "supervisor",
+      },
+      conversationId: "supervisor-conv",
+      depth: 1,
+      rootConversationId: "root-conv",
+    });
+    const workerState = makeState("worker-1", {
+      config: {
+        id: "worker-1",
+        parentConversationId: "supervisor-conv",
+        label: "Worker",
+        objective: "Research",
+        role: "researcher",
+      },
+      conversationId: "worker-conv",
+      depth: 2,
+      rootConversationId: "root-conv",
+      parentSubagentId: "supervisor-1",
+    });
+    injectFakeSubagent(manager, "supervisor-1", supervisorState);
+    injectFakeSubagent(manager, "worker-1", workerState);
+
+    const internals = asInternals(manager);
+    internals.finalizeWhenSettled("supervisor-1");
+    expect(supervisorState.status).toBe("awaiting_children");
+    expect(
+      internals.subagents.get("supervisor-1")!.conversation,
+    ).not.toBeNull();
+
+    workerState.status = "completed";
+    internals.finalizeWhenSettled("supervisor-1");
+    expect(supervisorState.status).toBe("completed");
+    expect(internals.subagents.get("supervisor-1")!.conversation).toBeNull();
+
+    internals.stopSweep();
+  });
+
   test("completed subagent has conversation === null but state is preserved", async () => {
     const manager = new SubagentManager();
     const subagentId = "sub-1";
