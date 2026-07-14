@@ -1,6 +1,10 @@
 import { describe, test, expect, mock, afterEach } from "bun:test";
 import type { GatewayConfig } from "../config.js";
-import { initSigningKey, mintToken } from "../auth/token-service.js";
+import {
+  initSigningKey,
+  mintToken,
+  verifyToken,
+} from "../auth/token-service.js";
 import { CURRENT_POLICY_EPOCH } from "../auth/policy.js";
 
 type FetchFn = (
@@ -135,6 +139,64 @@ describe("runtime proxy auth enforcement", () => {
     // NOT the original edge token.
     expect(upstreamAuth).toStartWith("Bearer ");
     expect(upstreamAuth).not.toBe(`Bearer ${TOKEN}`);
+  });
+
+  test("isolated runtime binds a legacy platform actor to the default owner namespace", async () => {
+    let capturedHeaders: Headers | undefined;
+    fetchMock = mock(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        capturedHeaders = init?.headers as unknown as Headers;
+        return Response.json({ ok: true });
+      },
+    );
+
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+    );
+    const res = await handler(
+      new Request("http://localhost:7830/v1/health", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const exchangeToken = capturedHeaders!
+      .get("authorization")!
+      .replace(/^Bearer /, "");
+    const verified = verifyToken(exchangeToken, "vellum-daemon");
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.claims.sub).toBe("actor:self:vellum-principal-test-user");
+    }
+  });
+
+  test("isolated runtime rejects an actor token scoped to another assistant", async () => {
+    mockUpstream();
+    const otherAssistantToken = mintToken({
+      aud: "vellum-gateway",
+      sub: "actor:other-assistant:test-user",
+      scope_profile: "actor_client_v1",
+      policy_epoch: CURRENT_POLICY_EPOCH,
+      ttlSeconds: 300,
+    });
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+    );
+
+    const res = await handler(
+      new Request("http://localhost:7830/v1/health", {
+        headers: { authorization: `Bearer ${otherAssistantToken}` },
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test("auth not required: proxies without token", async () => {
