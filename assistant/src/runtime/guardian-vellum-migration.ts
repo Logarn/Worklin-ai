@@ -15,6 +15,11 @@ import { getLogger } from "../util/logger.js";
 
 const log = getLogger("guardian-vellum-migration");
 
+const MIGRATABLE_BOOTSTRAP_METHODS = new Set([
+  "bootstrap",
+  "startup-migration",
+]);
+
 /**
  * Heal guardian binding drift for the vellum channel.
  *
@@ -24,11 +29,13 @@ const log = getLogger("guardian-vellum-migration");
  * The JWT passes signature validation but trust resolution returns
  * `unknown` because the principals don't match.
  *
- * This function detects that scenario and updates the binding to match
- * the JWT's principal. Only heals when both the stored and incoming
- * principals have the `vellum-principal-` prefix (both auto-generated,
- * no external identity meaning). The JWT's signature proves it was
- * minted by this daemon's signing key.
+ * This function detects that scenario and updates the binding to match the
+ * JWT's principal. The incoming principal must use the platform-owner
+ * namespace. The stored vellum binding must either use that same generated
+ * namespace or carry bootstrap provenance, which covers legacy Worklin web
+ * owners created before the namespace was introduced. Challenge-verified and
+ * other external bindings are never rewritten. The JWT's signature proves the
+ * incoming principal was minted by this deployment's trusted control plane.
  *
  * Returns true if healing occurred, false otherwise.
  */
@@ -41,7 +48,15 @@ export function healGuardianBindingDrift(incomingPrincipalId: string): boolean {
   if (!guardianResult) return false;
 
   const currentPrincipalId = guardianResult.contact.principalId;
-  if (!currentPrincipalId?.startsWith("vellum-principal-")) return false;
+  const wasBootstrapped =
+    guardianResult.channel.verifiedVia !== null &&
+    MIGRATABLE_BOOTSTRAP_METHODS.has(guardianResult.channel.verifiedVia);
+  if (
+    !currentPrincipalId?.startsWith("vellum-principal-") &&
+    !wasBootstrapped
+  ) {
+    return false;
+  }
   if (currentPrincipalId === incomingPrincipalId) return false;
 
   const updated = updateContactPrincipalAndChannel(
