@@ -57,6 +57,20 @@ const INTERRUPT_DEADLINE_MS = 5_000;
  */
 const HOST_CALL_DEADLINE_RESET_THRESHOLD_MS = 50;
 
+// The compiled QuickJS module is immutable and safe to share. Keep the
+// isolation boundary at the runtime/context level so each workflow still gets
+// a fresh realm, while avoiding repeated WASM module initialization in long
+// lived assistant processes.
+let quickJSModulePromise:
+  | ReturnType<typeof newQuickJSAsyncWASMModuleFromVariant>
+  | undefined;
+
+function getQuickJSModule() {
+  return (quickJSModulePromise ??= newQuickJSAsyncWASMModuleFromVariant(
+    singlefileAsyncVariant,
+  ));
+}
+
 /** Thrown when a script invokes a banned non-deterministic primitive. */
 export class WorkflowDeterminismError extends Error {
   constructor(message: string) {
@@ -253,8 +267,9 @@ export function createWorkflowSandbox(
         );
       }
 
-      // A fresh WASM module/runtime/context per run is the isolation boundary:
-      // no realm, heap, or host-ref state is shared between workflow runs.
+      // A fresh runtime/context per run is the isolation boundary: no realm,
+      // heap, or host-ref state is shared between workflow runs. The immutable
+      // compiled module is shared to avoid repeated WASM initialization.
       // The context is created via the module-level `newContext()` so the
       // runtime is an *owned lifetime* of the context — disposing the context
       // tears down the runtime in the correct internal order (disposing the
@@ -265,9 +280,7 @@ export function createWorkflowSandbox(
       // (`bun build --compile` bundles JS but not the .wasm), so every workflow
       // run aborts with ENOENT. The singlefile variant rides along with the JS
       // bundle and works in source, Docker, and the compiled binary alike.
-      const QuickJS = await newQuickJSAsyncWASMModuleFromVariant(
-        singlefileAsyncVariant,
-      );
+      const QuickJS = await getQuickJSModule();
       const vm = QuickJS.newContext() as QuickJSAsyncContext;
       const runtime = vm.runtime;
       runtime.setMemoryLimit(memoryLimitBytes);
