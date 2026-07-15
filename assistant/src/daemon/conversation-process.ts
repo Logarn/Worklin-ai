@@ -1819,7 +1819,9 @@ async function drainSingleMessage(
   // reset for the first message so the initial LLM turn can project their
   // tools, while later turns return to normal conversation-driven activation.
   if (conversation.messages.length === 0) {
-    const onboardingSkills = conversation.getOnboardingContext()?.skills;
+    // Older host-proxy conversation doubles may not carry onboarding context.
+    // Treat that as an empty context rather than breaking their first turn.
+    const onboardingSkills = conversation.getOnboardingContext?.()?.skills;
     if (onboardingSkills?.length) {
       conversation.setPreactivatedSkillIds([...new Set(onboardingSkills)]);
     }
