@@ -79,6 +79,7 @@ mock.module("../../../memory/raw-query.js", () => ({
     rawGetCalls.push({ sql, params });
     return rawGetReturn;
   },
+  rawAll: () => [],
 }));
 
 // Defer route import until after mocks are installed.

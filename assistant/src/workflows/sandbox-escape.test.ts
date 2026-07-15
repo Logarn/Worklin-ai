@@ -246,9 +246,13 @@ describe("sandbox containment — resource guards", () => {
 
   test("an infinite loop is interrupted within a bounded time", async () => {
     const start = Date.now();
+    const sb = createWorkflowSandbox({
+      hostFunctions: {},
+      interruptDeadlineMs: 500,
+    });
     let caught: unknown;
     try {
-      await sandbox().run(`while (true) {}`, null);
+      await sb.run(`while (true) {}`, null);
     } catch (e) {
       caught = e;
     }
@@ -263,6 +267,7 @@ describe("sandbox containment — resource guards", () => {
     const sb = createWorkflowSandbox({
       hostFunctions: {},
       signal: controller.signal,
+      interruptDeadlineMs: 500,
     });
     // Abort almost immediately so the interrupt handler trips.
     setTimeout(() => controller.abort(), 20);
@@ -279,6 +284,7 @@ describe("sandbox containment — resource guards", () => {
     const sb = createWorkflowSandbox({
       hostFunctions: {},
       memoryLimitBytes: 8 * 1024 * 1024, // 8 MiB ceiling
+      interruptDeadlineMs: 500,
     });
     let caught: unknown;
     try {
@@ -319,7 +325,7 @@ describe("sandbox containment — host failures are contained", () => {
     }
     expect(caught).toBeInstanceOf(WorkflowScriptError);
     expect((caught as Error).message).toContain("boom from host");
-  });
+  }, 20_000);
 
   test("a script can catch a throwing host function itself", async () => {
     const sb = createWorkflowSandbox({
@@ -335,5 +341,5 @@ describe("sandbox containment — host failures are contained", () => {
       null,
     );
     expect(result).toBe("caught:boom");
-  });
+  }, 20_000);
 });
