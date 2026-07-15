@@ -37,6 +37,10 @@ PER_TEST_TIMEOUT="${PER_TEST_TIMEOUT:-120}"
 # slow tests to the front, improving parallel utilization.
 TEST_DURATIONS_FILE="${TEST_DURATIONS_FILE:-}"
 TEST_DURATIONS_OUTPUT="${TEST_DURATIONS_OUTPUT:-}"
+# Space- or newline-separated test paths that must run after the parallel
+# pool has drained. Use this for tests whose resource guards are sensitive to
+# other Bun processes competing for CPU time.
+SERIAL_TEST_FILES="${SERIAL_TEST_FILES:-}"
 
 EXPERIMENTAL_FILES=(
   "skill-load-tool.test.ts"
@@ -62,6 +66,7 @@ KNOWN_BROKEN_FILES=(
 
 # Collect test files, filtering experimental if needed
 test_files=()
+serial_test_files=()
 while IFS= read -r test_file; do
   base_name="$(basename "${test_file}")"
   if [[ "${EXCLUDE_EXPERIMENTAL}" == "true" ]]; then
@@ -93,6 +98,18 @@ while IFS= read -r test_file; do
     fi
   done
   if [[ ${skip_broken} -eq 1 ]]; then
+    continue
+  fi
+
+  is_serial=0
+  for serial_file in ${SERIAL_TEST_FILES}; do
+    if [[ "${test_file}" == "${serial_file}" ]]; then
+      serial_test_files+=("${test_file}")
+      is_serial=1
+      break
+    fi
+  done
+  if [[ ${is_serial} -eq 1 ]]; then
     continue
   fi
 
@@ -147,6 +164,9 @@ if [[ -n "${TEST_DURATIONS_FILE}" && -f "${TEST_DURATIONS_FILE}" ]]; then
 fi
 
 echo "Running ${#test_files[@]} test files (${WORKERS} workers)"
+if [[ ${#serial_test_files[@]} -gt 0 ]]; then
+  echo "Running ${#serial_test_files[@]} resource-sensitive test files serially after the parallel pool"
+fi
 
 # Temp dir for per-file output capture and failure tracking
 results_dir="$(mktemp -d)"
@@ -160,7 +180,8 @@ if [[ "${COVERAGE}" == "true" ]]; then
 fi
 
 # Run tests in parallel, capturing output per file
-printf '%s\n' "${test_files[@]}" | xargs -P "${WORKERS}" -I {} bash -c '
+if [[ ${#test_files[@]} -gt 0 ]]; then
+  printf '%s\n' "${test_files[@]}" | xargs -P "${WORKERS}" -I {} bash -c '
   test_file="$1"
   results_dir="$2"
   exclude_exp="$3"
@@ -234,7 +255,70 @@ printf '%s\n' "${test_files[@]}" | xargs -P "${WORKERS}" -I {} bash -c '
     echo "  ✓ ${base} (${elapsed}ms)"
   fi
 ' _ {} "${results_dir}" "${EXCLUDE_EXPERIMENTAL}" "${COVERAGE}" "${PER_TEST_TIMEOUT}"
-xargs_exit=$?
+  xargs_exit=$?
+else
+  xargs_exit=0
+fi
+
+# Run resource-sensitive tests one at a time after the parallel pool has
+# drained. These tests intentionally exercise CPU, interrupt, and memory
+# guards; another Bun process can make a correct guard appear to hang.
+for test_file in "${serial_test_files[@]}"; do
+  safe_name="$(echo "${test_file}" | tr "/" "_")"
+  out_file="${results_dir}/${safe_name}.out"
+
+  coverage_args=""
+  if [[ "${COVERAGE}" == "true" ]]; then
+    cov_dir="${results_dir}/cov_${safe_name}"
+    mkdir -p "${cov_dir}"
+    coverage_args="--coverage --coverage-reporter=lcov --coverage-dir=${cov_dir}"
+  fi
+
+  timeout_cmd=""
+  if command -v timeout &>/dev/null; then
+    timeout_cmd="timeout"
+  elif command -v gtimeout &>/dev/null; then
+    timeout_cmd="gtimeout"
+  fi
+
+  start_ms=$(perl -MTime::HiRes=time -e "printf \"%d\", time*1000")
+  if [[ -n "${timeout_cmd}" ]]; then
+    if [[ "${EXCLUDE_EXPERIMENTAL}" == "true" ]]; then
+      "${timeout_cmd}" -k 10 "${PER_TEST_TIMEOUT}" bun test ${coverage_args} --test-name-pattern "^(?!.*\\[experimental\\])" "${test_file}" > "${out_file}" 2>&1
+    else
+      "${timeout_cmd}" -k 10 "${PER_TEST_TIMEOUT}" bun test ${coverage_args} "${test_file}" > "${out_file}" 2>&1
+    fi
+  else
+    if [[ "${EXCLUDE_EXPERIMENTAL}" == "true" ]]; then
+      bun test ${coverage_args} --test-name-pattern "^(?!.*\\[experimental\\])" "${test_file}" > "${out_file}" 2>&1
+    else
+      bun test ${coverage_args} "${test_file}" > "${out_file}" 2>&1
+    fi
+  fi
+  exit_code=$?
+
+  end_ms=$(perl -MTime::HiRes=time -e "printf \"%d\", time*1000")
+  elapsed=$(( end_ms - start_ms ))
+  base="$(basename "${test_file}")"
+  echo -e "${elapsed}\t${test_file}" >> "${results_dir}/durations"
+
+  if [[ -n "${timeout_cmd}" && ( ${exit_code} -eq 124 || ${exit_code} -eq 137 ) ]]; then
+    if grep -q "^(fail)" "${out_file}" 2>/dev/null; then
+      echo "${test_file}" >> "${results_dir}/failures"
+      echo "  ✗ ${base} (killed after ${PER_TEST_TIMEOUT}s — tests failed and process hung)"
+    elif grep -qE "^Ran [0-9]+ tests? across" "${out_file}" 2>/dev/null; then
+      echo "  ⚠ ${base} (tests passed but process hung after ${PER_TEST_TIMEOUT}s — likely open handles)"
+    else
+      echo "${test_file}" >> "${results_dir}/failures"
+      echo "  ✗ ${base} (killed after ${PER_TEST_TIMEOUT}s — test run did not complete)"
+    fi
+  elif [[ ${exit_code} -ne 0 ]]; then
+    echo "${test_file}" >> "${results_dir}/failures"
+    echo "  ✗ ${base} (${elapsed}ms)"
+  else
+    echo "  ✓ ${base} (${elapsed}ms)"
+  fi
+done
 
 # Verify tests actually ran — catch xargs startup failures (e.g. invalid TEST_WORKERS)
 actual_runs=$(ls "${results_dir}"/*.out 2>/dev/null | wc -l)

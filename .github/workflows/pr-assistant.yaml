@@ -145,6 +145,9 @@ jobs:
         env:
           EXCLUDE_EXPERIMENTAL: 'true'
           TEST_WORKERS: '2'
+          SERIAL_TEST_FILES: |
+            src/workflows/sandbox.test.ts
+            src/workflows/sandbox-escape.test.ts
 
       # Smoke-run the meet-join manifest emitter so an assistant-side
       # change that breaks the `SkillHost` contract or `register(host)`
