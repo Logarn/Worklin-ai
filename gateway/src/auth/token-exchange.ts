@@ -88,6 +88,10 @@ export function mintExchangeToken(
     scope_profile: targetScopeProfile,
     policy_epoch: CURRENT_POLICY_EPOCH,
     ttlSeconds: EXCHANGE_TOKEN_TTL_SECONDS,
+    ...(edgeClaims.artifact_id ? { artifact_id: edgeClaims.artifact_id } : {}),
+    ...(edgeClaims.collaboration_role
+      ? { collaboration_role: edgeClaims.collaboration_role }
+      : {}),
   });
 }
 

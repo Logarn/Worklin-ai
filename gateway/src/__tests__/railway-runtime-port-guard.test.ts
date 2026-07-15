@@ -10,6 +10,7 @@ describe("Railway runtime port wiring", () => {
     ).text();
 
     expect(entrypoint).toContain(': "${PORT:=8080}"');
+    expect(entrypoint).toContain(': "${WORKLIN_PUBLIC_EDGE_PORT:=${PORT}}"');
     expect(entrypoint).toContain(
       ': "${WORKLIN_CONTROL_PLANE_INTERNAL_PORT:=8082}"',
     );
@@ -26,5 +27,6 @@ describe("Railway runtime port wiring", () => {
     expect(dockerfile).not.toContain(
       "ENV GATEWAY_INTERNAL_URL=http://127.0.0.1:7830",
     );
+    expect(dockerfile).toContain("EXPOSE 8080");
   });
 });

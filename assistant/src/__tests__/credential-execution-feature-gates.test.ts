@@ -165,8 +165,10 @@ describe("CES flags do not affect unrelated flags", () => {
     setOverridesForTesting(overrides);
     const config = makeConfig();
 
-    // auto-analyze is registry-enabled by design and should stay enabled.
-    expect(isAssistantFeatureFlagEnabled("auto-analyze", config)).toBe(true);
+    // memory-retrospective-fork defaults to false and should stay false.
+    expect(
+      isAssistantFeatureFlagEnabled("memory-retrospective-fork", config),
+    ).toBe(false);
   });
 
   test("enabling all CES flags does not change unrelated fail-closed flags", () => {

@@ -261,6 +261,9 @@ describe("scope profile contract", () => {
     ],
     local_v1: ["local.all"],
     ui_page_v1: ["settings.read"],
+    artifact_viewer_v1: ["artifact.read"],
+    artifact_commenter_v1: ["artifact.read", "artifact.comment"],
+    artifact_editor_v1: ["artifact.read", "artifact.comment", "artifact.write"],
   };
 
   for (const [profile, expectedScopes] of Object.entries(EXPECTED_PROFILES)) {

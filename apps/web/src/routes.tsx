@@ -52,24 +52,24 @@ function OAuthDesktopCompleteRedirect() {
 // (e.g. "the OAuth popup pages are NOT under AccountLayout") must run against
 // these raw definitions.
 export const routeTree = [
-    // Account routes — standalone auth pages, no app chrome.
-    // Lazy-loaded: only needed for unauthenticated flows.
-    {
-      path: "/account",
-      ErrorBoundary: RouteErrorBoundary,
-      HydrateFallback: RootHydrateFallback,
-      children: [
-        // Pathless wrapper so lazy-chunk failures render the chunk-fail
-        // variant of `RouteErrorBoundary` (inline copy + Reload button)
-        // rather than the full-page variant inherited from the top.
-        {
-          ErrorBoundary: RouteErrorBoundary,
-          children: [
-            // Auth screens that render in the MAIN window. AccountLayout sizes
-            // it compact (440×630) for these, matching onboarding.
-            {
-              Component: AccountLayout,
-              children: [
+  // Account routes — standalone auth pages, no app chrome.
+  // Lazy-loaded: only needed for unauthenticated flows.
+  {
+    path: "/account",
+    ErrorBoundary: RouteErrorBoundary,
+    HydrateFallback: RootHydrateFallback,
+    children: [
+      // Pathless wrapper so lazy-chunk failures render the chunk-fail
+      // variant of `RouteErrorBoundary` (inline copy + Reload button)
+      // rather than the full-page variant inherited from the top.
+      {
+        ErrorBoundary: RouteErrorBoundary,
+        children: [
+          // Auth screens that render in the MAIN window. AccountLayout sizes
+          // it compact (440×630) for these, matching onboarding.
+          {
+            Component: AccountLayout,
+            children: [
               {
                 index: true,
                 lazy: {
@@ -133,14 +133,14 @@ export const routeTree = [
                     ),
                 },
               },
-              ],
-            },
-            // OAuth completion / loopback machinery. These render inside the
-            // OAuth popup child window (or are transient redirects), NOT the
-            // main window — so they're deliberately OUTSIDE AccountLayout and
-            // never mount the sizing hook. The resize IPC targets the
-            // module-scoped main window, so sizing from a popup would shrink
-            // the wrong window. See `use-onboarding-window-size`.
+            ],
+          },
+          // OAuth completion / loopback machinery. These render inside the
+          // OAuth popup child window (or are transient redirects), NOT the
+          // main window — so they're deliberately OUTSIDE AccountLayout and
+          // never mount the sizing hook. The resize IPC targets the
+          // module-scoped main window, so sizing from a popup would shrink
+          // the wrong window. See `use-onboarding-window-size`.
           {
             path: "oauth/popup-complete",
             lazy: {
@@ -172,12 +172,12 @@ export const routeTree = [
                 ),
             },
           },
-          ],
-        },
-      ],
-    },
+        ],
+      },
+    ],
+  },
 
-    // Logout — standalone page, no app chrome
+  // Logout — standalone page, no app chrome
   {
     path: "/logout",
     ErrorBoundary: RouteErrorBoundary,
@@ -188,12 +188,12 @@ export const routeTree = [
     },
   },
 
-    // About — standalone metadata page rendered inside the Electron
-    // About BrowserWindow. Declared as a sibling of `/assistant` (not
-    // a child) so React Router's most-specific matcher picks it for
-    // `/assistant/about` BEFORE falling into the auth-protected app
-    // tree below. URL sits under `/assistant/*` so it's served by
-    // Vite's SPA fallback in dev (which is scoped to the `base`).
+  // About — standalone metadata page rendered inside the Electron
+  // About BrowserWindow. Declared as a sibling of `/assistant` (not
+  // a child) so React Router's most-specific matcher picks it for
+  // `/assistant/about` BEFORE falling into the auth-protected app
+  // tree below. URL sits under `/assistant/*` so it's served by
+  // Vite's SPA fallback in dev (which is scoped to the `base`).
   {
     path: "/assistant/about",
     ErrorBoundary: RouteErrorBoundary,
@@ -204,9 +204,9 @@ export const routeTree = [
     },
   },
 
-    // Bundle confirmation — standalone page rendered inside the Electron
-    // bundle-confirmation BrowserWindow. No auth required so bundles can
-    // be opened before the user logs in. Same sibling pattern as About.
+  // Bundle confirmation — standalone page rendered inside the Electron
+  // bundle-confirmation BrowserWindow. No auth required so bundles can
+  // be opened before the user logs in. Same sibling pattern as About.
   {
     path: "/assistant/bundle/confirm",
     ErrorBoundary: RouteErrorBoundary,
@@ -217,10 +217,10 @@ export const routeTree = [
     },
   },
 
-    // Quick Input — lightweight input panel rendered inside the Electron
-    // quick input BrowserWindow (a frameless, always-on-top panel invoked
-    // via Cmd+Shift+/). Same pattern as About: sibling of `/assistant`,
-    // outside auth middleware and RootLayout for fast load.
+  // Quick Input — lightweight input panel rendered inside the Electron
+  // quick input BrowserWindow (a frameless, always-on-top panel invoked
+  // via Cmd+Shift+/). Same pattern as About: sibling of `/assistant`,
+  // outside auth middleware and RootLayout for fast load.
   {
     path: "/assistant/quick-input",
     ErrorBoundary: RouteErrorBoundary,
@@ -231,7 +231,7 @@ export const routeTree = [
     },
   },
 
-    // Shared live-voice panel rendered in the non-focus-stealing Electron overlay.
+  // Shared live-voice panel rendered in the non-focus-stealing Electron overlay.
   {
     path: "/assistant/floating/voice-overlay",
     ErrorBoundary: RouteErrorBoundary,
@@ -244,8 +244,8 @@ export const routeTree = [
     },
   },
 
-    // Mic-free visual review route. It contains no user or provider data and is
-    // intentionally available before onboarding so reviewers can inspect the UI.
+  // Mic-free visual review route. It contains no user or provider data and is
+  // intentionally available before onboarding so reviewers can inspect the UI.
   {
     path: "/assistant/voice-preview",
     ErrorBoundary: RouteErrorBoundary,
@@ -258,9 +258,9 @@ export const routeTree = [
     },
   },
 
-    // Command palette — focused floating Electron BrowserWindow opened by
-    // the app menu's Cmd/Ctrl+K accelerator. Standalone and unauthenticated
-    // so it does not depend on ChatLayout being mounted in the main window.
+  // Command palette — focused floating Electron BrowserWindow opened by
+  // the app menu's Cmd/Ctrl+K accelerator. Standalone and unauthenticated
+  // so it does not depend on ChatLayout being mounted in the main window.
   {
     path: "/assistant/floating/command-palette",
     ErrorBoundary: RouteErrorBoundary,
@@ -273,11 +273,11 @@ export const routeTree = [
     },
   },
 
-    // Dictation overlay — live transcription pill rendered inside the
-    // Electron dictation overlay BrowserWindow (a click-through floating
-    // panel pinned top-center of the screen while push-to-talk dictation
-    // is active). Same pattern as Quick Input: sibling of `/assistant`,
-    // outside auth middleware and RootLayout for fast load.
+  // Dictation overlay — live transcription pill rendered inside the
+  // Electron dictation overlay BrowserWindow (a click-through floating
+  // panel pinned top-center of the screen while push-to-talk dictation
+  // is active). Same pattern as Quick Input: sibling of `/assistant`,
+  // outside auth middleware and RootLayout for fast load.
   {
     path: "/assistant/floating/dictation-overlay",
     ErrorBoundary: RouteErrorBoundary,
@@ -289,8 +289,8 @@ export const routeTree = [
         ),
     },
   },
-    // Legacy direct path retained so old dev windows do not blank during
-    // rolling Electron/web updates.
+  // Legacy direct path retained so old dev windows do not blank during
+  // rolling Electron/web updates.
   {
     path: "/assistant/dictation-overlay",
     ErrorBoundary: RouteErrorBoundary,
@@ -303,144 +303,162 @@ export const routeTree = [
     },
   },
 
-    // Assistant routes — auth-protected app with layout
-    {
-      path: "/assistant",
-      middleware: [authMiddleware],
-      ErrorBoundary: RouteErrorBoundary,
-      HydrateFallback: RootHydrateFallback,
-      Component: RootLayout,
-      children: [
-        // Pathless wrapper attaching `RouteErrorBoundary` at the layer
-        // *inside* RootLayout. Any error from a child route (chunk-fetch
-        // failure or genuine render bug) is caught here — React Router
-        // doesn't support selective bubbling. The boundary picks a UI
-        // variant based on the error shape:
-        //   - chunk fail  → inline "section couldn't load" within
-        //                   RootLayout's chrome (sidebar stays visible)
-        //   - other error → full-page "Something went wrong" treatment
-        //                   (full-viewport `min-h-svh` so it reads as a
-        //                   takeover even when mounted inside chrome)
-        // The outer boundary on `/assistant` only fires for errors that
-        // happen *during* the resolution of `/assistant` itself (loader,
-        // middleware, RootLayout render) — not for child-route errors.
-        {
-          ErrorBoundary: RouteErrorBoundary,
-          children: [
-        // Standalone pre-app routes (not part of the new-user onboarding funnel).
-        {
-          path: "welcome",
+  // Assistant routes — auth-protected app with layout
+  {
+    path: "/assistant",
+    middleware: [authMiddleware],
+    ErrorBoundary: RouteErrorBoundary,
+    HydrateFallback: RootHydrateFallback,
+    Component: RootLayout,
+    children: [
+      // Pathless wrapper attaching `RouteErrorBoundary` at the layer
+      // *inside* RootLayout. Any error from a child route (chunk-fetch
+      // failure or genuine render bug) is caught here — React Router
+      // doesn't support selective bubbling. The boundary picks a UI
+      // variant based on the error shape:
+      //   - chunk fail  → inline "section couldn't load" within
+      //                   RootLayout's chrome (sidebar stays visible)
+      //   - other error → full-page "Something went wrong" treatment
+      //                   (full-viewport `min-h-svh` so it reads as a
+      //                   takeover even when mounted inside chrome)
+      // The outer boundary on `/assistant` only fires for errors that
+      // happen *during* the resolution of `/assistant` itself (loader,
+      // middleware, RootLayout render) — not for child-route errors.
+      {
+        ErrorBoundary: RouteErrorBoundary,
+        children: [
+          // Standalone pre-app routes (not part of the new-user onboarding funnel).
+          {
+            path: "welcome",
             lazy: {
               Component: () =>
                 import("@/domains/onboarding/pages/welcome-screen").then(
                   (m) => m.WelcomeScreen,
                 ),
             },
-        },
-        {
-          path: "select-assistant",
+          },
+          {
+            path: "select-assistant",
             lazy: {
               Component: () =>
                 import("@/domains/onboarding/pages/select-assistant-screen").then(
                   (m) => m.SelectAssistantScreen,
                 ),
             },
-        },
-        {
-          path: "review-terms",
+          },
+          {
+            path: "review-terms",
             lazy: {
               Component: () =>
                 import("@/domains/onboarding/pages/review-terms-screen").then(
                   (m) => m.ReviewTermsScreen,
                 ),
             },
-        },
+          },
+          {
+            path: "invitations/:token",
+            lazy: {
+              Component: () =>
+                import("@/domains/artifact-sharing/accept-artifact-invitation-page").then(
+                  (m) => m.AcceptArtifactInvitationPage,
+                ),
+            },
+          },
+          {
+            path: "shared/:artifactId",
+            lazy: {
+              Component: () =>
+                import("@/domains/artifact-sharing/shared-copybook-page").then(
+                  (m) => m.SharedCopybookPage,
+                ),
+            },
+          },
 
-        // Onboarding funnel — new-user setup flow (privacy → prechat → hatching).
-        {
-          middleware: [onboardingCompletedMiddleware],
-          children: [
-            {
-              middleware: [localModeOnlyMiddleware],
-              children: [
-                {
-                  path: "onboarding/hosting",
+          // Onboarding funnel — new-user setup flow (privacy → prechat → hatching).
+          {
+            middleware: [onboardingCompletedMiddleware],
+            children: [
+              {
+                middleware: [localModeOnlyMiddleware],
+                children: [
+                  {
+                    path: "onboarding/hosting",
                     lazy: {
                       Component: () =>
                         import("@/domains/onboarding/pages/hosting-screen").then(
                           (m) => m.HostingScreen,
                         ),
                     },
-                },
-                {
-                  path: "onboarding/api-key",
+                  },
+                  {
+                    path: "onboarding/api-key",
                     lazy: {
                       Component: () =>
                         import("@/domains/onboarding/pages/api-key-screen").then(
                           (m) => m.ApiKeyScreen,
                         ),
                     },
-                },
-              ],
-            },
-            {
-              path: "onboarding/privacy",
+                  },
+                ],
+              },
+              {
+                path: "onboarding/privacy",
                 lazy: {
                   Component: () =>
                     import("@/domains/onboarding/pages/privacy-screen").then(
                       (m) => m.PrivacyScreen,
                     ),
                 },
-            },
-            {
-              path: "onboarding/provider",
+              },
+              {
+                path: "onboarding/provider",
                 lazy: {
                   Component: () =>
                     import("@/domains/onboarding/pages/api-key-screen").then(
                       (m) => m.ApiKeyScreen,
                     ),
                 },
-            },
-            {
-              path: "onboarding/prechat",
+              },
+              {
+                path: "onboarding/prechat",
                 lazy: {
                   Component: () =>
                     import("@/domains/onboarding/pages/prechat-route").then(
                       (m) => m.PreChatRoute,
                     ),
                 },
-            },
-            {
-              path: "onboarding/hatching",
+              },
+              {
+                path: "onboarding/hatching",
                 lazy: {
                   Component: () =>
                     import("@/domains/onboarding/pages/hatching-screen").then(
                       (m) => m.HatchingScreen,
                     ),
                 },
-            },
-          ],
-        },
+              },
+            ],
+          },
 
-        // Settings and logs require a resolved assistant. The gate
-        // defers child rendering until the lifecycle reaches active/
-        // self_hosted, so route components can use useActiveAssistantId().
-        {
-          Component: ActiveAssistantGate,
-          children: [
-            // Settings routes — full-screen overlay panel (no ChatLayout sidebar).
-            // SidebarShell provides its own layout with back-arrow, sidebar nav,
-            // and content area — the main app sidebar is intentionally hidden.
-            // Lazy-loaded: visited occasionally, heavy deps (Stripe, schedules, voice).
-            {
-              path: "settings",
+          // Settings and logs require a resolved assistant. The gate
+          // defers child rendering until the lifecycle reaches active/
+          // self_hosted, so route components can use useActiveAssistantId().
+          {
+            Component: ActiveAssistantGate,
+            children: [
+              // Settings routes — full-screen overlay panel (no ChatLayout sidebar).
+              // SidebarShell provides its own layout with back-arrow, sidebar nav,
+              // and content area — the main app sidebar is intentionally hidden.
+              // Lazy-loaded: visited occasionally, heavy deps (Stripe, schedules, voice).
+              {
+                path: "settings",
                 lazy: {
                   Component: () =>
                     import("@/domains/settings/settings-layout").then(
                       (m) => m.SettingsLayout,
                     ),
                 },
-              children: [
+                children: [
                   {
                     index: true,
                     lazy: {
@@ -648,21 +666,21 @@ export const routeTree = [
                         ),
                     },
                   },
-              ],
-            },
+                ],
+              },
 
-            // Logs routes — full-screen overlay panel (like SettingsLayout).
-            // LogsLayout reuses SidebarShell for visual consistency.
-            // Lazy-loaded: analytics-only.
-            {
-              path: "logs",
+              // Logs routes — full-screen overlay panel (like SettingsLayout).
+              // LogsLayout reuses SidebarShell for visual consistency.
+              // Lazy-loaded: analytics-only.
+              {
+                path: "logs",
                 lazy: {
                   Component: () =>
                     import("@/domains/logs/logs-layout").then(
                       (m) => m.LogsLayout,
                     ),
                 },
-              children: [
+                children: [
                   {
                     index: true,
                     lazy: {
@@ -708,30 +726,30 @@ export const routeTree = [
                         ),
                     },
                   },
-              ],
-            },
-          ],
-        },
+                ],
+              },
+            ],
+          },
 
-        {
-          Component: ChatLayout,
-          children: [
-            // Inner pathless wrapper: catches every error from chat-side
-            // routes (home, library, identity, inspector, etc.) one layer
-            // deeper than the `/assistant` boundary so the chunk-fail UI
-            // variant renders *inside* ChatLayout's chrome (sidebar stays
-            // visible). Non-chunk render errors are caught here too —
-            // `RouteErrorBoundary` shows the full-page variant in that
-            // case (`min-h-svh`), which visually takes over the route
-            // content area.
-            {
-              ErrorBoundary: RouteErrorBoundary,
-              children: [
-            // ChatPage / DocumentViewerPage own their own lifecycle UI
-            // (loading screens, hatching, version-selection, errors) and
-            // must render in every assistant state — they are NOT placed
-            // under <ActiveAssistantGate>.
-            { index: true, Component: ConversationRedirect },
+          {
+            Component: ChatLayout,
+            children: [
+              // Inner pathless wrapper: catches every error from chat-side
+              // routes (home, library, identity, inspector, etc.) one layer
+              // deeper than the `/assistant` boundary so the chunk-fail UI
+              // variant renders *inside* ChatLayout's chrome (sidebar stays
+              // visible). Non-chunk render errors are caught here too —
+              // `RouteErrorBoundary` shows the full-page variant in that
+              // case (`min-h-svh`), which visually takes over the route
+              // content area.
+              {
+                ErrorBoundary: RouteErrorBoundary,
+                children: [
+                  // ChatPage / DocumentViewerPage own their own lifecycle UI
+                  // (loading screens, hatching, version-selection, errors) and
+                  // must render in every assistant state — they are NOT placed
+                  // under <ActiveAssistantGate>.
+                  { index: true, Component: ConversationRedirect },
                   {
                     path: "conversations/:conversationId",
                     Component: ChatPage,
@@ -745,30 +763,30 @@ export const routeTree = [
                         ),
                     },
                   },
-            // Everything below requires a resolved assistantId AND an
-            // active daemon. The gate defers child rendering until the
-            // lifecycle resolves so route components can rely on a
-            // non-null assistantId via useActiveAssistantId().
-            {
-              Component: ActiveAssistantGate,
-              children: [
-                {
-                  path: "home",
+                  // Everything below requires a resolved assistantId AND an
+                  // active daemon. The gate defers child rendering until the
+                  // lifecycle resolves so route components can rely on a
+                  // non-null assistantId via useActiveAssistantId().
+                  {
+                    Component: ActiveAssistantGate,
+                    children: [
+                      {
+                        path: "home",
                         lazy: {
                           Component: () =>
                             import("@/home-page-route").then(
                               (m) => m.HomePageRoute,
                             ),
                         },
-                },
-                {
+                      },
+                      {
                         lazy: {
                           Component: () =>
                             import("@/domains/intelligence/intelligence-layout").then(
                               (m) => m.IntelligenceLayout,
                             ),
                         },
-                  children: [
+                        children: [
                           {
                             path: "identity",
                             lazy: {
@@ -823,8 +841,8 @@ export const routeTree = [
                                 ),
                             },
                           },
-                  ],
-                },
+                        ],
+                      },
                       {
                         path: "work",
                         lazy: {
@@ -906,40 +924,40 @@ export const routeTree = [
                             ),
                         },
                       },
-                {
-                  path: "conversations/:conversationId/inspect",
+                      {
+                        path: "conversations/:conversationId/inspect",
                         lazy: {
                           Component: () =>
                             import("@/domains/chat/inspector/inspect-page").then(
                               (m) => m.InspectPage,
                             ),
                         },
-                },
-                {
-                  path: "memory-router-playground",
+                      },
+                      {
+                        path: "memory-router-playground",
                         lazy: {
                           Component: () =>
                             import("@/domains/chat/inspector/memory-router-playground-page").then(
                               (m) => m.MemoryRouterPlaygroundPage,
                             ),
                         },
-                },
-              ],
-            },
-              ], // end inner chunk-fail boundary (chat-side)
-            },
-          ],
-        },
+                      },
+                    ],
+                  },
+                ], // end inner chunk-fail boundary (chat-side)
+              },
+            ],
+          },
 
-        // Catch-all within /assistant/*
-        { path: "*", Component: NotFound },
-          ], // end outer chunk-fail boundary (/assistant)
-        },
-      ],
-    },
+          // Catch-all within /assistant/*
+          { path: "*", Component: NotFound },
+        ], // end outer chunk-fail boundary (/assistant)
+      },
+    ],
+  },
 
-    // Top-level catch-all
-    { path: "*", ErrorBoundary: RouteErrorBoundary, Component: NotFound },
+  // Top-level catch-all
+  { path: "*", ErrorBoundary: RouteErrorBoundary, Component: NotFound },
 ];
 
 export const router = createBrowserRouter(routeTree as never, {

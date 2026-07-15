@@ -57,6 +57,8 @@ export function buildAuthContext(claims: TokenClaims): BuildAuthContextResult {
     scopeProfile: claims.scope_profile,
     scopes,
     policyEpoch: claims.policy_epoch,
+    artifactId: claims.artifact_id,
+    collaborationRole: claims.collaboration_role,
   };
 
   return { ok: true, context };

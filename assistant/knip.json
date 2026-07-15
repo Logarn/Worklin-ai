@@ -17,12 +17,11 @@
     "@vellumai/environments",
     "@vellumai/gateway-client",
     "@vellumai/ipc-server-utils",
+    "@vellumai/retention-domain",
     "@vellumai/service-contracts",
     "@vellumai/retention-domain",
     "@vellumai/slack-text",
     "@vellumai/twilio-client",
-    "@resvg/resvg-js-darwin-arm64",
-    "@resvg/resvg-js-darwin-x64",
     "@vellumai/skill-host-contracts",
     "ajv",
     "madge"

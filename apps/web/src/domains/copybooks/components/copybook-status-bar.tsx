@@ -1,5 +1,5 @@
 import { Button, Typography } from "@vellumai/design-library";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, Share2 } from "lucide-react";
 
 import type { CopybookMonth } from "../copybook-api";
 import { CopybookStatus } from "../copybook-status";
@@ -27,6 +27,7 @@ export function CopybookStatusBar({
   approvalPending = false,
   blockingCommentCount = 0,
   onApprove,
+  onShare,
 }: {
   title: string;
   year: number;
@@ -35,6 +36,7 @@ export function CopybookStatusBar({
   approvalPending?: boolean;
   blockingCommentCount?: number;
   onApprove?: () => void;
+  onShare?: () => void;
 }) {
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--border-base)] px-4 py-3">
@@ -73,6 +75,16 @@ export function CopybookStatusBar({
           onClick={onApprove}
         >
           {approvalPending ? "Approving…" : approvalLabel}
+        </Button>
+      ) : null}
+      {onShare ? (
+        <Button
+          variant="outlined"
+          size="compact"
+          leftIcon={<Share2 />}
+          onClick={onShare}
+        >
+          Share
         </Button>
       ) : null}
     </div>

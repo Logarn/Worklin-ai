@@ -251,6 +251,9 @@ describe("Invariant 2: no generic plaintext secret read API", () => {
       "tools/credential-execution/make-authenticated-request.ts", // resolves the CES RPC client via getCesClient
       "tools/credential-execution/manage-secure-command-tool.ts", // resolves the CES RPC client via getCesClient
       "tools/executor.ts", // CES approval bridge resolves the CES RPC client via getCesClient
+      "tools/retention/klaviyo-connection.ts", // reads the saved Klaviyo credential for the read-only retention audit
+      "runtime/http-server.ts", // runtime startup resolves the configured platform key
+      "live-voice/provider-bootstrap.ts", // live voice provider startup resolves its configured key
     ]);
 
     const thisDir = dirname(fileURLToPath(import.meta.url));

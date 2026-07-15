@@ -1188,6 +1188,51 @@ export function buildSchema(): Record<string, unknown> {
           },
         },
       },
+      "/v1/live-voice/providers/chat/completions": {
+        post: {
+          summary: "Live voice provider callback",
+          description:
+            "Proxies a managed live-voice provider callback to the assistant runtime. Provider authorization is forwarded without being persisted by the gateway.",
+          operationId: "liveVoiceProviderCallback",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { type: "object", additionalProperties: true },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Provider callback accepted" },
+            "401": { description: "Provider authorization was rejected" },
+            "502": { description: "Assistant runtime is unavailable" },
+          },
+        },
+      },
+      "/v1/live-voice/providers/elevenlabs/upstream": {
+        get: {
+          summary: "ElevenLabs Speech Engine upstream WebSocket",
+          description:
+            "Accepts the provider-authorized WebSocket upgrade for the configured ElevenLabs Speech Engine and proxies frames to the assistant runtime.",
+          operationId: "elevenLabsSpeechEngineUpstream",
+          parameters: [
+            {
+              name: "x-elevenlabs-speech-engine-authorization",
+              in: "header",
+              required: true,
+              schema: { type: "string" },
+              description:
+                "Provider-issued authorization for this Speech Engine connection.",
+            },
+          ],
+          responses: {
+            "101": { description: "WebSocket upgrade successful" },
+            "401": { description: "Provider authorization is missing" },
+            "426": { description: "WebSocket upgrade is required" },
+            "500": { description: "WebSocket upgrade failed" },
+          },
+        },
+      },
       "/webhooks/oauth/callback": {
         get: {
           summary: "OAuth2 callback",

@@ -63,6 +63,9 @@ profile mutation, segment mutation, and flow activation.
 
 ## Local Development
 
+For assistant lifecycle management, use `vellum wake`, `vellum ps`, and
+`vellum sleep` rather than starting background processes manually.
+
 Install Bun first if needed:
 
 ```bash
