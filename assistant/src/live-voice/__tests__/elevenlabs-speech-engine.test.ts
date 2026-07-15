@@ -14,6 +14,7 @@ function token(
     JSON.stringify({
       iss: "https://api.elevenlabs.io/convai/speech-engine",
       sub: "convai_speech_engine_upstream",
+      iat: 1_000,
       exp: 1_100,
       ...overrides,
     }),
@@ -32,6 +33,16 @@ describe("ElevenLabs Speech Engine authorization", () => {
     ).toBe(true);
   });
 
+  test("accepts the provider's optional bearer prefix and surrounding whitespace", () => {
+    expect(
+      verifyElevenLabsSpeechEngineJwt(
+        `  Bearer ${token("secret")}  `,
+        "  secret  ",
+        1_000,
+      ),
+    ).toBe(true);
+  });
+
   test("rejects a wrong secret, issuer, or expired token", () => {
     expect(
       verifyElevenLabsSpeechEngineJwt(token("secret"), "other", 1_000),
@@ -45,6 +56,13 @@ describe("ElevenLabs Speech Engine authorization", () => {
     ).toBe(false);
     expect(
       verifyElevenLabsSpeechEngineJwt(token("secret"), "secret", 1_161),
+    ).toBe(false);
+    expect(
+      verifyElevenLabsSpeechEngineJwt(
+        token("secret", { iat: 1_061 }),
+        "secret",
+        1_000,
+      ),
     ).toBe(false);
   });
 });
