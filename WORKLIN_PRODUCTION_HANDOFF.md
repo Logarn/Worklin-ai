@@ -11,7 +11,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `13729b4` (`fix: verify ElevenLabs speech engine resource`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, and the secret-safe ElevenLabs Speech Engine resource verifier
+- Current production application commit: `9970ef9` (`fix: accept ElevenLabs bearer authorization`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, the secret-safe Speech Engine resource verifier, pilot-principal compatibility, server-side shared-runtime scoping, and the production-proven ElevenLabs upstream authorization fix
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
@@ -205,9 +205,9 @@ Settings and terminology changes:
 
 ElevenLabs readiness:
 
-- Worklin already contains the provider-neutral ElevenLabs bootstrap, server-side `credential/elevenlabs/api_key` lookup, short-lived conversation-token minting, WebRTC client adapter, transcript events, input/output amplitude sampling, and interruption handling.
-- That is implementation readiness, not a completed production voice test. ElevenLabs still needs a user-created account, an Agent or Speech Engine ID, a scoped API key, and the same continuous-turn, interruption, persistence, approval, and latency gates.
-- ElevenLabs currently advertises a Free ElevenAgents tier with 15 included call minutes and four concurrent calls. Account creation, terms acceptance, billing choices, and key creation remain user actions.
+- Worklin contains the provider-neutral ElevenLabs bootstrap, server-side `credential/elevenlabs/api_key` lookup, short-lived conversation-token minting, WebRTC client adapter, transcript events, input/output amplitude sampling, interruption handling, and Speech Engine upstream bridge.
+- The account, scoped key, Speech Engine, server-side configuration, private-pilot allowlist, browser connection, and public upstream route are configured. Production has now reached `Listening`, accepted the ElevenLabs upstream WebSocket, and advanced into the normal Worklin LLM turn.
+- Release B is not complete. The active pilot assistant's selected model is currently rejected by Kimi before an assistant reply can be synthesized, and the continuous-turn, interruption, persistence, approval, overlay-parity, and latency gates remain outstanding.
 
 Implementation and production verification on 2026-07-14:
 
@@ -250,27 +250,39 @@ Production commit `90c9e2d` added a small raw-TCP public edge router to the comb
 
 Production commit `a80ce3e` changed the browser adapter so an unexpected ElevenLabs disconnect remains visible as a failed voice state instead of silently returning to `Ready`. The canonical Vercel alias was repointed to the Ready deployment and verified to serve the new bundle.
 
-Authenticated Chrome test evidence on 2026-07-14:
+Initial authenticated Chrome evidence on 2026-07-14:
 
 1. Worklin session bootstrap returned HTTP 200 and minted an ElevenLabs conversation token without exposing the provider key.
 2. The browser connected to ElevenLabs over WebRTC.
 3. ElevenLabs supplied a provider conversation ID, and Worklin bound it to the managed session with HTTP 200.
-4. Approximately 0.4 seconds later, the ElevenLabs agent disconnected and the browser released the Worklin session with HTTP 200.
-5. Production now leaves the actionable message visible: `ElevenLabs ended the voice session: agent disconnected`.
-6. Railway logged no request to the configured Speech Engine upstream path for either signed test. The deployed route itself is reachable and fail-closed, so the current boundary is before Worklin's upstream handler.
-7. The ElevenLabs account remained on the Free plan with `0 / 10,000` credits used, 15 included call minutes, and four concurrent calls. This is not a credit-exhaustion failure.
+4. The first attempts disconnected before reaching the configured Worklin upstream, which production correctly surfaced as `ElevenLabs ended the voice session: agent disconnected`.
+5. The ElevenLabs account still had its included call allowance. This was not a credit-exhaustion failure.
 
 Production commit `13729b4` now performs that diagnostic automatically before minting an ElevenLabs conversation token. It reads the configured Speech Engine with the existing server-side credential and retains only the resource ID, a query-free `wss://` host/path, whether request headers exist, and privacy booleans. It never returns or logs the API key, header values, provider response body, or raw provider URL query. Four focused resource-inspection tests, the existing ElevenLabs authorization and managed-session suites, assistant TypeScript, targeted lint, formatting, and secret scanning pass.
 
 The GitHub push completed, but Railway's GitHub watcher did not create a deployment for `13729b4`. The authenticated Logarn Railway CLI was therefore used to upload the exact clean checkout to the existing `Worklin-ai` production service. Three tracked, broken macOS-only design-tool symlinks were excluded from that upload with a temporary `.railwayignore`; the file was removed immediately afterward and was not committed. Railway deployment `9ad89634-dae0-4071-a46a-b5e85d56357d` completed successfully on 2026-07-15, and `/healthz` plus `/readyz` both returned HTTP 200 with gateway status 200.
 
-The first authenticated Chrome retry reached the new verifier and stopped before microphone/provider connection with `Voice session bootstrap failed (403)`. The ElevenLabs `Worklin Voice Pilot` API key is enabled, is not IP-restricted, and is currently restricted to `ElevenAgents: Write`; every other endpoint family is `No Access`, including `Speech to Speech`. The official Speech Engine GET is `GET /v1/speech-engine/:speech_engine_id`, while the previously successful conversation-token call is under `/v1/convai`. This makes the missing Speech Engine endpoint scope the current leading diagnosis. No key permissions have been changed yet. Obtain the user's explicit approval before adding `Speech to Speech: Access` to the existing key, save that one change, retry Worklin, and verify the logged sanitized upstream URL before proceeding to a spoken call.
+The user explicitly approved adding only `Speech to Speech: Access` to the existing ElevenLabs `Worklin Voice Pilot` API key. That one permission was saved; `ElevenAgents: Write` remained enabled and every unrelated endpoint family remained `No Access`. The key remains non-IP-restricted and server-side only.
+
+The next sanitized network trace corrected the earlier diagnosis: Worklin's own bootstrap returned `403 Managed voice is limited to the private pilot`. The gateway authenticates the production owner as a canonical `vellum-principal-<userId>`, while the pre-existing pilot setting stored the legacy raw user ID. Commit `53e1416` makes canonical platform principals accept their exact legacy raw user entry without broadening access to unrelated actors. Three focused allowlist tests passed. Railway deployment `ed875147-3003-4aef-8a87-64162a0b8e44` completed successfully.
+
+The subsequent retry progressed to `503 runtime_not_ready`. The assistant stack was failed because isolated Railway runtime capacity is intentionally capped at zero. Commit `e2ea3b6` removed the pilot assistant ID from public `railway.json`; the current assistant ID now exists only in the server-side `WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS` variable. Railway deployment `3b4c66c8-3f38-4201-b509-d4ab54a72546` recovered exactly that assistant onto the internal shared runtime. Customer onboarding must remain gated while isolated runtime capacity is unavailable.
+
+The recovered retry bootstrapped with HTTP 200 and ElevenLabs reached the public Speech Engine path, but the gateway's runtime upgrade returned 401. Worklin's JWT verifier matched the documented signature scheme but did not accept the optional `Bearer` prefix handled by ElevenLabs' official SDK. Commit `9970ef9` trims the API key, accepts a case-insensitive Bearer prefix plus surrounding whitespace, and validates the JWT `iat` clock-skew boundary. Ten focused authorization/resource/allowlist tests, targeted lint, full assistant TypeScript, formatting, and secret scanning passed. Railway deployment `1a145888-9100-4054-9c2d-039cdd29a9eb` completed successfully with green readiness.
+
+Final authenticated Chrome evidence on 2026-07-15:
+
+1. The large Worklin orb started the real production session and the panel advanced to `Listening` with `Go ahead — I’m listening.`
+2. Railway logged `ElevenLabs Speech Engine upstream opened` at 08:06:15 UTC and closed it cleanly after the short test at 08:06:24 UTC. This proves the browser connection, provider token, provider conversation binding, public edge, gateway forwarding, runtime service token, provider JWT, and upstream route all passed.
+3. The normal Worklin LLM turn was then attempted. Kimi rejected configured model `claude-sonnet-4-6` with HTTP 404 `Not found the model ... or Permission denied` before any assistant speech could be synthesized.
+4. The panel returned to `Ready`, releasing the microphone/provider session. Do not leave silent test sessions open because provider time can still accrue.
+5. No long-lived provider credential, browser session material, signed connection payload, or raw audio was written to source or this handoff.
 
 A conventional ElevenAgents resource named `Worklin Voice Pilot` was created during initial exploration before the Speech Engine resource. It is not the configured Worklin engine and is harmless, but do not delete it without the user's confirmation.
 
 ## Current Objective And Blockers
 
-Worklin remains the canonical agent brain for memory, tools, permissions, and transcript persistence. The current objective is to get the configured ElevenLabs Speech Engine to open its upstream WebSocket, then run the full continuous-turn safety and latency suite.
+Worklin remains the canonical agent brain for memory, tools, permissions, and transcript persistence. The ElevenLabs Speech Engine now opens its production upstream and reaches the normal Worklin agent turn. The immediate blocker is the pilot assistant's selected LLM profile: it routes `claude-sonnet-4-6` through Kimi, which rejects it with HTTP 404/permission denied. Obtain the user's explicit model-profile choice before changing it, then run the full continuous-turn safety and latency suite.
 
 The Hume pilot remains independently blocked by Hume billing, not Worklin connectivity:
 
@@ -282,9 +294,9 @@ The Hume pilot remains independently blocked by Hume billing, not Worklin connec
 
 ## Verified Production Snapshot
 
-Verified on 2026-07-14:
+Verified through 2026-07-15:
 
-- The repository `main` and `origin/main` include production application commit `bb46a82`; this handoff refresh follows it.
+- The repository `main` and `origin/main` include production application commit `9970ef9`; this handoff refresh follows it.
 - `GET https://worklin-ai-production.up.railway.app/healthz` returned HTTP 200 with `{"ok":true}`.
 - `GET https://worklin-ai-production.up.railway.app/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}`.
 - `GET https://worklin-ai.vercel.app/assistant` returned HTTP 200.
@@ -307,10 +319,19 @@ Verified on 2026-07-14:
 - Hume configuration completed successfully in Worklin without exposing provider secrets to the renderer or repository.
 - `90c9e2d` deployed successfully to Railway. The combined public edge preserves ordinary control-plane HTTP, exposes only the exact ElevenLabs upstream WebSocket path, and returns HTTP 401 when the provider authorization JWT is absent.
 - `a80ce3e` deployed successfully to Vercel. The canonical production alias serves `index-CQJeke1Q.js`, which contains the ElevenLabs disconnect-visibility copy.
-- The authenticated ElevenLabs production attempt bootstrapped and bound its provider conversation successfully, then surfaced `agent disconnected`; no ElevenLabs upstream request reached Railway during the attempt.
+- The approved ElevenLabs key change is limited to `Speech to Speech: Access`; `ElevenAgents: Write` remains enabled and unrelated scopes remain disabled.
+- `53e1416` preserved private-pilot access for the canonical platform owner while retaining compatibility with the exact legacy raw user allowlist entry.
+- `e2ea3b6` moved the internal shared-runtime pilot assistant ID out of `railway.json` and into server-only Railway configuration; the current assistant recovered from `runtime_not_ready`.
+- `9970ef9` aligned Worklin's Speech Engine JWT verifier with the official ElevenLabs SDK's optional Bearer-prefix handling and `iat` validation.
+- Railway deployment `1a145888-9100-4054-9c2d-039cdd29a9eb` is successful and `/readyz` passed.
+- The final authenticated ElevenLabs production attempt reached `Listening`; Railway logged the Speech Engine upstream open and close. The next failure is the normal LLM stage: Kimi rejects `claude-sonnet-4-6` with HTTP 404/permission denied.
 
 Recent production commits relevant to this pilot include:
 
+- `9970ef9` — accept ElevenLabs' optional Bearer-prefixed Speech Engine authorization and validate `iat`.
+- `e2ea3b6` — keep private-pilot shared-runtime assistant IDs in server-only configuration.
+- `53e1416` — preserve voice-pilot access across legacy raw and canonical platform owner principals.
+- `13729b4` — verify the configured Speech Engine resource without exposing provider secrets.
 - `a80ce3e` — surface unexpected ElevenLabs agent disconnects in the live-voice panel.
 - `90c9e2d` — proxy the exact ElevenLabs Speech Engine upstream path through the combined Railway public edge.
 - `919abb2` — allow read-only Brand Brain context through the actor pre-execution gate.
@@ -437,12 +458,13 @@ Targets:
 
 ### 4. Resume the ElevenLabs pilot
 
-ElevenLabs remains disabled for general users. The account, scoped server-side credential, Speech Engine, Worklin assistant configuration, browser token flow, and public upstream route now exist.
+ElevenLabs remains disabled for general users. The account, scoped server-side credential, Speech Engine, Worklin assistant configuration, browser token flow, public upstream route, provider JWT verification, and runtime upstream are now production-proven.
 
-1. Read the configured Speech Engine through a server-side diagnostic and verify the stored `speech_engine.ws_url`; return only non-secret configuration and never return the provider key.
-2. If the URL differs, update the existing Speech Engine rather than creating another duplicate resource.
-3. If the URL is correct, use the visible `agent disconnected` result plus the absence of an incoming upstream request when contacting ElevenLabs support.
-4. Once the upstream opens, run the same three-turn, transcript, visualization, barge-in, persistence, duplicate-session, approval-safety, no-raw-audio, and latency gates documented for Hume.
+1. Ask the user which model profile to use for this pilot conversation. The current profile sends `claude-sonnet-4-6` to Kimi and is rejected with HTTP 404/permission denied. Do not silently change the user's model profile.
+2. Apply only the selected model-profile change and confirm a normal typed turn succeeds before spending another voice minute.
+3. Start Live Voice, confirm `Listening`, and speak a short first turn. Verify the Worklin response is both audible and persisted as the same conversation turn.
+4. Run the documented three-turn, partial/final transcript, input/output visualization, barge-in, persistence, duplicate-session, approval-safety, no-raw-audio, and latency gates.
+5. Keep the internal shared-runtime fallback limited to the one pilot assistant. Do not treat it as customer-ready or increase Railway runtime cost/capacity without explicit authorization.
 
 Do not declare Release B complete until the in-app and overlay surfaces both pass the same-conversation behavioral and safety suite.
 
@@ -477,15 +499,15 @@ Continue Worklin production work from:
 
 Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKLIN_PRODUCTION_HANDOFF.md is the only authoritative handoff; do not create another dated handoff.
 
-The current private-pilot engine is ElevenLabs. Its scoped credential is stored only in Worklin's server-side credential service. Speech Engine `seng_9801kxgndkvqe3v93h0wmebr3bqy` is configured with upstream `wss://worklin-ai-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`. Commit `90c9e2d` deployed the exact-path public upstream proxy; unauthenticated probes correctly receive 401 and normal Railway health/readiness remain green. Commit `a80ce3e` keeps unexpected provider disconnects visible in the real composer.
+The current private-pilot engine is ElevenLabs. Its scoped credential is stored only in Worklin's server-side credential service. Speech Engine `seng_9801kxgndkvqe3v93h0wmebr3bqy` is configured with upstream `wss://worklin-ai-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`. The approved key scopes are `ElevenAgents: Write` and `Speech to Speech: Access`; unrelated scopes remain disabled. Never expose or retrieve the key.
 
-The authenticated production attempt bootstrapped successfully, connected browser WebRTC, and bound the provider conversation to Worklin with HTTP 200. Roughly 0.4 seconds later ElevenLabs disconnected its agent; production now visibly reports `ElevenLabs ended the voice session: agent disconnected`. Railway received no request from ElevenLabs on the configured upstream path. The ElevenLabs Free plan still has its included call allowance, so this is not a billing failure. Next, use a server-side diagnostic with the already stored credential to confirm the Speech Engine's persisted `speech_engine.ws_url`; never return or log the key. If the URL is correct, escalate the provider disconnect plus missing-upstream evidence to ElevenLabs rather than creating duplicate agents.
+The ElevenLabs production transport now works end to end. `53e1416` fixed legacy-versus-canonical owner allowlist matching, `e2ea3b6` moved the single pilot shared-runtime assistant ID into server-only Railway configuration, and `9970ef9` aligned Worklin's Speech Engine JWT verifier with ElevenLabs' optional Bearer prefix. Railway deployment `1a145888-9100-4054-9c2d-039cdd29a9eb` is healthy. Authenticated Chrome reached `Listening`, and Railway logged the ElevenLabs Speech Engine upstream opening and closing. The immediate blocker is now the normal Worklin LLM stage: Kimi rejects configured model `claude-sonnet-4-6` with HTTP 404/permission denied. Ask the user which model profile to use before changing it, verify one typed turn, then rerun voice.
 
 The Hume path is also configured and its connectivity is proven: Worklin bootstrap returned 200, Hume WebSocket returned 101, session_settings/chat_metadata exchanged, Chrome granted the built-in microphone, Worklin showed Listening, and 16 kHz audio_input frames streamed. Hume is independently blocked by error E0300: exhausted credit balance. Stop at that billing gate; the user must add credits.
 
 The app previously hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. The deployed fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Preserve all unrelated worktree changes.
 
-Production application behavior is verified through `a80ce3e`; repository `main` includes that application commit and this handoff refresh. Natural-language messages, including first-turn wake-up, onboarding, connection, audit, and copy requests, now reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The authenticated Dr Rachael production test completed through three Kimi calls, loaded `write-brand-copy`, read Brand Brain without denial, reported the truthful Seamossonly-versus-Worklin profile mismatch, and returned the requested email. The complete first-party catalog is bundled for every user. The live-voice card now has explicit close/reopen behavior, large-orb start guidance, and Hume/ElevenLabs/Native settings consistency in production. Vercel and Railway are healthy. The source-level Contacts and approval/channel terminology checks passed with `89` focused tests, but broader production catalog/load sampling and the live terminology sweep are blocked by the authenticated Chrome profile's `Updated Terms` re-acceptance screen. Stop there until the user reviews and accepts or declines the policies. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
+Production application behavior is verified through `9970ef9`; repository `main` includes that application commit and this handoff refresh. Natural-language messages, including first-turn wake-up, onboarding, connection, audit, and copy requests, reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The authenticated Dr Rachael production test completed through three Kimi calls, loaded `write-brand-copy`, read Brand Brain without denial, reported the truthful Seamossonly-versus-Worklin profile mismatch, and returned the requested email. The complete first-party catalog is bundled for every user. The live-voice card has explicit close/reopen behavior, large-orb start guidance, and Hume/ElevenLabs/Native settings consistency in production. Vercel and Railway are healthy. The source-level Contacts and approval/channel terminology checks passed with `89` focused tests, but broader production catalog/load sampling and the live terminology sweep were blocked in another Chrome profile by an `Updated Terms` re-acceptance screen. Stop there until the user reviews and accepts or declines the policies. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
 
 After either provider can sustain a session, run the documented three-turn test, real-time transcript check, output-driven speaking visualization check, barge-in latency measurement, end-session and refresh persistence checks, duplicate-session rejection, approval safety test, and no-raw-audio confirmation. Use the authenticated Chrome profile requested by the user; do not switch to Safari or the in-app browser. Never repeat or expose provider credentials.
 ```
