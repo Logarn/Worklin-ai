@@ -34,7 +34,7 @@ This bridge is enough for one real customer while Railway project-token issuance
 
 Production status on 2026-07-15:
 
-- Commit `65ff168` is pushed on `assistant/preprovisioned-customer-runtime` in PR `#113`.
+- PR `#113` merged to `main` as `d96c0aa`. Railway's two successful production deployments were built from the equivalent application code at `65ff168`; the later branch commit and squash only finalized this handoff and repository history.
 - The existing stopped service was configured as an isolated `claim_once` runtime and received its own 500 MB volume. No API key or customer identity is stored in its service configuration.
 - Railway deployment `d779d8d9-2c62-4652-8cd2-f30e67fda61d` completed successfully for the private customer runtime. Its full `/readyz` healthcheck passed and one replica is running.
 - Railway deployment `657367ac-fcd5-4790-b2df-cb8247cf7103` completed successfully for the main Worklin control plane with exactly one pre-provisioned slot registered. Public `/healthz` returned `{"ok":true}` and `/readyz` returned `{"ok":true,"gatewayStatus":200}`.
