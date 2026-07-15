@@ -59,6 +59,7 @@ import {
   listActiveArtifactGrantsForRecipient,
   normalizeInviteEmail,
 } from "./artifact-sharing-store.js";
+import { pathEquals, pathIsOrStartsWith } from "./http-paths.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -1049,7 +1050,7 @@ async function handleAssistants(
   url: URL,
   user: UserRow,
 ): Promise<boolean> {
-  if (url.pathname === "/v1/assistants/" && req.method === "GET") {
+  if (pathEquals(url.pathname, "/v1/assistants/") && req.method === "GET") {
     const assistant = getOrCreateAssistant(user);
     const hosting = url.searchParams.get("hosting");
     const includeAssistant =
@@ -1071,7 +1072,10 @@ async function handleAssistants(
     return true;
   }
 
-  if (url.pathname === "/v1/assistants/active/" && req.method === "GET") {
+  if (
+    pathEquals(url.pathname, "/v1/assistants/active/") &&
+    req.method === "GET"
+  ) {
     const assistant = getOrCreateAssistant(user);
     const runtimeStack = hasAcceptedAssistantConsent(user.consent_json)
       ? ensureAssistantRuntime(assistant)
@@ -1080,7 +1084,10 @@ async function handleAssistants(
     return true;
   }
 
-  if (url.pathname === "/v1/assistants/hatch/" && req.method === "POST") {
+  if (
+    pathEquals(url.pathname, "/v1/assistants/hatch/") &&
+    req.method === "POST"
+  ) {
     if (!checkCsrf(req)) {
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
@@ -1389,7 +1396,10 @@ async function proxySharedArtifact(
   url: URL,
   user: UserRow,
 ): Promise<boolean> {
-  if (url.pathname === "/v1/shared-artifacts/" && req.method === "GET") {
+  if (
+    pathEquals(url.pathname, "/v1/shared-artifacts/") &&
+    req.method === "GET"
+  ) {
     const grants = listActiveArtifactGrantsForRecipient(db, user.id);
     sendJson(req, res, {
       results: grants.map((grant) => ({
@@ -1760,11 +1770,14 @@ app.use(
   asyncHandler(async (req, res) => {
     const url = new URL(req.originalUrl, env.apiOrigin);
 
-    if (url.pathname === "/v1/feature-flags/client-flag-values/") {
+    if (pathEquals(url.pathname, "/v1/feature-flags/client-flag-values/")) {
       handleFeatureFlags(req, res);
       return;
     }
-    if (url.pathname === "/v1/telemetry/ingest/" && req.method === "POST") {
+    if (
+      pathEquals(url.pathname, "/v1/telemetry/ingest/") &&
+      req.method === "POST"
+    ) {
       sendJson(req, res, { ok: true }, 202);
       return;
     }
@@ -1780,15 +1793,15 @@ app.use(
     const user = requireUser(req, res);
     if (!user) return;
 
-    if (url.pathname === "/v1/user/me/") {
+    if (pathEquals(url.pathname, "/v1/user/me/")) {
       await handleUserMe(req, res, user);
       return;
     }
-    if (url.pathname === "/v1/organizations/") {
+    if (pathEquals(url.pathname, "/v1/organizations/")) {
       handleOrganizations(req, res, user);
       return;
     }
-    if (url.pathname === "/v1/organizations/billing/summary/") {
+    if (pathEquals(url.pathname, "/v1/organizations/billing/summary/")) {
       handleBilling(req, res);
       return;
     }
@@ -1796,7 +1809,7 @@ app.use(
     if (await handleArtifactInvitations(req, res, url, user)) return;
     if (await proxySharedArtifact(req, res, url, user)) return;
 
-    if (url.pathname.startsWith("/v1/assistants/")) {
+    if (pathIsOrStartsWith(url.pathname, "/v1/assistants/")) {
       const handled = await handleAssistants(req, res, url, user);
       if (handled) return;
       await proxyToGateway(req, res, url, user);
