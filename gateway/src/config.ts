@@ -25,7 +25,7 @@ export type GatewayConfig = {
   routingEntries: RoutingEntry[];
   runtimeInitialBackoffMs: number;
   runtimeMaxRetries: number;
-  runtimeAssistantScopeMode?: "off" | "enforce";
+  runtimeAssistantScopeMode?: "off" | "enforce" | "claim_once";
   runtimeProxyRequireAuth: boolean;
   runtimeTimeoutMs: number;
   shutdownDrainMs: number;
@@ -176,9 +176,10 @@ export function loadConfig(): GatewayConfig {
     undefined;
   const runtimeAssistantScopeModeRaw =
     process.env.RUNTIME_ASSISTANT_SCOPE_MODE?.trim().toLowerCase();
-  const runtimeAssistantScopeMode: "off" | "enforce" =
+  const runtimeAssistantScopeMode: "off" | "enforce" | "claim_once" =
     runtimeAssistantScopeModeRaw === "off" ||
-    runtimeAssistantScopeModeRaw === "enforce"
+    runtimeAssistantScopeModeRaw === "enforce" ||
+    runtimeAssistantScopeModeRaw === "claim_once"
       ? runtimeAssistantScopeModeRaw
       : platformAssistantId ||
           envFlagTrue(process.env.WORKLIN_REQUIRE_ISOLATED_RUNTIME) ||

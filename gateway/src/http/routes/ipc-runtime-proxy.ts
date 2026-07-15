@@ -31,6 +31,10 @@ import {
   type RouteSchemaPolicy,
 } from "../../ipc/route-schema-cache.js";
 import { getLogger } from "../../logger.js";
+import {
+  claimRuntimeAssistant,
+  readRuntimeAssistantClaim,
+} from "../../runtime-assistant-claim.js";
 
 const log = getLogger("ipc-runtime-proxy");
 
@@ -39,12 +43,17 @@ const VELLUM_HEADER_PREFIX = "x-vellum-";
 
 async function resolveStackAssistantId(
   config: GatewayConfig,
+  requestedAssistantId?: string,
 ): Promise<string | null> {
   if (config.platformAssistantId) return config.platformAssistantId;
   const fromCredential = await readCredential(
     credentialKey("vellum", "platform_assistant_id"),
   );
-  return fromCredential?.trim() || null;
+  if (fromCredential?.trim()) return fromCredential.trim();
+  if (config.runtimeAssistantScopeMode !== "claim_once") return null;
+  if (!requestedAssistantId) return readRuntimeAssistantClaim();
+  const claim = claimRuntimeAssistant(requestedAssistantId);
+  return claim.ok ? claim.assistantId : readRuntimeAssistantClaim();
 }
 
 function bindPlatformOwnerClaims(
@@ -120,10 +129,24 @@ export async function tryIpcProxy(
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
     claims = result.claims;
-    if (config.runtimeAssistantScopeMode === "enforce") {
+    if (
+      config.runtimeAssistantScopeMode === "enforce" ||
+      config.runtimeAssistantScopeMode === "claim_once"
+    ) {
+      const parsedSubject = parseSub(claims.sub);
+      const requestedAssistantId =
+        parsedSubject.ok && parsedSubject.principalType === "actor"
+          ? parsedSubject.assistantId
+          : null;
+      if (!requestedAssistantId) {
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+      }
       let expectedAssistantId: string | null;
       try {
-        expectedAssistantId = await resolveStackAssistantId(config);
+        expectedAssistantId = await resolveStackAssistantId(
+          config,
+          requestedAssistantId,
+        );
       } catch (err) {
         log.error(
           { err, method: req.method, path: new URL(req.url).pathname },

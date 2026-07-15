@@ -34,6 +34,12 @@ export interface RuntimeStackRow {
   updated_at: string;
 }
 
+export interface PreprovisionedRuntimeSlot {
+  serviceRef: string;
+  gatewayUrl: string;
+  workspaceVolumeRef: string | null;
+}
+
 export interface RuntimeStackConfig {
   gatewayUrl: string;
   publicIngressUrl: string;
@@ -44,6 +50,7 @@ export interface RuntimeStackConfig {
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
   runtimeRoot: string | null;
+  preprovisionedRuntimeSlots: readonly PreprovisionedRuntimeSlot[];
 }
 
 type EnvLike = Record<string, string | undefined>;
@@ -58,6 +65,62 @@ function boolEnv(value: string | undefined, fallback: boolean): boolean {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function parsePreprovisionedRuntimeSlots(
+  value: string | undefined,
+): PreprovisionedRuntimeSlot[] {
+  if (!value?.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("WORKLIN_PREPROVISIONED_RUNTIME_SLOTS must be valid JSON.");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      "WORKLIN_PREPROVISIONED_RUNTIME_SLOTS must be a JSON array.",
+    );
+  }
+
+  const slots: PreprovisionedRuntimeSlot[] = [];
+  const serviceRefs = new Set<string>();
+  const gatewayUrls = new Set<string>();
+  for (const item of parsed) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("Each preprovisioned runtime slot must be an object.");
+    }
+    const record = item as Record<string, unknown>;
+    const serviceRef =
+      typeof record.serviceRef === "string" ? record.serviceRef.trim() : "";
+    const rawGatewayUrl =
+      typeof record.gatewayUrl === "string" ? record.gatewayUrl.trim() : "";
+    const workspaceVolumeRef =
+      typeof record.workspaceVolumeRef === "string"
+        ? record.workspaceVolumeRef.trim() || null
+        : null;
+    let gatewayUrl: string;
+    try {
+      const url = new URL(rawGatewayUrl);
+      if (url.protocol !== "http:" && url.protocol !== "https:")
+        throw new Error();
+      gatewayUrl = trimTrailingSlash(url.toString());
+    } catch {
+      throw new Error(
+        "Each preprovisioned runtime slot needs an HTTP gatewayUrl.",
+      );
+    }
+    if (!serviceRef) {
+      throw new Error("Each preprovisioned runtime slot needs a serviceRef.");
+    }
+    if (serviceRefs.has(serviceRef) || gatewayUrls.has(gatewayUrl)) {
+      throw new Error("Preprovisioned runtime slots must be unique.");
+    }
+    serviceRefs.add(serviceRef);
+    gatewayUrls.add(gatewayUrl);
+    slots.push({ serviceRef, gatewayUrl, workspaceVolumeRef });
+  }
+  return slots;
 }
 
 export function runtimeStackConfigFromEnv(
@@ -98,6 +161,9 @@ export function runtimeStackConfigFromEnv(
       rawEnv.WORKLIN_RUNTIME_STACK_PROVIDER?.trim() ||
       (template ? "static_template" : "railway"),
     runtimeRoot: rawEnv.WORKLIN_RUNTIME_ROOT?.trim() || null,
+    preprovisionedRuntimeSlots: parsePreprovisionedRuntimeSlots(
+      rawEnv.WORKLIN_PREPROVISIONED_RUNTIME_SLOTS,
+    ),
   };
 }
 
@@ -191,19 +257,17 @@ export function getRuntimeStackForAssistant(
 ): RuntimeStackRow | null {
   if (assistant.runtime_stack_id) {
     const byId = db
-      .query<
-        RuntimeStackRow,
-        [string, string]
-      >("SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?")
+      .query<RuntimeStackRow, [string, string]>(
+        "SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?",
+      )
       .get(assistant.runtime_stack_id, assistant.id);
     if (byId) return byId;
   }
   return (
     db
-      .query<
-        RuntimeStackRow,
-        [string]
-      >("SELECT * FROM runtime_stacks WHERE assistant_id = ?")
+      .query<RuntimeStackRow, [string]>(
+        "SELECT * FROM runtime_stacks WHERE assistant_id = ?",
+      )
       .get(assistant.id) ?? null
   );
 }
@@ -450,12 +514,84 @@ export function getRuntimeStackById(
 ): RuntimeStackRow | null {
   return (
     db
-      .query<
-        RuntimeStackRow,
-        [string]
-      >("SELECT * FROM runtime_stacks WHERE id = ?")
+      .query<RuntimeStackRow, [string]>(
+        "SELECT * FROM runtime_stacks WHERE id = ?",
+      )
       .get(stackId) ?? null
   );
+}
+
+export function claimPreprovisionedRuntimeStack(
+  db: Database,
+  assistant: AssistantRuntimeRow,
+  stack: RuntimeStackRow,
+  config: RuntimeStackConfig,
+  nowIso: () => string,
+): RuntimeStackRow {
+  if (
+    config.preprovisionedRuntimeSlots.length === 0 ||
+    (stack.status !== "failed" && stack.status !== "provisioning") ||
+    stack.gateway_url !== null ||
+    stack.service_ref !== null ||
+    stack.workspace_volume_ref !== null
+  ) {
+    return stack;
+  }
+
+  return db.transaction(() => {
+    const current = getRuntimeStackById(db, stack.id);
+    if (
+      !current ||
+      current.assistant_id !== assistant.id ||
+      (current.status !== "failed" && current.status !== "provisioning") ||
+      current.gateway_url !== null ||
+      current.service_ref !== null ||
+      current.workspace_volume_ref !== null
+    ) {
+      return current ?? stack;
+    }
+
+    const allocated = new Set(
+      db
+        .query<{ service_ref: string }, []>(
+          `SELECT service_ref
+           FROM runtime_stacks
+           WHERE service_ref IS NOT NULL AND status != 'deleted'`,
+        )
+        .all()
+        .map((row) => row.service_ref),
+    );
+    const slot = config.preprovisionedRuntimeSlots.find(
+      (candidate) => !allocated.has(candidate.serviceRef),
+    );
+    if (!slot) return current;
+
+    db.query(
+      `UPDATE runtime_stacks
+       SET status = 'active',
+           provider = 'preprovisioned',
+           gateway_url = ?,
+           workspace_volume_ref = ?,
+           service_ref = ?,
+           last_health_status = 'reserved',
+           last_error = NULL,
+           updated_at = ?
+       WHERE id = ?
+         AND assistant_id = ?
+         AND status IN ('failed', 'provisioning')
+         AND gateway_url IS NULL
+         AND service_ref IS NULL
+         AND workspace_volume_ref IS NULL`,
+    ).run(
+      slot.gatewayUrl,
+      slot.workspaceVolumeRef,
+      slot.serviceRef,
+      nowIso(),
+      current.id,
+      assistant.id,
+    );
+    return getRuntimeStackById(db, current.id) ?? current;
+  })();
 }
 
 export function countAllocatedRuntimeServices(db: Database): number {

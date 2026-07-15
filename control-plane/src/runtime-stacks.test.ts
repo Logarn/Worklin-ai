@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import {
   assistantApiStatusForRuntimeStack,
+  claimPreprovisionedRuntimeStack,
   countAllocatedRuntimeServices,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
@@ -80,6 +81,7 @@ function config(
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
     runtimeRoot: "/data",
+    preprovisionedRuntimeSlots: [],
     ...overrides,
   };
 }
@@ -103,10 +105,9 @@ describe("runtime stack provisioning defaults", () => {
     expect(operationalStateForRuntimeStack(stack)).toBe("provisioning");
 
     const row = db
-      .query<
-        { runtime_stack_id: string | null },
-        []
-      >("SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'")
+      .query<{ runtime_stack_id: string | null }, []>(
+        "SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'",
+      )
       .get();
     expect(row?.runtime_stack_id).toBe(stack.id);
   });
@@ -311,10 +312,9 @@ describe("runtime stack provisioning defaults", () => {
     );
 
     const count = db
-      .query<
-        { count: number },
-        []
-      >("SELECT COUNT(*) AS count FROM runtime_stacks")
+      .query<{ count: number }, []>(
+        "SELECT COUNT(*) AS count FROM runtime_stacks",
+      )
       .get();
     expect(second.id).toBe(first.id);
     expect(second).toMatchObject({
@@ -640,6 +640,98 @@ describe("runtime stack provisioning defaults", () => {
       last_error: null,
     });
   });
+
+  test("atomically assigns one preprovisioned slot to only one assistant", () => {
+    const db = setupDb();
+    const slotConfig = config({
+      preprovisionedRuntimeSlots: [
+        {
+          serviceRef: "reserved-service-1",
+          gatewayUrl: "http://reserved-runtime.railway.internal:8080",
+          workspaceVolumeRef: "reserved-volume-1",
+        },
+      ],
+    });
+    const firstAssistant = assistant();
+    const secondAssistant = assistant({
+      id: "asst-2",
+      user_id: "user-2",
+      org_id: "org-2",
+    });
+    const firstInitial = ensureRuntimeStackForAssistant(
+      db,
+      firstAssistant,
+      slotConfig,
+      NOW,
+    );
+    const secondInitial = ensureRuntimeStackForAssistant(
+      db,
+      secondAssistant,
+      slotConfig,
+      NOW,
+    );
+
+    const first = claimPreprovisionedRuntimeStack(
+      db,
+      firstAssistant,
+      firstInitial,
+      slotConfig,
+      NOW,
+    );
+    const second = claimPreprovisionedRuntimeStack(
+      db,
+      secondAssistant,
+      secondInitial,
+      slotConfig,
+      NOW,
+    );
+
+    expect(first).toMatchObject({
+      status: "active",
+      provider: "preprovisioned",
+      service_ref: "reserved-service-1",
+      workspace_volume_ref: "reserved-volume-1",
+      gateway_url: "http://reserved-runtime.railway.internal:8080",
+    });
+    expect(second).toMatchObject({
+      status: "provisioning",
+      service_ref: null,
+      workspace_volume_ref: null,
+      gateway_url: null,
+    });
+  });
+
+  test("does not claim a preprovisioned slot for a stack with allocated state", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    recordRuntimeStackService(db, initial.id, "existing-service", NOW);
+    const result = claimPreprovisionedRuntimeStack(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      getRuntimeStackById(db, initial.id)!,
+      config({
+        preprovisionedRuntimeSlots: [
+          {
+            serviceRef: "reserved-service-1",
+            gatewayUrl: "http://reserved-runtime.railway.internal:8080",
+            workspaceVolumeRef: "reserved-volume-1",
+          },
+        ],
+      }),
+      NOW,
+    );
+
+    expect(result).toMatchObject({
+      status: "provisioning",
+      service_ref: "existing-service",
+      gateway_url: null,
+    });
+  });
 });
 
 describe("runtimeStackConfigFromEnv", () => {
@@ -656,6 +748,7 @@ describe("runtimeStackConfigFromEnv", () => {
       legacySharedRuntimeAssistantIds: [],
       legacySharedRuntimeUserEmailHashes: [],
       runtimeStackUrlTemplate: null,
+      preprovisionedRuntimeSlots: [],
     });
   });
 
@@ -683,5 +776,44 @@ describe("runtimeStackConfigFromEnv", () => {
         "https://worklin.example.com",
       ).legacySharedRuntimeAssistantIds,
     ).toEqual(["asst-1", "asst-2", "asst-3"]);
+  });
+
+  test("parses preprovisioned runtime slots", () => {
+    expect(
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_PREPROVISIONED_RUNTIME_SLOTS: JSON.stringify([
+            {
+              serviceRef: "service-1",
+              gatewayUrl: "http://runtime-1.railway.internal:8080/",
+              workspaceVolumeRef: "volume-1",
+            },
+          ]),
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ).preprovisionedRuntimeSlots,
+    ).toEqual([
+      {
+        serviceRef: "service-1",
+        gatewayUrl: "http://runtime-1.railway.internal:8080",
+        workspaceVolumeRef: "volume-1",
+      },
+    ]);
+  });
+
+  test("rejects duplicate preprovisioned runtime slots", () => {
+    expect(() =>
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_PREPROVISIONED_RUNTIME_SLOTS: JSON.stringify([
+            { serviceRef: "service-1", gatewayUrl: "http://runtime-1:8080" },
+            { serviceRef: "service-1", gatewayUrl: "http://runtime-2:8080" },
+          ]),
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ),
+    ).toThrow("Preprovisioned runtime slots must be unique.");
   });
 });
