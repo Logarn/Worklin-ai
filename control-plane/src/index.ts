@@ -17,6 +17,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   assistantApiStatusForRuntimeStack,
+  claimPreprovisionedRuntimeStack,
   countAllocatedRuntimeServices,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
@@ -759,7 +760,13 @@ function scheduleRuntimeProvisioning(
 }
 
 function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
-  const runtimeStack = runtimeStackForPayload(assistant);
+  const runtimeStack = claimPreprovisionedRuntimeStack(
+    db,
+    assistant,
+    runtimeStackForPayload(assistant),
+    runtimeStackConfig,
+    nowIso,
+  );
   const provisioningError = runtimeProvisioningConfigurationError();
   if (provisioningError && runtimeStack.status === "provisioning") {
     markRuntimeStackFailed(
@@ -1093,9 +1100,15 @@ async function handleAssistants(
       return true;
     }
     const existing = getActiveAssistant(user);
-    const provisioningError = runtimeProvisioningConfigurationError();
     const assistant = existing ?? getOrCreateAssistant(user);
-    const runtimeStack = runtimeStackForPayload(assistant);
+    const runtimeStack = claimPreprovisionedRuntimeStack(
+      db,
+      assistant,
+      runtimeStackForPayload(assistant),
+      runtimeStackConfig,
+      nowIso,
+    );
+    const provisioningError = runtimeProvisioningConfigurationError();
     if (
       (runtimeStack.status === "provisioning" ||
         runtimeStack.status === "failed") &&

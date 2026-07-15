@@ -21,6 +21,10 @@ import { fetchImpl } from "../../fetch.js";
 import { getLogger } from "../../logger.js";
 import { isLoopbackAddress } from "../../util/is-loopback-address.js";
 import { tryIpcProxy } from "./ipc-runtime-proxy.js";
+import {
+  claimRuntimeAssistant,
+  readRuntimeAssistantClaim,
+} from "../../runtime-assistant-claim.js";
 
 const log = getLogger("runtime-proxy");
 
@@ -60,12 +64,38 @@ function parseAssistantScopedPath(
 
 async function resolveStackAssistantId(
   config: GatewayConfig,
+  requestedAssistantId?: string,
 ): Promise<string | null> {
   if (config.platformAssistantId) return config.platformAssistantId;
   const fromCredential = await readCredential(
     credentialKey("vellum", "platform_assistant_id"),
   );
-  return fromCredential?.trim() || null;
+  if (fromCredential?.trim()) return fromCredential.trim();
+  if (config.runtimeAssistantScopeMode !== "claim_once") return null;
+  if (!requestedAssistantId) return readRuntimeAssistantClaim();
+  const claim = claimRuntimeAssistant(requestedAssistantId);
+  return claim.ok ? claim.assistantId : readRuntimeAssistantClaim();
+}
+
+function requestedAssistantId(
+  claims: TokenClaims,
+  assistantScopedPath: AssistantScopedPath | null,
+): string | null {
+  const subject = parseSub(claims.sub);
+  if (
+    !subject.ok ||
+    subject.principalType !== "actor" ||
+    !subject.assistantId
+  ) {
+    return null;
+  }
+  if (
+    assistantScopedPath &&
+    assistantScopedPath.assistantId !== subject.assistantId
+  ) {
+    return null;
+  }
+  return subject.assistantId;
 }
 
 function bindPlatformOwnerClaims(
@@ -153,10 +183,23 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
       }
       let exchangeClaims = result.claims;
       let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
-      if (config.runtimeAssistantScopeMode === "enforce") {
+      if (
+        config.runtimeAssistantScopeMode === "enforce" ||
+        config.runtimeAssistantScopeMode === "claim_once"
+      ) {
+        const requested = requestedAssistantId(
+          result.claims,
+          assistantScopedPath,
+        );
+        if (!requested) {
+          return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
         let expectedAssistantId: string | null;
         try {
-          expectedAssistantId = await resolveStackAssistantId(config);
+          expectedAssistantId = await resolveStackAssistantId(
+            config,
+            requested,
+          );
         } catch (err) {
           log.error(
             { err, method: req.method, path: url.pathname },
@@ -208,7 +251,10 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
     // /v1/assistants/:assistantId/... requests from clients to flat paths.
     let upstreamPath = url.pathname;
     if (assistantScopedPath) {
-      if (config.runtimeAssistantScopeMode === "enforce") {
+      if (
+        config.runtimeAssistantScopeMode === "enforce" ||
+        config.runtimeAssistantScopeMode === "claim_once"
+      ) {
         let expectedAssistantId: string | null;
         try {
           expectedAssistantId = await resolveStackAssistantId(config);

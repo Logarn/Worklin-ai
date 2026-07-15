@@ -11,10 +11,59 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `4dacb43` (`Merge pull request #111 from Logarn/assistant/fix-control-plane-slash-routes`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, the secret-safe Speech Engine resource verifier, pilot-principal compatibility, server-side shared-runtime scoping, the production-proven ElevenLabs upstream authorization fix, and the slashless control-plane route hotfix
+- Current production application commit: `65ff168` (`Add one-customer isolated runtime bridge`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, the secret-safe Speech Engine resource verifier, pilot-principal compatibility, server-side shared-runtime scoping, the production-proven ElevenLabs upstream authorization fix, the slashless control-plane route hotfix, and the capacity-one isolated customer bridge described below
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## P0: Multi-User Agent Runtime Capacity
+
+This is a release-blocking product problem, not a voice-only follow-up. Worklin's account, authentication, conversation, and settings layers support multiple users, but the agent execution layer still treats each assistant as an isolated runtime deployment. Automatic Railway provisioning exists, but production cannot mint the required project-scoped token while the Railway trial account is unverified. The legacy shared runtime remains restricted to exactly one pilot assistant because sharing its workspace, memory, credentials, and tool process across customers would violate tenant isolation.
+
+### Immediate one-customer bridge
+
+The bounded production bridge reuses one existing stopped Railway service as a pre-provisioned isolated runtime slot:
+
+- `WORKLIN_PREPROVISIONED_RUNTIME_SLOTS` declares only operator-prepared private runtime slots; it contains no provider or customer credentials.
+- The first consented assistant whose stack is still unallocated may atomically claim the available slot. Stack assignment is unique and persisted in the control-plane database.
+- The isolated gateway runs with `RUNTIME_ASSISTANT_SCOPE_MODE=claim_once`. Its first valid signed actor request persists the assistant identity on the dedicated volume. Repeated requests for that assistant are idempotent; every different assistant is rejected before reaching the daemon.
+- The runtime has its own volume, workspace, assistant database, gateway security directory, and credential-executor storage. It does not share customer state with the private voice-pilot assistant.
+- Once the single slot is assigned, later assistants remain unallocated and fail closed. Never widen the legacy shared-runtime allowlist to create capacity.
+
+This bridge is enough for one real customer while Railway project-token issuance is blocked. It is not the scalable architecture and must not be represented as general multi-user capacity.
+
+Production status on 2026-07-15:
+
+- Commit `65ff168` is pushed on `assistant/preprovisioned-customer-runtime` in PR `#113`.
+- The existing stopped service was configured as an isolated `claim_once` runtime and received its own 500 MB volume. No API key or customer identity is stored in its service configuration.
+- Railway deployment `d779d8d9-2c62-4652-8cd2-f30e67fda61d` completed successfully for the private customer runtime. Its full `/readyz` healthcheck passed and one replica is running.
+- Railway deployment `657367ac-fcd5-4790-b2df-cb8247cf7103` completed successfully for the main Worklin control plane with exactly one pre-provisioned slot registered. Public `/healthz` returned `{"ok":true}` and `/readyz` returned `{"ok":true,"gatewayStatus":200}`.
+- The slot is intentionally unclaimed. Do not consume it with a test assistant; the next consented new assistant should be the real customer.
+- Qdrant cannot start in the small reserved runtime and degrades as designed with dense embeddings disabled. Treat advanced vector-memory behavior as unavailable on this bridge; verify normal BYOK chat, SQLite-backed state, skills, tools, and persistence with the customer before describing those behaviors as accepted.
+- Railway project-token creation remains blocked by account verification. The automatic per-assistant Railway provisioner remains inert, and the project still has limited trial credit. Monitor usage while the second service is running.
+
+### Durable fix that must remain on every future handoff
+
+Replace permanent per-assistant services and the one-slot bridge with a tenant-safe pooled execution plane. Do not close this task until all of the following are true:
+
+1. Arbitrary new users can complete signup, consent, BYOK provider setup, assistant creation, and a real agent turn without an operator editing infrastructure.
+2. Every request carries authenticated organization, user, and assistant context through conversation, memory, credential, file, artifact, tool, background-job, and voice-session operations.
+3. Cross-tenant reads, writes, credential use, tool execution, event delivery, and file access fail closed under an adversarial two-tenant test suite.
+4. Risky code and host-tool work uses an ephemeral tenant-scoped sandbox; ordinary turns use a shared worker pool rather than a permanent service per user.
+5. Per-tenant concurrency limits, rate limits, storage quotas, idle suspension, usage metrics, and operator-visible capacity alerts are enforced.
+6. BYOK credentials remain server-side and tenant-scoped. Worklin-managed model or voice billing stays deferred until explicitly reopened.
+7. The private pilot assistant and this pre-provisioned customer slot have a tested migration path, after which `legacy_shared`, `claim_once`, and `WORKLIN_PREPROVISIONED_RUNTIME_SLOTS` can be removed.
+
+Minimum release gate: two independently authenticated users run simultaneous multi-turn conversations and tool tasks, then a security test proves that swapping conversation, assistant, organization, actor, artifact, and credential identifiers cannot cross the tenant boundary.
+
+Immediate customer acceptance sequence:
+
+1. Let the real customer use the normal production URL and complete signup, terms, consent, and BYOK provider setup themselves.
+2. Confirm their assistant reports `runtime_provider: "preprovisioned"` and `runtime_status: "active"`; do not expose their identifiers in this handoff.
+3. Run a typed multi-turn BYOK conversation, refresh and confirm persistence, load one bundled skill, execute one read-only tool, and verify an approval-required action still pauses safely.
+4. Confirm the reserved runtime logs one first-assistant claim and never changes identity afterward.
+5. After the slot is claimed, verify another assistant cannot reach that daemon and cannot inherit its conversation, credential, workspace, memory, or event state.
+6. Monitor Railway credit and stop the reserved service only if the customer no longer needs access; stopping it removes availability but preserves its dedicated volume.
 
 ## 2026-07-15 Assistant Wake-Up Hotfix
 
@@ -479,8 +528,8 @@ Targets:
 
 ElevenLabs remains disabled for general users. The account, scoped server-side credential, Speech Engine, Worklin assistant configuration, browser token flow, public upstream route, provider JWT verification, and runtime upstream are now production-proven.
 
-1. Ask the user which model profile to use for this pilot conversation. The current profile sends `claude-sonnet-4-6` to Kimi and is rejected with HTTP 404/permission denied. Do not silently change the user's model profile.
-2. Apply only the selected model-profile change and confirm a normal typed turn succeeds before spending another voice minute.
+1. Keep the pilot on BYOK. The current profile sends `claude-sonnet-4-6` to Kimi and is rejected with HTTP 404/permission denied; change it to a model supported by the user's configured Kimi credential, or use an Anthropic BYOK credential if Claude is required. Do not switch the conversation to a Worklin-managed profile.
+2. Confirm a normal typed turn succeeds under the corrected BYOK provider/model pair before spending another voice minute.
 3. Start Live Voice, confirm `Listening`, and speak a short first turn. Verify the Worklin response is both audible and persisted as the same conversation turn.
 4. Run the documented three-turn, partial/final transcript, input/output visualization, barge-in, persistence, duplicate-session, approval-safety, no-raw-audio, and latency gates.
 5. Keep the internal shared-runtime fallback limited to the one pilot assistant. Do not treat it as customer-ready or increase Railway runtime cost/capacity without explicit authorization.
@@ -496,7 +545,7 @@ Do not declare Release B complete until the in-app and overlay surfaces both pas
 - Ending voice releases the microphone, audio context, provider connection, and session lease while preserving completed chat turns.
 - Approval-required tools must pause and direct the user to Worklin's normal approval UI.
 - The Hume pilot allowlist is written for the authenticated user, not `*`.
-- Managed/BYOK customer settings, billing, quotas, entitlements, and voice credits are not part of this pilot.
+- Customer model access is BYOK-only for now. Worklin-managed model and voice billing, credits, quotas, and entitlements remain deferred.
 
 ## Safety Boundaries
 
@@ -518,9 +567,11 @@ Continue Worklin production work from:
 
 Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKLIN_PRODUCTION_HANDOFF.md is the only authoritative handoff; do not create another dated handoff.
 
+P0 is multi-user agent-runtime capacity. Production currently has exactly one unclaimed pre-provisioned isolated customer runtime from commit `65ff168` and Railway deployments `d779d8d9-2c62-4652-8cd2-f30e67fda61d` plus `657367ac-fcd5-4790-b2df-cb8247cf7103`. The first consented new assistant may atomically claim that slot; its gateway then permanently locks to the first valid signed assistant identity and rejects all others. Do not consume the slot with a test identity, do not add customer assistants to the legacy shared-runtime allowlist, and do not describe this as general multi-user capacity. Follow the customer acceptance sequence in the P0 section when the real customer signs up. The durable task is a tenant-safe pooled execution plane with adversarial two-tenant isolation coverage, BYOK credential scoping, ephemeral risky-tool sandboxes, quotas, usage controls, and migration off `legacy_shared` and `claim_once`. Keep that P0 in every future handoff until its release gate passes.
+
 The current private-pilot engine is ElevenLabs. Its scoped credential is stored only in Worklin's server-side credential service. Speech Engine `seng_9801kxgndkvqe3v93h0wmebr3bqy` is configured with upstream `wss://worklin-ai-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`. The approved key scopes are `ElevenAgents: Write` and `Speech to Speech: Access`; unrelated scopes remain disabled. Never expose or retrieve the key.
 
-The ElevenLabs production transport now works end to end. `53e1416` fixed legacy-versus-canonical owner allowlist matching, `e2ea3b6` moved the single pilot shared-runtime assistant ID into server-only Railway configuration, and `9970ef9` aligned Worklin's Speech Engine JWT verifier with ElevenLabs' optional Bearer prefix. Railway deployment `1a145888-9100-4054-9c2d-039cdd29a9eb` is healthy. Authenticated Chrome reached `Listening`, and Railway logged the ElevenLabs Speech Engine upstream opening and closing. The immediate blocker is now the normal Worklin LLM stage: Kimi rejects configured model `claude-sonnet-4-6` with HTTP 404/permission denied. Ask the user which model profile to use before changing it, verify one typed turn, then rerun voice.
+The ElevenLabs production transport now works end to end. `53e1416` fixed legacy-versus-canonical owner allowlist matching, `e2ea3b6` moved the single pilot shared-runtime assistant ID into server-only Railway configuration, and `9970ef9` aligned Worklin's Speech Engine JWT verifier with ElevenLabs' optional Bearer prefix. Railway deployment `1a145888-9100-4054-9c2d-039cdd29a9eb` is healthy. Authenticated Chrome reached `Listening`, and Railway logged the ElevenLabs Speech Engine upstream opening and closing. The immediate blocker is now the normal Worklin LLM stage: Kimi rejects configured model `claude-sonnet-4-6` with HTTP 404/permission denied. Keep the pilot on BYOK, select a model supported by the configured provider, verify one typed turn, then rerun voice. Do not silently switch to a Worklin-managed profile.
 
 The Hume path is also configured and its connectivity is proven: Worklin bootstrap returned 200, Hume WebSocket returned 101, session_settings/chat_metadata exchanged, Chrome granted the built-in microphone, Worklin showed Listening, and 16 kHz audio_input frames streamed. Hume is independently blocked by error E0300: exhausted credit balance. Stop at that billing gate; the user must add credits.
 

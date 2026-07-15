@@ -1,4 +1,7 @@
 import { describe, test, expect, mock, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GatewayConfig } from "../config.js";
 import {
   initSigningKey,
@@ -37,6 +40,14 @@ function mintEdgeToken(): string {
 }
 
 const TOKEN = mintEdgeToken();
+const originalGatewaySecurityDir = process.env.GATEWAY_SECURITY_DIR;
+const claimDirectories: string[] = [];
+
+function useClaimDirectory(): void {
+  const directory = mkdtempSync(join(tmpdir(), "worklin-proxy-claim-"));
+  claimDirectories.push(directory);
+  process.env.GATEWAY_SECURITY_DIR = directory;
+}
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   const merged: GatewayConfig = {
@@ -68,6 +79,14 @@ function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
 
 afterEach(() => {
   fetchMock = mock(async () => new Response());
+  if (originalGatewaySecurityDir === undefined) {
+    delete process.env.GATEWAY_SECURITY_DIR;
+  } else {
+    process.env.GATEWAY_SECURITY_DIR = originalGatewaySecurityDir;
+  }
+  for (const directory of claimDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 function mockUpstream() {
@@ -197,6 +216,37 @@ describe("runtime proxy auth enforcement", () => {
 
     expect(res.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("claim-once runtime locks to the first signed assistant", async () => {
+    useClaimDirectory();
+    mockUpstream();
+    const handler = createRuntimeProxyHandler(
+      makeConfig({ runtimeAssistantScopeMode: "claim_once" }),
+    );
+
+    const first = await handler(
+      new Request("http://localhost:7830/v1/health", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    );
+    expect(first.status).toBe(200);
+
+    const otherAssistantToken = mintToken({
+      aud: "vellum-gateway",
+      sub: "actor:other-assistant:test-user",
+      scope_profile: "actor_client_v1",
+      policy_epoch: CURRENT_POLICY_EPOCH,
+      ttlSeconds: 300,
+    });
+    const second = await handler(
+      new Request("http://localhost:7830/v1/health", {
+        headers: { authorization: `Bearer ${otherAssistantToken}` },
+      }),
+    );
+
+    expect(second.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test("assistant-scoped URL binds a legacy platform actor when stack enforcement is off", async () => {
