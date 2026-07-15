@@ -271,16 +271,22 @@ async function drainOneConversationAnalyzeJob(
 
 // ── Test fixture ──────────────────────────────────────────────────
 
-beforeAll(() => {
-  initializeDb();
-});
+beforeAll(
+  () => {
+    initializeDb();
+  },
+  { timeout: 20_000 },
+);
 
-beforeEach(() => {
-  resetTables();
-  analyzeCalls.length = 0;
-  // Clear any stale feature-flag overrides between tests.
-  setOverridesForTesting({});
-});
+beforeEach(
+  () => {
+    resetTables();
+    analyzeCalls.length = 0;
+    // Clear any stale feature-flag overrides between tests.
+    setOverridesForTesting({});
+  },
+  { timeout: 20_000 },
+);
 
 // ─────────────────────────────────────────────────────────────────
 

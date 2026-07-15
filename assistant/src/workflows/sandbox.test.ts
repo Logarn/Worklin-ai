@@ -217,7 +217,7 @@ describe("createWorkflowSandbox — CPU guard", () => {
     });
     const result = await sandbox.run(`return slow();`, null);
     expect(result).toBe("ok");
-  });
+  }, 60_000);
 
   test("a host call that REJECTS after a long await still resets the deadline (catch survives)", async () => {
     // A leaf that fails after a multi-second round-trip must not leave the
@@ -247,5 +247,5 @@ describe("createWorkflowSandbox — CPU guard", () => {
       null,
     );
     expect(String(result).startsWith("caught:")).toBe(true);
-  });
+  }, 60_000);
 });

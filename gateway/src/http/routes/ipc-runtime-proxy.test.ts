@@ -316,7 +316,7 @@ describe("tryIpcProxy", () => {
     expect(validateEdgeTokenMock).toHaveBeenCalledWith("good-token");
   });
 
-  test("isolated runtime binds a legacy platform actor to the default owner namespace", async () => {
+  test("isolated runtime propagates platform owner only after trusted actor binding", async () => {
     validateEdgeTokenMock.mockImplementation(() => ({
       ok: true,
       claims: {
@@ -335,7 +335,10 @@ describe("tryIpcProxy", () => {
     });
     const result = await tryIpcProxy(
       makeRequest("/v1/health", {
-        headers: { authorization: "Bearer valid" },
+        headers: {
+          authorization: "Bearer valid",
+          "x-vellum-platform-owner": "caller-value",
+        },
       }),
       config,
     );
@@ -350,6 +353,24 @@ describe("tryIpcProxy", () => {
     expect(headers["x-vellum-actor-principal-id"]).toBe(
       "vellum-principal-user_1",
     );
+    expect(headers["x-vellum-platform-owner"]).toBe("true");
+  });
+
+  test("strips a caller-supplied platform owner without trusted actor binding", async () => {
+    const result = await tryIpcProxy(
+      makeRequest("/v1/health", {
+        headers: { "x-vellum-platform-owner": "true" },
+      }),
+      makeConfig(),
+    );
+
+    expect(result!.status).toBe(200);
+    const [, params] = ipcCallAssistantMock.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const headers = params.headers as Record<string, string>;
+    expect(headers["x-vellum-platform-owner"]).toBeUndefined();
   });
 
   test("isolated runtime rejects an actor token scoped to another assistant", async () => {
@@ -371,7 +392,10 @@ describe("tryIpcProxy", () => {
     });
     const result = await tryIpcProxy(
       makeRequest("/v1/health", {
-        headers: { authorization: "Bearer valid" },
+        headers: {
+          authorization: "Bearer valid",
+          "x-vellum-platform-owner": "true",
+        },
       }),
       config,
     );

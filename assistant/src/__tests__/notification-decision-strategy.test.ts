@@ -377,7 +377,7 @@ describe("notification decision strategy", () => {
       const copy = composeFallbackCopy(signal, channels);
       expect(copy.vellum).toBeDefined();
       expect(copy.vellum!.body).toBe(
-        "A guardian question needs your attention",
+        "An approval request needs your attention",
       );
     });
   });
