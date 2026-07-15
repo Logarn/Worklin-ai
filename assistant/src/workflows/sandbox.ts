@@ -116,6 +116,12 @@ export interface CreateWorkflowSandboxOptions {
   /** Runtime memory ceiling. Defaults to 256 MiB. */
   memoryLimitBytes?: number;
   /**
+   * Gives nested workflows their own Asyncify module. The shared module is
+   * safe for ordinary runs, but Asyncify cannot be re-entered while a parent
+   * workflow is suspended waiting for a child.
+   */
+  isolateModule?: boolean;
+  /**
    * CPU budget, in milliseconds, for a single contiguous stretch of script
    * execution between host calls. Reset around every host-call boundary, so it
    * never counts time suspended awaiting a host promise. Defaults to 5000.
@@ -268,8 +274,10 @@ export function createWorkflowSandbox(
       }
 
       // A fresh runtime/context per run is the isolation boundary: no realm,
-      // heap, or host-ref state is shared between workflow runs. The immutable
-      // compiled module is shared to avoid repeated WASM initialization.
+      // heap, or host-ref state is shared between workflow runs. Ordinary runs
+      // share the immutable compiled module to avoid repeated WASM
+      // initialization; nested runs opt into a fresh module because Asyncify
+      // cannot be re-entered while the parent VM is suspended.
       // The context is created via the module-level `newContext()` so the
       // runtime is an *owned lifetime* of the context — disposing the context
       // tears down the runtime in the correct internal order (disposing the
@@ -280,7 +288,9 @@ export function createWorkflowSandbox(
       // (`bun build --compile` bundles JS but not the .wasm), so every workflow
       // run aborts with ENOENT. The singlefile variant rides along with the JS
       // bundle and works in source, Docker, and the compiled binary alike.
-      const QuickJS = await getQuickJSModule();
+      const QuickJS = await (opts.isolateModule
+        ? newQuickJSAsyncWASMModuleFromVariant(singlefileAsyncVariant)
+        : getQuickJSModule());
       const vm = QuickJS.newContext() as QuickJSAsyncContext;
       const runtime = vm.runtime;
       runtime.setMemoryLimit(memoryLimitBytes);
