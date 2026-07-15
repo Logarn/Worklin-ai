@@ -19,6 +19,7 @@
     "@vellumai/ipc-server-utils",
     "@vellumai/retention-domain",
     "@vellumai/service-contracts",
+    "@vellumai/retention-domain",
     "@vellumai/slack-text",
     "@vellumai/twilio-client",
     "@vellumai/skill-host-contracts",

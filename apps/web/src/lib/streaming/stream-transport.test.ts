@@ -91,7 +91,7 @@ describe("subscribeEvents idle watchdog", () => {
       const request = capturedRequests[0]!;
       const url = new URL(request.url);
       expect(url.origin).toBe(ingress);
-      expect(url.pathname).toBe("/v1/assistants/asst-1/events/");
+      expect(url.pathname).toBe("/v1/assistants/asst-1/events");
       expect(request.headers.get("Authorization")).toBe(`Bearer ${actorToken}`);
     } finally {
       stream.cancel();
@@ -133,7 +133,7 @@ describe("subscribeEvents idle watchdog", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(capturedRequests).toHaveLength(1);
       const request = capturedRequests[0]!;
-      expect(request.url).toContain("/v1/assistants/asst-1/events/");
+      expect(request.url).toContain("/v1/assistants/asst-1/events");
       expect(request.headers.get("Authorization")).toBe(`Bearer ${actorToken}`);
       expect(request.credentials).toBe("include");
     } finally {
@@ -167,7 +167,7 @@ describe("subscribeEvents idle watchdog", () => {
     try {
       await new Promise((r) => setTimeout(r, 50));
       expect(requestedUrls).toHaveLength(1);
-      expect(requestedUrls[0]).toContain("/v1/assistants/asst-1/events/");
+      expect(requestedUrls[0]).toContain("/v1/assistants/asst-1/events");
       // Neither the legacy nor the canonical wire field should appear when
       // subscribing to all assistant events (no conversation filter).
       expect(requestedUrls[0]).not.toContain("conversationKey");

@@ -202,6 +202,9 @@ describe("Invariant 2: no generic plaintext secret read API", () => {
       "runtime/routes/migration-routes.ts", // migration import credential restore
       "daemon/conversation-messaging.ts", // credential storage during session messaging
       "runtime/routes/settings-routes.ts", // settings routes OAuth credential lookup (client_secret)
+      "tools/retention/klaviyo-connection.ts", // Klaviyo API key lookup for retention read operations
+      "runtime/http-server.ts", // runtime provider credential lookup for HTTP and webhook services
+      "live-voice/provider-bootstrap.ts", // managed live-voice provider credential lookup
       "oauth/oauth-store.ts", // OAuth provider disconnect (delete stored tokens)
       "oauth/manual-token-connection.ts", // manual-token provider backfill (credential store existence check)
       "workspace/provider-commit-message-generator.ts", // commit message generation provider key lookup

@@ -60,6 +60,21 @@
   ],
   "redirects": [
     {
+      "source": "/callback/",
+      "destination": "/callback",
+      "permanent": false
+    },
+    {
+      "source": "/_allauth/:path*/",
+      "destination": "/_allauth/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/v1/:path*/",
+      "destination": "/v1/:path*",
+      "permanent": false
+    },
+    {
       "source": "/",
       "destination": "/assistant",
       "permanent": false

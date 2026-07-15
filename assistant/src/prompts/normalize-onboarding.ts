@@ -87,12 +87,14 @@ export interface NormalizedOnboarding {
   dailyTools: string[];
   tone?: string;
   assistantName?: string;
+  brandName?: string;
   priorAssistants?: string[];
   googleConnected?: boolean;
   googleServices?: string[];
   cohort?: string;
   websiteUrl?: string;
   contentSourceUrl?: string;
+  skills?: string[];
 }
 
 const SCOPE_SERVICE_MAP: Record<string, string> = {
@@ -129,6 +131,10 @@ export function normalizeOnboardingContext(
     dailyTools: normalizeTools(ctx.tools),
     tone: ctx.tone,
     assistantName: ctx.assistantName,
+    brandName:
+      typeof ctx.brandName === "string"
+        ? ctx.brandName.trim().replace(/[\r\n\t]/g, "") || undefined
+        : undefined,
     googleConnected: ctx.googleConnected,
     googleServices: ctx.googleConnected
       ? deriveGoogleServices(ctx.googleScopes)
@@ -145,5 +151,6 @@ export function normalizeOnboardingContext(
       typeof ctx.contentSourceUrl === "string"
         ? ctx.contentSourceUrl.trim().replace(/[\r\n\t]/g, "") || undefined
         : undefined,
+    skills: ctx.skills?.length ? [...new Set(ctx.skills)] : undefined,
   };
 }

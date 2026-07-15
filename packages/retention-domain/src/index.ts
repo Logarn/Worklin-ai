@@ -1,5 +1,6 @@
 export const RETENTION_DOMAIN_VERSION = "worklin_retention_v1";
 export const BRAND_BRAIN_VERSION = "brand_brain_v1";
+export const BRAND_RESEARCH_VERSION = "brand_research_v1";
 export const CUSTOMER_FEATURE_STORE_VERSION = "customer_feature_store_v1";
 export const CUSTOMER_SCORING_VERSION = "rule_based_customer_scoring_v1";
 export const MICRO_SEGMENT_DEFINITION_VERSION =
@@ -131,6 +132,7 @@ export interface BrandBrainContext {
       | "document_upload"
       | "campaign_memory"
       | "source_snapshot"
+      | "brand_research"
       | "fixture";
     label: string;
     status: "fixture" | "draft" | "live_readonly" | "approved";
@@ -149,7 +151,111 @@ export interface BrandBrainContext {
     outcome: "winning" | "mixed" | "avoid";
   }>;
   caveats: string[];
+  /** Optional deep public-research report used by downstream agents. */
+  research?: BrandResearchReport;
   safety: RetentionSafetyMetadata;
+}
+
+export type BrandResearchConfidence = "high" | "medium" | "low";
+
+export interface BrandResearchEvidence {
+  id: string;
+  url: string;
+  title: string;
+  sourceType:
+    | "official_site"
+    | "competitor_site"
+    | "search_result"
+    | "social_profile"
+    | "review"
+    | "press"
+    | "market_report"
+    | "other";
+  observedAt: string;
+  finding: string;
+  confidence: BrandResearchConfidence;
+}
+
+export interface BrandResearchReport {
+  version: typeof BRAND_RESEARCH_VERSION;
+  generatedAt: string;
+  query: { brandName: string; websiteUrl?: string };
+  executiveSummary: string[];
+  identity: {
+    category: string;
+    positioning: string;
+    offers: string[];
+    audienceSignals: string[];
+  };
+  competitorLandscape: Array<{
+    name: string;
+    websiteUrl?: string;
+    positioning: string;
+    notableMoves: string[];
+    evidenceIds: string[];
+    confidence: BrandResearchConfidence;
+  }>;
+  channelFindings: {
+    seoAndContent: string[];
+    social: string[];
+    emailAndLifecycle: string[];
+    sms: string[];
+    productAndLaunches: string[];
+  };
+  marketSignals: string[];
+  customerSignals: string[];
+  trendSignals: string[];
+  evidence: BrandResearchEvidence[];
+  gaps: string[];
+  recommendations: Array<{
+    priority: "now" | "next" | "later";
+    action: string;
+    rationale: string;
+    evidenceIds: string[];
+  }>;
+  safety: {
+    readOnly: true;
+    publicSourcesOnly: true;
+    unsupportedClaimsExcluded: true;
+    caveats: string[];
+  };
+}
+
+/** Attach public research without turning observations into approved claims. */
+export function attachBrandResearch(
+  brain: BrandBrainContext,
+  research: BrandResearchReport,
+): BrandBrainContext {
+  if (research.version !== BRAND_RESEARCH_VERSION) {
+    throw new Error(`Unsupported Brand Research version: ${research.version}`);
+  }
+  if (
+    research.query.brandName.trim().toLocaleLowerCase() !==
+    brain.brandName.trim().toLocaleLowerCase()
+  ) {
+    throw new Error(
+      "Brand Research report does not match the Brand Brain brand name.",
+    );
+  }
+  return {
+    ...brain,
+    research,
+    sourceProvenance: [
+      ...brain.sourceProvenance,
+      {
+        sourceType: "brand_research",
+        label: `Public research report for ${research.query.brandName}`,
+        status: "live_readonly",
+        observedAt: research.generatedAt,
+      },
+    ],
+    caveats: [
+      ...new Set([
+        ...brain.caveats,
+        "Research findings are public observations and inferences, not approved brand claims.",
+      ]),
+    ],
+  };
 }
 
 export type BrandBrainCorrectionField =

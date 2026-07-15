@@ -28,22 +28,6 @@ import {
 import type { PlatformSessionStatus } from "@/stores/session-status";
 import { routes } from "@/utils/routes";
 
-const assistantApi = await import(
-  new URL("../../assistant/api.ts?actual", import.meta.url).href,
-);
-const actualReactQuery = await import(
-  new URL(
-    "../../../node_modules/@tanstack/react-query/build/modern/index.js?actual",
-    import.meta.url,
-  ).href,
-);
-const actualGeneratedApiQueryModule = await import(
-  new URL(
-    "../../generated/api/@tanstack/react-query.gen.ts?actual",
-    import.meta.url,
-  ).href,
-);
-
 let searchParams = new URLSearchParams();
 const navigateMock = mock(() => {});
 
@@ -159,6 +143,22 @@ mock.module("@/assistant/lifecycle-service", () => ({
   },
 }));
 
+mock.module("@/assistant/api", () => ({
+  hatchAssistant: hatchAssistantMock,
+  getAssistant: getAssistantMock,
+  getAssistantHealthz: getAssistantHealthzMock,
+}));
+
+mock.module("@/components/ai/chatgpt-oauth-section", () => ({
+  ChatgptOAuthSection: () => null,
+}));
+
+mock.module("@/stores/organization-store", () => ({
+  useOrganizationStore: {
+    getState: () => ({ currentOrganizationId: null }),
+  },
+}));
+
 mock.module("@/assistant/queries", () => ({
   useAssistantQuery: useAssistantQueryMock,
 }));
@@ -193,6 +193,12 @@ mock.module("@/utils/avatar-random", () => ({
 mock.module("@/utils/avatar-svg-compositor", () => ({
   composeSvg: () => "<svg />",
 }));
+
+async function skipBrandResearchStep(): Promise<void> {
+  fireEvent.click(
+    await screen.findByRole("button", { name: "I'll add a brand later" }),
+  );
+}
 
 mock.module("@/domains/onboarding/components/onboarding-layout", () => ({
   OnboardingLayout: ({ children }: { children: ReactNode }) => (
@@ -362,7 +368,6 @@ type EmulatedQueryOptions = {
 // mock so the hooks run unconditionally on every `useQuery` call regardless of
 // which query it is — only the returned value branches on the query key.
 mock.module("@tanstack/react-query", () => ({
-  ...actualReactQuery,
   useQuery: (options?: EmulatedQueryOptions) => {
     const isRecipeQuery =
       Array.isArray(options?.queryKey) &&
@@ -395,8 +400,6 @@ mock.module("@tanstack/react-query", () => ({
 }));
 
 mock.module("@/generated/api/@tanstack/react-query.gen", () => ({
-  ...actualGeneratedApiQueryModule,
-  assistantsActiveRetrieveOptions: () => ({}),
   assistantsOauthConnectionsListOptions: () => ({}),
   useAssistantsOauthStartCreateMutation: () => ({
     mutate: mock(() => {}),
@@ -527,11 +530,6 @@ beforeEach(() => {
   invalidateQueriesMock.mockClear();
   writeSelectedVersionMock.mockClear();
   fetchOnboardingRecipeMock.mockClear();
-  spyOn(assistantApi, "hatchAssistant").mockImplementation(hatchAssistantMock);
-  spyOn(assistantApi, "getAssistant").mockImplementation(getAssistantMock);
-  spyOn(assistantApi, "getAssistantHealthz").mockImplementation(
-    getAssistantHealthzMock,
-  );
 });
 
 afterEach(() => {
@@ -806,6 +804,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
 
     expect(await screen.findByTestId("task-continue")).toBeTruthy();
     expect(screen.queryByText("Connect Google")).toBeNull();
@@ -819,6 +818,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByTestId("task-continue"));
     fireEvent.click(await screen.findByTestId("tools-continue"));
     fireEvent.click(await screen.findByTestId("prior-continue"));
@@ -913,6 +913,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByTestId("task-continue"));
     fireEvent.click(await screen.findByTestId("tools-continue"));
 
@@ -934,6 +935,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByTestId("task-continue"));
     fireEvent.click(await screen.findByTestId("tools-continue"));
 

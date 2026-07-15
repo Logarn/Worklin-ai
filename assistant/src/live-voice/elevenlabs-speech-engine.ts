@@ -15,7 +15,12 @@ export function verifyElevenLabsSpeechEngineJwt(
   apiKey: string,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): boolean {
-  const [headerPart, payloadPart, signaturePart, extra] = token.split(".");
+  let normalizedToken = token.trim();
+  if (normalizedToken.toLowerCase().startsWith("bearer ")) {
+    normalizedToken = normalizedToken.slice(7).trim();
+  }
+  const [headerPart, payloadPart, signaturePart, extra] =
+    normalizedToken.split(".");
   if (!headerPart || !payloadPart || !signaturePart || extra) return false;
   try {
     const header = JSON.parse(
@@ -23,17 +28,19 @@ export function verifyElevenLabsSpeechEngineJwt(
     ) as { alg?: unknown };
     const payload = JSON.parse(
       Buffer.from(payloadPart, "base64url").toString("utf8"),
-    ) as { iss?: unknown; sub?: unknown; exp?: unknown };
+    ) as { iss?: unknown; sub?: unknown; exp?: unknown; iat?: unknown };
     if (
       header.alg !== "HS256" ||
       payload.iss !== ISSUER ||
       payload.sub !== SUBJECT ||
       typeof payload.exp !== "number" ||
-      payload.exp + 60 < nowSeconds
+      typeof payload.iat !== "number" ||
+      payload.exp + 60 < nowSeconds ||
+      payload.iat - 60 > nowSeconds
     ) {
       return false;
     }
-    const secret = createHash("sha256").update(apiKey).digest();
+    const secret = createHash("sha256").update(apiKey.trim(), "utf8").digest();
     const expected = createHmac("sha256", secret)
       .update(`${headerPart}.${payloadPart}`)
       .digest();

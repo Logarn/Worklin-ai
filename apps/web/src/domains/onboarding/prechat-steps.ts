@@ -20,6 +20,7 @@ import type { PlatformSessionStatus } from "@/stores/session-status";
 
 export type PreChatStepId =
   | "name"
+  | "brand"
   | "taskTone"
   | "tools"
   | "priorAssistants"
@@ -90,6 +91,11 @@ export function resolveWebSteps(caps: WebStepCapabilities): PreChatStep[] {
       id: "name",
       funnelStep: ONBOARDING_FUNNEL_STEPS.nameVibe,
       enabled: true,
+    },
+    {
+      id: "brand",
+      funnelStep: null,
+      enabled: !paredDown,
     },
     {
       id: "taskTone",

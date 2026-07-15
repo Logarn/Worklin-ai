@@ -183,6 +183,28 @@ describe("healGuardianBindingDrift", () => {
     expect(guardian!.channel.verifiedVia).toBe("authenticated-owner-bootstrap");
   });
 
+  test("keeps authenticated owner A immutable when owner B arrives", () => {
+    const ownerPrincipalId = "vellum-principal-platform-owner-a";
+    expect(
+      healGuardianBindingDrift(ownerPrincipalId, {
+        platformOwnerBound: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      healGuardianBindingDrift("vellum-principal-platform-owner-b", {
+        platformOwnerBound: true,
+      }),
+    ).toBe(false);
+
+    const unchangedGuardian = findGuardianForChannel("vellum");
+    expect(unchangedGuardian!.contact.principalId).toBe(ownerPrincipalId);
+    expect(unchangedGuardian!.channel.externalUserId).toBe(ownerPrincipalId);
+    expect(unchangedGuardian!.channel.verifiedVia).toBe(
+      "authenticated-owner-bootstrap",
+    );
+  });
+
   test("refuses first binding for an unnamespaced principal", () => {
     expect(
       healGuardianBindingDrift("platform-owner", {

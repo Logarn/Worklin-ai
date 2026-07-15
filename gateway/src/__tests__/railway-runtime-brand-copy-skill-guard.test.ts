@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 describe("Railway runtime brand-copy skill packaging", () => {
-  test("installs the production brand-copy skill in the bundled catalog", async () => {
+  test("ships the complete first-party skill catalog in the runtime image", async () => {
     const dockerignore = await Bun.file(
       new URL("../../../.dockerignore", import.meta.url),
     ).text();

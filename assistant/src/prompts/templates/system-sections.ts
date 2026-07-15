@@ -95,11 +95,17 @@ function renderFirstRunUserContext(onboarding: OnboardingContext): string {
     lines.push(`- Daily tools: ${n.dailyTools.join(", ")}`);
   if (n.assistantName)
     lines.push(`- Chosen assistant name: ${n.assistantName}`);
+  if (n.brandName) lines.push(`- Brand to research: ${n.brandName}`);
   if (n.tone) lines.push(`- Preferred initial voice: ${n.tone}`);
   if (n.cohort) lines.push(`- Cohort: ${n.cohort}`);
   if (n.websiteUrl) lines.push(`- Website URL: ${n.websiteUrl}`);
   if (n.contentSourceUrl)
     lines.push(`- Content source URL: ${n.contentSourceUrl}`);
+  if (n.skills?.length) {
+    lines.push(
+      `- First-run skills to use: ${n.skills.join(", ")} (load the relevant skill before the first substantive task)`,
+    );
+  }
   if (n.googleConnected && n.googleServices?.length) {
     lines.push(
       `- Google connected: yes (${n.googleServices.join(", ")} access granted)`,

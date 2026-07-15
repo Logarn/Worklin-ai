@@ -28,7 +28,7 @@ afterAll(() => {
 });
 
 describe("always-loaded tool count", () => {
-  test("should include the intentional always-loaded baseline", async () => {
+  test("should include the baseline tools and the retention audit tool", async () => {
     await initializeTools();
     const allDefs = getAllToolDefinitions();
 

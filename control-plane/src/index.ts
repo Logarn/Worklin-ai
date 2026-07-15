@@ -34,6 +34,7 @@ import {
 } from "./runtime-stacks.js";
 import { assistantIdFromManagedVoiceRoutingToken } from "./live-voice-provider-callback.js";
 import {
+  ensureAssistantStoreSchema,
   getActiveAssistant as getStoredActiveAssistant,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
@@ -205,6 +206,7 @@ db.exec(`
   );
 `);
 ensureArtifactSharingSchema(db);
+ensureAssistantStoreSchema(db);
 ensureRuntimeStackSchema(db);
 
 const useSecureCookies =

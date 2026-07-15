@@ -28,6 +28,7 @@ describe("resolveWebSteps", () => {
   test("full control funnel: every capability enabled", () => {
     expect(ids(CONTROL)).toEqual([
       "name",
+      "brand",
       "taskTone",
       "tools",
       "priorAssistants",
@@ -46,7 +47,7 @@ describe("resolveWebSteps", () => {
         hasGoogleTool: false,
         showIOSAppStep: false,
       }),
-    ).toEqual(["name", "taskTone", "tools"]);
+    ).toEqual(["name", "brand", "taskTone", "tools"]);
   });
 
   test("platform-gated steps move together when the funnel is unavailable", () => {
@@ -62,7 +63,7 @@ describe("resolveWebSteps", () => {
         hasGoogleTool: true,
         showIOSAppStep: false,
       }),
-    ).toEqual(["name", "taskTone", "tools"]);
+    ).toEqual(["name", "brand", "taskTone", "tools"]);
   });
 
   test("local mode with a platform session keeps prior-assistants", () => {
@@ -72,7 +73,7 @@ describe("resolveWebSteps", () => {
         hasGoogleTool: false,
         showIOSAppStep: false,
       }),
-    ).toEqual(["name", "taskTone", "tools", "priorAssistants"]);
+    ).toEqual(["name", "brand", "taskTone", "tools", "priorAssistants"]);
   });
 
   test("google step only appears when a Google tool was picked", () => {
@@ -174,7 +175,8 @@ describe("restoreNativeStep", () => {
 describe("nextStep / prevStep", () => {
   test("walk forward through the full control funnel", () => {
     const steps = resolveWebSteps(CONTROL);
-    expect(nextStep(steps, "name")).toBe("taskTone");
+    expect(nextStep(steps, "name")).toBe("brand");
+    expect(nextStep(steps, "brand")).toBe("taskTone");
     expect(nextStep(steps, "tools")).toBe("priorAssistants");
     expect(nextStep(steps, "google")).toBe("iosApp");
     expect(nextStep(steps, "iosApp")).toBeNull();
@@ -183,7 +185,10 @@ describe("nextStep / prevStep", () => {
   test("back never reveals a gated step: skips disabled prior-assistants", () => {
     // `prevStep` walks to the previous *enabled* step, so a disabled step is
     // never a back target regardless of which capability gated it off.
-    const steps = resolveWebSteps({ ...CONTROL, canOfferPriorAssistants: false });
+    const steps = resolveWebSteps({
+      ...CONTROL,
+      canOfferPriorAssistants: false,
+    });
     expect(prevStep(steps, "google")).toBe("tools");
   });
 

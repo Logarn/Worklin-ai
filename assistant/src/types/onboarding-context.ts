@@ -6,6 +6,8 @@ export interface OnboardingContext {
   /** The user's role / occupation, e.g. "Software Engineer". */
   occupation?: string;
   assistantName?: string;
+  /** Brand name supplied during onboarding for the initial research pass. */
+  brandName?: string;
   priorAssistants?: string[];
   googleConnected?: boolean;
   googleScopes?: string[];

@@ -106,6 +106,14 @@ Local auth depends on Auth0 and the local control-plane env. Use:
 deploy/production/create-local-auth0-env.sh
 ```
 
+For local runtime lifecycle checks, use the Vellum commands below:
+
+```bash
+vellum wake
+vellum ps
+vellum sleep
+```
+
 Do not commit generated `.env`, `*.env.local`, `.vercel`, database files, or
 private credential files.
 

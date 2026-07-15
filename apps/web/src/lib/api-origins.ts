@@ -52,6 +52,37 @@ function joinBaseAndPath(base: string, path: string): string {
   return new URL(normalizedPath, normalizedBase).toString();
 }
 
+const HOSTED_PROXY_PATH_PREFIXES = ["/_allauth/", "/v1/"] as const;
+
+/** Normalize same-origin proxy requests before they reach the hosting layer. */
+export function normalizeHostedProxyPath(
+  path: string,
+  currentOrigin = typeof window === "undefined" ? "" : window.location.origin,
+): string {
+  if (!currentOrigin) return path;
+
+  let url: URL;
+  try {
+    url = new URL(path, currentOrigin);
+  } catch {
+    return path;
+  }
+
+  if (url.origin !== currentOrigin) return path;
+
+  const shouldNormalize =
+    url.pathname === "/callback/" ||
+    HOSTED_PROXY_PATH_PREFIXES.some((prefix) =>
+      url.pathname.startsWith(prefix),
+    );
+
+  if (!shouldNormalize || !url.pathname.endsWith("/")) return path;
+
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  if (/^https?:\/\//.test(path)) return url.toString();
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 const configuredPlatformApiBaseUrl = normalizeConfiguredOrigin(
   import.meta.env.VITE_PLATFORM_API_BASE_URL,
 );

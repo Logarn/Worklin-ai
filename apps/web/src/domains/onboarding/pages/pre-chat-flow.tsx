@@ -17,6 +17,7 @@ import {
   resolveOnboardingFunnelVariant,
 } from "@/domains/onboarding/funnel-events";
 import { GetIOSAppScreen } from "@/domains/onboarding/screens/get-ios-app-screen.js";
+import { BrandProfileScreen } from "@/domains/onboarding/screens/brand-profile-screen.js";
 import { GoogleConnectScreen } from "@/domains/onboarding/screens/google-connect-screen.js";
 import { NameExchangeScreen } from "@/domains/onboarding/screens/name-exchange-screen.js";
 import { NameStepScreen } from "@/domains/onboarding/screens/name-step-screen.js";
@@ -44,9 +45,7 @@ import {
   resolveWebSteps,
   type PreChatStep,
 } from "@/domains/onboarding/prechat-steps";
-import {
-  DEFAULT_GROUP_ID,
-} from "@/domains/onboarding/prechat-names";
+import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import { GOOGLE_TOOL_IDS } from "@/domains/onboarding/prechat-tools";
 import { usePreChatConsentGate } from "@/domains/onboarding/use-prechat-consent-gate";
 import { usePreChatStepState } from "@/domains/onboarding/use-prechat-step-state";
@@ -131,6 +130,8 @@ export function PreChatFlow() {
   const [selectedPriorAssistants, setSelectedPriorAssistants] = useState<
     Set<string>
   >(() => new Set());
+  const [brandName, setBrandName] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
   const { value: userName, onChange: handleUserNameChange } = usePrefilledInput(
     localMode && !hasPlatformSession ? "" : firstName || lastName,
   );
@@ -179,7 +180,9 @@ export function PreChatFlow() {
   // connection. If the assistant has not been resolved yet, skip the step
   // instead of rendering a dead-end null screen.
   const canOfferGoogleStep =
-    platformFunnelAvailable && googleAssistantId !== undefined && googleAssistantId !== null;
+    platformFunnelAvailable &&
+    googleAssistantId !== undefined &&
+    googleAssistantId !== null;
   const canOfferPriorAssistants = platformFunnelAvailable;
 
   const handleAssistantAvatarChange = (avatar: AssistantCharacter): void => {
@@ -280,6 +283,8 @@ export function PreChatFlow() {
         args?.selectedPriorAssistants ?? selectedPriorAssistants,
       tone: selectedGroupId ?? recipe?.tone ?? DEFAULT_GROUP_ID,
       userName,
+      brandName,
+      websiteUrl,
       assistantName,
       selfIntroGreetingEnabled,
       activationFlowEnabled: isNative ? undefined : activationFlowEnabled,
@@ -388,6 +393,24 @@ export function PreChatFlow() {
         onBack={() => goBack(activeStep)}
         onContinue={() => advance(activeStep)}
         onSkip={() => advance(activeStep)}
+      />
+    );
+  }
+
+  if (activeStep.id === "brand") {
+    return (
+      <BrandProfileScreen
+        brandName={brandName}
+        websiteUrl={websiteUrl}
+        onBrandNameChange={setBrandName}
+        onWebsiteUrlChange={setWebsiteUrl}
+        onBack={() => goBack(activeStep)}
+        onContinue={() => advance(activeStep)}
+        onSkip={() => {
+          setBrandName("");
+          setWebsiteUrl("");
+          advance(activeStep);
+        }}
       />
     );
   }

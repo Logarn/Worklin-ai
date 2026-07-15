@@ -1029,6 +1029,7 @@ export function persistOnboardingArtifacts(onboarding: {
   userName?: string;
   occupation?: string;
   assistantName?: string;
+  brandName?: string;
   priorAssistants?: string[];
   cohort?: string;
   websiteUrl?: string;
@@ -1109,6 +1110,7 @@ export async function handleSendMessage(
       tone: string;
       userName?: string;
       assistantName?: string;
+      brandName?: string;
       googleConnected?: boolean;
       googleScopes?: string[];
       priorAssistants?: string[];
