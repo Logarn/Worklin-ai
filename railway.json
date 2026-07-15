@@ -16,7 +16,7 @@
     ]
   },
   "deploy": {
-    "startCommand": "env WORKLIN_REQUIRE_ISOLATED_RUNTIME=false WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=true WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS=worklin-fdbb31f2-334c-4fdf-bf8c-93e29371d245 VELLUM_FLAG_SETTINGS_DEVELOPER_NAV=true VELLUM_FLAG_VOICE_MODE=true /app/runtime/entrypoint.sh",
+    "startCommand": "env WORKLIN_REQUIRE_ISOLATED_RUNTIME=false WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=true VELLUM_FLAG_SETTINGS_DEVELOPER_NAV=true VELLUM_FLAG_VOICE_MODE=true /app/runtime/entrypoint.sh",
     "healthcheckPath": "/readyz",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
