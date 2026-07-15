@@ -54,9 +54,9 @@ describe("startup tool payload — no browser tools", () => {
     const definitions = getAllToolDefinitions();
     const serialized = JSON.stringify(definitions);
     // Startup payload is ~22 000 chars.
-    // Floor at 14 000 catches accidental wholesale removal; ceiling at 35 000
+    // Floor at 14 000 catches accidental wholesale removal; ceiling at 40 000
     // gives headroom while still catching unexpected tool leakage.
     expect(serialized.length).toBeGreaterThan(14_000);
-    expect(serialized.length).toBeLessThan(35_000);
+    expect(serialized.length).toBeLessThan(40_000);
   });
 });

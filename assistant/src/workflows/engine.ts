@@ -853,7 +853,7 @@ export async function executeWorkflow(
       // asyncify and cannot be re-entered), but with host functions bound to the
       // SAME shared run-state and a child label prefix, at depth 1.
       const childHostFns = buildHostFunctions(childName, depth + 1);
-      return runScriptInSandbox(source, childArgs ?? null, childHostFns);
+      return runScriptInSandbox(source, childArgs ?? null, childHostFns, true);
     };
 
     // Always-available host functions.
@@ -900,6 +900,7 @@ export async function executeWorkflow(
       string,
       (...a: unknown[]) => unknown | Promise<unknown>
     >,
+    isolateModule = false,
   ): Promise<unknown> => {
     const fullScript = `${SCRIPT_PRELUDE_HELPERS}${SCRIPT_PRELUDE}\n${stripTopLevelExports(source)}`;
     const sandbox = createWorkflowSandbox({
@@ -908,6 +909,7 @@ export async function executeWorkflow(
         ? { onLog: (m) => onProgress({ type: "log", message: m }) }
         : {}),
       ...(signal ? { signal } : {}),
+      ...(isolateModule ? { isolateModule: true } : {}),
     });
     return sandbox.run(fullScript, scriptArgs);
   };
@@ -920,6 +922,7 @@ export async function executeWorkflow(
       scriptSource,
       args,
       buildHostFunctions("", 0),
+      true,
     );
     // A host CapExceededSignal/AbortedSignal crosses into the VM as a catchable
     // exception, so a script can wrap agent()/parallel() in try/catch, SWALLOW

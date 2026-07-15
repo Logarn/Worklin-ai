@@ -505,7 +505,7 @@ describe("(d) unknown actor flow: fail-closed with no interactive approval", () 
     if (result.allowed) return;
 
     // Unknown actors get the verified-identity message
-    expect(result.result.content).toContain("verified channel identity");
+    expect(result.result.content).toContain("verified account owner");
 
     // No canonical request created — unknown actors don't escalate
     const requests = listCanonicalGuardianRequests({
@@ -1087,4 +1087,3 @@ describe("cross-milestone integration checks", () => {
     expect(freshReq?.followupState).toBeNull();
   });
 });
-

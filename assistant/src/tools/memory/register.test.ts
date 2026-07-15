@@ -170,7 +170,7 @@ describe("recallTool.execute", () => {
       );
 
       expect(result.isError).toBe(true);
-      expect(result.content).toContain("only available to the guardian");
+      expect(result.content).toContain("only available to the account owner");
       expect(recallCalls).toHaveLength(0);
     },
   );

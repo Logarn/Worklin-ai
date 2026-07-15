@@ -92,6 +92,7 @@ export async function tryIpcProxy(
 
   // --- Auth: replicate the gateway's JWT validation -----------------------
   let claims: TokenClaims | undefined;
+  let platformOwnerBound = false;
 
   if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
     const authHeader = req.headers.get("authorization");
@@ -148,6 +149,7 @@ export async function tryIpcProxy(
         return Response.json({ error: "Forbidden" }, { status: 403 });
       }
       claims = boundClaims;
+      platformOwnerBound = true;
     }
   }
 
@@ -221,6 +223,7 @@ export async function tryIpcProxy(
   // `assistant/src/runtime/routes/http-adapter.ts`.
   delete headers["x-vellum-actor-principal-id"];
   delete headers["x-vellum-principal-type"];
+  delete headers["x-vellum-platform-owner"];
   if (claims) {
     const sub = parseSub(claims.sub);
     if (sub.ok) {
@@ -229,6 +232,9 @@ export async function tryIpcProxy(
         headers["x-vellum-actor-principal-id"] = sub.actorPrincipalId;
       }
     }
+  }
+  if (platformOwnerBound) {
+    headers["x-vellum-platform-owner"] = "true";
   }
 
   let body: Record<string, unknown> | undefined;

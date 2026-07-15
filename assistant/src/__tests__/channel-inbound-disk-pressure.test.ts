@@ -8,7 +8,7 @@ const deliverChannelReplyMock = mock(
   async (_callbackUrl: string, _payload: Record<string, unknown>) => {},
 );
 const expectedRemoteBlockReply =
-  "Storage is critically low, so remote messages are ignored until the guardian frees enough space. Please try again later.";
+  "Storage is critically low, so remote messages are ignored until the account owner frees enough space. Please try again later.";
 
 mock.module("../util/logger.js", () => ({
   getLogger: () =>

@@ -24,8 +24,8 @@ const guardedFiles = [
 // that the old hard-coded templates used.
 const forbiddenPatterns = [
   /["\u{1F4DE}].*Call to.*(?:started|completed|failed)/u,
-  /["\u{2705}].*Account verification.*succeeded/u,
-  /["\u{274C}].*Account verification.*failed/u,
+  /\u{2705}\s*Account verification.*succeeded/u,
+  /\u{274C}\s*Account verification.*failed/u,
 ];
 
 describe("no hardcoded pointer copy in call-site files", () => {

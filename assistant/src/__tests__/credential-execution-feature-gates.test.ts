@@ -165,8 +165,8 @@ describe("CES flags do not affect unrelated flags", () => {
     setOverridesForTesting(overrides);
     const config = makeConfig();
 
-    // auto-analyze defaults to false and should stay false.
-    expect(isAssistantFeatureFlagEnabled("auto-analyze", config)).toBe(false);
+    // auto-analyze is registry-enabled by design and should stay enabled.
+    expect(isAssistantFeatureFlagEnabled("auto-analyze", config)).toBe(true);
   });
 
   test("enabling all CES flags does not change unrelated fail-closed flags", () => {

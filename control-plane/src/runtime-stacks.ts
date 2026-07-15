@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 export const RUNTIME_STACK_STATUSES = [
   "provisioning",
@@ -102,22 +102,25 @@ export function runtimeStackConfigFromEnv(
 }
 
 function isLegacySharedRuntimeAllowedForAssistant(
-  db: Database,
   config: RuntimeStackConfig,
   assistant: AssistantRuntimeRow,
 ): boolean {
-  if (config.legacySharedRuntimeAssistantIds.includes(assistant.id)) return true;
-  if (config.legacySharedRuntimeUserEmailHashes.length === 0) {
-    return config.legacySharedRuntimeAssistantIds.length === 0;
-  }
-  const user = db
-    .query<{ email: string }, [string]>("SELECT email FROM users WHERE id = ?")
-    .get(assistant.user_id);
-  if (!user) return false;
-  const userEmailHash = createHash("sha256")
-    .update(user.email.trim().toLowerCase())
-    .digest("hex");
-  return config.legacySharedRuntimeUserEmailHashes.includes(userEmailHash);
+  return (
+    config.legacySharedRuntimeAssistantIds.length === 1 &&
+    config.legacySharedRuntimeAssistantIds[0] === assistant.id
+  );
+}
+
+function shouldUseLegacySharedRuntime(
+  config: RuntimeStackConfig,
+  assistant: AssistantRuntimeRow,
+): boolean {
+  return (
+    !config.requireIsolatedRuntime &&
+    config.allowLegacySharedRuntime &&
+    !config.runtimeStackUrlTemplate &&
+    isLegacySharedRuntimeAllowedForAssistant(config, assistant)
+  );
 }
 
 function tableColumns(db: Database, table: string): Set<string> {
@@ -188,17 +191,19 @@ export function getRuntimeStackForAssistant(
 ): RuntimeStackRow | null {
   if (assistant.runtime_stack_id) {
     const byId = db
-      .query<RuntimeStackRow, [string, string]>(
-        "SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string, string]
+      >("SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?")
       .get(assistant.runtime_stack_id, assistant.id);
     if (byId) return byId;
   }
   return (
     db
-      .query<RuntimeStackRow, [string]>(
-        "SELECT * FROM runtime_stacks WHERE assistant_id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string]
+      >("SELECT * FROM runtime_stacks WHERE assistant_id = ?")
       .get(assistant.id) ?? null
   );
 }
@@ -216,7 +221,6 @@ function expandRuntimeStackUrlTemplate(
 }
 
 function nextRuntimeStackSeed(
-  db: Database,
   assistant: AssistantRuntimeRow,
   config: RuntimeStackConfig,
 ): Pick<
@@ -246,11 +250,7 @@ function nextRuntimeStackSeed(
     };
   }
 
-  if (
-    !config.requireIsolatedRuntime &&
-    config.allowLegacySharedRuntime &&
-    isLegacySharedRuntimeAllowedForAssistant(db, config, assistant)
-  ) {
+  if (shouldUseLegacySharedRuntime(config, assistant)) {
     return {
       status: "active",
       provider: "legacy_shared",
@@ -275,6 +275,47 @@ function nextRuntimeStackSeed(
   };
 }
 
+function revalidateLegacySharedRuntimeStack(
+  db: Database,
+  assistant: AssistantRuntimeRow,
+  stack: RuntimeStackRow,
+  config: RuntimeStackConfig,
+  nowIso: () => string,
+): RuntimeStackRow {
+  if (
+    stack.provider !== "legacy_shared" ||
+    stack.status !== "active" ||
+    shouldUseLegacySharedRuntime(config, assistant)
+  ) {
+    return stack;
+  }
+
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET status = 'provisioning',
+        provider = ?,
+        gateway_url = NULL,
+        public_ingress_url = ?,
+        workspace_volume_ref = NULL,
+        service_ref = NULL,
+        last_health_status = NULL,
+        last_error = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND provider = 'legacy_shared'
+      AND status = 'active'
+  `,
+  ).run(
+    config.runtimeStackProvider,
+    config.publicIngressUrl,
+    nowIso(),
+    stack.id,
+  );
+
+  return getRuntimeStackById(db, stack.id) ?? stack;
+}
+
 function recoverUnallocatedStackToLegacySharedRuntime(
   db: Database,
   assistant: AssistantRuntimeRow,
@@ -283,10 +324,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
   nowIso: () => string,
 ): RuntimeStackRow {
   if (
-    config.requireIsolatedRuntime ||
-    !config.allowLegacySharedRuntime ||
-    !isLegacySharedRuntimeAllowedForAssistant(db, config, assistant) ||
-    config.runtimeStackUrlTemplate ||
+    !shouldUseLegacySharedRuntime(config, assistant) ||
     stack.provider !== "railway" ||
     (stack.status !== "failed" && stack.status !== "provisioning") ||
     stack.gateway_url !== null ||
@@ -296,7 +334,8 @@ function recoverUnallocatedStackToLegacySharedRuntime(
     return stack;
   }
 
-  db.query(`
+  db.query(
+    `
     UPDATE runtime_stacks
     SET status = 'active',
         provider = 'legacy_shared',
@@ -313,7 +352,8 @@ function recoverUnallocatedStackToLegacySharedRuntime(
       AND gateway_url IS NULL
       AND service_ref IS NULL
       AND workspace_volume_ref IS NULL
-  `).run(
+  `,
+  ).run(
     config.gatewayUrl,
     config.publicIngressUrl,
     config.runtimeRoot,
@@ -338,17 +378,24 @@ export function ensureRuntimeStackForAssistant(
         assistant.id,
       );
     }
-    return recoverUnallocatedStackToLegacySharedRuntime(
+    const revalidated = revalidateLegacySharedRuntimeStack(
       db,
       assistant,
       existing,
       config,
       nowIso,
     );
+    return recoverUnallocatedStackToLegacySharedRuntime(
+      db,
+      assistant,
+      revalidated,
+      config,
+      nowIso,
+    );
   }
 
   const timestamp = nowIso();
-  const seed = nextRuntimeStackSeed(db, assistant, config);
+  const seed = nextRuntimeStackSeed(assistant, config);
   const stack: RuntimeStackRow = {
     id: "rt-" + randomUUID(),
     org_id: assistant.org_id,
@@ -357,7 +404,8 @@ export function ensureRuntimeStackForAssistant(
     updated_at: timestamp,
     ...seed,
   };
-  db.query(`
+  db.query(
+    `
     INSERT INTO runtime_stacks (
       id,
       org_id,
@@ -373,7 +421,8 @@ export function ensureRuntimeStackForAssistant(
       created_at,
       updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     stack.id,
     stack.org_id,
     stack.assistant_id,
@@ -401,9 +450,10 @@ export function getRuntimeStackById(
 ): RuntimeStackRow | null {
   return (
     db
-      .query<RuntimeStackRow, [string]>(
-        "SELECT * FROM runtime_stacks WHERE id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string]
+      >("SELECT * FROM runtime_stacks WHERE id = ?")
       .get(stackId) ?? null
   );
 }
@@ -411,11 +461,13 @@ export function getRuntimeStackById(
 export function countAllocatedRuntimeServices(db: Database): number {
   return (
     db
-      .query<{ count: number }, []>(`
+      .query<{ count: number }, []>(
+        `
         SELECT COUNT(*) AS count
         FROM runtime_stacks
         WHERE service_ref IS NOT NULL AND status != 'deleted'
-      `)
+      `,
+      )
       .get()?.count ?? 0
   );
 }
@@ -425,11 +477,13 @@ export function markRuntimeStackProvisioning(
   stackId: string,
   nowIso: () => string,
 ): void {
-  db.query(`
+  db.query(
+    `
     UPDATE runtime_stacks
     SET status = 'provisioning', last_error = NULL, updated_at = ?
     WHERE id = ?
-  `).run(nowIso(), stackId);
+  `,
+  ).run(nowIso(), stackId);
 }
 
 export function recordRuntimeStackService(
@@ -438,11 +492,13 @@ export function recordRuntimeStackService(
   serviceRef: string,
   nowIso: () => string,
 ): void {
-  db.query(`
+  db.query(
+    `
     UPDATE runtime_stacks
     SET service_ref = ?, updated_at = ?
     WHERE id = ?
-  `).run(serviceRef, nowIso(), stackId);
+  `,
+  ).run(serviceRef, nowIso(), stackId);
 }
 
 export function recordRuntimeStackVolume(
@@ -451,11 +507,13 @@ export function recordRuntimeStackVolume(
   volumeRef: string,
   nowIso: () => string,
 ): void {
-  db.query(`
+  db.query(
+    `
     UPDATE runtime_stacks
     SET workspace_volume_ref = ?, updated_at = ?
     WHERE id = ?
-  `).run(volumeRef, nowIso(), stackId);
+  `,
+  ).run(volumeRef, nowIso(), stackId);
 }
 
 export function markRuntimeStackActive(
@@ -465,7 +523,8 @@ export function markRuntimeStackActive(
   healthStatus: string,
   nowIso: () => string,
 ): void {
-  db.query(`
+  db.query(
+    `
     UPDATE runtime_stacks
     SET status = 'active',
         gateway_url = ?,
@@ -473,7 +532,8 @@ export function markRuntimeStackActive(
         last_error = NULL,
         updated_at = ?
     WHERE id = ?
-  `).run(gatewayUrl, healthStatus, nowIso(), stackId);
+  `,
+  ).run(gatewayUrl, healthStatus, nowIso(), stackId);
 }
 
 export function markRuntimeStackFailed(
@@ -482,11 +542,13 @@ export function markRuntimeStackFailed(
   error: string,
   nowIso: () => string,
 ): void {
-  db.query(`
+  db.query(
+    `
     UPDATE runtime_stacks
     SET status = 'failed', last_error = ?, updated_at = ?
     WHERE id = ?
-  `).run(error.slice(0, 2_000), nowIso(), stackId);
+  `,
+  ).run(error.slice(0, 2_000), nowIso(), stackId);
 }
 
 export function assistantApiStatusForRuntimeStack(
