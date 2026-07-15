@@ -1,6 +1,6 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-07-14
+Last refreshed: 2026-07-15
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
@@ -11,7 +11,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `aca7f272` (`Add collaborative brand artifacts (#82)`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, and assistant/live-voice UI consistency pass
+- Current production application commit: `13729b4` (`fix: verify ElevenLabs speech engine resource`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, and the secret-safe ElevenLabs Speech Engine resource verifier
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
@@ -260,7 +260,11 @@ Authenticated Chrome test evidence on 2026-07-14:
 6. Railway logged no request to the configured Speech Engine upstream path for either signed test. The deployed route itself is reachable and fail-closed, so the current boundary is before Worklin's upstream handler.
 7. The ElevenLabs account remained on the Free plan with `0 / 10,000` credits used, 15 included call minutes, and four concurrent calls. This is not a credit-exhaustion failure.
 
-The next diagnostic must use the existing server-side credential (or a user-created replacement) to read the Speech Engine resource and confirm that its stored `speech_engine.ws_url` still exactly matches the production upstream URL. Do not create another key merely to bypass secure storage. If the resource is correct, take the provider disconnect and missing-upstream evidence to ElevenLabs support or replace the resource once; do not keep creating duplicate agents.
+Production commit `13729b4` now performs that diagnostic automatically before minting an ElevenLabs conversation token. It reads the configured Speech Engine with the existing server-side credential and retains only the resource ID, a query-free `wss://` host/path, whether request headers exist, and privacy booleans. It never returns or logs the API key, header values, provider response body, or raw provider URL query. Four focused resource-inspection tests, the existing ElevenLabs authorization and managed-session suites, assistant TypeScript, targeted lint, formatting, and secret scanning pass.
+
+The GitHub push completed, but Railway's GitHub watcher did not create a deployment for `13729b4`. The authenticated Logarn Railway CLI was therefore used to upload the exact clean checkout to the existing `Worklin-ai` production service. Three tracked, broken macOS-only design-tool symlinks were excluded from that upload with a temporary `.railwayignore`; the file was removed immediately afterward and was not committed. Railway deployment `9ad89634-dae0-4071-a46a-b5e85d56357d` completed successfully on 2026-07-15, and `/healthz` plus `/readyz` both returned HTTP 200 with gateway status 200.
+
+The first authenticated Chrome retry reached the new verifier and stopped before microphone/provider connection with `Voice session bootstrap failed (403)`. The ElevenLabs `Worklin Voice Pilot` API key is enabled, is not IP-restricted, and is currently restricted to `ElevenAgents: Write`; every other endpoint family is `No Access`, including `Speech to Speech`. The official Speech Engine GET is `GET /v1/speech-engine/:speech_engine_id`, while the previously successful conversation-token call is under `/v1/convai`. This makes the missing Speech Engine endpoint scope the current leading diagnosis. No key permissions have been changed yet. Obtain the user's explicit approval before adding `Speech to Speech: Access` to the existing key, save that one change, retry Worklin, and verify the logged sanitized upstream URL before proceeding to a spoken call.
 
 A conventional ElevenAgents resource named `Worklin Voice Pilot` was created during initial exploration before the Speech Engine resource. It is not the configured Worklin engine and is harmless, but do not delete it without the user's confirmation.
 
