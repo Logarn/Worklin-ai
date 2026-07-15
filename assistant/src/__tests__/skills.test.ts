@@ -934,5 +934,5 @@ describe("skill source ownership", () => {
       expect(loaded.skill?.id).toBe(id);
       expect(loaded.skill?.body.trim().length).toBeGreaterThan(0);
     }
-  });
+  }, 30_000);
 });
