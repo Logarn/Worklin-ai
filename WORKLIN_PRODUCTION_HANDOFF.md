@@ -11,10 +11,29 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `9970ef9` (`fix: accept ElevenLabs bearer authorization`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, the secret-safe Speech Engine resource verifier, pilot-principal compatibility, server-side shared-runtime scoping, and the production-proven ElevenLabs upstream authorization fix
+- Current production application commit: `4dacb43` (`Merge pull request #111 from Logarn/assistant/fix-control-plane-slash-routes`), including the brand-first Work destination, artifact registry, hardened Campaign Copybook persistence, the ElevenLabs public upstream proxy, LLM-first conversational routing, the system-access fix, bundled first-party catalog, assistant/live-voice UI consistency pass, the secret-safe Speech Engine resource verifier, pilot-principal compatibility, server-side shared-runtime scoping, the production-proven ElevenLabs upstream authorization fix, and the slashless control-plane route hotfix
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-07-15 Assistant Wake-Up Hotfix
+
+PR `#111` merged as `4dacb43e84557e7a453ab9965e2abefb4be4b72d` and was deployed to Railway production as deployment `deb8bc93-6a74-4237-9757-6467a6122899` with message `Accept slashless control-plane routes`. Vercel reported success for the merge commit, and Railway `/readyz` returned HTTP 200 with `{"ok":true,"gatewayStatus":200}` after the deployment.
+
+Root cause: the hosted frontend/Vercel layer normalizes `/v1/.../` requests to slashless paths such as `/v1/assistants?hosting=platform`, while the control-plane exact handlers only accepted trailing-slash paths. A signed-in browser could therefore receive `404 {"detail":"Not found."}` for assistant bootstrap even when the same account's assistant/runtime existed and was active behind Railway.
+
+Fix: `control-plane/src/http-paths.ts` now normalizes route comparisons and protects assistant-prefix matching. `control-plane/src/index.ts` uses it for assistant, organization, user, billing, feature-flag, telemetry, and shared-artifact routes. Regression coverage lives in `control-plane/src/http-paths.test.ts`.
+
+Verification:
+
+- `bun test src/http-paths.test.ts src/runtime-stacks.test.ts` passed in `control-plane`.
+- `bunx tsc --noEmit` passed in `control-plane`.
+- `git diff --check` passed.
+- Targeted ESLint is not configured for `control-plane`; attempting it reports no ESLint config for that package.
+- Authenticated Chrome production probe after Railway deployment: `/v1/assistants?hosting=platform` returned HTTP 200 with one active assistant, and `/v1/assistants/active` returned HTTP 200 with `runtime_status: "active"` and `runtime_provider: "legacy_shared"`.
+- Live browser flow using the disposable xAI provider key progressed through provider setup, prechat onboarding, and into conversation `3be75ebd-5117-4325-a700-7024d0d39d7b`. A simple production chat turn succeeded; the assistant replied with a short confirmation.
+
+Product note: logging into Worklin with the same Gmail/Auth0 account should map to the same Worklin user and should not be device-bound. The post-login confusion observed here was not an intentional cross-device restriction; it was a route/bootstrap failure plus a separate UX issue where choosing `ChatGPT Subscription` requires a second ChatGPT provider authorization before first chat. The current onboarding also has several skippable setup gates before the main conversation UI, which can still feel like the assistant is not ready even after the backend wake path is fixed.
 
 ## Collaborative Artifacts Implementation — Production
 

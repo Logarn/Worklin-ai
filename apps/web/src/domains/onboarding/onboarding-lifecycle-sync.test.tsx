@@ -591,6 +591,41 @@ describe("onboarding lifecycle sync", () => {
     expect(hatchAssistantMock).not.toHaveBeenCalled();
   });
 
+  test("an already-active hosted assistant primes new-browser state before leaving hatching", async () => {
+    pendingProviderKey = { provider: "xai", key: "provider-key-value" };
+    getAssistantImpl = async () =>
+      assistantResult("active", {
+        id: "asst-returning",
+        is_local: false,
+        ingress_url: "https://worklin-ai.vercel.app",
+        platform_actor_token: "actor-token-returning",
+      });
+
+    render(<HatchingScreen />);
+
+    await waitFor(() =>
+      expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
+        "asst-returning",
+      ),
+    );
+    expect(setSelectedAssistantMock).toHaveBeenCalledWith("asst-returning");
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://worklin-ai.vercel.app",
+        token: "actor-token-returning",
+      }),
+    );
+    await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
+      timeout: 2_000,
+    });
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(routes.onboarding.prechat, {
+        replace: true,
+      }),
+    );
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
+  });
+
   test("provider setup failure stops hatching before onboarding navigation", async () => {
     pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
     applyPendingProviderKeyImpl = async () => {
