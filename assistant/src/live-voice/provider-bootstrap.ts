@@ -5,10 +5,17 @@ import { getConfig } from "../config/loader.js";
 import type { VoiceEngineId } from "../config/schemas/voice.js";
 import { credentialKey } from "../security/credential-key.js";
 import { getSecureKeyAsync } from "../security/secure-keys.js";
+import { getLogger } from "../util/logger.js";
+import {
+  ElevenLabsSpeechEngineResourceError,
+  inspectElevenLabsSpeechEngine,
+} from "./elevenlabs-speech-engine-resource.js";
 import {
   createManagedVoiceSession,
   releaseManagedVoiceSession,
 } from "./provider-session.js";
+
+const log = getLogger("live-voice-provider-bootstrap");
 
 const HUME_TOKEN_URL = "https://api.hume.ai/oauth2-cc/token";
 const HUME_CHAT_URL = "wss://api.hume.ai/v0/evi/chat";
@@ -198,6 +205,27 @@ async function bootstrapElevenLabs(
       "ElevenLabs requires an API key and agent ID",
     );
   }
+  const resource = await inspectElevenLabsSpeechEngine({
+    apiKey,
+    speechEngineId: providerConfig.agentId,
+    fetchImpl,
+  }).catch((error: unknown) => {
+    if (error instanceof ElevenLabsSpeechEngineResourceError) {
+      throw new VoiceBootstrapError("provider_error", error.message);
+    }
+    throw error;
+  });
+  log.info(
+    {
+      speechEngineId: resource.speechEngineId,
+      upstreamUrl: resource.upstreamUrl,
+      requestHeadersConfigured: resource.requestHeadersConfigured,
+      recordVoice: resource.recordVoice,
+      deleteAudio: resource.deleteAudio,
+      zeroRetentionMode: resource.zeroRetentionMode,
+    },
+    "ElevenLabs Speech Engine resource verified",
+  );
   const url = new URL(ELEVENLABS_CONVERSATION_TOKEN_URL);
   url.searchParams.set("agent_id", providerConfig.agentId.trim());
   const response = await fetchImpl(url, {
