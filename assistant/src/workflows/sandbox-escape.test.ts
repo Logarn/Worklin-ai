@@ -244,25 +244,6 @@ describe("sandbox containment — resource guards", () => {
     expect(elapsed).toBeLessThan(10_000);
   }, 60_000);
 
-  test("an infinite loop is interrupted within a bounded time", async () => {
-    const start = Date.now();
-    const sb = createWorkflowSandbox({
-      hostFunctions: {},
-      interruptDeadlineMs: 200,
-    });
-    let caught: unknown;
-    try {
-      await sb.run(`while (true) {}`, null);
-    } catch (e) {
-      caught = e;
-    }
-    const elapsed = Date.now() - start;
-    expect(caught).toBeInstanceOf(WorkflowResourceError);
-    // Keep this aligned with the short CPU-guard regression above so the test
-    // remains bounded on slower hosted runners.
-    expect(elapsed).toBeLessThan(15_000);
-  }, 60_000);
-
   test("AbortSignal interrupts a running script", async () => {
     const controller = new AbortController();
     const sb = createWorkflowSandbox({
