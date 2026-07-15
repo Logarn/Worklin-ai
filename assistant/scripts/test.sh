@@ -37,10 +37,6 @@ PER_TEST_TIMEOUT="${PER_TEST_TIMEOUT:-120}"
 # slow tests to the front, improving parallel utilization.
 TEST_DURATIONS_FILE="${TEST_DURATIONS_FILE:-}"
 TEST_DURATIONS_OUTPUT="${TEST_DURATIONS_OUTPUT:-}"
-# Space- or newline-separated test paths to omit from this shard. Omitted
-# files should be run by a dedicated workflow job when they need a different
-# platform or process environment.
-EXCLUDE_TEST_FILES="${EXCLUDE_TEST_FILES:-}"
 
 EXPERIMENTAL_FILES=(
   "skill-load-tool.test.ts"
@@ -97,17 +93,6 @@ while IFS= read -r test_file; do
     fi
   done
   if [[ ${skip_broken} -eq 1 ]]; then
-    continue
-  fi
-
-  is_excluded=0
-  for excluded_file in ${EXCLUDE_TEST_FILES}; do
-    if [[ "${test_file}" == "${excluded_file}" ]]; then
-      is_excluded=1
-      break
-    fi
-  done
-  if [[ ${is_excluded} -eq 1 ]]; then
     continue
   fi
 

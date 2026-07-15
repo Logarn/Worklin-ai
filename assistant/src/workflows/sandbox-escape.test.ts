@@ -248,7 +248,7 @@ describe("sandbox containment — resource guards", () => {
     const start = Date.now();
     const sb = createWorkflowSandbox({
       hostFunctions: {},
-      interruptDeadlineMs: 500,
+      interruptDeadlineMs: 200,
     });
     let caught: unknown;
     try {
@@ -258,22 +258,29 @@ describe("sandbox containment — resource guards", () => {
     }
     const elapsed = Date.now() - start;
     expect(caught).toBeInstanceOf(WorkflowResourceError);
-    // INTERRUPT_DEADLINE_MS is 5s; allow generous slack but assert it is bounded.
+    // Keep this aligned with the short CPU-guard regression above so the test
+    // remains bounded on slower hosted runners.
     expect(elapsed).toBeLessThan(15_000);
   }, 60_000);
 
   test("AbortSignal interrupts a running script", async () => {
     const controller = new AbortController();
     const sb = createWorkflowSandbox({
-      hostFunctions: {},
+      hostFunctions: {
+        abort: () => {
+          controller.abort();
+          return null;
+        },
+      },
       signal: controller.signal,
       interruptDeadlineMs: 500,
     });
-    // Abort almost immediately so the interrupt handler trips.
-    setTimeout(() => controller.abort(), 20);
     let caught: unknown;
     try {
-      await sb.run(`while (true) {}`, null);
+      // Abort at a host-call boundary, before entering the pure CPU loop. This
+      // avoids relying on a wall-clock timer firing while the VM is executing
+      // synchronously, while still exercising the signal-aware interrupt.
+      await sb.run(`abort(); while (true) {}`, null);
     } catch (e) {
       caught = e;
     }
