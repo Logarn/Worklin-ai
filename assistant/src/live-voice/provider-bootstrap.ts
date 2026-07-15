@@ -21,6 +21,7 @@ const HUME_TOKEN_URL = "https://api.hume.ai/oauth2-cc/token";
 const HUME_CHAT_URL = "wss://api.hume.ai/v0/evi/chat";
 const ELEVENLABS_CONVERSATION_TOKEN_URL =
   "https://api.elevenlabs.io/v1/convai/conversation/token";
+const PLATFORM_PRINCIPAL_PREFIX = "vellum-principal-";
 
 export type VoiceSessionConnection =
   | { transport: "native" }
@@ -130,11 +131,21 @@ export async function bootstrapVoiceSession(input: {
 }
 
 function enforcePilotAllowlist(allowlist: string[], actorId: string): void {
-  if (allowlist.includes("*") || allowlist.includes(actorId)) return;
+  if (isVoicePilotAllowed(allowlist, actorId)) return;
   throw new VoiceBootstrapError(
     "forbidden",
     "Managed voice is limited to the private pilot",
   );
+}
+
+export function isVoicePilotAllowed(
+  allowlist: string[],
+  actorId: string,
+): boolean {
+  if (allowlist.includes("*") || allowlist.includes(actorId)) return true;
+  if (!actorId.startsWith(PLATFORM_PRINCIPAL_PREFIX)) return false;
+  const legacyUserId = actorId.slice(PLATFORM_PRINCIPAL_PREFIX.length);
+  return legacyUserId.length > 0 && allowlist.includes(legacyUserId);
 }
 
 async function bootstrapHume(
