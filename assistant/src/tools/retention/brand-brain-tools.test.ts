@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { createDraftBrandBrain } from "@vellumai/retention-domain";
 
+import { run as saveBrandResearch } from "../../config/bundled-skills/worklin-brand-brain/tools/brand-research-save.js";
 import { saveBrandBrain } from "../../memory/brand-brain-store.js";
 import { getDb } from "../../memory/db-connection.js";
 import { initializeDb } from "../../memory/db-init.js";
@@ -91,5 +92,68 @@ describe("Brand Brain skill tools", () => {
     });
     expect(outcome.isError).toBe(false);
     expect(JSON.parse(outcome.content).profile.campaignMemory).toHaveLength(1);
+  });
+
+  test("persists a public research report as unapproved Brand Brain context", async () => {
+    const result = await saveBrandResearch(
+      {
+        report: {
+          version: "brand_research_v1",
+          generatedAt: "2026-07-15T00:00:00.000Z",
+          query: {
+            brandName: "Acme Studio",
+            websiteUrl: "https://acme.example",
+          },
+          executiveSummary: ["The public site emphasizes a focused workflow."],
+          identity: {
+            category: "Workflow software",
+            positioning: "A focused workflow tool.",
+            offers: ["Core product"],
+            audienceSignals: ["Small teams"],
+          },
+          competitorLandscape: [],
+          channelFindings: {
+            seoAndContent: [],
+            social: [],
+            emailAndLifecycle: [],
+            sms: [],
+            productAndLaunches: [],
+          },
+          marketSignals: [],
+          customerSignals: [],
+          trendSignals: [],
+          evidence: [
+            {
+              id: "official-home",
+              url: "https://acme.example",
+              title: "Acme Studio homepage",
+              sourceType: "official_site",
+              observedAt: "2026-07-15",
+              finding: "The homepage describes a focused workflow tool.",
+              confidence: "high",
+            },
+          ],
+          gaps: ["Public customer sentiment was not available."],
+          recommendations: [],
+          safety: {
+            readOnly: true,
+            publicSourcesOnly: true,
+            unsupportedClaimsExcluded: true,
+            caveats: [],
+          },
+        },
+      },
+      context,
+    );
+    const parsed = JSON.parse(result.content);
+    expect(result.isError).toBe(false);
+    expect(parsed.saved).toBe(true);
+    const stored = JSON.parse(
+      (await executeBrandBrainRead({}, context)).content,
+    );
+    expect(stored.profile.research.version).toBe("brand_research_v1");
+    expect(stored.profile.caveats).toContain(
+      "Research findings are public observations and inferences, not approved brand claims.",
+    );
   });
 });

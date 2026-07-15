@@ -170,6 +170,9 @@ describe("pre-chat onboarding contract", () => {
         tone: "warm",
         userName: "Alex",
         assistantName: "Nova",
+        brandName: "Acme Studio",
+        websiteUrl: "https://acme.example",
+        skills: ["worklin-brand-research"],
       };
 
       const result = buildSystemPrompt({ onboardingContext: context });
@@ -183,6 +186,11 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).toContain("- Common work: builds code, apps, or tools");
       expect(bootstrap).toContain("- Name: Alex");
       expect(bootstrap).toContain("- Chosen assistant name: Nova");
+      expect(bootstrap).toContain("- Brand to research: Acme Studio");
+      expect(bootstrap).toContain("- Website URL: https://acme.example");
+      expect(bootstrap).toContain(
+        "- First-run skills to use: worklin-brand-research",
+      );
       expect(bootstrap).toContain("Apply this context quietly.");
 
       // Raw JSON must NOT be present

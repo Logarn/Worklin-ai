@@ -20,4 +20,11 @@ Call `brand_brain_apply_correction` only when the user directly corrects or expl
 
 Call `brand_brain_record_campaign_outcome` only when the user supplies or confirms an actual result and there is a concrete evidence note. Set `result_confirmed` to true only in that case. Treat stored campaign outcomes as dated priors, not universal laws.
 
+When `worklin-brand-research` is active, use `brand_research_save` after the
+main assistant has synthesized a complete public research report. The report
+must declare `brand_research_v1`, `readOnly: true`, `publicSourcesOnly: true`,
+and `unsupportedClaimsExcluded: true`. Research findings remain observations
+or qualified inferences; they are not approved claims, voice rules, or
+customer quotations.
+
 Never store generated claims, invented customer language, speculative outcomes, or private credentials in Brand Brain.
