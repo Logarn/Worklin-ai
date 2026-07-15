@@ -194,6 +194,12 @@ mock.module("@/utils/avatar-svg-compositor", () => ({
   composeSvg: () => "<svg />",
 }));
 
+async function skipBrandResearchStep(): Promise<void> {
+  fireEvent.click(
+    await screen.findByRole("button", { name: "I'll add a brand later" }),
+  );
+}
+
 mock.module("@/domains/onboarding/components/onboarding-layout", () => ({
   OnboardingLayout: ({ children }: { children: ReactNode }) => (
     <div>{children}</div>
@@ -798,6 +804,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
 
     expect(await screen.findByTestId("task-continue")).toBeTruthy();
     expect(screen.queryByText("Connect Google")).toBeNull();
@@ -811,6 +818,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByTestId("task-continue"));
     fireEvent.click(await screen.findByTestId("tools-continue"));
     fireEvent.click(await screen.findByTestId("prior-continue"));
@@ -905,6 +913,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByTestId("task-continue"));
     fireEvent.click(await screen.findByTestId("tools-continue"));
 
@@ -926,6 +935,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByTestId("task-continue"));
     fireEvent.click(await screen.findByTestId("tools-continue"));
 
