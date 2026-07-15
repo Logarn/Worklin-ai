@@ -256,6 +256,40 @@ describe("runtime stack provisioning defaults", () => {
     expect(isRuntimeStackRoutable(stack)).toBe(true);
   });
 
+  test("a runtime URL template gives separate users separate stack routes", () => {
+    const db = setupDb();
+    const stackConfig = config({
+      runtimeStackUrlTemplate:
+        "https://private-runtime.example.com/{orgId}/{assistantId}",
+      runtimeStackProvider: "static_template",
+    });
+
+    const first = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      stackConfig,
+      NOW,
+    );
+    const second = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ id: "asst-2", user_id: "user-2", org_id: "org-2" }),
+      stackConfig,
+      NOW,
+    );
+
+    expect(first.id).not.toBe(second.id);
+    expect(first.gateway_url).toBe(
+      "https://private-runtime.example.com/org-1/asst-1",
+    );
+    expect(second.gateway_url).toBe(
+      "https://private-runtime.example.com/org-2/asst-2",
+    );
+    expect(first.provider).toBe("static_template");
+    expect(second.provider).toBe("static_template");
+    expect(isRuntimeStackRoutable(first)).toBe(true);
+    expect(isRuntimeStackRoutable(second)).toBe(true);
+  });
+
   test("explicit legacy mode recovers an unallocated provisioning Railway stack", () => {
     const db = setupDb();
     const first = ensureRuntimeStackForAssistant(

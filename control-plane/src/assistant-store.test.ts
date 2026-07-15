@@ -65,6 +65,26 @@ describe("default assistant store", () => {
     ).toBe("admin");
   });
 
+  test("creates separate default assistants and organizations per user", () => {
+    const db = setupDb();
+
+    const first = getOrCreateAssistant(db, "user-1", NOW);
+    const second = getOrCreateAssistant(db, "user-2", NOW);
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.org_id).not.toBe(first.org_id);
+    expect(getActiveAssistant(db, "user-1")?.id).toBe(first.id);
+    expect(getActiveAssistant(db, "user-2")?.id).toBe(second.id);
+    expect(
+      getOrganizationMembership(db, first.org_id, "user-1")?.role,
+    ).toBe("admin");
+    expect(
+      getOrganizationMembership(db, second.org_id, "user-2")?.role,
+    ).toBe("admin");
+    expect(getOrganizationMembership(db, first.org_id, "user-2")).toBeNull();
+    expect(getOrganizationMembership(db, second.org_id, "user-1")).toBeNull();
+  });
+
   test("is idempotent across repeated session bootstrap calls", () => {
     const db = setupDb();
 

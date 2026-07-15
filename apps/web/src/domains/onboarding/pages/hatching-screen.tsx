@@ -286,6 +286,9 @@ export function HatchingScreen() {
             (preflightState.kind === "active" ||
               preflightState.kind === "self_hosted")
           ) {
+            useResolvedAssistantsStore.getState().upsertFromApi(existing.data);
+            void setSelectedAssistant(existing.data.id);
+            primePlatformAssistantConnection(existing.data);
             if (isLocalMode()) {
               void saveLockfileAssistant({
                 assistantId: existing.data.id,
