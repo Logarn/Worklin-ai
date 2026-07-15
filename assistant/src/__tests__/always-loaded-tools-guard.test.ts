@@ -28,7 +28,7 @@ afterAll(() => {
 });
 
 describe("always-loaded tool count", () => {
-  test("should be exactly 11 with recall occupying the existing slot", async () => {
+  test("should include the intentional always-loaded baseline", async () => {
     await initializeTools();
     const allDefs = getAllToolDefinitions();
 
@@ -58,6 +58,7 @@ describe("always-loaded tool count", () => {
       "file_write",
       "recall",
       "remember",
+      "retention_audit",
       "skill_execute",
       "skill_load",
       "web_fetch",
@@ -66,6 +67,6 @@ describe("always-loaded tool count", () => {
 
     expect(activeNames).toEqual(expectedNames);
     expect(activeNames.filter((name) => name === "recall")).toHaveLength(1);
-    expect(activeTools.length).toBe(11);
+    expect(activeTools.length).toBe(12);
   });
 });

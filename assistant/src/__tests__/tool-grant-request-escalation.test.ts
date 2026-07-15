@@ -217,7 +217,7 @@ describe("ToolApprovalHandler / grant-miss escalation", () => {
     expect(result.allowed).toBe(false);
     if (result.allowed) return;
     // Should get the generic denial message, not escalation
-    expect(result.result.content).toContain("verified channel identity");
+    expect(result.result.content).toContain("verified account owner");
 
     // No canonical request should have been created
     const requests = listCanonicalGuardianRequests({
@@ -226,7 +226,6 @@ describe("ToolApprovalHandler / grant-miss escalation", () => {
     });
     expect(requests.length).toBe(0);
   });
-
 });
 
 // ---------------------------------------------------------------------------

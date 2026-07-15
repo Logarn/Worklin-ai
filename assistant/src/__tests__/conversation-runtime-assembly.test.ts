@@ -1703,7 +1703,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).toContain("current_time: 2026-04-02T12:00:00Z");
     expect(text).toContain("canonical_actor_identity: unknown");
     expect(text).toContain("trust_class: unknown");
-    expect(text).toContain("non-guardian account");
+    expect(text).toContain("not verified as the owner");
     expect(text).toContain("Do not explain the verification system");
     expect(text).toContain("</turn_context>");
   });
