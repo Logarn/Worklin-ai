@@ -116,9 +116,9 @@ export interface CreateWorkflowSandboxOptions {
   /** Runtime memory ceiling. Defaults to 256 MiB. */
   memoryLimitBytes?: number;
   /**
-   * Gives nested workflows their own Asyncify module. The shared module is
-   * safe for ordinary runs, but Asyncify cannot be re-entered while a parent
-   * workflow is suspended waiting for a child.
+   * Gives an execution its own Asyncify module. The shared module is safe for
+   * direct sequential sandbox use, but workflow engine executions opt out so
+   * parent and child runs never share suspended Asyncify state.
    */
   isolateModule?: boolean;
   /**

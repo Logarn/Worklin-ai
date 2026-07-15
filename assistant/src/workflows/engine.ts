@@ -922,6 +922,7 @@ export async function executeWorkflow(
       scriptSource,
       args,
       buildHostFunctions("", 0),
+      true,
     );
     // A host CapExceededSignal/AbortedSignal crosses into the VM as a catchable
     // exception, so a script can wrap agent()/parallel() in try/catch, SWALLOW
