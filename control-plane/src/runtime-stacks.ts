@@ -32,6 +32,10 @@ export interface RuntimeStackRow {
   workspace_volume_ref: string | null;
   service_ref: string | null;
   service_capacity_reserved: number;
+  service_create_attempted_at: number | null;
+  volume_create_attempted_at: number | null;
+  provisioning_lease_token: string | null;
+  provisioning_lease_expires_at: number | null;
   actor_signing_key_scope: string;
   last_health_status: string | null;
   last_error: string | null;
@@ -252,6 +256,10 @@ export function ensureRuntimeStackSchema(db: Database): void {
       service_ref TEXT,
       service_capacity_reserved INTEGER NOT NULL DEFAULT 0
         CHECK(service_capacity_reserved IN (0, 1)),
+      service_create_attempted_at INTEGER,
+      volume_create_attempted_at INTEGER,
+      provisioning_lease_token TEXT,
+      provisioning_lease_expires_at INTEGER,
       actor_signing_key_scope TEXT NOT NULL DEFAULT 'global',
       last_health_status TEXT,
       last_error TEXT,
@@ -270,6 +278,30 @@ export function ensureRuntimeStackSchema(db: Database): void {
     "runtime_stacks",
     "service_capacity_reserved",
     "service_capacity_reserved INTEGER NOT NULL DEFAULT 0 CHECK(service_capacity_reserved IN (0, 1))",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "service_create_attempted_at",
+    "service_create_attempted_at INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "volume_create_attempted_at",
+    "volume_create_attempted_at INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "provisioning_lease_token",
+    "provisioning_lease_token TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "provisioning_lease_expires_at",
+    "provisioning_lease_expires_at INTEGER",
   );
   addColumnIfMissing(
     db,
@@ -410,6 +442,10 @@ function revalidateLegacySharedRuntimeStack(
         workspace_volume_ref = NULL,
         service_ref = NULL,
         service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
+        provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
         actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
@@ -459,6 +495,10 @@ function recoverUnallocatedStackToLegacySharedRuntime(
         workspace_volume_ref = ?,
         service_ref = 'legacy-shared-runtime',
         service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
+        provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
         actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
@@ -530,6 +570,10 @@ export function ensureRuntimeStackForAssistant(
       org_id: assistant.org_id,
       assistant_id: assistant.id,
       service_capacity_reserved: 0,
+      service_create_attempted_at: null,
+      volume_create_attempted_at: null,
+      provisioning_lease_token: null,
+      provisioning_lease_expires_at: null,
       actor_signing_key_scope:
         seed.provider === "railway" && seed.service_ref === null
           ? runtimeActorSigningKeyScope(stackId)
@@ -654,6 +698,10 @@ export function claimPreprovisionedRuntimeStack(
            workspace_volume_ref = ?,
            service_ref = ?,
            service_capacity_reserved = 0,
+           service_create_attempted_at = NULL,
+           volume_create_attempted_at = NULL,
+           provisioning_lease_token = NULL,
+           provisioning_lease_expires_at = NULL,
            actor_signing_key_scope = ?,
            last_health_status = 'reserved',
            last_error = NULL,
@@ -727,79 +775,257 @@ export function countAllocatedRuntimeServices(db: Database): number {
   );
 }
 
-export interface RuntimeServiceCapacityClaim {
+export interface RuntimeServiceProvisioningLeaseClaim {
   stack: RuntimeStackRow | null;
+  leaseAcquired: boolean;
   serviceCreationAllowed: boolean;
+  retryAfterMs: number | null;
 }
 
-export function claimRuntimeServiceCapacity(
+export function claimRuntimeServiceProvisioningLease(
   db: Database,
   stackId: string,
   maxRuntimeServices: number,
+  leaseToken: string,
+  nowMs: number,
+  leaseTtlMs: number,
   nowIso: () => string,
-): RuntimeServiceCapacityClaim {
+): RuntimeServiceProvisioningLeaseClaim {
+  if (!leaseToken) throw new Error("Provisioning lease token is required.");
+  if (!Number.isInteger(leaseTtlMs) || leaseTtlMs < 1) {
+    throw new Error("Provisioning lease TTL must be a positive integer.");
+  }
+
   return db
     .transaction(() => {
       const current = getRuntimeStackById(db, stackId);
       if (!current || current.provider !== "railway") {
-        return { stack: current, serviceCreationAllowed: false };
+        return {
+          stack: current,
+          leaseAcquired: false,
+          serviceCreationAllowed: false,
+          retryAfterMs: null,
+        };
       }
-      if (current.service_ref !== null) {
-        return { stack: current, serviceCreationAllowed: false };
-      }
-      if (current.service_capacity_reserved === 1) {
-        return { stack: current, serviceCreationAllowed: true };
+      if (
+        current.provisioning_lease_token &&
+        current.provisioning_lease_token !== leaseToken &&
+        (current.provisioning_lease_expires_at ?? 0) > nowMs
+      ) {
+        return {
+          stack: current,
+          leaseAcquired: false,
+          serviceCreationAllowed: false,
+          retryAfterMs: Math.max(
+            1,
+            (current.provisioning_lease_expires_at ?? nowMs) - nowMs,
+          ),
+        };
       }
 
-      const allocatedOrReserved =
-        db
-          .query<{ count: number }, []>(
-            `
-            SELECT COUNT(*) AS count
-            FROM runtime_stacks
-            WHERE status != 'deleted'
-              AND (
-                service_ref IS NOT NULL
-                OR service_capacity_reserved = 1
-              )
-          `,
-          )
-          .get()?.count ?? 0;
-      if (maxRuntimeServices < 1 || allocatedOrReserved >= maxRuntimeServices) {
-        return { stack: current, serviceCreationAllowed: false };
+      let reserveServiceCapacity = current.service_capacity_reserved;
+      if (current.service_ref === null && reserveServiceCapacity === 0) {
+        const allocatedOrReserved =
+          db
+            .query<{ count: number }, []>(
+              `
+              SELECT COUNT(*) AS count
+              FROM runtime_stacks
+              WHERE status != 'deleted'
+                AND (
+                  service_ref IS NOT NULL
+                  OR service_capacity_reserved = 1
+                )
+            `,
+            )
+            .get()?.count ?? 0;
+        if (
+          maxRuntimeServices > 0 &&
+          allocatedOrReserved < maxRuntimeServices
+        ) {
+          reserveServiceCapacity = 1;
+        }
       }
 
       db.query(
         `
         UPDATE runtime_stacks
-        SET service_capacity_reserved = 1, updated_at = ?
+        SET service_capacity_reserved = ?,
+            provisioning_lease_token = ?,
+            provisioning_lease_expires_at = ?,
+            updated_at = ?
         WHERE id = ?
           AND provider = 'railway'
-          AND service_ref IS NULL
-          AND service_capacity_reserved = 0
+          AND (
+            provisioning_lease_token IS NULL
+            OR provisioning_lease_token = ?
+            OR provisioning_lease_expires_at IS NULL
+            OR provisioning_lease_expires_at <= ?
+          )
       `,
-      ).run(nowIso(), stackId);
+      ).run(
+        reserveServiceCapacity,
+        leaseToken,
+        nowMs + leaseTtlMs,
+        nowIso(),
+        stackId,
+        leaseToken,
+        nowMs,
+      );
       const claimed = getRuntimeStackById(db, stackId);
       return {
         stack: claimed,
-        serviceCreationAllowed: claimed?.service_capacity_reserved === 1,
+        leaseAcquired: claimed?.provisioning_lease_token === leaseToken,
+        serviceCreationAllowed:
+          claimed?.service_ref === null &&
+          claimed.service_capacity_reserved === 1,
+        retryAfterMs: null,
       };
     })
     .immediate();
+}
+
+export function renewRuntimeServiceProvisioningLease(
+  db: Database,
+  stackId: string,
+  leaseToken: string,
+  nowMs: number,
+  leaseTtlMs: number,
+  nowIso: () => string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET provisioning_lease_expires_at = ?, updated_at = ?
+      WHERE id = ? AND provisioning_lease_token = ?
+    `,
+    )
+    .run(nowMs + leaseTtlMs, nowIso(), stackId, leaseToken);
+  if (result.changes !== 1) {
+    throw new Error("Runtime provisioning lease was lost.");
+  }
+}
+
+export function releaseRuntimeServiceProvisioningLease(
+  db: Database,
+  stackId: string,
+  leaseToken: string,
+  nowIso: () => string,
+): void {
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
+        updated_at = ?
+    WHERE id = ? AND provisioning_lease_token = ?
+  `,
+  ).run(nowIso(), stackId, leaseToken);
+}
+
+function assertLeaseMutation(changes: number, leaseToken?: string): void {
+  if (leaseToken && changes !== 1) {
+    throw new Error("Runtime provisioning lease was lost.");
+  }
 }
 
 export function markRuntimeStackProvisioning(
   db: Database,
   stackId: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
     SET status = 'provisioning', last_error = NULL, updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(nowIso(), stackId);
+    )
+    .run(nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function recordRuntimeServiceCreateAttempt(
+  db: Database,
+  stackId: string,
+  attemptedAt: number,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET service_create_attempted_at = ?, updated_at = ?
+      WHERE id = ?
+        AND service_ref IS NULL
+        AND provisioning_lease_token = ?
+    `,
+    )
+    .run(attemptedAt, nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function clearRuntimeServiceCreateAttempt(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET service_create_attempted_at = NULL, updated_at = ?
+      WHERE id = ? AND provisioning_lease_token = ?
+    `,
+    )
+    .run(nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function recordRuntimeVolumeCreateAttempt(
+  db: Database,
+  stackId: string,
+  attemptedAt: number,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET volume_create_attempted_at = ?, updated_at = ?
+      WHERE id = ?
+        AND workspace_volume_ref IS NULL
+        AND provisioning_lease_token = ?
+    `,
+    )
+    .run(attemptedAt, nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function clearRuntimeVolumeCreateAttempt(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET volume_create_attempted_at = NULL, updated_at = ?
+      WHERE id = ? AND provisioning_lease_token = ?
+    `,
+    )
+    .run(nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function recordRuntimeStackService(
@@ -807,16 +1033,23 @@ export function recordRuntimeStackService(
   stackId: string,
   serviceRef: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
     SET service_ref = ?,
         service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
         updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(serviceRef, nowIso(), stackId);
+    )
+    .run(serviceRef, nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function recordRuntimeStackVolume(
@@ -824,14 +1057,22 @@ export function recordRuntimeStackVolume(
   stackId: string,
   volumeRef: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
-    SET workspace_volume_ref = ?, updated_at = ?
+    SET workspace_volume_ref = ?,
+        volume_create_attempted_at = NULL,
+        updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(volumeRef, nowIso(), stackId);
+    )
+    .run(volumeRef, nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function markRuntimeStackActive(
@@ -840,19 +1081,27 @@ export function markRuntimeStackActive(
   gatewayUrl: string,
   healthStatus: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
     SET status = 'active',
         gateway_url = ?,
         service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
         last_health_status = ?,
         last_error = NULL,
         updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(gatewayUrl, healthStatus, nowIso(), stackId);
+    )
+    .run(gatewayUrl, healthStatus, nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function markRuntimeStackFailed(
@@ -860,14 +1109,20 @@ export function markRuntimeStackFailed(
   stackId: string,
   error: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
     SET status = 'failed', last_error = ?, updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(error.slice(0, 2_000), nowIso(), stackId);
+    )
+    .run(error.slice(0, 2_000), nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function assistantApiStatusForRuntimeStack(

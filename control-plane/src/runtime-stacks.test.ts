@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
-  claimRuntimeServiceCapacity,
+  claimRuntimeServiceProvisioningLease,
   countAllocatedRuntimeServices,
   deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
@@ -20,6 +20,7 @@ import {
   prepareRuntimeStackActorSigningScope,
   recordRuntimeStackService,
   recordRuntimeStackVolume,
+  releaseRuntimeServiceProvisioningLease,
   runtimeActorSigningKeyScope,
   runtimeNotReadyPayload,
   runtimeStackConfigFromEnv,
@@ -704,24 +705,91 @@ describe("runtime stack provisioning defaults", () => {
       NOW,
     );
 
-    const firstClaim = claimRuntimeServiceCapacity(db, first.id, 1, NOW);
+    const firstClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      first.id,
+      1,
+      "lease-first",
+      1_000,
+      1_000,
+      NOW,
+    );
+    expect(firstClaim.leaseAcquired).toBe(true);
     expect(firstClaim.serviceCreationAllowed).toBe(true);
     expect(firstClaim.stack?.service_capacity_reserved).toBe(1);
 
-    markRuntimeStackFailed(db, first.id, "response lost", NOW);
-    const retryClaim = claimRuntimeServiceCapacity(db, first.id, 1, NOW);
-    const blockedClaim = claimRuntimeServiceCapacity(db, second.id, 1, NOW);
+    markRuntimeStackFailed(db, first.id, "response lost", NOW, "lease-first");
+    const overlappingClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      first.id,
+      1,
+      "lease-overlap",
+      1_500,
+      1_000,
+      NOW,
+    );
+    expect(overlappingClaim.leaseAcquired).toBe(false);
+    expect(overlappingClaim.retryAfterMs).toBe(500);
+
+    const retryClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      first.id,
+      1,
+      "lease-retry",
+      2_001,
+      1_000,
+      NOW,
+    );
+    const blockedClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      second.id,
+      1,
+      "lease-second",
+      2_001,
+      1_000,
+      NOW,
+    );
+    expect(retryClaim.leaseAcquired).toBe(true);
     expect(retryClaim.serviceCreationAllowed).toBe(true);
     expect(retryClaim.stack?.service_capacity_reserved).toBe(1);
+    expect(blockedClaim.leaseAcquired).toBe(true);
     expect(blockedClaim.serviceCreationAllowed).toBe(false);
     expect(blockedClaim.stack?.service_capacity_reserved).toBe(0);
 
-    recordRuntimeStackService(db, first.id, "service-recovered", NOW);
+    expect(() =>
+      recordRuntimeStackService(
+        db,
+        first.id,
+        "stale-service",
+        NOW,
+        "lease-first",
+      ),
+    ).toThrow("lease was lost");
+    recordRuntimeStackService(
+      db,
+      first.id,
+      "service-recovered",
+      NOW,
+      "lease-retry",
+    );
     expect(getRuntimeStackById(db, first.id)).toMatchObject({
       service_ref: "service-recovered",
       service_capacity_reserved: 0,
     });
-    expect(claimRuntimeServiceCapacity(db, second.id, 1, NOW)).toMatchObject({
+    releaseRuntimeServiceProvisioningLease(db, first.id, "lease-retry", NOW);
+    releaseRuntimeServiceProvisioningLease(db, second.id, "lease-second", NOW);
+    expect(
+      claimRuntimeServiceProvisioningLease(
+        db,
+        second.id,
+        1,
+        "lease-second-retry",
+        3_100,
+        1_000,
+        NOW,
+      ),
+    ).toMatchObject({
+      leaseAcquired: true,
       serviceCreationAllowed: false,
     });
   });
@@ -918,6 +986,10 @@ describe("runtime actor signing key isolation", () => {
     expect(getRuntimeStackById(db, "rt-existing")).toMatchObject({
       actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
       service_capacity_reserved: 0,
+      service_create_attempted_at: null,
+      volume_create_attempted_at: null,
+      provisioning_lease_token: null,
+      provisioning_lease_expires_at: null,
     });
   });
 });

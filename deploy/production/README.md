@@ -86,6 +86,9 @@ WORKLIN_RAILWAY_RUNTIME_BRANCH=main
 WORKLIN_RAILWAY_RUNTIME_REGION=<Railway region>
 WORKLIN_RAILWAY_RUNTIME_MOUNT_PATH=/data
 WORKLIN_RAILWAY_RUNTIME_PORT=8080
+WORKLIN_RAILWAY_REQUEST_TIMEOUT_MS=30000
+WORKLIN_RAILWAY_SERVICE_RECONCILE_TIMEOUT_MS=30000
+WORKLIN_RAILWAY_PROVISIONING_LEASE_TTL_MS=120000
 ```
 
 For each assistant, the provisioner creates one GitHub-backed service and one
@@ -93,11 +96,16 @@ persistent volume, applies assistant-scoped runtime variables, deploys the
 service, waits for Railway deployment success and `/readyz`, then stores its
 private `SERVICE_NAME.railway.internal` gateway URL. Partial attempts persist
 their service and volume IDs, and reserve service capacity durably until the
-service identity is recorded. Retries reconcile Railway by deterministic
-service name and mounted volume before creating resources or rejecting a retry
-at the configured cap, including after a create response is lost. An isolated
-runtime does not become active until its assistant and credential service are
-both connected and `/readyz` succeeds.
+service identity is recorded. A database-backed lease fences overlapping
+control-plane processes. Ambiguous service or volume creates remain marked
+until the deterministic resource appears. Automatic retries never issue a
+second create; if the resource never appears, an operator must verify its
+absence in Railway before clearing `service_create_attempted_at` or
+`volume_create_attempted_at` for that stack. Retries reconcile Railway before
+rejecting a retry at the configured cap.
+An isolated runtime does not become active until database initialization,
+daemon startup, and the credential service are complete and `/readyz`
+succeeds.
 
 Create a real env file from the template:
 

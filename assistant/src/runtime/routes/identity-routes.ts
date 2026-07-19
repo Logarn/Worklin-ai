@@ -28,6 +28,7 @@ import { WORKSPACE_MIGRATIONS } from "../../workspace/migrations/registry.js";
 import { getLastWorkspaceMigrationId } from "../../workspace/migrations/runner.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { runBtwSidechain } from "../btw-sidechain.js";
+import { getDaemonReadiness } from "../daemon-readiness.js";
 import { NotFoundError } from "./errors.js";
 import {
   getCachedIntro,
@@ -365,10 +366,23 @@ export function handleDetailedHealth(): Response {
 }
 
 export function handleReadyz(): Response {
+  const isolatedRuntime =
+    process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() === "isolated";
+  if (isolatedRuntime) {
+    const daemonReadiness = getDaemonReadiness();
+    if (!daemonReadiness.ready) {
+      return Response.json(
+        {
+          status: "starting",
+          reason: daemonReadiness.reason ?? "daemon_starting",
+        },
+        { status: 503 },
+      );
+    }
+  }
+
   const cesClient = getCesClient();
   if (!cesClient?.isReady()) {
-    const isolatedRuntime =
-      process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() === "isolated";
     getLogger("health").warn(
       { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
       isolatedRuntime

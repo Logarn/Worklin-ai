@@ -7,6 +7,7 @@ import {
   railwayProvisionerConfigFromEnv,
   railwayRuntimeCapacityError,
   railwayRuntimeServiceName,
+  type RailwayProvisioningPersistence,
   type RailwayProvisionerConfig,
 } from "./railway-runtime-provisioner.js";
 import type { AssistantRuntimeRow, RuntimeStackRow } from "./runtime-stacks.js";
@@ -30,6 +31,10 @@ function stack(overrides: Partial<RuntimeStackRow> = {}): RuntimeStackRow {
     workspace_volume_ref: null,
     service_ref: null,
     service_capacity_reserved: 0,
+    service_create_attempted_at: null,
+    volume_create_attempted_at: null,
+    provisioning_lease_token: null,
+    provisioning_lease_expires_at: null,
     actor_signing_key_scope: "runtime_v1:rt-1",
     last_health_status: null,
     last_error: null,
@@ -55,6 +60,9 @@ function config(
     runtimePort: 8080,
     maxRuntimeServices: 2,
     maxConcurrentProvisioning: 2,
+    requestTimeoutMs: 50,
+    serviceReconcileTimeoutMs: 20,
+    provisioningLeaseTtlMs: 1_000,
     pollIntervalMs: 10,
     deployTimeoutMs: 100,
     healthTimeoutMs: 100,
@@ -64,6 +72,20 @@ function config(
 
 function jsonResponse(data: unknown, status = 200): Response {
   return Response.json(data, { status });
+}
+
+function makePersistence(
+  overrides: Partial<RailwayProvisioningPersistence> = {},
+): RailwayProvisioningPersistence {
+  return {
+    renewLease: () => {},
+    recordServiceCreateAttempt: () => {},
+    recordVolumeCreateAttempt: () => {},
+    recordService: () => {},
+    recordVolume: () => {},
+    markActive: () => {},
+    ...overrides,
+  };
 }
 
 describe("railwayProvisionerConfigFromEnv", () => {
@@ -244,17 +266,17 @@ describe("provisionRailwayRuntime", () => {
       stack: stack(),
       runtimeActorSigningKey: "a".repeat(64),
       allowServiceCreation: true,
-      config: config(),
+      config: config({ mountPath: "/runtime/customer" }),
       fetchImpl,
       sleep: async (delayMs) => {
         clock += delayMs;
       },
       now: () => clock,
-      persistence: {
+      persistence: makePersistence({
         recordService: (id) => events.push(`service:${id}`),
         recordVolume: (id) => events.push(`volume:${id}`),
         markActive: (url, status) => events.push(`active:${url}:${status}`),
-      },
+      }),
     });
 
     expect(events).toEqual([
@@ -278,8 +300,19 @@ describe("provisionRailwayRuntime", () => {
       WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
+      WORKLIN_RUNTIME_ROOT: "/runtime/customer",
+      VELLUM_WORKSPACE_DIR: "/runtime/customer/workspace",
+      GATEWAY_SECURITY_DIR: "/runtime/customer/gateway-security",
+      CES_DATA_DIR: "/runtime/customer/ces-data",
+      CREDENTIAL_SECURITY_DIR: "/runtime/customer/ces-data/security",
     });
     expect(input.variables.CES_SERVICE_TOKEN).toHaveLength(64);
+    const volumeMutation = graphqlOperations.find((operation) =>
+      operation.query.includes("volumeCreate"),
+    );
+    expect(
+      (volumeMutation?.variables.input as { mountPath?: string }).mountPath,
+    ).toBe("/runtime/customer");
     expect(
       graphqlOperations.map((operation) => {
         if (operation.query.includes("runtimeProjectServices"))
@@ -387,11 +420,11 @@ describe("provisionRailwayRuntime", () => {
       fetchImpl,
       sleep: async () => {},
       now: () => 0,
-      persistence: {
+      persistence: makePersistence({
         recordService: (id) => events.push(`service:${id}`),
         recordVolume: (id) => events.push(`volume:${id}`),
         markActive: (url, status) => events.push(`active:${url}:${status}`),
-      },
+      }),
     });
 
     expect(serviceCreateCalls).toBe(1);
@@ -401,6 +434,125 @@ describe("provisionRailwayRuntime", () => {
       "volume:volume-recovered",
       "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
     ]);
+  });
+
+  test("never creates again automatically after an ambiguous response", async () => {
+    let serviceCreateCalls = 0;
+    let firstLookupCalls = 0;
+    const firstFetch = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("runtimeProjectServices")) {
+        firstLookupCalls += 1;
+        return jsonResponse({
+          data: { project: { services: { edges: [] } } },
+        });
+      }
+      if (request.query.includes("serviceCreate")) {
+        serviceCreateCalls += 1;
+        throw new TypeError("simulated ambiguous response loss");
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+    const firstEvents: string[] = [];
+
+    await expect(
+      provisionRailwayRuntime({
+        assistant,
+        stack: stack(),
+        runtimeActorSigningKey: "f".repeat(64),
+        allowServiceCreation: true,
+        config: config(),
+        fetchImpl: firstFetch,
+        sleep: async () => {},
+        now: () => 100,
+        persistence: makePersistence({
+          recordServiceCreateAttempt: () => firstEvents.push("service-attempt"),
+        }),
+      }),
+    ).rejects.toThrow("creation outcome is uncertain");
+    expect(firstLookupCalls).toBe(4);
+    expect(serviceCreateCalls).toBe(1);
+    expect(firstEvents).toEqual(["service-attempt"]);
+
+    let secondLookupCalls = 0;
+    const secondFetch = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("runtimeProjectServices")) {
+        secondLookupCalls += 1;
+        return jsonResponse({
+          data: { project: { services: { edges: [] } } },
+        });
+      }
+      if (request.query.includes("serviceCreate")) {
+        serviceCreateCalls += 1;
+        throw new Error("a second service create must never be issued");
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+
+    await expect(
+      provisionRailwayRuntime({
+        assistant,
+        stack: stack({ service_create_attempted_at: 100 }),
+        runtimeActorSigningKey: "f".repeat(64),
+        allowServiceCreation: true,
+        config: config(),
+        fetchImpl: secondFetch,
+        sleep: async () => {},
+        now: () => 200,
+        persistence: makePersistence(),
+      }),
+    ).rejects.toThrow("operator reconciliation is required");
+
+    expect(secondLookupCalls).toBe(4);
+    expect(serviceCreateCalls).toBe(1);
+  });
+
+  test("never creates a second volume after an ambiguous response", async () => {
+    let volumeLookupCalls = 0;
+    let volumeCreateCalls = 0;
+    const fetchImpl = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("runtimeEnvironmentConfig")) {
+        volumeLookupCalls += 1;
+        return jsonResponse({
+          data: {
+            environment: {
+              config: {
+                services: {
+                  "service-existing": { volumeMounts: {} },
+                },
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("volumeCreate")) {
+        volumeCreateCalls += 1;
+        throw new Error("a second volume create must never be issued");
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+
+    await expect(
+      provisionRailwayRuntime({
+        assistant,
+        stack: stack({
+          service_ref: "service-existing",
+          volume_create_attempted_at: 100,
+        }),
+        runtimeActorSigningKey: "f".repeat(64),
+        allowServiceCreation: false,
+        config: config(),
+        fetchImpl,
+        sleep: async () => {},
+        now: () => 200,
+        persistence: makePersistence(),
+      }),
+    ).rejects.toThrow("operator reconciliation is required");
+
+    expect(volumeLookupCalls).toBe(4);
+    expect(volumeCreateCalls).toBe(0);
   });
 
   test("reconciles an orphaned service at the cap without creating another", async () => {
@@ -472,11 +624,11 @@ describe("provisionRailwayRuntime", () => {
       fetchImpl,
       sleep: async () => {},
       now: () => 0,
-      persistence: {
+      persistence: makePersistence({
         recordService: (id) => events.push(`service:${id}`),
         recordVolume: (id) => events.push(`volume:${id}`),
         markActive: (url, status) => events.push(`active:${url}:${status}`),
-      },
+      }),
     });
 
     expect(serviceCreateCalls).toBe(0);
@@ -512,11 +664,7 @@ describe("provisionRailwayRuntime", () => {
         allowServiceCreation: false,
         config: config({ maxRuntimeServices: 2 }),
         fetchImpl,
-        persistence: {
-          recordService: () => {},
-          recordVolume: () => {},
-          markActive: () => {},
-        },
+        persistence: makePersistence(),
       }),
     ).rejects.toThrow("service limit (2) has been reached");
     expect(serviceLookups).toBe(1);
@@ -556,7 +704,7 @@ describe("provisionRailwayRuntime", () => {
       fetchImpl,
       sleep: async () => {},
       now: () => 0,
-      persistence: {
+      persistence: makePersistence({
         recordService: () => {
           throw new Error("service should be reused");
         },
@@ -564,7 +712,7 @@ describe("provisionRailwayRuntime", () => {
           throw new Error("volume should be reused");
         },
         markActive: () => {},
-      },
+      }),
     });
 
     expect(operations.some((query) => query.includes("serviceCreate"))).toBe(

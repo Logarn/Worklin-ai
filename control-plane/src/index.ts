@@ -18,7 +18,7 @@ import { dirname } from "node:path";
 import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
-  claimRuntimeServiceCapacity,
+  claimRuntimeServiceProvisioningLease,
   deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
@@ -29,8 +29,12 @@ import {
   markRuntimeStackProvisioning,
   operationalStateForRuntimeStack,
   prepareRuntimeStackActorSigningScope,
+  recordRuntimeServiceCreateAttempt,
   recordRuntimeStackService,
   recordRuntimeStackVolume,
+  recordRuntimeVolumeCreateAttempt,
+  releaseRuntimeServiceProvisioningLease,
+  renewRuntimeServiceProvisioningLease,
   runtimeNotReadyPayload,
   runtimeStackConfigFromEnv,
   type RuntimeStackRow,
@@ -676,6 +680,10 @@ function assistantPayload(
 const runtimeProvisioningScheduler = new BoundedKeyedTaskScheduler(
   railwayProvisionerConfig.maxConcurrentProvisioning,
 );
+const runtimeProvisioningLeaseRetryTimers = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
 
 function runtimeProvisioningConfigurationError(): string | null {
   if (runtimeStackConfig.runtimeStackUrlTemplate) return null;
@@ -683,6 +691,25 @@ function runtimeProvisioningConfigurationError(): string | null {
     return `Unsupported runtime stack provider: ${runtimeStackConfig.runtimeStackProvider}.`;
   }
   return railwayProvisionerConfigurationError(railwayProvisionerConfig);
+}
+
+function scheduleRuntimeProvisioningLeaseRetry(
+  assistant: AssistantRow,
+  stackId: string,
+  retryAfterMs: number | null,
+): void {
+  if (runtimeProvisioningLeaseRetryTimers.has(stackId)) return;
+  const delayMs = Math.max(
+    1_000,
+    (retryAfterMs ?? railwayProvisionerConfig.provisioningLeaseTtlMs) + 100,
+  );
+  const timer = setTimeout(() => {
+    runtimeProvisioningLeaseRetryTimers.delete(stackId);
+    const latest = getRuntimeStackById(db, stackId);
+    if (latest) scheduleRuntimeProvisioning(assistant, latest);
+  }, delayMs);
+  timer.unref?.();
+  runtimeProvisioningLeaseRetryTimers.set(stackId, timer);
 }
 
 function scheduleRuntimeProvisioning(
@@ -708,27 +735,44 @@ function scheduleRuntimeProvisioning(
     return;
   }
 
-  const capacityClaim = claimRuntimeServiceCapacity(
+  const leaseToken = randomUUID();
+  const leaseClaim = claimRuntimeServiceProvisioningLease(
     db,
     current.id,
     railwayProvisionerConfig.maxRuntimeServices,
+    leaseToken,
+    Date.now(),
+    railwayProvisionerConfig.provisioningLeaseTtlMs,
     nowIso,
   );
-  if (!capacityClaim.stack) {
+  if (!leaseClaim.stack) {
     return;
   }
-  current = capacityClaim.stack;
+  if (!leaseClaim.leaseAcquired) {
+    scheduleRuntimeProvisioningLeaseRetry(
+      assistant,
+      current.id,
+      leaseClaim.retryAfterMs,
+    );
+    return;
+  }
+  const retryTimer = runtimeProvisioningLeaseRetryTimers.get(current.id);
+  if (retryTimer) clearTimeout(retryTimer);
+  runtimeProvisioningLeaseRetryTimers.delete(current.id);
+  current = leaseClaim.stack;
 
   current =
     prepareRuntimeStackActorSigningScope(db, current.id, nowIso) ?? current;
-  markRuntimeStackProvisioning(db, current.id, nowIso);
+  markRuntimeStackProvisioning(db, current.id, nowIso, leaseToken);
 
   const task = runtimeProvisioningScheduler.schedule(current.id, async () => {
     const current = getRuntimeStackById(db, stack.id);
     if (
       !current ||
+      current.provisioning_lease_token !== leaseToken ||
       (current.status !== "provisioning" && current.status !== "failed")
     ) {
+      releaseRuntimeServiceProvisioningLease(db, stack.id, leaseToken, nowIso);
       return;
     }
 
@@ -740,13 +784,50 @@ function scheduleRuntimeProvisioning(
           env.actorSigningKey,
           current.actor_signing_key_scope,
         ),
-        allowServiceCreation: capacityClaim.serviceCreationAllowed,
+        allowServiceCreation: leaseClaim.serviceCreationAllowed,
         config: railwayProvisionerConfig,
         persistence: {
+          renewLease: () =>
+            renewRuntimeServiceProvisioningLease(
+              db,
+              current.id,
+              leaseToken,
+              Date.now(),
+              railwayProvisionerConfig.provisioningLeaseTtlMs,
+              nowIso,
+            ),
+          recordServiceCreateAttempt: (attemptedAt) =>
+            recordRuntimeServiceCreateAttempt(
+              db,
+              current.id,
+              attemptedAt,
+              nowIso,
+              leaseToken,
+            ),
+          recordVolumeCreateAttempt: (attemptedAt) =>
+            recordRuntimeVolumeCreateAttempt(
+              db,
+              current.id,
+              attemptedAt,
+              nowIso,
+              leaseToken,
+            ),
           recordService: (serviceId) =>
-            recordRuntimeStackService(db, current.id, serviceId, nowIso),
+            recordRuntimeStackService(
+              db,
+              current.id,
+              serviceId,
+              nowIso,
+              leaseToken,
+            ),
           recordVolume: (volumeId) =>
-            recordRuntimeStackVolume(db, current.id, volumeId, nowIso),
+            recordRuntimeStackVolume(
+              db,
+              current.id,
+              volumeId,
+              nowIso,
+              leaseToken,
+            ),
           markActive: (gatewayUrl, healthStatus) =>
             markRuntimeStackActive(
               db,
@@ -754,6 +835,7 @@ function scheduleRuntimeProvisioning(
               gatewayUrl,
               healthStatus,
               nowIso,
+              leaseToken,
             ),
         },
       });
@@ -764,12 +846,30 @@ function scheduleRuntimeProvisioning(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Runtime provisioning failed.";
-      markRuntimeStackFailed(db, current.id, message, nowIso);
+      try {
+        markRuntimeStackFailed(db, current.id, message, nowIso, leaseToken);
+      } catch (leaseError) {
+        console.warn("runtime_stack_failure_not_persisted_after_lease_loss", {
+          assistantId: assistant.id,
+          runtimeStackId: current.id,
+          error:
+            leaseError instanceof Error
+              ? leaseError.message
+              : String(leaseError),
+        });
+      }
       console.error("runtime_stack_provisioning_failed", {
         assistantId: assistant.id,
         runtimeStackId: current.id,
         error: message,
       });
+    } finally {
+      releaseRuntimeServiceProvisioningLease(
+        db,
+        current.id,
+        leaseToken,
+        nowIso,
+      );
     }
   });
   void task.catch((error) => {

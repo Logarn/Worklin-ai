@@ -29,12 +29,18 @@ export interface RailwayProvisionerConfig {
   runtimePort: number;
   maxRuntimeServices: number;
   maxConcurrentProvisioning: number;
+  requestTimeoutMs: number;
+  serviceReconcileTimeoutMs: number;
+  provisioningLeaseTtlMs: number;
   pollIntervalMs: number;
   deployTimeoutMs: number;
   healthTimeoutMs: number;
 }
 
 export interface RailwayProvisioningPersistence {
+  renewLease(): void;
+  recordServiceCreateAttempt(attemptedAt: number): void;
+  recordVolumeCreateAttempt(attemptedAt: number): void;
   recordService(serviceId: string): void;
   recordVolume(volumeId: string): void;
   markActive(gatewayUrl: string, healthStatus: string): void;
@@ -100,6 +106,18 @@ export function railwayProvisionerConfigFromEnv(
       rawEnv.WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY,
       2,
     ),
+    requestTimeoutMs: positiveIntegerEnv(
+      rawEnv.WORKLIN_RAILWAY_REQUEST_TIMEOUT_MS,
+      30_000,
+    ),
+    serviceReconcileTimeoutMs: positiveIntegerEnv(
+      rawEnv.WORKLIN_RAILWAY_SERVICE_RECONCILE_TIMEOUT_MS,
+      30_000,
+    ),
+    provisioningLeaseTtlMs: positiveIntegerEnv(
+      rawEnv.WORKLIN_RAILWAY_PROVISIONING_LEASE_TTL_MS,
+      2 * 60_000,
+    ),
     pollIntervalMs: positiveIntegerEnv(
       rawEnv.WORKLIN_RAILWAY_POLL_INTERVAL_MS,
       5_000,
@@ -128,6 +146,9 @@ export function railwayProvisionerConfigurationError(
   }
   if (config.maxRuntimeServices < 1) {
     return "WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES must be explicitly set above zero.";
+  }
+  if (config.provisioningLeaseTtlMs <= config.requestTimeoutMs) {
+    return "WORKLIN_RAILWAY_PROVISIONING_LEASE_TTL_MS must exceed WORKLIN_RAILWAY_REQUEST_TIMEOUT_MS.";
   }
   return null;
 }
@@ -223,12 +244,14 @@ class RailwayGraphqlClient {
   constructor(
     private readonly config: RailwayProvisionerConfig,
     private readonly fetchImpl: FetchLike,
+    private readonly beforeRequest: () => void,
   ) {}
 
   async request<T>(
     query: string,
     variables: Record<string, unknown>,
   ): Promise<T> {
+    this.beforeRequest();
     const response = await this.fetchImpl(this.config.apiEndpoint, {
       method: "POST",
       headers: {
@@ -236,6 +259,7 @@ class RailwayGraphqlClient {
         "Project-Access-Token": this.config.projectToken,
       },
       body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(this.config.requestTimeoutMs),
     });
     const payload = (await response.json()) as GraphqlEnvelope<T>;
     if (!response.ok || payload.errors?.length || !payload.data) {
@@ -295,26 +319,6 @@ class RailwayGraphqlClient {
     return matches[0]?.id ?? null;
   }
 
-  async getOrCreateService(
-    name: string,
-    allowServiceCreation: boolean,
-  ): Promise<string> {
-    const existing = await this.findServiceByName(name);
-    if (existing) return existing;
-    if (!allowServiceCreation) {
-      throw new Error(
-        `Railway runtime service limit (${this.config.maxRuntimeServices}) has been reached.`,
-      );
-    }
-    try {
-      return await this.createService(name);
-    } catch (createError) {
-      const recovered = await this.findServiceByName(name);
-      if (recovered) return recovered;
-      throw createError;
-    }
-  }
-
   async createVolume(serviceId: string): Promise<string> {
     const input: Record<string, unknown> = {
       projectId: this.config.projectId,
@@ -372,18 +376,6 @@ class RailwayGraphqlClient {
       );
     }
     return volumeIds[0] ?? null;
-  }
-
-  async getOrCreateVolume(serviceId: string): Promise<string> {
-    const existing = await this.findVolumeForService(serviceId);
-    if (existing) return existing;
-    try {
-      return await this.createVolume(serviceId);
-    } catch (createError) {
-      const recovered = await this.findVolumeForService(serviceId);
-      if (recovered) return recovered;
-      throw createError;
-    }
   }
 
   async setVariables(
@@ -459,16 +451,58 @@ async function waitForDeployment(
   throw new Error("Railway deployment timed out before becoming successful.");
 }
 
+async function waitForServiceReconciliation(
+  client: RailwayGraphqlClient,
+  serviceName: string,
+  config: RailwayProvisionerConfig,
+  sleep: Sleep,
+): Promise<string | null> {
+  const attempts = Math.max(
+    1,
+    Math.ceil(config.serviceReconcileTimeoutMs / config.pollIntervalMs) + 1,
+  );
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const existing = await client.findServiceByName(serviceName);
+    if (existing) return existing;
+    if (attempt + 1 < attempts) {
+      await sleep(config.pollIntervalMs);
+    }
+  }
+  return null;
+}
+
+async function waitForVolumeReconciliation(
+  client: RailwayGraphqlClient,
+  serviceId: string,
+  config: RailwayProvisionerConfig,
+  sleep: Sleep,
+): Promise<string | null> {
+  const attempts = Math.max(
+    1,
+    Math.ceil(config.serviceReconcileTimeoutMs / config.pollIntervalMs) + 1,
+  );
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const existing = await client.findVolumeForService(serviceId);
+    if (existing) return existing;
+    if (attempt + 1 < attempts) {
+      await sleep(config.pollIntervalMs);
+    }
+  }
+  return null;
+}
+
 async function waitForHealth(
   gatewayUrl: string,
   config: RailwayProvisionerConfig,
   fetchImpl: FetchLike,
   sleep: Sleep,
   now: () => number,
+  beforeRequest: () => void,
 ): Promise<string> {
   const deadline = now() + config.healthTimeoutMs;
   let lastStatus = "unreachable";
   while (now() < deadline) {
+    beforeRequest();
     try {
       const response = await fetchImpl(`${gatewayUrl}/readyz`, {
         signal: AbortSignal.timeout(Math.min(config.pollIntervalMs, 5_000)),
@@ -499,20 +533,88 @@ export async function provisionRailwayRuntime(
   const fetchImpl = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
-  const client = new RailwayGraphqlClient(options.config, fetchImpl);
+  const client = new RailwayGraphqlClient(
+    options.config,
+    fetchImpl,
+    options.persistence.renewLease,
+  );
   const serviceName = railwayRuntimeServiceName(options.assistant.id);
   let serviceId = options.stack.service_ref;
   let volumeId = options.stack.workspace_volume_ref;
 
   if (!serviceId) {
-    serviceId = await client.getOrCreateService(
-      serviceName,
-      options.allowServiceCreation,
-    );
+    serviceId = await client.findServiceByName(serviceName);
+    if (!serviceId && options.stack.service_create_attempted_at !== null) {
+      serviceId = await waitForServiceReconciliation(
+        client,
+        serviceName,
+        options.config,
+        sleep,
+      );
+      if (!serviceId) {
+        throw new Error(
+          "Railway service creation outcome remains uncertain; operator reconciliation is required before another create.",
+        );
+      }
+    }
+    if (!serviceId) {
+      if (!options.allowServiceCreation) {
+        throw new Error(
+          `Railway runtime service limit (${options.config.maxRuntimeServices}) has been reached.`,
+        );
+      }
+      options.persistence.recordServiceCreateAttempt(now());
+      try {
+        serviceId = await client.createService(serviceName);
+      } catch {
+        serviceId = await waitForServiceReconciliation(
+          client,
+          serviceName,
+          options.config,
+          sleep,
+        );
+        if (!serviceId) {
+          throw new Error(
+            "Railway service creation outcome is uncertain; retry will reconcile before another create.",
+          );
+        }
+      }
+    }
     options.persistence.recordService(serviceId);
   }
   if (!volumeId) {
-    volumeId = await client.getOrCreateVolume(serviceId);
+    volumeId = await client.findVolumeForService(serviceId);
+    if (!volumeId && options.stack.volume_create_attempted_at !== null) {
+      volumeId = await waitForVolumeReconciliation(
+        client,
+        serviceId,
+        options.config,
+        sleep,
+      );
+      if (!volumeId) {
+        throw new Error(
+          "Railway volume creation outcome remains uncertain; operator reconciliation is required before another create.",
+        );
+      }
+    }
+    if (!volumeId) {
+      options.persistence.recordVolumeCreateAttempt(now());
+      try {
+        volumeId = await client.createVolume(serviceId);
+      } catch {
+        volumeId = await waitForVolumeReconciliation(
+          client,
+          serviceId,
+          options.config,
+          sleep,
+        );
+        if (!volumeId) {
+          throw new Error(
+            "Railway volume creation outcome is uncertain; retry will reconcile before another create.",
+          );
+        }
+      }
+    }
     options.persistence.recordVolume(volumeId);
   }
 
@@ -529,6 +631,9 @@ export async function provisionRailwayRuntime(
     CES_SERVICE_TOKEN: randomBytes(32).toString("hex"),
     WORKLIN_RUNTIME_ROOT: options.config.mountPath,
     VELLUM_WORKSPACE_DIR: `${options.config.mountPath}/workspace`,
+    GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
+    CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
+    CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
   });
 
   const deploymentId = await client.deploy(serviceId);
@@ -539,6 +644,7 @@ export async function provisionRailwayRuntime(
     fetchImpl,
     sleep,
     now,
+    options.persistence.renewLease,
   );
   options.persistence.markActive(gatewayUrl, healthStatus);
 }
