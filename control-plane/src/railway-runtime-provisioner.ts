@@ -44,6 +44,7 @@ export interface ProvisionRailwayRuntimeOptions {
   assistant: AssistantRuntimeRow;
   stack: RuntimeStackRow;
   runtimeActorSigningKey: string;
+  allowServiceCreation: boolean;
   config: RailwayProvisionerConfig;
   persistence: RailwayProvisioningPersistence;
   fetchImpl?: FetchLike;
@@ -294,9 +295,17 @@ class RailwayGraphqlClient {
     return matches[0]?.id ?? null;
   }
 
-  async getOrCreateService(name: string): Promise<string> {
+  async getOrCreateService(
+    name: string,
+    allowServiceCreation: boolean,
+  ): Promise<string> {
     const existing = await this.findServiceByName(name);
     if (existing) return existing;
+    if (!allowServiceCreation) {
+      throw new Error(
+        `Railway runtime service limit (${this.config.maxRuntimeServices}) has been reached.`,
+      );
+    }
     try {
       return await this.createService(name);
     } catch (createError) {
@@ -496,7 +505,10 @@ export async function provisionRailwayRuntime(
   let volumeId = options.stack.workspace_volume_ref;
 
   if (!serviceId) {
-    serviceId = await client.getOrCreateService(serviceName);
+    serviceId = await client.getOrCreateService(
+      serviceName,
+      options.allowServiceCreation,
+    );
     options.persistence.recordService(serviceId);
   }
   if (!volumeId) {

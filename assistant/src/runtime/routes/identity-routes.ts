@@ -367,12 +367,23 @@ export function handleDetailedHealth(): Response {
 export function handleReadyz(): Response {
   const cesClient = getCesClient();
   if (!cesClient?.isReady()) {
-    // TODO: Return 503 once we confirm via logs that this won't cause
-    // regressions in the K8s readinessProbe.
+    const isolatedRuntime =
+      process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() === "isolated";
     getLogger("health").warn(
       { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
-      "CES not ready — pod would be unready if 503 were enabled",
+      isolatedRuntime
+        ? "CES not ready — isolated runtime remains unavailable"
+        : "CES not ready — continuing in compatibility mode",
     );
+    if (isolatedRuntime) {
+      return Response.json(
+        {
+          status: "starting",
+          reason: cesClient ? "ces_not_ready" : "ces_unavailable",
+        },
+        { status: 503 },
+      );
+    }
   }
   return Response.json({ status: "ok" });
 }

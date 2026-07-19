@@ -107,6 +107,7 @@ const PROFILER_ENV_KEYS = [
   "VELLUM_PROFILER_MAX_BYTES",
   "VELLUM_PROFILER_MAX_RUNS",
   "VELLUM_PROFILER_MIN_FREE_MB",
+  "WORKLIN_RUNTIME_MODE",
 ] as const;
 
 function clearProfilerEnv(): void {
@@ -284,6 +285,45 @@ describe("identity routes — health endpoint", () => {
         close: () => {},
       } as unknown as import("../credential-execution/client.js").CesClient;
       setCesClient(mockClient);
+      const res = handleReadyz();
+      expect(res.status).toBe(200);
+    });
+
+    test("isolated runtime readyz returns 503 while CES is unavailable", async () => {
+      process.env.WORKLIN_RUNTIME_MODE = "isolated";
+
+      const res = handleReadyz();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        status: "starting",
+        reason: "ces_unavailable",
+      });
+    });
+
+    test("isolated runtime readyz returns 503 until CES is connected", async () => {
+      process.env.WORKLIN_RUNTIME_MODE = "isolated";
+      const mockClient = {
+        isReady: () => false,
+        close: () => {},
+      } as unknown as import("../credential-execution/client.js").CesClient;
+      setCesClient(mockClient);
+
+      const res = handleReadyz();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        status: "starting",
+        reason: "ces_not_ready",
+      });
+    });
+
+    test("isolated runtime readyz returns 200 after CES connects", () => {
+      process.env.WORKLIN_RUNTIME_MODE = "isolated";
+      const mockClient = {
+        isReady: () => true,
+        close: () => {},
+      } as unknown as import("../credential-execution/client.js").CesClient;
+      setCesClient(mockClient);
+
       const res = handleReadyz();
       expect(res.status).toBe(200);
     });

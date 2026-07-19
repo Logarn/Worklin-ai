@@ -92,9 +92,12 @@ For each assistant, the provisioner creates one GitHub-backed service and one
 persistent volume, applies assistant-scoped runtime variables, deploys the
 service, waits for Railway deployment success and `/readyz`, then stores its
 private `SERVICE_NAME.railway.internal` gateway URL. Partial attempts persist
-their service and volume IDs. Retries also reconcile Railway by deterministic
-service name and mounted volume before creating resources, including after a
-create response is lost.
+their service and volume IDs, and reserve service capacity durably until the
+service identity is recorded. Retries reconcile Railway by deterministic
+service name and mounted volume before creating resources or rejecting a retry
+at the configured cap, including after a create response is lost. An isolated
+runtime does not become active until its assistant and credential service are
+both connected and `/readyz` succeeds.
 
 Create a real env file from the template:
 

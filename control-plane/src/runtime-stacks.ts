@@ -31,6 +31,7 @@ export interface RuntimeStackRow {
   public_ingress_url: string | null;
   workspace_volume_ref: string | null;
   service_ref: string | null;
+  service_capacity_reserved: number;
   actor_signing_key_scope: string;
   last_health_status: string | null;
   last_error: string | null;
@@ -249,6 +250,8 @@ export function ensureRuntimeStackSchema(db: Database): void {
       public_ingress_url TEXT,
       workspace_volume_ref TEXT,
       service_ref TEXT,
+      service_capacity_reserved INTEGER NOT NULL DEFAULT 0
+        CHECK(service_capacity_reserved IN (0, 1)),
       actor_signing_key_scope TEXT NOT NULL DEFAULT 'global',
       last_health_status TEXT,
       last_error TEXT,
@@ -262,6 +265,12 @@ export function ensureRuntimeStackSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_assistants_user_created
       ON assistants(user_id, created_at);
   `);
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "service_capacity_reserved",
+    "service_capacity_reserved INTEGER NOT NULL DEFAULT 0 CHECK(service_capacity_reserved IN (0, 1))",
+  );
   addColumnIfMissing(
     db,
     "runtime_stacks",
@@ -400,6 +409,7 @@ function revalidateLegacySharedRuntimeStack(
         public_ingress_url = ?,
         workspace_volume_ref = NULL,
         service_ref = NULL,
+        service_capacity_reserved = 0,
         actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
@@ -448,6 +458,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
         public_ingress_url = ?,
         workspace_volume_ref = ?,
         service_ref = 'legacy-shared-runtime',
+        service_capacity_reserved = 0,
         actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
@@ -518,6 +529,7 @@ export function ensureRuntimeStackForAssistant(
       id: stackId,
       org_id: assistant.org_id,
       assistant_id: assistant.id,
+      service_capacity_reserved: 0,
       actor_signing_key_scope:
         seed.provider === "railway" && seed.service_ref === null
           ? runtimeActorSigningKeyScope(stackId)
@@ -641,6 +653,7 @@ export function claimPreprovisionedRuntimeStack(
            gateway_url = ?,
            workspace_volume_ref = ?,
            service_ref = ?,
+           service_capacity_reserved = 0,
            actor_signing_key_scope = ?,
            last_health_status = 'reserved',
            last_error = NULL,
@@ -714,6 +727,67 @@ export function countAllocatedRuntimeServices(db: Database): number {
   );
 }
 
+export interface RuntimeServiceCapacityClaim {
+  stack: RuntimeStackRow | null;
+  serviceCreationAllowed: boolean;
+}
+
+export function claimRuntimeServiceCapacity(
+  db: Database,
+  stackId: string,
+  maxRuntimeServices: number,
+  nowIso: () => string,
+): RuntimeServiceCapacityClaim {
+  return db
+    .transaction(() => {
+      const current = getRuntimeStackById(db, stackId);
+      if (!current || current.provider !== "railway") {
+        return { stack: current, serviceCreationAllowed: false };
+      }
+      if (current.service_ref !== null) {
+        return { stack: current, serviceCreationAllowed: false };
+      }
+      if (current.service_capacity_reserved === 1) {
+        return { stack: current, serviceCreationAllowed: true };
+      }
+
+      const allocatedOrReserved =
+        db
+          .query<{ count: number }, []>(
+            `
+            SELECT COUNT(*) AS count
+            FROM runtime_stacks
+            WHERE status != 'deleted'
+              AND (
+                service_ref IS NOT NULL
+                OR service_capacity_reserved = 1
+              )
+          `,
+          )
+          .get()?.count ?? 0;
+      if (maxRuntimeServices < 1 || allocatedOrReserved >= maxRuntimeServices) {
+        return { stack: current, serviceCreationAllowed: false };
+      }
+
+      db.query(
+        `
+        UPDATE runtime_stacks
+        SET service_capacity_reserved = 1, updated_at = ?
+        WHERE id = ?
+          AND provider = 'railway'
+          AND service_ref IS NULL
+          AND service_capacity_reserved = 0
+      `,
+      ).run(nowIso(), stackId);
+      const claimed = getRuntimeStackById(db, stackId);
+      return {
+        stack: claimed,
+        serviceCreationAllowed: claimed?.service_capacity_reserved === 1,
+      };
+    })
+    .immediate();
+}
+
 export function markRuntimeStackProvisioning(
   db: Database,
   stackId: string,
@@ -737,7 +811,9 @@ export function recordRuntimeStackService(
   db.query(
     `
     UPDATE runtime_stacks
-    SET service_ref = ?, updated_at = ?
+    SET service_ref = ?,
+        service_capacity_reserved = 0,
+        updated_at = ?
     WHERE id = ?
   `,
   ).run(serviceRef, nowIso(), stackId);
@@ -770,6 +846,7 @@ export function markRuntimeStackActive(
     UPDATE runtime_stacks
     SET status = 'active',
         gateway_url = ?,
+        service_capacity_reserved = 0,
         last_health_status = ?,
         last_error = NULL,
         updated_at = ?

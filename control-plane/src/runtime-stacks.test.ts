@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
+  claimRuntimeServiceCapacity,
   countAllocatedRuntimeServices,
   deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
@@ -684,6 +685,47 @@ describe("runtime stack provisioning defaults", () => {
     });
   });
 
+  test("persists a capacity reservation across failures and retries", () => {
+    const db = setupDb();
+    const first = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    const second = ensureRuntimeStackForAssistant(
+      db,
+      assistant({
+        id: "asst-2",
+        user_id: "user-2",
+        org_id: "org-2",
+      }),
+      config(),
+      NOW,
+    );
+
+    const firstClaim = claimRuntimeServiceCapacity(db, first.id, 1, NOW);
+    expect(firstClaim.serviceCreationAllowed).toBe(true);
+    expect(firstClaim.stack?.service_capacity_reserved).toBe(1);
+
+    markRuntimeStackFailed(db, first.id, "response lost", NOW);
+    const retryClaim = claimRuntimeServiceCapacity(db, first.id, 1, NOW);
+    const blockedClaim = claimRuntimeServiceCapacity(db, second.id, 1, NOW);
+    expect(retryClaim.serviceCreationAllowed).toBe(true);
+    expect(retryClaim.stack?.service_capacity_reserved).toBe(1);
+    expect(blockedClaim.serviceCreationAllowed).toBe(false);
+    expect(blockedClaim.stack?.service_capacity_reserved).toBe(0);
+
+    recordRuntimeStackService(db, first.id, "service-recovered", NOW);
+    expect(getRuntimeStackById(db, first.id)).toMatchObject({
+      service_ref: "service-recovered",
+      service_capacity_reserved: 0,
+    });
+    expect(claimRuntimeServiceCapacity(db, second.id, 1, NOW)).toMatchObject({
+      serviceCreationAllowed: false,
+    });
+  });
+
   test("atomically assigns one preprovisioned slot to only one assistant", () => {
     const db = setupDb();
     const slotConfig = config({
@@ -873,9 +915,10 @@ describe("runtime actor signing key isolation", () => {
     `);
 
     ensureRuntimeStackSchema(db);
-    expect(
-      getRuntimeStackById(db, "rt-existing")?.actor_signing_key_scope,
-    ).toBe(GLOBAL_ACTOR_SIGNING_KEY_SCOPE);
+    expect(getRuntimeStackById(db, "rt-existing")).toMatchObject({
+      actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      service_capacity_reserved: 0,
+    });
   });
 });
 

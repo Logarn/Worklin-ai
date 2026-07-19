@@ -29,6 +29,7 @@ function stack(overrides: Partial<RuntimeStackRow> = {}): RuntimeStackRow {
     public_ingress_url: "https://worklin.example.com",
     workspace_volume_ref: null,
     service_ref: null,
+    service_capacity_reserved: 0,
     actor_signing_key_scope: "runtime_v1:rt-1",
     last_health_status: null,
     last_error: null,
@@ -242,6 +243,7 @@ describe("provisionRailwayRuntime", () => {
       assistant,
       stack: stack(),
       runtimeActorSigningKey: "a".repeat(64),
+      allowServiceCreation: true,
       config: config(),
       fetchImpl,
       sleep: async (delayMs) => {
@@ -380,6 +382,7 @@ describe("provisionRailwayRuntime", () => {
       assistant,
       stack: stack(),
       runtimeActorSigningKey: "c".repeat(64),
+      allowServiceCreation: true,
       config: config(),
       fetchImpl,
       sleep: async () => {},
@@ -398,6 +401,126 @@ describe("provisionRailwayRuntime", () => {
       "volume:volume-recovered",
       "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
     ]);
+  });
+
+  test("reconciles an orphaned service at the cap without creating another", async () => {
+    let serviceCreateCalls = 0;
+    const fetchImpl = (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/readyz")) {
+        return jsonResponse({ status: "ok" });
+      }
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("runtimeProjectServices")) {
+        return jsonResponse({
+          data: {
+            project: {
+              services: {
+                edges: [
+                  {
+                    node: {
+                      id: "service-orphaned",
+                      name: railwayRuntimeServiceName(assistant.id),
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("serviceCreate")) {
+        serviceCreateCalls += 1;
+        throw new Error("service creation must remain blocked at the cap");
+      }
+      if (request.query.includes("runtimeEnvironmentConfig")) {
+        return jsonResponse({
+          data: {
+            environment: {
+              config: {
+                services: {
+                  "service-orphaned": {
+                    volumeMounts: {
+                      "volume-orphaned": { mountPath: "/data" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("variableCollectionUpsert")) {
+        return jsonResponse({ data: { variableCollectionUpsert: true } });
+      }
+      if (request.query.includes("serviceInstanceDeploy")) {
+        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      }
+      if (request.query.includes("query deployment")) {
+        return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+
+    const events: string[] = [];
+    await provisionRailwayRuntime({
+      assistant,
+      stack: stack(),
+      runtimeActorSigningKey: "d".repeat(64),
+      allowServiceCreation: false,
+      config: config(),
+      fetchImpl,
+      sleep: async () => {},
+      now: () => 0,
+      persistence: {
+        recordService: (id) => events.push(`service:${id}`),
+        recordVolume: (id) => events.push(`volume:${id}`),
+        markActive: (url, status) => events.push(`active:${url}:${status}`),
+      },
+    });
+
+    expect(serviceCreateCalls).toBe(0);
+    expect(events).toEqual([
+      "service:service-orphaned",
+      "volume:volume-orphaned",
+      "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
+    ]);
+  });
+
+  test("fails at the cap only after confirming no matching service exists", async () => {
+    let serviceLookups = 0;
+    let serviceCreateCalls = 0;
+    const fetchImpl = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("runtimeProjectServices")) {
+        serviceLookups += 1;
+        return jsonResponse({
+          data: { project: { services: { edges: [] } } },
+        });
+      }
+      if (request.query.includes("serviceCreate")) {
+        serviceCreateCalls += 1;
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+
+    await expect(
+      provisionRailwayRuntime({
+        assistant,
+        stack: stack(),
+        runtimeActorSigningKey: "e".repeat(64),
+        allowServiceCreation: false,
+        config: config({ maxRuntimeServices: 2 }),
+        fetchImpl,
+        persistence: {
+          recordService: () => {},
+          recordVolume: () => {},
+          markActive: () => {},
+        },
+      }),
+    ).rejects.toThrow("service limit (2) has been reached");
+    expect(serviceLookups).toBe(1);
+    expect(serviceCreateCalls).toBe(0);
   });
 
   test("reuses persisted service and volume references after a partial attempt", async () => {
@@ -428,6 +551,7 @@ describe("provisionRailwayRuntime", () => {
         workspace_volume_ref: "volume-existing",
       }),
       runtimeActorSigningKey: "b".repeat(64),
+      allowServiceCreation: true,
       config: config(),
       fetchImpl,
       sleep: async () => {},
