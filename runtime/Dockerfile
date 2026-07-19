@@ -157,6 +157,13 @@ ENV PATH="${PYTHONUSERBASE}/bin:${PATH}"
 
 COPY --from=builder /app /app
 
+RUN chmod 0555 /app/assistant/src/index.ts && \
+    ln -sf /app/assistant/src/index.ts /usr/local/bin/assistant
+
+RUN runuser -u assistant -g assistant -G vellum -- \
+    env HOME=/home/assistant VELLUM_WORKSPACE_DIR=/tmp/worklin-cli-smoke \
+    assistant task --help | grep -F "Manage task templates and work queue items"
+
 COPY packages/block-volume-bootstrap/scripts/*.sh /usr/local/bin/
 RUN chmod +x \
     /app/assistant/docker-entrypoint.sh \

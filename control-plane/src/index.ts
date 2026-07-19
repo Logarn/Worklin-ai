@@ -19,6 +19,7 @@ import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
   countAllocatedRuntimeServices,
+  deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
   getRuntimeStackById,
@@ -27,6 +28,7 @@ import {
   markRuntimeStackFailed,
   markRuntimeStackProvisioning,
   operationalStateForRuntimeStack,
+  prepareRuntimeStackActorSigningScope,
   recordRuntimeStackService,
   recordRuntimeStackVolume,
   runtimeNotReadyPayload,
@@ -44,6 +46,7 @@ import {
   type OrganizationRow,
 } from "./assistant-store.js";
 import {
+  BoundedKeyedTaskScheduler,
   provisionRailwayRuntime,
   railwayRuntimeCapacityError,
   railwayProvisionerConfigurationError,
@@ -555,7 +558,7 @@ function getOrCreateAssistant(user: UserRow): AssistantRow {
 }
 
 function mintActorToken(
-  assistantId: string,
+  runtimeStack: RuntimeStackRow,
   userId: string,
   collaboration?: {
     artifactId: string;
@@ -573,7 +576,7 @@ function mintActorToken(
   const claims = {
     iss: "vellum-auth",
     aud: "vellum-gateway",
-    sub: `actor:${assistantId}:${platformOwnerPrincipalId(userId)}`,
+    sub: `actor:${runtimeStack.assistant_id}:${platformOwnerPrincipalId(userId)}`,
     scope_profile: scopeProfile,
     exp: now + (collaboration ? 5 * 60 : ACTOR_TOKEN_TTL_SECONDS),
     policy_epoch: POLICY_EPOCH,
@@ -591,7 +594,11 @@ function mintActorToken(
   ).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const sigInput = `${header}.${payload}`;
-  const sig = createHmac("sha256", Buffer.from(env.actorSigningKey, "hex"))
+  const runtimeSigningKey = deriveRuntimeActorSigningKey(
+    env.actorSigningKey,
+    runtimeStack.actor_signing_key_scope,
+  );
+  const sig = createHmac("sha256", Buffer.from(runtimeSigningKey, "hex"))
     .update(sigInput)
     .digest("base64url");
   return `${sigInput}.${sig}`;
@@ -621,7 +628,7 @@ async function verifyShareableArtifact(
   target.pathname = `/v1/assistants/${encodeURIComponent(assistant.id)}/shared-artifacts/${encodeURIComponent(artifactId)}/snapshot`;
   const response = await fetch(target, {
     headers: {
-      Authorization: `Bearer ${mintActorToken(assistant.id, user.id, {
+      Authorization: `Bearer ${mintActorToken(runtimeStack, user.id, {
         artifactId,
         role: "owner",
       })}`,
@@ -662,22 +669,18 @@ function assistantPayload(
     maintenance_mode: { enabled: false },
     is_local: false,
     ingress_url: publicWebOrigin(),
-    platform_actor_token: mintActorToken(row.id, user.id),
-    access_consented: false,
+    platform_actor_token: mintActorToken(runtimeStack, user.id),
+    access_consented: hasAcceptedAssistantConsent(user.consent_json),
   };
 }
 
-const runtimeProvisioningInFlight = new Map<string, Promise<void>>();
-let runtimeProvisioningQueue: Promise<void> = Promise.resolve();
+const runtimeProvisioningScheduler = new BoundedKeyedTaskScheduler(
+  railwayProvisionerConfig.maxConcurrentProvisioning,
+);
+const runtimeServiceCapacityReservations = new Set<string>();
 
 function runtimeProvisioningConfigurationError(): string | null {
   if (runtimeStackConfig.runtimeStackUrlTemplate) return null;
-  if (
-    !runtimeStackConfig.requireIsolatedRuntime &&
-    runtimeStackConfig.allowLegacySharedRuntime
-  ) {
-    return null;
-  }
   if (runtimeStackConfig.runtimeStackProvider !== "railway") {
     return `Unsupported runtime stack provider: ${runtimeStackConfig.runtimeStackProvider}.`;
   }
@@ -689,74 +692,112 @@ function scheduleRuntimeProvisioning(
   stack: RuntimeStackRow,
 ): void {
   if (
+    !assistantOwnerHasAcceptedConsent(assistant) ||
     stack.provider !== "railway" ||
     (stack.status !== "provisioning" && stack.status !== "failed") ||
     runtimeProvisioningConfigurationError() !== null ||
-    runtimeProvisioningInFlight.has(stack.id)
+    runtimeProvisioningScheduler.has(stack.id)
   ) {
     return;
   }
 
-  const task = runtimeProvisioningQueue.then(async () => {
-    const current = getRuntimeStackById(db, stack.id);
-    if (
-      !current ||
-      (current.status !== "provisioning" && current.status !== "failed")
-    ) {
-      return;
-    }
+  let current = getRuntimeStackById(db, stack.id);
+  if (
+    !current ||
+    current.provider !== "railway" ||
+    (current.status !== "provisioning" && current.status !== "failed")
+  ) {
+    return;
+  }
 
+  const needsService = current.service_ref === null;
+  const capacityError = railwayRuntimeCapacityError(
+    current.service_ref,
+    countAllocatedRuntimeServices(db) + runtimeServiceCapacityReservations.size,
+    railwayProvisionerConfig.maxRuntimeServices,
+  );
+  if (capacityError) {
+    markRuntimeStackFailed(db, current.id, capacityError, nowIso);
+    return;
+  }
+
+  current =
+    prepareRuntimeStackActorSigningScope(db, current.id, nowIso) ?? current;
+  markRuntimeStackProvisioning(db, current.id, nowIso);
+  if (needsService) runtimeServiceCapacityReservations.add(current.id);
+
+  const task = runtimeProvisioningScheduler.schedule(current.id, async () => {
     try {
-      const capacityError = railwayRuntimeCapacityError(
-        current.service_ref,
-        countAllocatedRuntimeServices(db),
-        railwayProvisionerConfig.maxRuntimeServices,
-      );
-      if (capacityError) throw new Error(capacityError);
+      const current = getRuntimeStackById(db, stack.id);
+      if (
+        !current ||
+        (current.status !== "provisioning" && current.status !== "failed")
+      ) {
+        return;
+      }
 
-      markRuntimeStackProvisioning(db, current.id, nowIso);
-      await provisionRailwayRuntime({
-        assistant,
-        stack: current,
-        actorSigningKey: env.actorSigningKey,
-        config: railwayProvisionerConfig,
-        persistence: {
-          recordService: (serviceId) =>
-            recordRuntimeStackService(db, current.id, serviceId, nowIso),
-          recordVolume: (volumeId) =>
-            recordRuntimeStackVolume(db, current.id, volumeId, nowIso),
-          markActive: (gatewayUrl, healthStatus) =>
-            markRuntimeStackActive(
-              db,
-              current.id,
-              gatewayUrl,
-              healthStatus,
-              nowIso,
-            ),
-        },
-      });
-      console.log("runtime_stack_provisioned", {
-        assistantId: assistant.id,
-        runtimeStackId: current.id,
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Runtime provisioning failed.";
-      markRuntimeStackFailed(db, current.id, message, nowIso);
-      console.error("runtime_stack_provisioning_failed", {
-        assistantId: assistant.id,
-        runtimeStackId: current.id,
-        error: message,
-      });
+      try {
+        await provisionRailwayRuntime({
+          assistant,
+          stack: current,
+          runtimeActorSigningKey: deriveRuntimeActorSigningKey(
+            env.actorSigningKey,
+            current.actor_signing_key_scope,
+          ),
+          config: railwayProvisionerConfig,
+          persistence: {
+            recordService: (serviceId) => {
+              recordRuntimeStackService(db, current.id, serviceId, nowIso);
+              runtimeServiceCapacityReservations.delete(current.id);
+            },
+            recordVolume: (volumeId) =>
+              recordRuntimeStackVolume(db, current.id, volumeId, nowIso),
+            markActive: (gatewayUrl, healthStatus) =>
+              markRuntimeStackActive(
+                db,
+                current.id,
+                gatewayUrl,
+                healthStatus,
+                nowIso,
+              ),
+          },
+        });
+        console.log("runtime_stack_provisioned", {
+          assistantId: assistant.id,
+          runtimeStackId: current.id,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Runtime provisioning failed.";
+        markRuntimeStackFailed(db, current.id, message, nowIso);
+        console.error("runtime_stack_provisioning_failed", {
+          assistantId: assistant.id,
+          runtimeStackId: current.id,
+          error: message,
+        });
+      }
+    } finally {
+      runtimeServiceCapacityReservations.delete(stack.id);
     }
   });
+  void task.catch((error) => {
+    console.error("runtime_stack_scheduler_failed", {
+      assistantId: assistant.id,
+      runtimeStackId: stack.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
 
-  runtimeProvisioningInFlight.set(stack.id, task);
-  runtimeProvisioningQueue = task.catch(() => {});
-  void task.then(
-    () => runtimeProvisioningInFlight.delete(stack.id),
-    () => runtimeProvisioningInFlight.delete(stack.id),
-  );
+function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
+  const owner = db
+    .query<{ consent_json: string | null }, [string]>(
+      "SELECT consent_json FROM users WHERE id = ?",
+    )
+    .get(assistant.user_id);
+  return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
 }
 
 function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
@@ -778,15 +819,19 @@ function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
     return getRuntimeStackById(db, runtimeStack.id) ?? runtimeStack;
   }
   scheduleRuntimeProvisioning(assistant, runtimeStack);
-  return runtimeStack;
+  return getRuntimeStackById(db, runtimeStack.id) ?? runtimeStack;
 }
 
 function resumeRuntimeProvisioning(): void {
-  if (runtimeProvisioningConfigurationError() !== null) return;
   const assistants = db
-    .query<AssistantRow, []>("SELECT * FROM assistants")
+    .query<AssistantRow & { owner_consent_json: string | null }, []>(
+      `SELECT assistants.*, users.consent_json AS owner_consent_json
+       FROM assistants
+       JOIN users ON users.id = assistants.user_id`,
+    )
     .all();
   for (const assistant of assistants) {
+    if (!hasAcceptedAssistantConsent(assistant.owner_consent_json)) continue;
     const stack = runtimeStackForPayload(assistant);
     scheduleRuntimeProvisioning(assistant, stack);
   }
@@ -940,7 +985,6 @@ async function handleSession(req: Request, res: Response): Promise<void> {
       db.query("DELETE FROM sessions WHERE id = ?").run(sessionId);
     }
     appendCookie(res, clearCookie(SESSION_COOKIE));
-    appendCookie(res, clearCookie(AUTH0_SESSION_COOKIE));
     sendJson(req, res, {
       data: {},
       meta: { is_authenticated: false },
@@ -1099,15 +1143,22 @@ async function handleAssistants(
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
     }
+    if (!hasAcceptedAssistantConsent(user.consent_json)) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "Accept the current terms, privacy policy, and AI data policy before preparing your assistant.",
+          code: "assistant_consent_required",
+        },
+        403,
+      );
+      return true;
+    }
     const existing = getActiveAssistant(user);
     const assistant = existing ?? getOrCreateAssistant(user);
-    const runtimeStack = claimPreprovisionedRuntimeStack(
-      db,
-      assistant,
-      runtimeStackForPayload(assistant),
-      runtimeStackConfig,
-      nowIso,
-    );
+    const runtimeStack = ensureAssistantRuntime(assistant);
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
       (runtimeStack.status === "provisioning" ||
@@ -1120,13 +1171,14 @@ async function handleAssistants(
         {
           detail: "Managed assistant provisioning is not available.",
           code: "platform_hosted_disabled",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+          runtime_last_error: runtimeStack.last_error,
         },
         503,
       );
       return true;
     }
-
-    scheduleRuntimeProvisioning(assistant, runtimeStack);
     sendJson(
       req,
       res,
@@ -1465,7 +1517,7 @@ async function proxySharedArtifact(
   const headers = copyProxyHeaders(req);
   headers.set(
     "Authorization",
-    `Bearer ${mintActorToken(assistant.id, user.id, {
+    `Bearer ${mintActorToken(runtimeStack, user.id, {
       artifactId,
       role: grant.role,
     })}`,
@@ -1649,7 +1701,7 @@ async function proxyToGateway(
   }
   headers.set(
     "Authorization",
-    `Bearer ${mintActorToken(assistant.id, user.id)}`,
+    `Bearer ${mintActorToken(runtimeStack, user.id)}`,
   );
   headers.set("X-Worklin-Assistant-Id", assistant.id);
   headers.set("X-Worklin-Org-Id", assistant.org_id);
@@ -1707,6 +1759,21 @@ function asyncHandler(
 const app = express();
 app.set("trust proxy", true);
 app.use(corsMiddleware);
+app.use("/logout", (req, res, next) => {
+  const sessionId = parseCookies(req)[SESSION_COOKIE];
+  try {
+    if (sessionId) {
+      db.query("DELETE FROM sessions WHERE id = ?").run(sessionId);
+    }
+  } catch (error) {
+    console.error("worklin_logout_session_cleanup_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    appendCookie(res, clearCookie(SESSION_COOKIE));
+    next();
+  }
+});
 
 if (auth0Configured()) {
   app.use(
@@ -1849,9 +1916,8 @@ if (runtimeProvisionerError) {
   console.warn("runtime_stack_provisioner_unavailable", {
     reason: runtimeProvisionerError,
   });
-} else {
-  resumeRuntimeProvisioning();
 }
+resumeRuntimeProvisioning();
 
 // Bun's Node HTTP compatibility can let an Express-only process exit after
 // listen() unless another handle is active. Keep the control-plane alive in

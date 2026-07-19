@@ -7,9 +7,12 @@ import {
   isLocalAssistant,
   isLocalMode,
 } from "@/lib/local-mode";
+import { isElectron } from "@/runtime/is-electron";
 import { setMenuPlatformSession } from "@/runtime/menu";
 import { useAuthStore } from "@/stores/auth-store";
 import { routes } from "@/utils/routes";
+
+const HOSTED_LOGOUT_PATH = "/logout";
 
 export async function handleLogout(navigate: NavigateFunction): Promise<void> {
   if (isLocalMode()) {
@@ -24,7 +27,12 @@ export async function handleLogout(navigate: NavigateFunction): Promise<void> {
     await useAuthStore.getState().logout();
     navigate(getOnboardingEntrypoint());
   } else {
-    await useAuthStore.getState().logout();
-    hardNavigate(routes.account.login);
+    try {
+      await useAuthStore.getState().logout();
+    } catch (error) {
+      console.warn("[auth] Worklin session cleanup failed during logout", error);
+    } finally {
+      hardNavigate(isElectron() ? routes.account.login : HOSTED_LOGOUT_PATH);
+    }
   }
 }

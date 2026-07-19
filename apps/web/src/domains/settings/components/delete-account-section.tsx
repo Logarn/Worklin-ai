@@ -1,5 +1,6 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 
 import { DetailCard } from "@/components/detail-card";
 import { useUserDeletionRequestCreateMutation } from "@/generated/api/@tanstack/react-query.gen";
@@ -7,10 +8,9 @@ import {
     useActiveAssistantLifecycleIsLoading,
     usePlatformGate,
 } from "@/hooks/use-platform-gate";
-import { hardNavigate } from "@/lib/auth/hard-navigate";
+import { handleLogout } from "@/lib/auth/handle-logout";
 import { useAuthStore } from "@/stores/auth-store";
 import { clearConsentForUser } from "@/utils/onboarding-cleanup";
-import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
 import { ConfirmDialog } from "@vellumai/design-library/components/confirm-dialog";
 import { Notice } from "@vellumai/design-library/components/notice";
@@ -33,8 +33,8 @@ export function DeleteAccountSection() {
   // (`retired`, `error`) should NOT block account deletion, since the
   // user's platform account exists independently of any assistant.
   const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
+  const navigate = useNavigate();
   const userId = useAuthStore.use.user()?.id ?? null;
-  const logout = useAuthStore.use.logout();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const deleteMutation = useUserDeletionRequestCreateMutation({
@@ -43,8 +43,7 @@ export function DeleteAccountSection() {
         "Account deletion requested. You will be logged out shortly.",
       );
       clearConsentForUser(userId);
-      await logout();
-      hardNavigate(routes.account.login);
+      await handleLogout(navigate);
     },
     onError: () => {
       toast.error("Failed to request account deletion. Please try again.");

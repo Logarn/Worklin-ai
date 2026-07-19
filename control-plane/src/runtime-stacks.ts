@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 
 export const RUNTIME_STACK_STATUSES = [
   "provisioning",
@@ -10,6 +10,9 @@ export const RUNTIME_STACK_STATUSES = [
 ] as const;
 
 export type RuntimeStackStatus = (typeof RUNTIME_STACK_STATUSES)[number];
+
+export const GLOBAL_ACTOR_SIGNING_KEY_SCOPE = "global";
+const RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX = "runtime_v1:";
 
 export interface AssistantRuntimeRow {
   id: string;
@@ -28,6 +31,7 @@ export interface RuntimeStackRow {
   public_ingress_url: string | null;
   workspace_volume_ref: string | null;
   service_ref: string | null;
+  actor_signing_key_scope: string;
   last_health_status: string | null;
   last_error: string | null;
   created_at: string;
@@ -54,6 +58,30 @@ export interface RuntimeStackConfig {
 }
 
 type EnvLike = Record<string, string | undefined>;
+
+export function runtimeActorSigningKeyScope(stackId: string): string {
+  return `${RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX}${stackId}`;
+}
+
+export function deriveRuntimeActorSigningKey(
+  masterSigningKey: string,
+  scope: string,
+): string {
+  if (!/^[0-9a-f]{64}$/i.test(masterSigningKey)) {
+    throw new Error("ACTOR_TOKEN_SIGNING_KEY must be 64 hex characters.");
+  }
+  if (scope === GLOBAL_ACTOR_SIGNING_KEY_SCOPE) return masterSigningKey;
+  if (
+    !scope.startsWith(RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX) ||
+    scope.length === RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX.length ||
+    scope.length > 256
+  ) {
+    throw new Error(`Unsupported runtime actor signing key scope: ${scope}`);
+  }
+  return createHmac("sha256", Buffer.from(masterSigningKey, "hex"))
+    .update(`worklin/runtime-actor-signing-key/v1\0${scope}`)
+    .digest("hex");
+}
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -221,6 +249,7 @@ export function ensureRuntimeStackSchema(db: Database): void {
       public_ingress_url TEXT,
       workspace_volume_ref TEXT,
       service_ref TEXT,
+      actor_signing_key_scope TEXT NOT NULL DEFAULT 'global',
       last_health_status TEXT,
       last_error TEXT,
       created_at TEXT NOT NULL,
@@ -233,6 +262,12 @@ export function ensureRuntimeStackSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_assistants_user_created
       ON assistants(user_id, created_at);
   `);
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "actor_signing_key_scope",
+    "actor_signing_key_scope TEXT NOT NULL DEFAULT 'global'",
+  );
   addColumnIfMissing(
     db,
     "assistants",
@@ -257,17 +292,19 @@ export function getRuntimeStackForAssistant(
 ): RuntimeStackRow | null {
   if (assistant.runtime_stack_id) {
     const byId = db
-      .query<RuntimeStackRow, [string, string]>(
-        "SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string, string]
+      >("SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?")
       .get(assistant.runtime_stack_id, assistant.id);
     if (byId) return byId;
   }
   return (
     db
-      .query<RuntimeStackRow, [string]>(
-        "SELECT * FROM runtime_stacks WHERE assistant_id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string]
+      >("SELECT * FROM runtime_stacks WHERE assistant_id = ?")
       .get(assistant.id) ?? null
   );
 }
@@ -363,6 +400,7 @@ function revalidateLegacySharedRuntimeStack(
         public_ingress_url = ?,
         workspace_volume_ref = NULL,
         service_ref = NULL,
+        actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
         updated_at = ?
@@ -373,6 +411,9 @@ function revalidateLegacySharedRuntimeStack(
   ).run(
     config.runtimeStackProvider,
     config.publicIngressUrl,
+    config.runtimeStackProvider === "railway"
+      ? runtimeActorSigningKeyScope(stack.id)
+      : GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
     nowIso(),
     stack.id,
   );
@@ -407,6 +448,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
         public_ingress_url = ?,
         workspace_volume_ref = ?,
         service_ref = 'legacy-shared-runtime',
+        actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
         updated_at = ?
@@ -421,6 +463,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
     config.gatewayUrl,
     config.publicIngressUrl,
     config.runtimeRoot,
+    GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
     nowIso(),
     stack.id,
   );
@@ -458,54 +501,78 @@ export function ensureRuntimeStackForAssistant(
     );
   }
 
-  const timestamp = nowIso();
-  const seed = nextRuntimeStackSeed(assistant, config);
-  const stack: RuntimeStackRow = {
-    id: "rt-" + randomUUID(),
-    org_id: assistant.org_id,
-    assistant_id: assistant.id,
-    created_at: timestamp,
-    updated_at: timestamp,
-    ...seed,
-  };
-  db.query(
-    `
-    INSERT INTO runtime_stacks (
-      id,
-      org_id,
-      assistant_id,
-      status,
-      provider,
-      gateway_url,
-      public_ingress_url,
-      workspace_volume_ref,
-      service_ref,
-      last_health_status,
-      last_error,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-  ).run(
-    stack.id,
-    stack.org_id,
-    stack.assistant_id,
-    stack.status,
-    stack.provider,
-    stack.gateway_url,
-    stack.public_ingress_url,
-    stack.workspace_volume_ref,
-    stack.service_ref,
-    stack.last_health_status,
-    stack.last_error,
-    stack.created_at,
-    stack.updated_at,
-  );
-  db.query("UPDATE assistants SET runtime_stack_id = ? WHERE id = ?").run(
-    stack.id,
-    assistant.id,
-  );
-  return stack;
+  const createStack = db.transaction(() => {
+    const concurrent = getRuntimeStackForAssistant(db, assistant);
+    if (concurrent) {
+      db.query("UPDATE assistants SET runtime_stack_id = ? WHERE id = ?").run(
+        concurrent.id,
+        assistant.id,
+      );
+      return concurrent;
+    }
+
+    const timestamp = nowIso();
+    const seed = nextRuntimeStackSeed(assistant, config);
+    const stackId = "rt-" + randomUUID();
+    const stack: RuntimeStackRow = {
+      id: stackId,
+      org_id: assistant.org_id,
+      assistant_id: assistant.id,
+      actor_signing_key_scope:
+        seed.provider === "railway" && seed.service_ref === null
+          ? runtimeActorSigningKeyScope(stackId)
+          : GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      created_at: timestamp,
+      updated_at: timestamp,
+      ...seed,
+    };
+    db.query(
+      `
+      INSERT INTO runtime_stacks (
+        id,
+        org_id,
+        assistant_id,
+        status,
+        provider,
+        gateway_url,
+        public_ingress_url,
+        workspace_volume_ref,
+        service_ref,
+        actor_signing_key_scope,
+        last_health_status,
+        last_error,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(assistant_id) DO NOTHING
+    `,
+    ).run(
+      stack.id,
+      stack.org_id,
+      stack.assistant_id,
+      stack.status,
+      stack.provider,
+      stack.gateway_url,
+      stack.public_ingress_url,
+      stack.workspace_volume_ref,
+      stack.service_ref,
+      stack.actor_signing_key_scope,
+      stack.last_health_status,
+      stack.last_error,
+      stack.created_at,
+      stack.updated_at,
+    );
+    const persisted = getRuntimeStackForAssistant(db, assistant);
+    if (!persisted) {
+      throw new Error("Runtime stack upsert did not produce a row.");
+    }
+    db.query("UPDATE assistants SET runtime_stack_id = ? WHERE id = ?").run(
+      persisted.id,
+      assistant.id,
+    );
+    return persisted;
+  });
+  return createStack.immediate();
 }
 
 export function getRuntimeStackById(
@@ -514,9 +581,10 @@ export function getRuntimeStackById(
 ): RuntimeStackRow | null {
   return (
     db
-      .query<RuntimeStackRow, [string]>(
-        "SELECT * FROM runtime_stacks WHERE id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string]
+      >("SELECT * FROM runtime_stacks WHERE id = ?")
       .get(stackId) ?? null
   );
 }
@@ -573,6 +641,7 @@ export function claimPreprovisionedRuntimeStack(
            gateway_url = ?,
            workspace_volume_ref = ?,
            service_ref = ?,
+           actor_signing_key_scope = ?,
            last_health_status = 'reserved',
            last_error = NULL,
            updated_at = ?
@@ -586,12 +655,49 @@ export function claimPreprovisionedRuntimeStack(
       slot.gatewayUrl,
       slot.workspaceVolumeRef,
       slot.serviceRef,
+      GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
       nowIso(),
       current.id,
       assistant.id,
     );
     return getRuntimeStackById(db, current.id) ?? current;
   })();
+}
+
+export function prepareRuntimeStackActorSigningScope(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+): RuntimeStackRow | null {
+  return db
+    .transaction(() => {
+      const current = getRuntimeStackById(db, stackId);
+      if (
+        !current ||
+        current.provider !== "railway" ||
+        current.service_ref !== null ||
+        current.actor_signing_key_scope !== GLOBAL_ACTOR_SIGNING_KEY_SCOPE
+      ) {
+        return current;
+      }
+      db.query(
+        `
+      UPDATE runtime_stacks
+      SET actor_signing_key_scope = ?, updated_at = ?
+      WHERE id = ?
+        AND provider = 'railway'
+        AND service_ref IS NULL
+        AND actor_signing_key_scope = ?
+    `,
+      ).run(
+        runtimeActorSigningKeyScope(current.id),
+        nowIso(),
+        current.id,
+        GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      );
+      return getRuntimeStackById(db, current.id);
+    })
+    .immediate();
 }
 
 export function countAllocatedRuntimeServices(db: Database): number {

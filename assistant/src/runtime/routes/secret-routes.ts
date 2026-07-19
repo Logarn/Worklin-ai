@@ -26,9 +26,16 @@ import { setSentryOrganizationId, setSentryUserId } from "../../instrument.js";
 import { clearEmbeddingBackendCache } from "../../memory/embedding-backend.js";
 import { syncManualTokenConnection } from "../../oauth/manual-token-connection.js";
 import { validateAnthropicApiKey } from "../../providers/anthropic/client.js";
+import { validateFireworksApiKey } from "../../providers/fireworks/client.js";
 import { validateGeminiApiKey } from "../../providers/gemini/client.js";
+import { validateKimiApiKey } from "../../providers/kimi/client.js";
 import { validateMinimaxApiKey } from "../../providers/minimax/client.js";
 import { validateOpenAIApiKey } from "../../providers/openai/client.js";
+import {
+  type ApiKeyValidationResult,
+  validateOpenAICompatibleApiKey,
+} from "../../providers/openai/validate-api-key.js";
+import { validateOpenRouterApiKey } from "../../providers/openrouter/client.js";
 import { initializeProviders } from "../../providers/registry.js";
 import { credentialKey } from "../../security/credential-key.js";
 import {
@@ -66,6 +73,16 @@ const CES_READY_POLL_INTERVAL_MS = 500;
 const CES_READY_POLL_TIMEOUT_MS = 30_000;
 
 let apiKeyGeneration = 0;
+
+export function assertApiKeyAccepted(
+  provider: string,
+  validation: ApiKeyValidationResult,
+): void {
+  if (validation.valid) return;
+  throw new BadRequestError(
+    `${provider} API key was not saved. ${validation.reason}`,
+  );
+}
 
 async function queueApiKeyPropagation(
   cesClient: CesClient,
@@ -170,42 +187,24 @@ async function handleAddSecret({ body }: RouteHandlerArgs) {
         );
       }
 
-      if (name === "anthropic") {
-        const validation = await validateAnthropicApiKey(value);
-        if (!validation.valid) {
-          log.warn(
-            { provider: name, reason: validation.reason },
-            "API key validation failed",
-          );
-          return { success: false, error: validation.reason };
-        }
-      } else if (name === "openai") {
-        const validation = await validateOpenAIApiKey(value);
-        if (!validation.valid) {
-          log.warn(
-            { provider: name, reason: validation.reason },
-            "API key validation failed",
-          );
-          return { success: false, error: validation.reason };
-        }
-      } else if (name === "gemini") {
-        const validation = await validateGeminiApiKey(value);
-        if (!validation.valid) {
-          log.warn(
-            { provider: name, reason: validation.reason },
-            "API key validation failed",
-          );
-          return { success: false, error: validation.reason };
-        }
-      } else if (name === "minimax") {
-        const validation = await validateMinimaxApiKey(value);
-        if (!validation.valid) {
-          log.warn(
-            { provider: name, reason: validation.reason },
-            "API key validation failed",
-          );
-          return { success: false, error: validation.reason };
-        }
+      const validation =
+        name === "anthropic"
+          ? await validateAnthropicApiKey(value)
+          : name === "openai"
+            ? await validateOpenAIApiKey(value)
+            : name === "gemini"
+              ? await validateGeminiApiKey(value)
+              : name === "kimi"
+                ? await validateKimiApiKey(value)
+                : name === "fireworks"
+                  ? await validateFireworksApiKey(value)
+                  : name === "openrouter"
+                    ? await validateOpenRouterApiKey(value)
+                    : name === "minimax"
+                      ? await validateMinimaxApiKey(value)
+                      : null;
+      if (validation) {
+        assertApiKeyAccepted(name, validation);
       }
 
       const stored = await setSecureKeyAsync(
@@ -233,6 +232,17 @@ async function handleAddSecret({ body }: RouteHandlerArgs) {
       const service = name.slice(0, colonIdx);
       const field = name.slice(colonIdx + 1);
       const key = credentialKey(service, field);
+
+      if (service === "xai" && field === "api_key") {
+        assertApiKeyAccepted(
+          "xAI",
+          await validateOpenAICompatibleApiKey(value, {
+            baseUrl: "https://api.x.ai/v1",
+            providerLabel: "xAI",
+            rejectionStatuses: [400, 401, 403],
+          }),
+        );
+      }
 
       const TRIMMED_IDENTITY_FIELDS = new Set([
         "platform_assistant_id",

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import type { AssistantRuntimeRow, RuntimeStackRow } from "./runtime-stacks.js";
 
@@ -28,6 +28,7 @@ export interface RailwayProvisionerConfig {
   mountPath: string;
   runtimePort: number;
   maxRuntimeServices: number;
+  maxConcurrentProvisioning: number;
   pollIntervalMs: number;
   deployTimeoutMs: number;
   healthTimeoutMs: number;
@@ -42,7 +43,7 @@ export interface RailwayProvisioningPersistence {
 export interface ProvisionRailwayRuntimeOptions {
   assistant: AssistantRuntimeRow;
   stack: RuntimeStackRow;
-  actorSigningKey: string;
+  runtimeActorSigningKey: string;
   config: RailwayProvisionerConfig;
   persistence: RailwayProvisioningPersistence;
   fetchImpl?: FetchLike;
@@ -94,6 +95,10 @@ export function railwayProvisionerConfigFromEnv(
       rawEnv.WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES,
       0,
     ),
+    maxConcurrentProvisioning: positiveIntegerEnv(
+      rawEnv.WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY,
+      2,
+    ),
     pollIntervalMs: positiveIntegerEnv(
       rawEnv.WORKLIN_RAILWAY_POLL_INTERVAL_MS,
       5_000,
@@ -137,13 +142,80 @@ export function railwayRuntimeCapacityError(
 }
 
 export function railwayRuntimeServiceName(assistantId: string): string {
+  const legacyPrefix = "worklin-runtime-";
+  const maxLegacySuffixLength = 32 - legacyPrefix.length;
   const suffix = assistantId
     .toLowerCase()
     .replace(/^worklin-/, "")
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 36);
-  return `worklin-runtime-${suffix || "assistant"}`;
+    .replace(/^-+|-+$/g, "");
+  const normalized = suffix || "assistant";
+  if (normalized.length <= maxLegacySuffixLength) {
+    return `${legacyPrefix}${normalized}`;
+  }
+
+  const prefix = "worklin-rt-";
+  const hash = createHash("sha256")
+    .update(assistantId)
+    .digest("hex")
+    .slice(0, 12);
+  const readableLength = 32 - prefix.length - hash.length - 1;
+  return `${prefix}${normalized.slice(0, readableLength)}-${hash}`;
+}
+
+interface ScheduledTask {
+  key: string;
+  task: () => Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+export class BoundedKeyedTaskScheduler {
+  private activeCount = 0;
+  private readonly queued: ScheduledTask[] = [];
+  private readonly completions = new Map<string, Promise<void>>();
+
+  constructor(private readonly concurrency: number) {
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new Error("Provisioning concurrency must be a positive integer.");
+    }
+  }
+
+  has(key: string): boolean {
+    return this.completions.has(key);
+  }
+
+  schedule(key: string, task: () => Promise<void>): Promise<void> {
+    const existing = this.completions.get(key);
+    if (existing) return existing;
+
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    this.completions.set(key, completion);
+    this.queued.push({ key, task, resolve, reject });
+    this.drain();
+    return completion;
+  }
+
+  private drain(): void {
+    while (this.activeCount < this.concurrency) {
+      const scheduled = this.queued.shift();
+      if (!scheduled) return;
+      this.activeCount += 1;
+      void Promise.resolve()
+        .then(scheduled.task)
+        .then(scheduled.resolve, scheduled.reject)
+        .finally(() => {
+          this.activeCount -= 1;
+          this.completions.delete(scheduled.key);
+          this.drain();
+        });
+    }
+  }
 }
 
 class RailwayGraphqlClient {
@@ -195,6 +267,45 @@ class RailwayGraphqlClient {
     return data.serviceCreate.id;
   }
 
+  async findServiceByName(name: string): Promise<string | null> {
+    const data = await this.request<{
+      project: {
+        services: {
+          edges: Array<{ node: { id: string; name: string } }>;
+        };
+      } | null;
+    }>(
+      `query runtimeProjectServices($projectId: String!) {
+        project(id: $projectId) {
+          services(first: 1000) {
+            edges { node { id name } }
+          }
+        }
+      }`,
+      { projectId: this.config.projectId },
+    );
+    const matches =
+      data.project?.services.edges
+        .map((edge) => edge.node)
+        .filter((service) => service.name === name) ?? [];
+    if (matches.length > 1) {
+      throw new Error(`Multiple Railway services are named ${name}.`);
+    }
+    return matches[0]?.id ?? null;
+  }
+
+  async getOrCreateService(name: string): Promise<string> {
+    const existing = await this.findServiceByName(name);
+    if (existing) return existing;
+    try {
+      return await this.createService(name);
+    } catch (createError) {
+      const recovered = await this.findServiceByName(name);
+      if (recovered) return recovered;
+      throw createError;
+    }
+  }
+
   async createVolume(serviceId: string): Promise<string> {
     const input: Record<string, unknown> = {
       projectId: this.config.projectId,
@@ -210,6 +321,60 @@ class RailwayGraphqlClient {
       { input },
     );
     return data.volumeCreate.id;
+  }
+
+  async findVolumeForService(serviceId: string): Promise<string | null> {
+    const data = await this.request<{
+      environment: { config?: unknown } | null;
+    }>(
+      `query runtimeEnvironmentConfig($environmentId: String!) {
+        environment(id: $environmentId) { config }
+      }`,
+      { environmentId: this.config.environmentId },
+    );
+    const config =
+      data.environment?.config &&
+      typeof data.environment.config === "object" &&
+      !Array.isArray(data.environment.config)
+        ? (data.environment.config as Record<string, unknown>)
+        : null;
+    const services =
+      config?.services &&
+      typeof config.services === "object" &&
+      !Array.isArray(config.services)
+        ? (config.services as Record<string, unknown>)
+        : null;
+    const service =
+      services?.[serviceId] &&
+      typeof services[serviceId] === "object" &&
+      !Array.isArray(services[serviceId])
+        ? (services[serviceId] as Record<string, unknown>)
+        : null;
+    const volumeMounts =
+      service?.volumeMounts &&
+      typeof service.volumeMounts === "object" &&
+      !Array.isArray(service.volumeMounts)
+        ? (service.volumeMounts as Record<string, unknown>)
+        : null;
+    const volumeIds = volumeMounts ? Object.keys(volumeMounts) : [];
+    if (volumeIds.length > 1) {
+      throw new Error(
+        `Railway service ${serviceId} has multiple mounted volumes.`,
+      );
+    }
+    return volumeIds[0] ?? null;
+  }
+
+  async getOrCreateVolume(serviceId: string): Promise<string> {
+    const existing = await this.findVolumeForService(serviceId);
+    if (existing) return existing;
+    try {
+      return await this.createVolume(serviceId);
+    } catch (createError) {
+      const recovered = await this.findVolumeForService(serviceId);
+      if (recovered) return recovered;
+      throw createError;
+    }
   }
 
   async setVariables(
@@ -318,7 +483,7 @@ export async function provisionRailwayRuntime(
     options.config,
   );
   if (configurationError) throw new Error(configurationError);
-  if (!/^[0-9a-f]{64}$/i.test(options.actorSigningKey)) {
+  if (!/^[0-9a-f]{64}$/i.test(options.runtimeActorSigningKey)) {
     throw new Error("ACTOR_TOKEN_SIGNING_KEY must be 64 hex characters.");
   }
 
@@ -331,11 +496,11 @@ export async function provisionRailwayRuntime(
   let volumeId = options.stack.workspace_volume_ref;
 
   if (!serviceId) {
-    serviceId = await client.createService(serviceName);
+    serviceId = await client.getOrCreateService(serviceName);
     options.persistence.recordService(serviceId);
   }
   if (!volumeId) {
-    volumeId = await client.createVolume(serviceId);
+    volumeId = await client.getOrCreateVolume(serviceId);
     options.persistence.recordVolume(volumeId);
   }
 
@@ -348,7 +513,7 @@ export async function provisionRailwayRuntime(
     RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
     DEFAULT_ASSISTANT_ID: "self",
     UNMAPPED_POLICY: "default",
-    ACTOR_TOKEN_SIGNING_KEY: options.actorSigningKey,
+    ACTOR_TOKEN_SIGNING_KEY: options.runtimeActorSigningKey,
     CES_SERVICE_TOKEN: randomBytes(32).toString("hex"),
     WORKLIN_RUNTIME_ROOT: options.config.mountPath,
     VELLUM_WORKSPACE_DIR: `${options.config.mountPath}/workspace`,

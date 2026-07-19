@@ -71,12 +71,14 @@ WORKLIN_RAILWAY_PROVISIONING_ENABLED=true
 WORKLIN_RAILWAY_PROJECT_TOKEN=<project-scoped token>
 WORKLIN_RAILWAY_PROJECT_ID=<project id>
 WORKLIN_RAILWAY_ENVIRONMENT_ID=<production environment id>
-WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES=1
+WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES=12
+WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY=2
 ```
 
-The maximum-service value is a required cost guard. Start at `1` for the
-production test account and raise it only alongside an approved customer and
-infrastructure budget. Optional settings include:
+The maximum-service value is a required cost guard. A value of `12` supports
+ten isolated customer runtimes plus two controlled migration or canary slots.
+Keep provisioning concurrency at `2` unless Railway capacity and launch
+telemetry justify raising it. Optional settings include:
 
 ```bash
 WORKLIN_RAILWAY_RUNTIME_REPOSITORY=Logarn/Worklin-ai
@@ -90,8 +92,9 @@ For each assistant, the provisioner creates one GitHub-backed service and one
 persistent volume, applies assistant-scoped runtime variables, deploys the
 service, waits for Railway deployment success and `/readyz`, then stores its
 private `SERVICE_NAME.railway.internal` gateway URL. Partial attempts persist
-their service and volume IDs so retries do not intentionally create duplicate
-resources.
+their service and volume IDs. Retries also reconcile Railway by deterministic
+service name and mounted volume before creating resources, including after a
+create response is lost.
 
 Create a real env file from the template:
 

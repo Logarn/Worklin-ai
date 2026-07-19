@@ -10,15 +10,22 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const hardNavigateMock = mock((_to: string) => {});
 const saveConsentMock = mock(async (_args: unknown) => {});
+const navigateMock = mock((_to: string) => {});
+const handleLogoutMock = mock(async (_navigate: unknown) => {});
 
 let searchParamsValue = new URLSearchParams();
 
 mock.module("react-router", () => ({
   useSearchParams: () => [searchParamsValue, mock(() => {})],
+  useNavigate: () => navigateMock,
 }));
 
 mock.module("@/lib/auth/hard-navigate", () => ({
   hardNavigate: hardNavigateMock,
+}));
+
+mock.module("@/lib/auth/handle-logout", () => ({
+  handleLogout: handleLogoutMock,
 }));
 
 mock.module("@/utils/onboarding-cleanup", () => ({
@@ -85,6 +92,8 @@ describe("ReviewTermsScreen", () => {
     );
     hardNavigateMock.mockClear();
     saveConsentMock.mockClear();
+    navigateMock.mockClear();
+    handleLogoutMock.mockClear();
   });
 
   afterEach(cleanup);
@@ -122,6 +131,16 @@ describe("ReviewTermsScreen", () => {
       expect(hardNavigateMock).toHaveBeenCalledWith(
         "/assistant/conversations/draft-123",
       );
+    });
+  });
+
+  test("uses the complete hosted logout flow", async () => {
+    render(<ReviewTermsScreen />);
+
+    fireEvent.click(screen.getByText("Log out"));
+
+    await waitFor(() => {
+      expect(handleLogoutMock).toHaveBeenCalledWith(navigateMock);
     });
   });
 });

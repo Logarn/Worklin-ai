@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  BoundedKeyedTaskScheduler,
   provisionRailwayRuntime,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
@@ -28,6 +29,7 @@ function stack(overrides: Partial<RuntimeStackRow> = {}): RuntimeStackRow {
     public_ingress_url: "https://worklin.example.com",
     workspace_volume_ref: null,
     service_ref: null,
+    actor_signing_key_scope: "runtime_v1:rt-1",
     last_health_status: null,
     last_error: null,
     created_at: "2026-07-11T00:00:00.000Z",
@@ -51,6 +53,7 @@ function config(
     mountPath: "/data",
     runtimePort: 8080,
     maxRuntimeServices: 2,
+    maxConcurrentProvisioning: 2,
     pollIntervalMs: 10,
     deployTimeoutMs: 100,
     healthTimeoutMs: 100,
@@ -84,10 +87,82 @@ describe("railwayProvisionerConfigFromEnv", () => {
 });
 
 describe("railwayRuntimeServiceName", () => {
-  test("creates a stable DNS-safe service name", () => {
+  test("creates a stable DNS-safe service name within Railway's limit", () => {
     expect(railwayRuntimeServiceName(assistant.id)).toBe(
-      "worklin-runtime-52d71495-bab5-4567-bcfc-832cc2bb15fe",
+      "worklin-rt-52d71495-4bde2f6aeafa",
     );
+    expect(railwayRuntimeServiceName(assistant.id).length).toBeLessThanOrEqual(
+      32,
+    );
+    expect(railwayRuntimeServiceName("asst-1")).toBe("worklin-runtime-asst-1");
+  });
+
+  test("keeps long assistant ids with the same prefix distinct", () => {
+    const first = railwayRuntimeServiceName(
+      "worklin-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    );
+    const second = railwayRuntimeServiceName(
+      "worklin-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab",
+    );
+    expect(first).not.toBe(second);
+    expect(first.length).toBeLessThanOrEqual(32);
+    expect(second.length).toBeLessThanOrEqual(32);
+  });
+});
+
+describe("BoundedKeyedTaskScheduler", () => {
+  test("runs distinct stacks concurrently up to the configured bound", async () => {
+    const scheduler = new BoundedKeyedTaskScheduler(2);
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    let scheduled = 0;
+
+    const task = () => {
+      scheduled += 1;
+      return scheduler.schedule(`stack-${scheduled}`, async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+      });
+    };
+
+    const completions = [task(), task(), task(), task()];
+    await Bun.sleep(0);
+    expect(active).toBe(2);
+    expect(maxActive).toBe(2);
+
+    releases.shift()?.();
+    releases.shift()?.();
+    await Bun.sleep(0);
+    expect(active).toBe(2);
+
+    releases.shift()?.();
+    releases.shift()?.();
+    await Promise.all(completions);
+    expect(maxActive).toBe(2);
+  });
+
+  test("deduplicates the same runtime stack while it is queued or running", async () => {
+    const scheduler = new BoundedKeyedTaskScheduler(1);
+    let release!: () => void;
+    let calls = 0;
+    const first = scheduler.schedule("stack-1", async () => {
+      calls += 1;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    });
+    const duplicate = scheduler.schedule("stack-1", async () => {
+      calls += 1;
+    });
+
+    expect(duplicate).toBe(first);
+    await Bun.sleep(0);
+    expect(calls).toBe(1);
+    release();
+    await first;
   });
 });
 
@@ -127,8 +202,18 @@ describe("provisionRailwayRuntime", () => {
         variables: Record<string, unknown>;
       };
       graphqlOperations.push(request);
+      if (request.query.includes("runtimeProjectServices")) {
+        return jsonResponse({
+          data: { project: { services: { edges: [] } } },
+        });
+      }
       if (request.query.includes("serviceCreate")) {
         return jsonResponse({ data: { serviceCreate: { id: "service-1" } } });
+      }
+      if (request.query.includes("runtimeEnvironmentConfig")) {
+        return jsonResponse({
+          data: { environment: { config: { services: {} } } },
+        });
       }
       if (request.query.includes("volumeCreate")) {
         return jsonResponse({ data: { volumeCreate: { id: "volume-1" } } });
@@ -156,7 +241,7 @@ describe("provisionRailwayRuntime", () => {
     await provisionRailwayRuntime({
       assistant,
       stack: stack(),
-      actorSigningKey: "a".repeat(64),
+      runtimeActorSigningKey: "a".repeat(64),
       config: config(),
       fetchImpl,
       sleep: async (delayMs) => {
@@ -173,7 +258,7 @@ describe("provisionRailwayRuntime", () => {
     expect(events).toEqual([
       "service:service-1",
       "volume:volume-1",
-      "active:http://worklin-runtime-52d71495-bab5-4567-bcfc-832cc2bb15fe.railway.internal:8080:200",
+      "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
     ]);
     expect(deploymentPolls).toBe(2);
     expect(healthPolls).toBe(2);
@@ -193,6 +278,126 @@ describe("provisionRailwayRuntime", () => {
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
     });
     expect(input.variables.CES_SERVICE_TOKEN).toHaveLength(64);
+    expect(
+      graphqlOperations.map((operation) => {
+        if (operation.query.includes("runtimeProjectServices"))
+          return "service-lookup";
+        if (operation.query.includes("serviceCreate")) return "service";
+        if (operation.query.includes("runtimeEnvironmentConfig"))
+          return "volume-lookup";
+        if (operation.query.includes("volumeCreate")) return "volume";
+        if (operation.query.includes("variableCollectionUpsert"))
+          return "variables";
+        if (operation.query.includes("serviceInstanceDeploy")) return "deploy";
+        return "status";
+      }),
+    ).toEqual([
+      "service-lookup",
+      "service",
+      "volume-lookup",
+      "volume",
+      "variables",
+      "deploy",
+      "status",
+      "status",
+    ]);
+  });
+
+  test("recovers service and volume identities after create response loss", async () => {
+    let serviceCreated = false;
+    let volumeCreated = false;
+    let serviceCreateCalls = 0;
+    let volumeCreateCalls = 0;
+    const fetchImpl = (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/readyz")) {
+        return jsonResponse({ status: "ok" });
+      }
+      const request = JSON.parse(String(init?.body)) as {
+        query: string;
+      };
+      if (request.query.includes("runtimeProjectServices")) {
+        return jsonResponse({
+          data: {
+            project: {
+              services: {
+                edges: serviceCreated
+                  ? [
+                      {
+                        node: {
+                          id: "service-recovered",
+                          name: railwayRuntimeServiceName(assistant.id),
+                        },
+                      },
+                    ]
+                  : [],
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("serviceCreate")) {
+        serviceCreateCalls += 1;
+        serviceCreated = true;
+        throw new TypeError("simulated response loss");
+      }
+      if (request.query.includes("runtimeEnvironmentConfig")) {
+        return jsonResponse({
+          data: {
+            environment: {
+              config: {
+                services: {
+                  "service-recovered": {
+                    volumeMounts: volumeCreated
+                      ? { "volume-recovered": { mountPath: "/data" } }
+                      : {},
+                  },
+                },
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("volumeCreate")) {
+        volumeCreateCalls += 1;
+        volumeCreated = true;
+        throw new TypeError("simulated response loss");
+      }
+      if (request.query.includes("variableCollectionUpsert")) {
+        return jsonResponse({ data: { variableCollectionUpsert: true } });
+      }
+      if (request.query.includes("serviceInstanceDeploy")) {
+        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      }
+      if (request.query.includes("query deployment")) {
+        return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+
+    const events: string[] = [];
+    await provisionRailwayRuntime({
+      assistant,
+      stack: stack(),
+      runtimeActorSigningKey: "c".repeat(64),
+      config: config(),
+      fetchImpl,
+      sleep: async () => {},
+      now: () => 0,
+      persistence: {
+        recordService: (id) => events.push(`service:${id}`),
+        recordVolume: (id) => events.push(`volume:${id}`),
+        markActive: (url, status) => events.push(`active:${url}:${status}`),
+      },
+    });
+
+    expect(serviceCreateCalls).toBe(1);
+    expect(volumeCreateCalls).toBe(1);
+    expect(events).toEqual([
+      "service:service-recovered",
+      "volume:volume-recovered",
+      "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
+    ]);
   });
 
   test("reuses persisted service and volume references after a partial attempt", async () => {
@@ -222,7 +427,7 @@ describe("provisionRailwayRuntime", () => {
         service_ref: "service-existing",
         workspace_volume_ref: "volume-existing",
       }),
-      actorSigningKey: "b".repeat(64),
+      runtimeActorSigningKey: "b".repeat(64),
       config: config(),
       fetchImpl,
       sleep: async () => {},

@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import {
@@ -9,6 +9,7 @@ import {
     useTosAccepted,
 } from "@/domains/onboarding/prefs";
 import { hardNavigate } from "@/lib/auth/hard-navigate";
+import { handleLogout as handlePlatformLogout } from "@/lib/auth/handle-logout";
 import { isElectron } from "@/runtime/is-electron";
 import { useAuthStore, useHasPlatformSession } from "@/stores/auth-store";
 import { saveConsent } from "@/utils/onboarding-cleanup";
@@ -22,8 +23,8 @@ const CONSENT_CHECKBOX_CLASS =
 
 export function ReviewTermsScreen() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const userId = useAuthStore.use.user()?.id ?? null;
-  const logout = useAuthStore.use.logout();
   const electron = isElectron();
   const hasPlatformSession = useHasPlatformSession();
 
@@ -69,9 +70,8 @@ export function ReviewTermsScreen() {
   ]);
 
   const handleLogout = useCallback(async () => {
-    await logout();
-    hardNavigate(routes.account.login);
-  }, [logout]);
+    await handlePlatformLogout(navigate);
+  }, [navigate]);
 
   const tosLabel: ReactNode = (
     <span className="text-body-medium-lighter text-[var(--content-default)]">
