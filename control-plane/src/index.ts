@@ -55,7 +55,6 @@ import {
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
 } from "./railway-runtime-provisioner.js";
-import { platformOwnerPrincipalId } from "./platform-owner-principal.js";
 import { ensureArtifactSharingSchema } from "./artifact-sharing-store.js";
 import {
   acceptArtifactInvitation,
@@ -67,6 +66,14 @@ import {
   normalizeInviteEmail,
 } from "./artifact-sharing-store.js";
 import { pathEquals, pathIsOrStartsWith } from "./http-paths.js";
+import {
+  applyRuntimeTenantHeaders,
+  createRuntimeTenantContext,
+  getOwnedAssistantForRuntime,
+  RuntimeTenantContextError,
+  runtimeTenantContextClaim,
+  type RuntimeTenantContext,
+} from "./runtime-tenant-context.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -562,7 +569,7 @@ function getOrCreateAssistant(user: UserRow): AssistantRow {
 
 function mintActorToken(
   runtimeStack: RuntimeStackRow,
-  userId: string,
+  tenantContext: RuntimeTenantContext,
   collaboration?: {
     artifactId: string;
     role: "viewer" | "commenter" | "editor" | "owner";
@@ -579,12 +586,13 @@ function mintActorToken(
   const claims = {
     iss: "vellum-auth",
     aud: "vellum-gateway",
-    sub: `actor:${runtimeStack.assistant_id}:${platformOwnerPrincipalId(userId)}`,
+    sub: `actor:${runtimeStack.assistant_id}:${tenantContext.actorId}`,
     scope_profile: scopeProfile,
     exp: now + (collaboration ? 5 * 60 : ACTOR_TOKEN_TTL_SECONDS),
     policy_epoch: POLICY_EPOCH,
     iat: now,
     jti: randomBytes(16).toString("hex"),
+    tenant_context: runtimeTenantContextClaim(tenantContext),
     ...(collaboration
       ? {
           artifact_id: collaboration.artifactId,
@@ -627,15 +635,22 @@ async function verifyShareableArtifact(
     nowIso,
   );
   if (!isRuntimeStackRoutable(runtimeStack)) return false;
+  const tenantContext = createRuntimeTenantContext(
+    assistant,
+    user.id,
+    runtimeStack,
+  );
   const target = new URL(runtimeStack.gateway_url);
   target.pathname = `/v1/assistants/${encodeURIComponent(assistant.id)}/shared-artifacts/${encodeURIComponent(artifactId)}/snapshot`;
+  const headers = new Headers({
+    Authorization: `Bearer ${mintActorToken(runtimeStack, tenantContext, {
+      artifactId,
+      role: "owner",
+    })}`,
+  });
+  applyRuntimeTenantHeaders(headers, tenantContext);
   const response = await fetch(target, {
-    headers: {
-      Authorization: `Bearer ${mintActorToken(runtimeStack, user.id, {
-        artifactId,
-        role: "owner",
-      })}`,
-    },
+    headers,
   });
   return response.ok;
 }
@@ -649,6 +664,7 @@ function assistantPayload(
   user: UserRow,
   runtimeStack = runtimeStackForPayload(row),
 ) {
+  const tenantContext = createRuntimeTenantContext(row, user.id, runtimeStack);
   return {
     id: row.id,
     name: row.name,
@@ -672,7 +688,7 @@ function assistantPayload(
     maintenance_mode: { enabled: false },
     is_local: false,
     ingress_url: publicWebOrigin(),
-    platform_actor_token: mintActorToken(runtimeStack, user.id),
+    platform_actor_token: mintActorToken(runtimeStack, tenantContext),
     access_consented: hasAcceptedAssistantConsent(user.consent_json),
   };
 }
@@ -1605,20 +1621,23 @@ async function proxySharedArtifact(
     sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
     return true;
   }
+  const tenantContext = createRuntimeTenantContext(
+    assistant,
+    user.id,
+    runtimeStack,
+  );
   const target = new URL(runtimeStack.gateway_url);
   target.pathname = `/v1/assistants/${encodeURIComponent(assistant.id)}/shared-artifacts/${encodeURIComponent(artifactId)}${suffix}`;
   target.search = url.search;
   const headers = copyProxyHeaders(req);
   headers.set(
     "Authorization",
-    `Bearer ${mintActorToken(runtimeStack, user.id, {
+    `Bearer ${mintActorToken(runtimeStack, tenantContext, {
       artifactId,
       role: grant.role,
     })}`,
   );
-  headers.set("X-Worklin-Assistant-Id", assistant.id);
-  headers.set("X-Worklin-Org-Id", assistant.org_id);
-  headers.set("X-Worklin-User-Id", user.id);
+  applyRuntimeTenantHeaders(headers, tenantContext);
   const bodyBuffer =
     req.method === "GET" || req.method === "HEAD"
       ? undefined
@@ -1745,12 +1764,7 @@ async function proxyToGateway(
     return;
   }
 
-  const assistant = db
-    .query<
-      AssistantRow,
-      [string, string]
-    >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
-    .get(assistantId, user.id);
+  const assistant = getOwnedAssistantForRuntime(db, assistantId, user.id);
   if (!assistant) {
     sendJson(req, res, { detail: "Assistant not found." }, 404);
     return;
@@ -1770,6 +1784,33 @@ async function proxyToGateway(
       runtimeStatus: runtimeStack.status,
     });
     sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
+    return;
+  }
+
+  let tenantContext: RuntimeTenantContext;
+  try {
+    tenantContext = createRuntimeTenantContext(
+      assistant,
+      user.id,
+      runtimeStack,
+    );
+  } catch (error) {
+    if (!(error instanceof RuntimeTenantContextError)) throw error;
+    console.error("runtime_tenant_context_rejected", {
+      assistantId: assistant.id,
+      userId: user.id,
+      runtimeStackId: runtimeStack.id,
+      reason: error.message,
+    });
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Assistant runtime identity is unavailable.",
+        code: "runtime_tenant_context_invalid",
+      },
+      503,
+    );
     return;
   }
 
@@ -1796,11 +1837,9 @@ async function proxyToGateway(
   }
   headers.set(
     "Authorization",
-    `Bearer ${mintActorToken(runtimeStack, user.id)}`,
+    `Bearer ${mintActorToken(runtimeStack, tenantContext)}`,
   );
-  headers.set("X-Worklin-Assistant-Id", assistant.id);
-  headers.set("X-Worklin-Org-Id", assistant.org_id);
-  headers.set("X-Worklin-User-Id", user.id);
+  applyRuntimeTenantHeaders(headers, tenantContext);
 
   const bodyBuffer =
     req.method === "GET" || req.method === "HEAD"
