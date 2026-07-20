@@ -18,6 +18,7 @@ import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { processGuardianDecision } from "../guardian-action-service.js";
 import { healGuardianBindingDrift } from "../guardian-vellum-migration.js";
 import { resolveLocalTrustContext } from "../local-actor-identity.js";
+import { resolveAuthenticatedOwnerTrustContext } from "../platform-owner-trust.js";
 import {
   resolveTrustContext,
   withSourceChannel,
@@ -52,6 +53,7 @@ function applyTrustContext(
     }): void;
   },
   actorPrincipalId: string | undefined,
+  platformOwnerBound: boolean,
 ): void {
   if (!conversation.setTrustContext) return;
 
@@ -62,13 +64,20 @@ function applyTrustContext(
       conversation.setTrustContext(resolveLocalTrustContext(sourceChannel));
     } else {
       const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
-      let trustCtx = resolveTrustContext({
-        assistantId,
+      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId,
+        platformOwnerBound,
         sourceChannel,
-        conversationExternalId: "local",
-        actorExternalId: actorPrincipalId,
       });
-      if (trustCtx.trustClass === "unknown") {
+      let trustCtx =
+        authenticatedOwnerTrust ??
+        resolveTrustContext({
+          assistantId,
+          sourceChannel,
+          conversationExternalId: "local",
+          actorExternalId: actorPrincipalId,
+        });
+      if (!authenticatedOwnerTrust && trustCtx.trustClass === "unknown") {
         const healed = healGuardianBindingDrift(actorPrincipalId);
         if (healed) {
           trustCtx = resolveTrustContext({
@@ -185,7 +194,11 @@ async function handleSurfaceAction({
   }
 
   const actorPrincipalId = headers?.["x-vellum-actor-principal-id"];
-  applyTrustContext(conversation, actorPrincipalId);
+  applyTrustContext(
+    conversation,
+    actorPrincipalId,
+    headers?.["x-vellum-platform-owner"] === "true",
+  );
 
   try {
     const raw = await conversation.handleSurfaceAction(

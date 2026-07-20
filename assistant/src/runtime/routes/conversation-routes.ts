@@ -127,6 +127,7 @@ import type {
 } from "../http-types.js";
 import { resolveLocalTrustContext } from "../local-actor-identity.js";
 import * as pendingInteractions from "../pending-interactions.js";
+import { resolveAuthenticatedOwnerTrustContext } from "../platform-owner-trust.js";
 import {
   publishConversationListAndMetadataChanged,
   publishConversationMessagesChanged,
@@ -1397,13 +1398,23 @@ export async function handleSendMessage(
       conversation.setTrustContext(resolveLocalTrustContext(sourceChannel));
     } else {
       const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
-      let trustCtx = resolveTrustContext({
-        assistantId,
-        sourceChannel: "vellum",
-        conversationExternalId: "local",
-        actorExternalId: actorPrincipalId,
+      // A gateway-verified platform owner is scoped to this request. Resolve
+      // that identity directly so another user's guardian row cannot become
+      // the owner for a pooled runtime.
+      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId,
+        platformOwnerBound: headers?.["x-vellum-platform-owner"] === "true",
+        sourceChannel,
       });
-      if (trustCtx.trustClass === "unknown") {
+      let trustCtx =
+        authenticatedOwnerTrust ??
+        resolveTrustContext({
+          assistantId,
+          sourceChannel: "vellum",
+          conversationExternalId: "local",
+          actorExternalId: actorPrincipalId,
+        });
+      if (!authenticatedOwnerTrust && trustCtx.trustClass === "unknown") {
         // Attempt to heal guardian binding drift: after a DB reset the
         // guardian binding gets a new vellum-principal-* UUID while the
         // client still holds a valid JWT with the old one. The signing
