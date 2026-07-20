@@ -901,7 +901,7 @@ describe("ProviderCreateForm submit sequence", () => {
       label: "Fireworks",
       name: "fireworks",
       key: "fw_test",
-      model: "accounts/fireworks/models/kimi-k2p5",
+      model: "accounts/fireworks/models/kimi-k2p6",
     },
     {
       provider: "openrouter",

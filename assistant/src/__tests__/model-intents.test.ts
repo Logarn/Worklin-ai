@@ -37,10 +37,19 @@ describe("model intents", () => {
     expect(resolveModelIntent("gemini", "vision-optimized")).toBe(
       "gemini-3-flash-preview",
     );
+    expect(resolveModelIntent("fireworks", "latency-optimized")).toBe(
+      "accounts/fireworks/models/kimi-k2p6",
+    );
   });
 
   test("uses GPT-5.5 as the OpenAI provider default", () => {
     expect(getProviderDefaultModel("openai")).toBe("gpt-5.5");
+  });
+
+  test("uses serverless-ready Kimi K2.6 as the Fireworks default", () => {
+    expect(getProviderDefaultModel("fireworks")).toBe(
+      "accounts/fireworks/models/kimi-k2p6",
+    );
   });
 
   test("falls back to provider default for unknown providers", () => {
