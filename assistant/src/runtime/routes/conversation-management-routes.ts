@@ -48,6 +48,7 @@ import {
   resolveConversationId,
   setConversationKeyIfAbsent,
 } from "../../memory/conversation-key-store.js";
+import { queueRepairConversationTitle } from "../../memory/conversation-title-service.js";
 import { enqueueMemoryJob } from "../../memory/jobs-store.js";
 import { deleteSchedule } from "../../schedule/schedule-store.js";
 import { UserError } from "../../util/errors.js";
@@ -175,6 +176,7 @@ async function handleSwitchConversation({ body = {} }: RouteHandlerArgs) {
   if (body.conversationKey && typeof body.conversationKey === "string") {
     setConversationKeyIfAbsent(body.conversationKey, conversationId);
   }
+  queueRepairConversationTitle({ conversationId: result.conversationId });
   return {
     conversationId: result.conversationId,
     title: result.title,

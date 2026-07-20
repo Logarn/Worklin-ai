@@ -32,6 +32,12 @@ export interface ConfiguredProviderResult {
   configuredProviderName: string;
 }
 
+export interface ConfiguredProviderOptions {
+  overrideProfile?: string;
+  forceOverrideProfile?: boolean;
+  selectionSeed?: string;
+}
+
 /**
  * Cached promise for the lazy initialization path inside
  * `resolveConfiguredProvider`. When multiple concurrent callers enter before
@@ -48,6 +54,8 @@ export class CallSiteConfiguredProvider implements Provider {
     private readonly inner: Provider,
     private readonly callSite: LLMCallSite,
     private readonly overrideProfile?: string,
+    private readonly forceOverrideProfile?: boolean,
+    private readonly selectionSeed?: string,
   ) {
     this.name = inner.name;
     this.tokenEstimationProvider = inner.tokenEstimationProvider;
@@ -58,18 +66,22 @@ export class CallSiteConfiguredProvider implements Provider {
     options?: SendMessageOptions,
   ): Promise<ProviderResponse> {
     const config = options?.config;
-    if (config?.callSite) {
-      return this.inner.sendMessage(messages, options);
-    }
-
     return this.inner.sendMessage(messages, {
       ...options,
       config: {
         ...config,
-        callSite: this.callSite,
+        callSite: config?.callSite ?? this.callSite,
         ...(config?.overrideProfile === undefined &&
         this.overrideProfile !== undefined
           ? { overrideProfile: this.overrideProfile }
+          : {}),
+        ...(config?.forceOverrideProfile === undefined &&
+        this.forceOverrideProfile !== undefined
+          ? { forceOverrideProfile: this.forceOverrideProfile }
+          : {}),
+        ...(config?.selectionSeed === undefined &&
+        this.selectionSeed !== undefined
+          ? { selectionSeed: this.selectionSeed }
           : {}),
       },
     });
@@ -94,7 +106,7 @@ export class CallSiteConfiguredProvider implements Provider {
  */
 export async function resolveConfiguredProvider(
   callSite: LLMCallSite,
-  opts: { overrideProfile?: string } = {},
+  opts: ConfiguredProviderOptions = {},
 ): Promise<ConfiguredProviderResult | null> {
   const config = getConfig();
 
@@ -174,6 +186,8 @@ export async function resolveConfiguredProvider(
       connectionProvider,
       callSite,
       opts.overrideProfile,
+      opts.forceOverrideProfile,
+      opts.selectionSeed,
     ),
     configuredProviderName: inferenceProvider,
   };
@@ -189,7 +203,7 @@ export async function resolveConfiguredProvider(
  */
 export async function getConfiguredProvider(
   callSite: LLMCallSite,
-  opts: { overrideProfile?: string } = {},
+  opts: ConfiguredProviderOptions = {},
 ): Promise<Provider | null> {
   const result = await resolveConfiguredProvider(callSite, opts);
   return result?.provider ?? null;

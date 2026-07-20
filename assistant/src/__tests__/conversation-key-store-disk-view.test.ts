@@ -81,7 +81,7 @@ describe("conversation-key-store disk view", () => {
 
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
     expect(meta.id).toBe(first.conversationId);
-    expect(meta.title).toBe("Generating title...");
+    expect(meta.title).toBe("New Conversation");
     expect(meta.type).toBe("standard");
     expect(meta.channel).toBeNull();
     expect(readdirSync(conversationsDir)).toEqual([expectedDirName]);

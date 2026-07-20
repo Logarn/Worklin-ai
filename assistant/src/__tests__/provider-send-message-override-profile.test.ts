@@ -104,6 +104,38 @@ describe("SendMessageOptions.config.overrideProfile", () => {
     expect(captured?.config?.callSite).toBe("conversationTitle");
   });
 
+  test("CallSiteConfiguredProvider carries forced profile resolution through explicit side-chain call sites", async () => {
+    let captured: SendMessageOptions | undefined;
+    const inner: Provider = {
+      name: "openai",
+      async sendMessage(
+        _messages: Message[],
+        options?: SendMessageOptions,
+      ): Promise<ProviderResponse> {
+        captured = options;
+        return makeResponse("openai");
+      },
+    };
+
+    const provider = new CallSiteConfiguredProvider(
+      inner,
+      "conversationTitle",
+      "custom-balanced",
+      true,
+      "conv-123",
+    );
+    await provider.sendMessage(DUMMY_MESSAGES, {
+      config: { callSite: "conversationTitle" },
+    });
+
+    expect(captured?.config).toMatchObject({
+      callSite: "conversationTitle",
+      overrideProfile: "custom-balanced",
+      forceOverrideProfile: true,
+      selectionSeed: "conv-123",
+    });
+  });
+
   test("RetryProvider resolves model from named profile when overrideProfile is set", async () => {
     setLlmConfig({
       default: { provider: "anthropic", model: "claude-opus-4-7" },
