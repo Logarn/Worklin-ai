@@ -3,8 +3,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { getIsPlatform } from "../../config/env-registry.js";
 import { computeSkillVersionHash } from "../../skills/version-hash.js";
+import { getWorkspaceDir } from "../../util/platform.js";
 import { safeStringSlice } from "../../util/unicode.js";
+import {
+  preparePlatformSandboxLaunch,
+  terminateSandboxProcessTree,
+} from "../shared/platform-sandbox.js";
 import { buildSanitizedEnv } from "../terminal/safe-env.js";
 import type { ToolContext, ToolExecutionResult } from "../types.js";
 
@@ -55,7 +61,9 @@ try {
  *
  * Follows a subprocess isolation pattern: writes a runner script to a temp dir,
  * spawns it via the sandbox backend, passes input through env vars,
- * and reads a structured JSON result from stdout.
+ * and reads a structured JSON result from stdout. Platform-managed skill
+ * subprocesses are intentionally offline; authenticated external actions must
+ * use Worklin's scoped HTTP or provider tools.
  */
 export async function runSkillToolScriptSandbox(
   skillDir: string,
@@ -99,7 +107,12 @@ export async function runSkillToolScriptSandbox(
 
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const runDir = join(skillDir, ".vellum-skill-run", randomUUID());
+  const platformHosted = context.isPlatformHosted === true || getIsPlatform();
+  const runDir = join(
+    platformHosted ? getWorkspaceDir() : skillDir,
+    ".vellum-skill-run",
+    randomUUID(),
+  );
 
   try {
     mkdirSync(runDir, { recursive: true });
@@ -109,7 +122,14 @@ export async function runSkillToolScriptSandbox(
       "utf-8",
     );
 
-    return await spawnRunner(runDir, input, context, timeoutMs, executorPath);
+    return await spawnRunner(
+      runDir,
+      input,
+      context,
+      timeoutMs,
+      executorPath,
+      platformHosted,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
@@ -131,6 +151,7 @@ function spawnRunner(
   context: ToolContext,
   timeoutMs: number,
   executorPath: string,
+  platformHosted: boolean,
 ): Promise<ToolExecutionResult> {
   return new Promise<ToolExecutionResult>((resolve) => {
     const stdoutChunks: Buffer[] = [];
@@ -138,9 +159,10 @@ function spawnRunner(
     let timedOut = false;
 
     const bunRunCmd = "bun run __skill_runner.ts";
-    const wrapped = { command: "bash", args: ["-c", "--", bunRunCmd] };
+    let wrapped = { command: "bash", args: ["-c", "--", bunRunCmd] };
+    let spawnCwd = runDir;
 
-    const env = buildSanitizedEnv();
+    let env = buildSanitizedEnv();
     env.__SKILL_INPUT_JSON = JSON.stringify(input);
     // Pass a serializable subset of context to the subprocess
     env.__SKILL_CONTEXT_JSON = JSON.stringify({
@@ -149,8 +171,35 @@ function spawnRunner(
     });
     env.__CONVERSATION_ID = context.conversationId;
 
+    if (platformHosted) {
+      // Platform skill subprocesses are offline-only. Do not substitute a
+      // userspace proxy here: without a kernel egress boundary the process
+      // could bypass it over the shared host network.
+      const prepared = preparePlatformSandboxLaunch({
+        workspaceDir: getWorkspaceDir(),
+        cwd: runDir,
+        command: wrapped.command,
+        args: wrapped.args,
+        env,
+        networkMode: "off",
+      });
+      if (!prepared.ok) {
+        resolve({
+          content: `Failed to run skill tool script "${executorPath}" in sandbox: ${prepared.error} Worklin did not run the script without isolation.`,
+          isError: true,
+        });
+        return;
+      }
+      wrapped = {
+        command: prepared.launch.command,
+        args: prepared.launch.args,
+      };
+      spawnCwd = prepared.launch.cwd;
+      env = prepared.launch.env;
+    }
+
     const child = spawn(wrapped.command, wrapped.args, {
-      cwd: runDir,
+      cwd: spawnCwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
@@ -158,28 +207,18 @@ function spawnRunner(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        process.kill(-child.pid!, "SIGKILL");
-      } catch {
-        // Process group may have already exited.
-      }
+      terminateSandboxProcessTree(child);
     }, timeoutMs);
 
     // Cooperative cancellation via AbortSignal
+    let aborted = false;
     const onAbort = () => {
-      try {
-        process.kill(-child.pid!, "SIGKILL");
-      } catch {
-        // Process group may have already exited.
-      }
+      aborted = true;
+      terminateSandboxProcessTree(child);
     };
     if (context.signal) {
       if (context.signal.aborted) {
-        try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {
-          // Process group may have already exited.
-        }
+        onAbort();
       } else {
         context.signal.addEventListener("abort", onAbort, { once: true });
       }
@@ -197,6 +236,14 @@ function spawnRunner(
           content: `Skill tool script "${executorPath}" timed out after ${timeoutMs}ms`,
           isError: true,
           status: "timeout",
+        });
+        return;
+      }
+      if (aborted) {
+        resolve({
+          content: `Skill tool script "${executorPath}" was aborted`,
+          isError: true,
+          status: "aborted",
         });
         return;
       }

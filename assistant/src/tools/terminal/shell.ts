@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 
+import { getIsPlatform } from "../../config/env-registry.js";
 import { getConfig } from "../../config/loader.js";
 import { isCesShellLockdownEnabled } from "../../credential-execution/feature-gates.js";
 import { RiskLevel } from "../../permissions/types.js";
@@ -8,7 +9,7 @@ import { isUntrustedTrustClass } from "../../runtime/actor-trust-resolver.js";
 import { wakeAgentForOpportunity } from "../../runtime/agent-wake.js";
 import { redactSecrets } from "../../security/secret-scanner.js";
 import { getLogger } from "../../util/logger.js";
-import { getDataDir } from "../../util/platform.js";
+import { getDataDir, getWorkspaceDir } from "../../util/platform.js";
 import {
   generateBackgroundToolId,
   isBackgroundToolLimitReached,
@@ -24,6 +25,11 @@ import {
   getSessionEnv,
 } from "../network/script-proxy/index.js";
 import { registerTool } from "../registry.js";
+import {
+  PLATFORM_SANDBOX_PROXIED_NETWORK_ERROR,
+  preparePlatformSandboxLaunch,
+  terminateSandboxProcessTree,
+} from "../shared/platform-sandbox.js";
 import { formatShellOutput } from "../shared/shell-output.js";
 import type {
   ProxyEnvVars,
@@ -72,13 +78,13 @@ export const shellTool = {
         type: "string",
         enum: ["off", "proxied"],
         description:
-          'Network access mode for the command. "off" (default) blocks network access; "proxied" routes traffic through the credential proxy.',
+          'Network access mode for the command. "off" (default) blocks network access. "proxied" is available only outside platform-isolated execution; on the platform, use Worklin\'s scoped HTTP or provider tools for authenticated external actions.',
       },
       credential_ids: {
         type: "array",
         items: { type: "string" },
         description:
-          'Optional list of credential IDs to inject via the proxy when network_mode is "proxied".',
+          'Optional list of credential IDs to inject via the proxy when network_mode is "proxied" outside platform-isolated execution.',
       },
       background: {
         type: "boolean",
@@ -123,6 +129,19 @@ export const shellTool = {
 
     const networkMode: "off" | "proxied" =
       input.network_mode === "proxied" ? "proxied" : "off";
+    const platformIsolated =
+      context.isPlatformHosted === true || getIsPlatform();
+
+    // A userspace proxy does not stop a subprocess from bypassing that proxy
+    // over the shared host network. Reject before credential resolution or
+    // proxy-session creation. Authenticated external actions on the platform
+    // must use Worklin's scoped HTTP/provider tool path.
+    if (platformIsolated && networkMode === "proxied") {
+      return {
+        content: `Error: ${PLATFORM_SANDBOX_PROXIED_NETWORK_ERROR}`,
+        isError: true,
+      };
+    }
 
     // -----------------------------------------------------------------------
     // CES shell lockdown - reject proxied credential sessions for untrusted
@@ -276,7 +295,8 @@ export const shellTool = {
       "Executing shell command",
     );
 
-    // Acquire proxy session if proxied mode is requested.
+    // Acquire a proxy session only for non-platform execution. Platform
+    // execution rejected this mode above, before credentials were resolved.
     // `getOrStartSession` serializes per-conversation so concurrent proxied
     // commands share a single session instead of each creating one.
     // Sessions are NOT stopped here - the session manager's idle timer handles
@@ -305,7 +325,7 @@ export const shellTool = {
       }
     }
 
-    const env = buildSanitizedEnv();
+    let env = buildSanitizedEnv();
     env.__CONVERSATION_ID = context.conversationId;
     if (proxyEnv) {
       Object.assign(env, proxyEnv);
@@ -317,7 +337,30 @@ export const shellTool = {
       env.VELLUM_UNTRUSTED_SHELL = "1";
     }
 
-    const wrapped = { command: "bash", args: ["-c", "--", command] };
+    let wrapped = { command: "bash", args: ["-c", "--", command] };
+    let spawnCwd = context.workingDir;
+    if (platformIsolated) {
+      const prepared = preparePlatformSandboxLaunch({
+        workspaceDir: getWorkspaceDir(),
+        cwd: context.workingDir,
+        command: wrapped.command,
+        args: wrapped.args,
+        env,
+        networkMode,
+      });
+      if (!prepared.ok) {
+        return {
+          content: `Error: ${prepared.error} Risky shell execution is disabled on this platform runtime; Worklin did not run the command without isolation.`,
+          isError: true,
+        };
+      }
+      wrapped = {
+        command: prepared.launch.command,
+        args: prepared.launch.args,
+      };
+      spawnCwd = prepared.launch.cwd;
+      env = prepared.launch.env;
+    }
 
     // -----------------------------------------------------------------------
     // Background mode: spawn and return immediately. The process output is
@@ -340,7 +383,7 @@ export const shellTool = {
       const startedAt = Date.now();
 
       const child = spawn(wrapped.command, wrapped.args, {
-        cwd: context.workingDir,
+        cwd: spawnCwd,
         env,
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
@@ -460,7 +503,7 @@ export const shellTool = {
       const startedAt = Date.now();
 
       const child = spawn(wrapped.command, wrapped.args, {
-        cwd: context.workingDir,
+        cwd: spawnCwd,
         env,
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
@@ -636,19 +679,7 @@ function buildKillTree(
       },
       "Shell process group SIGKILL'd — orphans expected to reparent to PID 1",
     );
-    if (groupPid != null) {
-      try {
-        process.kill(-groupPid, "SIGKILL");
-        return;
-      } catch {
-        // Process group may have already exited — fall through.
-      }
-    }
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // Child may have already exited.
-    }
+    terminateSandboxProcessTree(child);
   };
 }
 
