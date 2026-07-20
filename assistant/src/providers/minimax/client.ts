@@ -15,31 +15,18 @@ export interface MinimaxProviderOptions {
 }
 
 const DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1";
-const FALLBACK_MINIMAX_BASE_URL = "https://api.minimaxi.com/v1";
 
-/** Validate a MiniMax API key against both supported API regions. */
+/** Validate a MiniMax API key against the endpoint used by the runtime. */
 export async function validateMinimaxApiKey(
   apiKey: string,
 ): Promise<{ valid: true } | { valid: false; reason: string }> {
-  const defaultResult = await tryValidate(apiKey, DEFAULT_MINIMAX_BASE_URL);
-  if (defaultResult.valid) {
-    return { valid: true };
-  }
-
-  const fallbackResult = await tryValidate(apiKey, FALLBACK_MINIMAX_BASE_URL);
-  if (fallbackResult.valid) {
-    return { valid: true };
-  }
-
-  return { valid: false, reason: fallbackResult.reason };
+  return tryValidate(apiKey, DEFAULT_MINIMAX_BASE_URL);
 }
 
 async function tryValidate(
   apiKey: string,
   baseURL: string,
-): Promise<
-  { valid: true; transient: false } | { valid: false; reason: string }
-> {
+): Promise<{ valid: true } | { valid: false; reason: string }> {
   try {
     const client = new OpenAI({
       apiKey,
@@ -48,7 +35,7 @@ async function tryValidate(
       maxRetries: 0,
     });
     await client.models.list();
-    return { valid: true, transient: false };
+    return { valid: true };
   } catch (error) {
     if (error instanceof OpenAI.APIError) {
       if (error.status === 401) {
@@ -62,7 +49,7 @@ async function tryValidate(
       }
       log.warn(
         { status: error.status, baseURL },
-        "MiniMax API key validation could not complete — trying fallback",
+        "MiniMax API key validation could not complete",
       );
       return {
         valid: false,
@@ -74,7 +61,7 @@ async function tryValidate(
         error: error instanceof Error ? error.message : String(error),
         baseURL,
       },
-      "MiniMax API key validation request failed — trying fallback",
+      "MiniMax API key validation request failed",
     );
     return {
       valid: false,
