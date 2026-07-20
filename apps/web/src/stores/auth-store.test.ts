@@ -44,8 +44,18 @@ const fetchMeMock = mock(async () => {
   return mockFetchMeResult;
 });
 const clearOrganizationMock = mock(() => {});
-const logoutMock = mock(async () => {});
+type MockLogoutResult =
+  | { ok: true; data: Record<string, never> }
+  | {
+      ok: false;
+      status?: number;
+      errors: Array<{ code: string; message: string }>;
+    };
+const logoutMock = mock(
+  async (): Promise<MockLogoutResult> => ({ ok: true, data: {} }),
+);
 const deleteBiometricTokenMock = mock(async () => {});
+const clearGatewayTokenMock = mock(() => {});
 
 let mockIsNativePlatform = false;
 let mockIsBiometricEnabled = false;
@@ -96,7 +106,7 @@ mock.module("@/lib/auth/gateway-session", () => ({
   isGatewayAuthEnabled: () => mockIsGatewayAuth,
   isGatewayAuthMode: () => mockIsGatewayAuth,
   ensureGatewayToken: async () => {},
-  clearGatewayToken: () => {},
+  clearGatewayToken: clearGatewayTokenMock,
   getLocalTokenUrl: () => "http://localhost/token",
 }));
 
@@ -251,6 +261,7 @@ beforeEach(() => {
   clearUserScopedStorageMock.mockClear();
   logoutMock.mockClear();
   deleteBiometricTokenMock.mockClear();
+  clearGatewayTokenMock.mockClear();
   installSessionCookiesMock.mockClear();
   retrieveBiometricTokenMock.mockClear();
   lifecycleResetForLogoutMock.mockClear();
@@ -452,6 +463,42 @@ describe("session cleanup on logout", () => {
     await useAuthStore.getState().logout();
 
     expect(order).toEqual(["reset", "clear:null"]);
+    expect(logoutMock).toHaveBeenCalledTimes(1);
+    expect(clearGatewayTokenMock).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().sessionStatus).toBe("unauthenticated");
+  });
+
+  test("gateway logout still clears local state when session deletion fails", async () => {
+    mockIsGatewayAuth = true;
+    logoutMock.mockImplementationOnce(async () => {
+      throw new Error("session deletion failed");
+    });
+
+    await expect(useAuthStore.getState().logout()).rejects.toThrow(
+      "session deletion failed",
+    );
+
+    expect(clearGatewayTokenMock).toHaveBeenCalledTimes(1);
+    expect(clearOrganizationMock).toHaveBeenCalledTimes(1);
+    expect(clearUserScopedStorageMock).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().sessionStatus).toBe("unauthenticated");
+  });
+
+  test("gateway logout rejects a resolved session-deletion failure", async () => {
+    mockIsGatewayAuth = true;
+    logoutMock.mockImplementationOnce(async () => ({
+      ok: false,
+      status: 503,
+      errors: [{ code: "unavailable", message: "Session service unavailable" }],
+    }));
+
+    await expect(useAuthStore.getState().logout()).rejects.toThrow(
+      "Session service unavailable",
+    );
+
+    expect(clearGatewayTokenMock).toHaveBeenCalledTimes(1);
+    expect(clearOrganizationMock).toHaveBeenCalledTimes(1);
+    expect(clearUserScopedStorageMock).toHaveBeenCalledTimes(1);
     expect(useAuthStore.getState().sessionStatus).toBe("unauthenticated");
   });
 

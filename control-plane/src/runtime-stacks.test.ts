@@ -5,9 +5,12 @@ import { createHash } from "node:crypto";
 import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
+  claimRuntimeServiceProvisioningLease,
   countAllocatedRuntimeServices,
+  deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
+  GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
   getRuntimeStackById,
   isRuntimeStackRoutable,
   markRuntimeStackActive,
@@ -16,8 +19,12 @@ import {
   markRuntimeStackProvisioning,
   markRuntimeStackSuspended,
   operationalStateForRuntimeStack,
+  prepareRuntimeStackActorSigningScope,
   recordRuntimeStackService,
   recordRuntimeStackVolume,
+  releaseRuntimeServiceProvisioningLease,
+  runtimeActorSigningKeyScope,
+  runtimeNotReadyPayload,
   runtimeStackConfigFromEnv,
   type AssistantRuntimeRow,
   type RuntimeStackConfig,
@@ -126,6 +133,9 @@ describe("runtime stack provisioning defaults", () => {
     );
 
     expect(stack.status).toBe("provisioning");
+    expect(stack.actor_signing_key_scope).toBe(
+      runtimeActorSigningKeyScope(stack.id),
+    );
     expect(stack.gateway_url).toBeNull();
     expect(isRuntimeStackRoutable(stack)).toBe(false);
     expect(assistantApiStatusForRuntimeStack(stack)).toBe("initializing");
@@ -243,6 +253,9 @@ describe("runtime stack provisioning defaults", () => {
 
     expect(pilotStack.status).toBe("active");
     expect(pilotStack.provider).toBe("legacy_shared");
+    expect(pilotStack.actor_signing_key_scope).toBe(
+      GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+    );
     expect(otherStack.status).toBe("provisioning");
     expect(otherStack.provider).toBe("railway");
   });
@@ -279,6 +292,7 @@ describe("runtime stack provisioning defaults", () => {
 
     expect(stack.status).toBe("active");
     expect(stack.provider).toBe("static_template");
+    expect(stack.actor_signing_key_scope).toBe(GLOBAL_ACTOR_SIGNING_KEY_SCOPE);
     expect(stack.gateway_url).toBe(
       "https://private-runtime.example.com/org-1/asst-1",
     );
@@ -319,6 +333,32 @@ describe("runtime stack provisioning defaults", () => {
     expect(isRuntimeStackRoutable(second)).toBe(true);
   });
 
+  test("repeated ensures persist at most one stack per assistant", () => {
+    const db = setupDb();
+    const first = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    const second = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: null }),
+      config(),
+      NOW,
+    );
+
+    expect(second.id).toBe(first.id);
+    expect(
+      db
+        .query<
+          { count: number },
+          []
+        >("SELECT COUNT(*) AS count FROM runtime_stacks WHERE assistant_id = 'asst-1'")
+        .get()?.count,
+    ).toBe(1);
+  });
+
   test("explicit legacy mode recovers an unallocated provisioning Railway stack", () => {
     const db = setupDb();
     const first = ensureRuntimeStackForAssistant(
@@ -353,6 +393,7 @@ describe("runtime stack provisioning defaults", () => {
       public_ingress_url: "https://worklin.example.com",
       workspace_volume_ref: "/data",
       service_ref: "legacy-shared-runtime",
+      actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
       last_health_status: null,
       last_error: null,
     });
@@ -462,6 +503,7 @@ describe("runtime stack provisioning defaults", () => {
       public_ingress_url: "https://worklin.example.com",
       workspace_volume_ref: null,
       service_ref: null,
+      actor_signing_key_scope: runtimeActorSigningKeyScope(initial.id),
       last_health_status: null,
       last_error: null,
     });
@@ -646,6 +688,7 @@ describe("runtime stack provisioning defaults", () => {
       status: "provisioning",
       service_ref: "service-1",
       workspace_volume_ref: "volume-1",
+      actor_signing_key_scope: runtimeActorSigningKeyScope(initial.id),
     });
 
     markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
@@ -667,6 +710,114 @@ describe("runtime stack provisioning defaults", () => {
       gateway_url: "http://runtime.railway.internal:8080",
       last_health_status: "200",
       last_error: null,
+    });
+  });
+
+  test("persists a capacity reservation across failures and retries", () => {
+    const db = setupDb();
+    const first = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    const second = ensureRuntimeStackForAssistant(
+      db,
+      assistant({
+        id: "asst-2",
+        user_id: "user-2",
+        org_id: "org-2",
+      }),
+      config(),
+      NOW,
+    );
+
+    const firstClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      first.id,
+      1,
+      "lease-first",
+      1_000,
+      1_000,
+      NOW,
+    );
+    expect(firstClaim.leaseAcquired).toBe(true);
+    expect(firstClaim.serviceCreationAllowed).toBe(true);
+    expect(firstClaim.stack?.service_capacity_reserved).toBe(1);
+
+    markRuntimeStackFailed(db, first.id, "response lost", NOW, "lease-first");
+    const overlappingClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      first.id,
+      1,
+      "lease-overlap",
+      1_500,
+      1_000,
+      NOW,
+    );
+    expect(overlappingClaim.leaseAcquired).toBe(false);
+    expect(overlappingClaim.retryAfterMs).toBe(500);
+
+    const retryClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      first.id,
+      1,
+      "lease-retry",
+      2_001,
+      1_000,
+      NOW,
+    );
+    const blockedClaim = claimRuntimeServiceProvisioningLease(
+      db,
+      second.id,
+      1,
+      "lease-second",
+      2_001,
+      1_000,
+      NOW,
+    );
+    expect(retryClaim.leaseAcquired).toBe(true);
+    expect(retryClaim.serviceCreationAllowed).toBe(true);
+    expect(retryClaim.stack?.service_capacity_reserved).toBe(1);
+    expect(blockedClaim.leaseAcquired).toBe(true);
+    expect(blockedClaim.serviceCreationAllowed).toBe(false);
+    expect(blockedClaim.stack?.service_capacity_reserved).toBe(0);
+
+    expect(() =>
+      recordRuntimeStackService(
+        db,
+        first.id,
+        "stale-service",
+        NOW,
+        "lease-first",
+      ),
+    ).toThrow("lease was lost");
+    recordRuntimeStackService(
+      db,
+      first.id,
+      "service-recovered",
+      NOW,
+      "lease-retry",
+    );
+    expect(getRuntimeStackById(db, first.id)).toMatchObject({
+      service_ref: "service-recovered",
+      service_capacity_reserved: 0,
+    });
+    releaseRuntimeServiceProvisioningLease(db, first.id, "lease-retry", NOW);
+    releaseRuntimeServiceProvisioningLease(db, second.id, "lease-second", NOW);
+    expect(
+      claimRuntimeServiceProvisioningLease(
+        db,
+        second.id,
+        1,
+        "lease-second-retry",
+        3_100,
+        1_000,
+        NOW,
+      ),
+    ).toMatchObject({
+      leaseAcquired: true,
+      serviceCreationAllowed: false,
     });
   });
 
@@ -721,6 +872,7 @@ describe("runtime stack provisioning defaults", () => {
       service_ref: "reserved-service-1",
       workspace_volume_ref: "reserved-volume-1",
       gateway_url: "http://reserved-runtime.railway.internal:8080",
+      actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
     });
     expect(second).toMatchObject({
       status: "provisioning",
@@ -759,6 +911,138 @@ describe("runtime stack provisioning defaults", () => {
       status: "provisioning",
       service_ref: "existing-service",
       gateway_url: null,
+    });
+  });
+});
+
+describe("runtime actor signing key isolation", () => {
+  test("derives stable and distinct child keys without changing legacy rows", () => {
+    const master = "a".repeat(64);
+    const firstScope = runtimeActorSigningKeyScope("rt-1");
+    const secondScope = runtimeActorSigningKeyScope("rt-2");
+
+    expect(
+      deriveRuntimeActorSigningKey(master, GLOBAL_ACTOR_SIGNING_KEY_SCOPE),
+    ).toBe(master);
+    expect(deriveRuntimeActorSigningKey(master, firstScope)).toBe(
+      deriveRuntimeActorSigningKey(master, firstScope),
+    );
+    expect(deriveRuntimeActorSigningKey(master, firstScope)).not.toBe(master);
+    expect(deriveRuntimeActorSigningKey(master, firstScope)).not.toBe(
+      deriveRuntimeActorSigningKey(master, secondScope),
+    );
+    expect(() =>
+      deriveRuntimeActorSigningKey(master, "unexpected-scope"),
+    ).toThrow("Unsupported runtime actor signing key scope");
+  });
+
+  test("upgrades an unallocated Railway row but preserves an existing service", () => {
+    const db = setupDb();
+    const unallocated = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    db.query(
+      "UPDATE runtime_stacks SET actor_signing_key_scope = ? WHERE id = ?",
+    ).run(GLOBAL_ACTOR_SIGNING_KEY_SCOPE, unallocated.id);
+
+    const prepared = prepareRuntimeStackActorSigningScope(
+      db,
+      unallocated.id,
+      NOW,
+    );
+    expect(prepared?.actor_signing_key_scope).toBe(
+      runtimeActorSigningKeyScope(unallocated.id),
+    );
+
+    recordRuntimeStackService(db, unallocated.id, "service-1", NOW);
+    db.query(
+      "UPDATE runtime_stacks SET actor_signing_key_scope = ? WHERE id = ?",
+    ).run(GLOBAL_ACTOR_SIGNING_KEY_SCOPE, unallocated.id);
+    expect(
+      prepareRuntimeStackActorSigningScope(db, unallocated.id, NOW)
+        ?.actor_signing_key_scope,
+    ).toBe(GLOBAL_ACTOR_SIGNING_KEY_SCOPE);
+  });
+
+  test("migrates existing runtime rows onto the global compatibility scope", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE assistants (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        org_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO assistants
+        (id, user_id, org_id, name, created_at, updated_at)
+      VALUES
+        ('asst-1', 'user-1', 'org-1', 'Worklin', '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z');
+      CREATE TABLE runtime_stacks (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        gateway_url TEXT,
+        public_ingress_url TEXT,
+        workspace_volume_ref TEXT,
+        service_ref TEXT,
+        last_health_status TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        last_health_status, last_error, created_at, updated_at
+      ) VALUES (
+        'rt-existing', 'org-1', 'asst-1', 'active', 'preprovisioned',
+        'http://runtime.test', 'https://worklin.example.com', 'volume-1',
+        'service-1', '200', NULL, '2026-07-11T00:00:00.000Z',
+        '2026-07-11T00:00:00.000Z'
+      );
+    `);
+
+    ensureRuntimeStackSchema(db);
+    expect(getRuntimeStackById(db, "rt-existing")).toMatchObject({
+      actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      service_capacity_reserved: 0,
+      service_create_attempted_at: null,
+      volume_create_attempted_at: null,
+      provisioning_lease_token: null,
+      provisioning_lease_expires_at: null,
+    });
+  });
+});
+
+describe("runtime not ready payload", () => {
+  test("reports missing and failed stacks without inventing a route", () => {
+    expect(runtimeNotReadyPayload(null)).toMatchObject({
+      code: "runtime_not_ready",
+      runtime_status: "missing",
+      runtime_stack_id: null,
+    });
+
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    markRuntimeStackFailed(db, initial.id, "deploy failed", NOW);
+    expect(
+      runtimeNotReadyPayload(getRuntimeStackById(db, initial.id)),
+    ).toMatchObject({
+      code: "runtime_not_ready",
+      runtime_status: "failed",
+      runtime_stack_id: initial.id,
     });
   });
 });

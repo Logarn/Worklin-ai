@@ -5,6 +5,7 @@ import {
   EFFORT_TO_REASONING_EFFORT,
   OpenAIChatCompletionsProvider,
 } from "../openai/chat-completions-provider.js";
+import { validateOpenAICompatibleApiKey } from "../openai/validate-api-key.js";
 import { isThinkingConfigEnabled } from "../thinking-config.js";
 import type {
   Message,
@@ -21,6 +22,14 @@ export interface OpenRouterProviderOptions {
 }
 
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+export function validateOpenRouterApiKey(apiKey: string) {
+  return validateOpenAICompatibleApiKey(apiKey, {
+    baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+    providerLabel: "OpenRouter",
+    path: "auth/key",
+  });
+}
 const OPENROUTER_APP_ATTRIBUTION_HEADERS = {
   "HTTP-Referer": "https://www.vellum.ai",
   "X-OpenRouter-Title": "Vellum Assistant",

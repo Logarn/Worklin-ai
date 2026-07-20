@@ -683,7 +683,10 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
   },
 
   logout: async () => {
-    if (isGatewayAuthMode()) {
+    const gatewayAuthMode = isGatewayAuthMode();
+
+    suppressPlatformProbe = true;
+    if (gatewayAuthMode) {
       // Clear lifecycle state BEFORE `sessionStatus` leaves `authenticated`
       // so the assistant sync hooks don't observe a stale assistant id in
       // their first re-render, and BEFORE the selection clear so the
@@ -693,18 +696,21 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
       // flips.
       lifecycleService.resetForLogout();
       await setSelectedAssistant(null);
-      clearGatewayToken();
-      clearOrganization();
-      clearUserScopedStorage();
-      set(sessionEnded());
-      broadcastAuthChange();
-      return;
     }
 
-    suppressPlatformProbe = true;
     try {
-      await allauthLogout();
+      const result = await allauthLogout();
+      if (!result.ok) {
+        const error = Object.assign(
+          new Error(
+            result.errors[0]?.message || "Failed to end the Worklin session.",
+          ),
+          { status: result.status },
+        );
+        throw error;
+      }
     } finally {
+      if (gatewayAuthMode) clearGatewayToken();
       // Clean up session token in the main process.
       if (isElectron()) await window.vellum?.auth?.signOut?.();
       if (isLocalMode()) {
@@ -713,11 +719,13 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
       void deleteBiometricToken();
       clearOrganization();
       clearUserScopedStorage();
-      lifecycleService.resetForLogout();
-      // Clear the selection slice too — `clearUserScopedStorage` already
-      // removed the persisted key, and a surviving slice would resolve the
-      // previous user's assistant after re-login.
-      await setSelectedAssistant(null);
+      if (!gatewayAuthMode) {
+        lifecycleService.resetForLogout();
+        // Clear the selection slice too — `clearUserScopedStorage` already
+        // removed the persisted key, and a surviving slice would resolve the
+        // previous user's assistant after re-login.
+        await setSelectedAssistant(null);
+      }
       set(sessionEnded());
       broadcastAuthChange();
     }

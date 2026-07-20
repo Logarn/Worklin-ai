@@ -92,6 +92,9 @@ export function mintExchangeToken(
     ...(edgeClaims.collaboration_role
       ? { collaboration_role: edgeClaims.collaboration_role }
       : {}),
+    ...(edgeClaims.tenant_context
+      ? { tenant_context: edgeClaims.tenant_context }
+      : {}),
   });
 }
 

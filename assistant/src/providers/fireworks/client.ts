@@ -1,5 +1,6 @@
 import { PROVIDER_CATALOG } from "../model-catalog.js";
 import { OpenAIChatCompletionsProvider } from "../openai/chat-completions-provider.js";
+import { validateOpenAICompatibleApiKey } from "../openai/validate-api-key.js";
 
 export interface FireworksProviderOptions {
   apiKey?: string;
@@ -8,6 +9,13 @@ export interface FireworksProviderOptions {
 }
 
 const DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1";
+
+export function validateFireworksApiKey(apiKey: string) {
+  return validateOpenAICompatibleApiKey(apiKey, {
+    baseUrl: DEFAULT_FIREWORKS_BASE_URL,
+    providerLabel: "Fireworks",
+  });
+}
 
 const FIREWORKS_MODEL_EFFORT_CEILINGS: ReadonlyMap<
   string,

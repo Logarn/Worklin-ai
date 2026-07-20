@@ -60,6 +60,15 @@ export type TokenAudience = "vellum-gateway" | "vellum-daemon";
 // JWT claims — the payload inside the token
 // ---------------------------------------------------------------------------
 
+export interface RuntimeTenantContextClaim {
+  version: 1;
+  organization_id: string;
+  user_id: string;
+  assistant_id: string;
+  actor_id: string;
+  request_id: string;
+}
+
 export interface TokenClaims {
   iss: "vellum-auth";
   aud: TokenAudience;
@@ -71,6 +80,7 @@ export interface TokenClaims {
   jti?: string;
   artifact_id?: string;
   collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
+  tenant_context?: RuntimeTenantContextClaim;
 }
 
 // ---------------------------------------------------------------------------

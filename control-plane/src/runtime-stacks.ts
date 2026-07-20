@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 
 export const RUNTIME_STACK_STATUSES = [
   "provisioning",
@@ -10,6 +10,9 @@ export const RUNTIME_STACK_STATUSES = [
 ] as const;
 
 export type RuntimeStackStatus = (typeof RUNTIME_STACK_STATUSES)[number];
+
+export const GLOBAL_ACTOR_SIGNING_KEY_SCOPE = "global";
+const RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX = "runtime_v1:";
 
 export interface AssistantRuntimeRow {
   id: string;
@@ -28,6 +31,12 @@ export interface RuntimeStackRow {
   public_ingress_url: string | null;
   workspace_volume_ref: string | null;
   service_ref: string | null;
+  service_capacity_reserved: number;
+  service_create_attempted_at: number | null;
+  volume_create_attempted_at: number | null;
+  provisioning_lease_token: string | null;
+  provisioning_lease_expires_at: number | null;
+  actor_signing_key_scope: string;
   last_health_status: string | null;
   last_error: string | null;
   created_at: string;
@@ -54,6 +63,30 @@ export interface RuntimeStackConfig {
 }
 
 type EnvLike = Record<string, string | undefined>;
+
+export function runtimeActorSigningKeyScope(stackId: string): string {
+  return `${RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX}${stackId}`;
+}
+
+export function deriveRuntimeActorSigningKey(
+  masterSigningKey: string,
+  scope: string,
+): string {
+  if (!/^[0-9a-f]{64}$/i.test(masterSigningKey)) {
+    throw new Error("ACTOR_TOKEN_SIGNING_KEY must be 64 hex characters.");
+  }
+  if (scope === GLOBAL_ACTOR_SIGNING_KEY_SCOPE) return masterSigningKey;
+  if (
+    !scope.startsWith(RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX) ||
+    scope.length === RUNTIME_ACTOR_SIGNING_KEY_SCOPE_PREFIX.length ||
+    scope.length > 256
+  ) {
+    throw new Error(`Unsupported runtime actor signing key scope: ${scope}`);
+  }
+  return createHmac("sha256", Buffer.from(masterSigningKey, "hex"))
+    .update(`worklin/runtime-actor-signing-key/v1\0${scope}`)
+    .digest("hex");
+}
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -221,6 +254,13 @@ export function ensureRuntimeStackSchema(db: Database): void {
       public_ingress_url TEXT,
       workspace_volume_ref TEXT,
       service_ref TEXT,
+      service_capacity_reserved INTEGER NOT NULL DEFAULT 0
+        CHECK(service_capacity_reserved IN (0, 1)),
+      service_create_attempted_at INTEGER,
+      volume_create_attempted_at INTEGER,
+      provisioning_lease_token TEXT,
+      provisioning_lease_expires_at INTEGER,
+      actor_signing_key_scope TEXT NOT NULL DEFAULT 'global',
       last_health_status TEXT,
       last_error TEXT,
       created_at TEXT NOT NULL,
@@ -233,6 +273,42 @@ export function ensureRuntimeStackSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_assistants_user_created
       ON assistants(user_id, created_at);
   `);
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "service_capacity_reserved",
+    "service_capacity_reserved INTEGER NOT NULL DEFAULT 0 CHECK(service_capacity_reserved IN (0, 1))",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "service_create_attempted_at",
+    "service_create_attempted_at INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "volume_create_attempted_at",
+    "volume_create_attempted_at INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "provisioning_lease_token",
+    "provisioning_lease_token TEXT",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "provisioning_lease_expires_at",
+    "provisioning_lease_expires_at INTEGER",
+  );
+  addColumnIfMissing(
+    db,
+    "runtime_stacks",
+    "actor_signing_key_scope",
+    "actor_signing_key_scope TEXT NOT NULL DEFAULT 'global'",
+  );
   addColumnIfMissing(
     db,
     "assistants",
@@ -365,6 +441,12 @@ function revalidateLegacySharedRuntimeStack(
         public_ingress_url = ?,
         workspace_volume_ref = NULL,
         service_ref = NULL,
+        service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
+        provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
+        actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
         updated_at = ?
@@ -375,6 +457,9 @@ function revalidateLegacySharedRuntimeStack(
   ).run(
     config.runtimeStackProvider,
     config.publicIngressUrl,
+    config.runtimeStackProvider === "railway"
+      ? runtimeActorSigningKeyScope(stack.id)
+      : GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
     nowIso(),
     stack.id,
   );
@@ -409,6 +494,12 @@ function recoverUnallocatedStackToLegacySharedRuntime(
         public_ingress_url = ?,
         workspace_volume_ref = ?,
         service_ref = 'legacy-shared-runtime',
+        service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
+        provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
+        actor_signing_key_scope = ?,
         last_health_status = NULL,
         last_error = NULL,
         updated_at = ?
@@ -423,6 +514,7 @@ function recoverUnallocatedStackToLegacySharedRuntime(
     config.gatewayUrl,
     config.publicIngressUrl,
     config.runtimeRoot,
+    GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
     nowIso(),
     stack.id,
   );
@@ -460,54 +552,83 @@ export function ensureRuntimeStackForAssistant(
     );
   }
 
-  const timestamp = nowIso();
-  const seed = nextRuntimeStackSeed(assistant, config);
-  const stack: RuntimeStackRow = {
-    id: "rt-" + randomUUID(),
-    org_id: assistant.org_id,
-    assistant_id: assistant.id,
-    created_at: timestamp,
-    updated_at: timestamp,
-    ...seed,
-  };
-  db.query(
-    `
-    INSERT INTO runtime_stacks (
-      id,
-      org_id,
-      assistant_id,
-      status,
-      provider,
-      gateway_url,
-      public_ingress_url,
-      workspace_volume_ref,
-      service_ref,
-      last_health_status,
-      last_error,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-  ).run(
-    stack.id,
-    stack.org_id,
-    stack.assistant_id,
-    stack.status,
-    stack.provider,
-    stack.gateway_url,
-    stack.public_ingress_url,
-    stack.workspace_volume_ref,
-    stack.service_ref,
-    stack.last_health_status,
-    stack.last_error,
-    stack.created_at,
-    stack.updated_at,
-  );
-  db.query("UPDATE assistants SET runtime_stack_id = ? WHERE id = ?").run(
-    stack.id,
-    assistant.id,
-  );
-  return stack;
+  const createStack = db.transaction(() => {
+    const concurrent = getRuntimeStackForAssistant(db, assistant);
+    if (concurrent) {
+      db.query("UPDATE assistants SET runtime_stack_id = ? WHERE id = ?").run(
+        concurrent.id,
+        assistant.id,
+      );
+      return concurrent;
+    }
+
+    const timestamp = nowIso();
+    const seed = nextRuntimeStackSeed(assistant, config);
+    const stackId = "rt-" + randomUUID();
+    const stack: RuntimeStackRow = {
+      id: stackId,
+      org_id: assistant.org_id,
+      assistant_id: assistant.id,
+      service_capacity_reserved: 0,
+      service_create_attempted_at: null,
+      volume_create_attempted_at: null,
+      provisioning_lease_token: null,
+      provisioning_lease_expires_at: null,
+      actor_signing_key_scope:
+        seed.provider === "railway" && seed.service_ref === null
+          ? runtimeActorSigningKeyScope(stackId)
+          : GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      created_at: timestamp,
+      updated_at: timestamp,
+      ...seed,
+    };
+    db.query(
+      `
+      INSERT INTO runtime_stacks (
+        id,
+        org_id,
+        assistant_id,
+        status,
+        provider,
+        gateway_url,
+        public_ingress_url,
+        workspace_volume_ref,
+        service_ref,
+        actor_signing_key_scope,
+        last_health_status,
+        last_error,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(assistant_id) DO NOTHING
+    `,
+    ).run(
+      stack.id,
+      stack.org_id,
+      stack.assistant_id,
+      stack.status,
+      stack.provider,
+      stack.gateway_url,
+      stack.public_ingress_url,
+      stack.workspace_volume_ref,
+      stack.service_ref,
+      stack.actor_signing_key_scope,
+      stack.last_health_status,
+      stack.last_error,
+      stack.created_at,
+      stack.updated_at,
+    );
+    const persisted = getRuntimeStackForAssistant(db, assistant);
+    if (!persisted) {
+      throw new Error("Runtime stack upsert did not produce a row.");
+    }
+    db.query("UPDATE assistants SET runtime_stack_id = ? WHERE id = ?").run(
+      persisted.id,
+      assistant.id,
+    );
+    return persisted;
+  });
+  return createStack.immediate();
 }
 
 export function getRuntimeStackById(
@@ -576,6 +697,12 @@ export function claimPreprovisionedRuntimeStack(
            gateway_url = ?,
            workspace_volume_ref = ?,
            service_ref = ?,
+           service_capacity_reserved = 0,
+           service_create_attempted_at = NULL,
+           volume_create_attempted_at = NULL,
+           provisioning_lease_token = NULL,
+           provisioning_lease_expires_at = NULL,
+           actor_signing_key_scope = ?,
            last_health_status = 'reserved',
            last_error = NULL,
            updated_at = ?
@@ -589,12 +716,49 @@ export function claimPreprovisionedRuntimeStack(
       slot.gatewayUrl,
       slot.workspaceVolumeRef,
       slot.serviceRef,
+      GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
       nowIso(),
       current.id,
       assistant.id,
     );
     return getRuntimeStackById(db, current.id) ?? current;
   })();
+}
+
+export function prepareRuntimeStackActorSigningScope(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+): RuntimeStackRow | null {
+  return db
+    .transaction(() => {
+      const current = getRuntimeStackById(db, stackId);
+      if (
+        !current ||
+        current.provider !== "railway" ||
+        current.service_ref !== null ||
+        current.actor_signing_key_scope !== GLOBAL_ACTOR_SIGNING_KEY_SCOPE
+      ) {
+        return current;
+      }
+      db.query(
+        `
+      UPDATE runtime_stacks
+      SET actor_signing_key_scope = ?, updated_at = ?
+      WHERE id = ?
+        AND provider = 'railway'
+        AND service_ref IS NULL
+        AND actor_signing_key_scope = ?
+    `,
+      ).run(
+        runtimeActorSigningKeyScope(current.id),
+        nowIso(),
+        current.id,
+        GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      );
+      return getRuntimeStackById(db, current.id);
+    })
+    .immediate();
 }
 
 export function countAllocatedRuntimeServices(db: Database): number {
@@ -626,18 +790,257 @@ export function countAllocatedRuntimeServicesForOrganization(
   );
 }
 
-export function markRuntimeStackProvisioning(
+export interface RuntimeServiceProvisioningLeaseClaim {
+  stack: RuntimeStackRow | null;
+  leaseAcquired: boolean;
+  serviceCreationAllowed: boolean;
+  retryAfterMs: number | null;
+}
+
+export function claimRuntimeServiceProvisioningLease(
   db: Database,
   stackId: string,
+  maxRuntimeServices: number,
+  leaseToken: string,
+  nowMs: number,
+  leaseTtlMs: number,
+  nowIso: () => string,
+): RuntimeServiceProvisioningLeaseClaim {
+  if (!leaseToken) throw new Error("Provisioning lease token is required.");
+  if (!Number.isInteger(leaseTtlMs) || leaseTtlMs < 1) {
+    throw new Error("Provisioning lease TTL must be a positive integer.");
+  }
+
+  return db
+    .transaction(() => {
+      const current = getRuntimeStackById(db, stackId);
+      if (!current || current.provider !== "railway") {
+        return {
+          stack: current,
+          leaseAcquired: false,
+          serviceCreationAllowed: false,
+          retryAfterMs: null,
+        };
+      }
+      if (
+        current.provisioning_lease_token &&
+        current.provisioning_lease_token !== leaseToken &&
+        (current.provisioning_lease_expires_at ?? 0) > nowMs
+      ) {
+        return {
+          stack: current,
+          leaseAcquired: false,
+          serviceCreationAllowed: false,
+          retryAfterMs: Math.max(
+            1,
+            (current.provisioning_lease_expires_at ?? nowMs) - nowMs,
+          ),
+        };
+      }
+
+      let reserveServiceCapacity = current.service_capacity_reserved;
+      if (current.service_ref === null && reserveServiceCapacity === 0) {
+        const allocatedOrReserved =
+          db
+            .query<{ count: number }, []>(
+              `
+              SELECT COUNT(*) AS count
+              FROM runtime_stacks
+              WHERE status != 'deleted'
+                AND (
+                  service_ref IS NOT NULL
+                  OR service_capacity_reserved = 1
+                )
+            `,
+            )
+            .get()?.count ?? 0;
+        if (
+          maxRuntimeServices > 0 &&
+          allocatedOrReserved < maxRuntimeServices
+        ) {
+          reserveServiceCapacity = 1;
+        }
+      }
+
+      db.query(
+        `
+        UPDATE runtime_stacks
+        SET service_capacity_reserved = ?,
+            provisioning_lease_token = ?,
+            provisioning_lease_expires_at = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND provider = 'railway'
+          AND (
+            provisioning_lease_token IS NULL
+            OR provisioning_lease_token = ?
+            OR provisioning_lease_expires_at IS NULL
+            OR provisioning_lease_expires_at <= ?
+          )
+      `,
+      ).run(
+        reserveServiceCapacity,
+        leaseToken,
+        nowMs + leaseTtlMs,
+        nowIso(),
+        stackId,
+        leaseToken,
+        nowMs,
+      );
+      const claimed = getRuntimeStackById(db, stackId);
+      return {
+        stack: claimed,
+        leaseAcquired: claimed?.provisioning_lease_token === leaseToken,
+        serviceCreationAllowed:
+          claimed?.service_ref === null &&
+          claimed.service_capacity_reserved === 1,
+        retryAfterMs: null,
+      };
+    })
+    .immediate();
+}
+
+export function renewRuntimeServiceProvisioningLease(
+  db: Database,
+  stackId: string,
+  leaseToken: string,
+  nowMs: number,
+  leaseTtlMs: number,
+  nowIso: () => string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET provisioning_lease_expires_at = ?, updated_at = ?
+      WHERE id = ? AND provisioning_lease_token = ?
+    `,
+    )
+    .run(nowMs + leaseTtlMs, nowIso(), stackId, leaseToken);
+  if (result.changes !== 1) {
+    throw new Error("Runtime provisioning lease was lost.");
+  }
+}
+
+export function releaseRuntimeServiceProvisioningLease(
+  db: Database,
+  stackId: string,
+  leaseToken: string,
   nowIso: () => string,
 ): void {
   db.query(
     `
     UPDATE runtime_stacks
+    SET provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
+        updated_at = ?
+    WHERE id = ? AND provisioning_lease_token = ?
+  `,
+  ).run(nowIso(), stackId, leaseToken);
+}
+
+function assertLeaseMutation(changes: number, leaseToken?: string): void {
+  if (leaseToken && changes !== 1) {
+    throw new Error("Runtime provisioning lease was lost.");
+  }
+}
+
+export function markRuntimeStackProvisioning(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+  leaseToken?: string,
+): void {
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
+    UPDATE runtime_stacks
     SET status = 'provisioning', last_error = NULL, updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(nowIso(), stackId);
+    )
+    .run(nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function recordRuntimeServiceCreateAttempt(
+  db: Database,
+  stackId: string,
+  attemptedAt: number,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET service_create_attempted_at = ?, updated_at = ?
+      WHERE id = ?
+        AND service_ref IS NULL
+        AND provisioning_lease_token = ?
+    `,
+    )
+    .run(attemptedAt, nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function clearRuntimeServiceCreateAttempt(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET service_create_attempted_at = NULL, updated_at = ?
+      WHERE id = ? AND provisioning_lease_token = ?
+    `,
+    )
+    .run(nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function recordRuntimeVolumeCreateAttempt(
+  db: Database,
+  stackId: string,
+  attemptedAt: number,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET volume_create_attempted_at = ?, updated_at = ?
+      WHERE id = ?
+        AND workspace_volume_ref IS NULL
+        AND provisioning_lease_token = ?
+    `,
+    )
+    .run(attemptedAt, nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function clearRuntimeVolumeCreateAttempt(
+  db: Database,
+  stackId: string,
+  nowIso: () => string,
+  leaseToken: string,
+): void {
+  const result = db
+    .query(
+      `
+      UPDATE runtime_stacks
+      SET volume_create_attempted_at = NULL, updated_at = ?
+      WHERE id = ? AND provisioning_lease_token = ?
+    `,
+    )
+    .run(nowIso(), stackId, leaseToken);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function recordRuntimeStackService(
@@ -645,14 +1048,23 @@ export function recordRuntimeStackService(
   stackId: string,
   serviceRef: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
-    SET service_ref = ?, updated_at = ?
+    SET service_ref = ?,
+        service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(serviceRef, nowIso(), stackId);
+    )
+    .run(serviceRef, nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function recordRuntimeStackVolume(
@@ -660,14 +1072,22 @@ export function recordRuntimeStackVolume(
   stackId: string,
   volumeRef: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
-    SET workspace_volume_ref = ?, updated_at = ?
+    SET workspace_volume_ref = ?,
+        volume_create_attempted_at = NULL,
+        updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(volumeRef, nowIso(), stackId);
+    )
+    .run(volumeRef, nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function markRuntimeStackActive(
@@ -676,18 +1096,27 @@ export function markRuntimeStackActive(
   gatewayUrl: string,
   healthStatus: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
     SET status = 'active',
         gateway_url = ?,
+        service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
         last_health_status = ?,
         last_error = NULL,
         updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(gatewayUrl, healthStatus, nowIso(), stackId);
+    )
+    .run(gatewayUrl, healthStatus, nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function markRuntimeStackFailed(
@@ -695,14 +1124,20 @@ export function markRuntimeStackFailed(
   stackId: string,
   error: string,
   nowIso: () => string,
+  leaseToken?: string,
 ): void {
-  db.query(
-    `
+  const lease = leaseToken ?? null;
+  const result = db
+    .query(
+      `
     UPDATE runtime_stacks
     SET status = 'failed', last_error = ?, updated_at = ?
     WHERE id = ?
+      AND (? IS NULL OR provisioning_lease_token = ?)
   `,
-  ).run(error.slice(0, 2_000), nowIso(), stackId);
+    )
+    .run(error.slice(0, 2_000), nowIso(), stackId, lease, lease);
+  assertLeaseMutation(result.changes, leaseToken);
 }
 
 export function markRuntimeStackSuspended(

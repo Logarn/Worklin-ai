@@ -56,6 +56,19 @@
           "value": "no-cache"
         }
       ]
+    },
+    {
+      "source": "/logout",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "private, no-store, max-age=0"
+        },
+        {
+          "key": "Pragma",
+          "value": "no-cache"
+        }
+      ]
     }
   ],
   "redirects": [
@@ -111,7 +124,7 @@
     },
     {
       "source": "/logout",
-      "destination": "/index.html"
+      "destination": "https://worklin-ai-production.up.railway.app/logout"
     }
   ]
 }

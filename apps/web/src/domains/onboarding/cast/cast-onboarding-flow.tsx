@@ -4,62 +4,54 @@
  * personal-page` arm. Control / variant-a users continue to see `PreChatFlow`
  * (the arm switch lives in `onboarding/pages/prechat-route.tsx`).
  *
- * This file ports the prototype orchestrator (`InteractiveCastFlow`): it owns the
- * `CastPhase` state machine and every collected selection, and renders one step
- * screen per phase through the screen-slot contract in `screens/screen-slot.ts`.
+ * This file owns the `CastPhase` state machine and every collected selection,
+ * and renders one screen per phase through the screen-slot contract in
+ * `screens/screen-slot.ts`.
  *
- * PR 5h wires the six real screens (login / preamble / starter / dialogue /
- * style / done) in against the contract, replacing the PR 5a stubs.
- *
- * PR 6 replaces the prototype's `navigate` stub with the real handoff: the
- * assistant is background-hatched on entry to the login/role step (maximizing
- * overlap with the time the user spends in the flow), and on completion the
- * flow awaits hatch readiness, builds a `PreChatOnboardingContext` from the
- * collected selections, stashes it for the chat surface, and navigates — the
- * same finish sequence as `pages/pre-chat-flow.tsx`. The chat surface
- * auto-sends the research directive (the context's `initialMessage`) and
- * attaches the context as the `onboarding` payload on that same first send.
+ * The assistant is background-hatched on entry to the login/role step. On
+ * completion, the flow awaits hatch readiness, builds a
+ * `PreChatOnboardingContext` from the collected selections, stashes it for the
+ * chat surface, and navigates. The chat surface auto-sends the research
+ * directive and attaches the context to that first send.
  */
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
+import { useNavigate, useSearchParams } from "react-router";
 
-import type { StyleProfile } from "@/domains/onboarding/cast/cast-templates";
-import type { CastCharacter } from "@/domains/onboarding/cast/cast-roster";
+import { lifecycleService } from "@/assistant/lifecycle-service";
+import { setSelectedAssistant } from "@/assistant/selection";
 import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
-import type { Rect } from "@/domains/onboarding/cast/cast-hero-types";
-import { MemoryList, SetupShell } from "@/domains/onboarding/cast/cast-shell";
-import { LoginScreen } from "@/domains/onboarding/cast/screens/login-screen";
-import { PreambleScreen } from "@/domains/onboarding/cast/screens/preamble-screen";
-import { StarterScreen } from "@/domains/onboarding/cast/screens/starter-screen";
-import { DialogueScreen } from "@/domains/onboarding/cast/screens/dialogue-screen";
-import { StyleScreen } from "@/domains/onboarding/cast/screens/style-screen";
-import { DoneScreen } from "@/domains/onboarding/cast/screens/done-screen";
-import type {
-  MemoryEntry,
-  StarterResume,
-} from "@/domains/onboarding/cast/screens/screen-slot";
 import {
   buildCastPreChatContext,
   type CastSelections,
 } from "@/domains/onboarding/cast/cast-prechat-mapping";
+import type { Rect } from "@/domains/onboarding/cast/cast-hero-types";
+import type { CastCharacter } from "@/domains/onboarding/cast/cast-roster";
+import { MemoryList, SetupShell } from "@/domains/onboarding/cast/cast-shell";
 import { deriveTaskSuggestions } from "@/domains/onboarding/cast/cast-task-derivation";
+import { DialogueScreen } from "@/domains/onboarding/cast/screens/dialogue-screen";
+import { DoneScreen } from "@/domains/onboarding/cast/screens/done-screen";
+import { LoginScreen } from "@/domains/onboarding/cast/screens/login-screen";
+import { PreambleScreen } from "@/domains/onboarding/cast/screens/preamble-screen";
+import type {
+  MemoryEntry,
+  StarterResume,
+} from "@/domains/onboarding/cast/screens/screen-slot";
+import { StarterScreen } from "@/domains/onboarding/cast/screens/starter-screen";
 import { useBackgroundHatch } from "@/domains/onboarding/cast/use-background-hatch";
-import {
-  setPendingAssistantName,
-  setPendingPreChatContext,
-} from "@/domains/onboarding/prechat";
-import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import {
   emitOnboardingFunnelStepCompleted,
   ONBOARDING_FUNNEL_STEPS,
   ONBOARDING_FUNNEL_VARIANTS,
 } from "@/domains/onboarding/funnel-events";
-import { lifecycleService } from "@/assistant/lifecycle-service";
-import { setSelectedAssistant } from "@/assistant/selection";
-import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import {
+  setPendingAssistantName,
+  setPendingPreChatContext,
+} from "@/domains/onboarding/prechat";
+import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import { useAuthStore } from "@/stores/auth-store";
-import { useNavigate, useSearchParams } from "react-router";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { routes } from "@/utils/routes";
 import "@/domains/onboarding/cast/cast.css";
 
@@ -74,7 +66,6 @@ const CAST_FUNNEL_STEP_BY_PHASE = {
   preamble: ONBOARDING_FUNNEL_STEPS.castPreamble,
   starter: ONBOARDING_FUNNEL_STEPS.castStarter,
   dialogue: ONBOARDING_FUNNEL_STEPS.castDialogue,
-  style: ONBOARDING_FUNNEL_STEPS.castStyle,
   done: ONBOARDING_FUNNEL_STEPS.castDone,
 } as const;
 
@@ -95,11 +86,8 @@ type EmitCastFunnelStep = (phase: CastFunnelPhase) => void;
  *   - `"deep"` (thorough, detailed) → `"grounded"` (descriptor "Calm and precise")
  *   - `null` (skipped) → `DEFAULT_GROUP_ID` ("grounded")
  *
- * Finalized in PR 7: the fast→energetic / deep→grounded pairing matches the
- * group descriptors directly, and a skipped tone defaulting to "grounded"
- * (the same `DEFAULT_GROUP_ID` the control funnel falls back to) keeps the
- * cast arm consistent with the rest of onboarding. The remaining two groups
- * ("warm", "poetic") have no corresponding cast axis to project from.
+ * A skipped tone defaults to "grounded", matching the rest of onboarding. The
+ * remaining two groups ("warm", "poetic") have no corresponding cast axis.
  */
 export function castToneToGroupId(tone: "fast" | "deep" | null): string {
   if (tone === "fast") return "energetic";
@@ -121,28 +109,18 @@ export interface CastCompletionData {
   /** Dialogue-phase selections: communication tone + connected reach tools. */
   tone: "fast" | "deep" | null;
   connectedTools: string[];
-  style: StyleProfile;
   assistantAvatar?: AssistantCharacter | null;
   credits: number;
 }
 
 /**
  * The live phases the orchestrator transitions through, order preserved:
- * `login → preamble → starter → dialogue → style → done`. The prototype's
- * `vibe`/`brain`/`email`/`job`/`rather` phases were collapsed into the
- * `dialogue` Visual Novel scene and the `style`/`done` panels, so they are not
- * part of the live state machine.
+ * `login → preamble → starter → dialogue → done`.
  */
-type CastPhase =
-  | "login"
-  | "preamble"
-  | "starter"
-  | "dialogue"
-  | "style"
-  | "done";
+type CastPhase = "login" | "preamble" | "starter" | "dialogue" | "done";
 
 // ---------------------------------------------------------------------------
-// Shared layout helpers (same as the prototype cast-page)
+// Shared layout helpers
 // ---------------------------------------------------------------------------
 
 function topBoxFor(w: number, h: number): Rect {
@@ -186,9 +164,8 @@ function InteractiveCastFlow({
     onLoginPhase();
   }, [phase, onLoginPhase]);
 
-  // De-dupe funnel emissions: a phase can advance from multiple call sites
-  // (e.g. style → done via both `onAdvance` and `onDone`), so guard each phase
-  // to fire its step at most once per flow walk.
+  // A screen can advance from more than one callback, so emit each funnel step
+  // at most once per flow walk.
   const emittedPhasesRef = useRef<Set<CastFunnelPhase>>(new Set());
   function emitPhaseOnce(phase: CastFunnelPhase): void {
     if (emittedPhasesRef.current.has(phase)) return;
@@ -198,7 +175,7 @@ function InteractiveCastFlow({
 
   const [userFirstName, setUserFirstName] = useState("");
   const [userLastName, setUserLastName] = useState("");
-  // `userRole` is the field the later handoff maps to `occupation`.
+  // `userRole` maps to `occupation` in the assistant handoff.
   const [userRole, setUserRole] = useState("");
   const [selected, setSelected] = useState<CastCharacter | null>(null);
   const [selectedAvatar, setSelectedAvatar] =
@@ -213,16 +190,11 @@ function InteractiveCastFlow({
     return { top: topBoxFor(w, h), w };
   });
 
-  // Style profile collected across the This-or-That rounds; flows into the
-  // screen-slot props and the completion payload.
-  const [style, setStyle] = useState<StyleProfile>({});
-
-  // Dialogue-phase selections the later handoff PR reads alongside `userRole`,
-  // `selected`/`name`, and `style`: the picked tone and the connected reach tools.
+  // Dialogue-phase selections persisted in the assistant handoff.
   const [tone, setTone] = useState<"fast" | "deep" | null>(null);
   const [connectedTools, setConnectedTools] = useState<string[]>([]);
 
-  // Memory list — accumulates across the tone/vibe/reach This/That phases.
+  // Memory list — accumulates across the tone and reach phases.
   // Entries are [step, text] tuples keyed by step so re-picks overwrite.
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [typingStep, setTypingStep] = useState<string | null>(null);
@@ -277,7 +249,6 @@ function InteractiveCastFlow({
       name,
       tone,
       connectedTools,
-      style,
       assistantAvatar: selectedAvatar,
       credits: earnedCredits,
     };
@@ -307,7 +278,6 @@ function InteractiveCastFlow({
   }
 
   function reopenCustomize() {
-    setStyle({});
     setTone(null);
     setConnectedTools([]);
     setMemories([]);
@@ -318,12 +288,8 @@ function InteractiveCastFlow({
     setPhase("starter");
   }
 
-  function onStyleRound(next: StyleProfile) {
-    setStyle(next);
-  }
-  function onStyleDone(next: StyleProfile) {
-    setStyle(next);
-    emitPhaseOnce("style");
+  function finishDialogue() {
+    emitPhaseOnce("dialogue");
     setPhase("done");
   }
 
@@ -375,9 +341,7 @@ function InteractiveCastFlow({
               userName={userFirstName}
               brainFileContent={brainFileContent}
               memories={memories}
-              onAdvance={() =>
-                completeHandoff(completionData(selected))
-              }
+              onAdvance={finishDialogue}
               onTonePicked={(value) => {
                 setTone(value);
                 recordMemory(
@@ -395,10 +359,7 @@ function InteractiveCastFlow({
                   connected.length > 0 ? `Connected: ${connected.join(", ")}` : "Tools: skipped",
                 );
               }}
-              onComplete={() => {
-                emitPhaseOnce("dialogue");
-                setPhase("style");
-              }}
+              onComplete={finishDialogue}
               onBack={reopenCustomize}
             />
           )}
@@ -417,29 +378,10 @@ function InteractiveCastFlow({
         )}
       </AnimatePresence>
 
-      {phase === "style" && selected && (
-        <StyleScreen
-          character={selected}
-          name={name}
-          heroBox={leftPanelBox}
-          onAdvance={() => {
-            emitPhaseOnce("style");
-            setPhase("done");
-          }}
-          onChoose={() => {
-            /* style demo turn — no orchestrator state to capture here */
-          }}
-          onRoundPicked={onStyleRound}
-          onDone={onStyleDone}
-          onBack={() => setPhase("dialogue")}
-        />
-      )}
-
       {phase === "done" && selected && (
         <DoneScreen
           character={selected}
           box={{ ...leftPanelBox, top: leftPanelBox.top + Math.round(leftPanelBox.size * 0.7) }}
-          style={style}
           ascended={false}
           assistantId={null}
           onAdvance={() =>
@@ -451,7 +393,7 @@ function InteractiveCastFlow({
           onEndpoint={() =>
             completeHandoff(completionData(selected))
           }
-          onBack={() => setPhase("style")}
+          onBack={() => setPhase("dialogue")}
         />
       )}
     </div>
@@ -459,8 +401,7 @@ function InteractiveCastFlow({
 }
 
 // ---------------------------------------------------------------------------
-// CastOnboardingFlow — top-level orchestrator entry (was `InteractiveSetup`).
-// Wraps the flow in the themed cast stage and owns the completion handoff:
+// CastOnboardingFlow wraps the themed cast stage and owns the completion handoff:
 // background-hatch on login-step entry, then on completion await readiness,
 // build the PreChatOnboardingContext, stash it, and finish like
 // `pages/pre-chat-flow.tsx`. The chat surface auto-sends the research directive

@@ -244,20 +244,24 @@ export async function validateGeminiApiKey(
           reason: `Gemini API error (${error.status}): ${error.message}`,
         };
       }
-      // Transient errors (429, 5xx, etc.) — validation is inconclusive,
-      // allow the key to be stored rather than blocking the user.
       log.warn(
         { status: error.status },
-        "Gemini API returned a transient error during key validation — allowing key storage",
+        "Gemini API key validation could not complete",
       );
-      return { valid: true };
+      return {
+        valid: false,
+        reason: `Gemini could not verify this connection (${error.status}). Try again shortly.`,
+      };
     }
-    // Network errors — validation is inconclusive, allow key storage.
     log.warn(
       { error: error instanceof Error ? error.message : String(error) },
-      "Network error during Gemini key validation — allowing key storage",
+      "Gemini API key validation request failed",
     );
-    return { valid: true };
+    return {
+      valid: false,
+      reason:
+        "Gemini could not verify this connection. Check your network and try again.",
+    };
   }
 }
 
