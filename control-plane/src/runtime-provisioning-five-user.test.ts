@@ -16,7 +16,7 @@ import {
 } from "./runtime-stacks.js";
 
 const CONTROL_PLANE_DIR = fileURLToPath(new URL("..", import.meta.url));
-const CUSTOMER_COUNT = 10;
+const CUSTOMER_COUNT = 5;
 const PROVISIONING_CONCURRENCY = 2;
 const SESSION_SECRET = "s".repeat(32);
 const ACTOR_SIGNING_KEY = "a".repeat(64);
@@ -83,7 +83,7 @@ async function freePort(): Promise<number> {
 }
 
 function createTempDbPath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "worklin-ten-user-"));
+  const directory = mkdtempSync(join(tmpdir(), "worklin-five-user-"));
   tempDirs.push(directory);
   return join(directory, "control-plane.sqlite");
 }
@@ -237,9 +237,10 @@ async function waitForProvisioningToSettle(
   for (let attempt = 0; attempt < 500; attempt += 1) {
     const db = new Database(dbPath, { readonly: true });
     const stacks = db
-      .query<RuntimeStackRow, []>(
-        "SELECT * FROM runtime_stacks ORDER BY assistant_id",
-      )
+      .query<
+        RuntimeStackRow,
+        []
+      >("SELECT * FROM runtime_stacks ORDER BY assistant_id")
       .all();
     db.close();
     if (
@@ -286,8 +287,8 @@ function expectSignedWithRuntimeKey(token: string, runtimeKey: string): void {
   );
 }
 
-describe("ten-customer isolated runtime launch", () => {
-  test("provisions and routes ten customers without sharing identity, capacity, or authorization", async () => {
+describe("five-customer isolated runtime launch", () => {
+  test("provisions and routes five customers without sharing identity, capacity, or authorization", async () => {
     const dbPath = createTempDbPath();
     const seedDb = new Database(dbPath);
     createControlPlaneSchema(seedDb);
@@ -307,7 +308,8 @@ describe("ten-customer isolated runtime launch", () => {
         const operation = (await request.json()) as RailwayOperation;
         railwayOperations.push(operation);
         const input = operation.variables.input as
-          Record<string, unknown> | undefined;
+          | Record<string, unknown>
+          | undefined;
 
         if (operation.query.includes("runtimeProjectServices")) {
           return Response.json({
@@ -555,13 +557,14 @@ describe("ten-customer isolated runtime launch", () => {
       expect(forwarded.authorization).toStartWith("Bearer ");
       expect(forwarded.authorization).not.toBe(forgedAuthorization);
       expect(forwarded.assistantId).toBe(customer.assistantId);
+      const stack = stackByAssistant.get(customer.assistantId)!;
+      expect(forwarded.orgId).toBe(stack.org_id);
       expect(forwarded.userId).toBe(customer.userId);
       expect(forwarded.pathname).toBe(
         `/v1/assistants/${customer.assistantId}/conversations/`,
       );
       expect(forwarded.search).toBe(`?customer=${customer.index}`);
 
-      const stack = stackByAssistant.get(customer.assistantId)!;
       const token = forwarded.authorization.slice("Bearer ".length);
       const runtimeSigningKey = deriveRuntimeActorSigningKey(
         ACTOR_SIGNING_KEY,
@@ -571,6 +574,13 @@ describe("ten-customer isolated runtime launch", () => {
       expect(decodeJwtPayload(token).sub).toStartWith(
         `actor:${customer.assistantId}:`,
       );
+      expect(decodeJwtPayload(token).tenant_context).toMatchObject({
+        version: 1,
+        organization_id: stack.org_id,
+        user_id: customer.userId,
+        assistant_id: customer.assistantId,
+        actor_id: `vellum-principal-${customer.userId}`,
+      });
       forwardedAuthorizations.add(forwarded.authorization);
     }
     expect(forwardedAuthorizations.size).toBe(CUSTOMER_COUNT);

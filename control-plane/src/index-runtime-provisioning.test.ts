@@ -162,6 +162,60 @@ function authenticatedHeaders(sessionId: string): Record<string, string> {
 }
 
 describe("control-plane runtime provisioning guards", () => {
+  test("control-plane-only readiness does not depend on a shared gateway", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const dbPath = createTempDbPath();
+
+    spawnControlPlane(port, dbPath, {
+      WORKLIN_RUNTIME_MODE: "control-plane",
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+      WORKLIN_RAILWAY_PROJECT_TOKEN: "project-token",
+      WORKLIN_RAILWAY_PROJECT_ID: "project-1",
+      WORKLIN_RAILWAY_ENVIRONMENT_ID: "production-1",
+      WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: "5",
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    });
+    await waitForHealth(origin);
+
+    const response = await fetch(`${origin}/readyz`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      gatewayStatus: null,
+      runtimeMode: "control-plane",
+      provisionerReady: true,
+    });
+  });
+
+  test("control-plane-only readiness rejects the shared-runtime fallback", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const dbPath = createTempDbPath();
+
+    spawnControlPlane(port, dbPath, {
+      WORKLIN_RUNTIME_MODE: "control-plane",
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+      WORKLIN_RAILWAY_PROJECT_TOKEN: "project-token",
+      WORKLIN_RAILWAY_PROJECT_ID: "project-1",
+      WORKLIN_RAILWAY_ENVIRONMENT_ID: "production-1",
+      WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: "5",
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "true",
+    });
+    await waitForHealth(origin);
+
+    const response = await fetch(`${origin}/readyz`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      ok: false,
+      gatewayStatus: null,
+      runtimeMode: "control-plane",
+      provisionerReady: false,
+    });
+  });
+
   test("the upstream logout route always invalidates the Worklin session", async () => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
@@ -197,9 +251,10 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<{ id: string }, []>(
-          "SELECT id FROM sessions WHERE id = 'session-logout'",
-        )
+        .query<
+          { id: string },
+          []
+        >("SELECT id FROM sessions WHERE id = 'session-logout'")
         .get(),
     ).toBeNull();
     verificationDb.close();
@@ -254,9 +309,10 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<{ id: string }, []>(
-          "SELECT id FROM sessions WHERE id = 'session-logout-failure'",
-        )
+        .query<
+          { id: string },
+          []
+        >("SELECT id FROM sessions WHERE id = 'session-logout-failure'")
         .get(),
     ).not.toBeNull();
     verificationDb.close();
@@ -302,9 +358,10 @@ describe("control-plane runtime provisioning guards", () => {
     });
     expect(
       db
-        .query<{ count: number }, []>(
-          "SELECT COUNT(*) AS count FROM runtime_stacks",
-        )
+        .query<
+          { count: number },
+          []
+        >("SELECT COUNT(*) AS count FROM runtime_stacks")
         .get()?.count,
     ).toBe(0);
 
@@ -877,9 +934,10 @@ describe("control-plane runtime provisioning guards", () => {
     ).toHaveLength(1);
     const verificationDb = new Database(dbPath);
     const stacks = verificationDb
-      .query<RuntimeStackRow, []>(
-        "SELECT * FROM runtime_stacks ORDER BY assistant_id",
-      )
+      .query<
+        RuntimeStackRow,
+        []
+      >("SELECT * FROM runtime_stacks ORDER BY assistant_id")
       .all();
     expect(stacks.map((stack) => stack.assistant_id)).toEqual([
       "asst-accepted",

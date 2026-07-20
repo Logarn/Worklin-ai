@@ -144,6 +144,7 @@ const env = {
   gatewayUrl: trimTrailingSlash(
     process.env.WORKLIN_GATEWAY_URL ?? "http://gateway:7830",
   ),
+  runtimeMode: process.env.WORKLIN_RUNTIME_MODE?.trim() || "combined",
   dbPath: process.env.WORKLIN_CONTROL_DB ?? "/data/control-plane.sqlite",
   sessionSecret: process.env.WORKLIN_SESSION_SECRET ?? "",
   actorSigningKey: process.env.ACTOR_TOKEN_SIGNING_KEY ?? "",
@@ -707,6 +708,18 @@ function runtimeProvisioningConfigurationError(): string | null {
     return `Unsupported runtime stack provider: ${runtimeStackConfig.runtimeStackProvider}.`;
   }
   return railwayProvisionerConfigurationError(railwayProvisionerConfig);
+}
+
+function controlPlaneOnlyConfigurationError(): string | null {
+  const provisioningError = runtimeProvisioningConfigurationError();
+  if (provisioningError) return provisioningError;
+  if (!runtimeStackConfig.requireIsolatedRuntime) {
+    return "Control-plane-only mode requires isolated runtimes.";
+  }
+  if (runtimeStackConfig.allowLegacySharedRuntime) {
+    return "Control-plane-only mode cannot allow the legacy shared runtime.";
+  }
+  return null;
 }
 
 function scheduleRuntimeProvisioningLeaseRetry(
@@ -1961,6 +1974,21 @@ app.get("/healthz", (req, res) => sendJson(req, res, { ok: true }));
 app.get(
   "/readyz",
   asyncHandler(async (req, res) => {
+    if (env.runtimeMode === "control-plane") {
+      const configurationError = controlPlaneOnlyConfigurationError();
+      sendJson(
+        req,
+        res,
+        {
+          ok: configurationError === null,
+          gatewayStatus: null,
+          runtimeMode: env.runtimeMode,
+          provisionerReady: configurationError === null,
+        },
+        configurationError === null ? 200 : 503,
+      );
+      return;
+    }
     try {
       const gateway = await fetch(`${env.gatewayUrl}/readyz`);
       sendJson(

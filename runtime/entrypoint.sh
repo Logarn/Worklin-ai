@@ -75,6 +75,49 @@ export WORKLIN_RUNTIME_MODE
 export VELLUM_DISABLE_EMBEDDINGS
 export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 
+declare -a pids=()
+
+start_as() {
+  local user="$1"
+  shift
+  runuser -u "${user}" -g "${user}" -G vellum -- "$@" &
+  pids+=("$!")
+}
+
+shutdown() {
+  local exit_code="${1:-0}"
+  for pid in "${pids[@]:-}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill "${pid}" 2>/dev/null || true
+    fi
+  done
+  wait || true
+  exit "${exit_code}"
+}
+
+wait_for_process_exit() {
+  local exit_code
+  set +e
+  wait -n "${pids[@]}"
+  exit_code=$?
+  set -e
+  if [[ "${exit_code}" -eq 0 ]]; then
+    exit_code=1
+  fi
+  shutdown "${exit_code}"
+}
+
+trap 'shutdown 143' SIGTERM SIGINT
+
+if [[ "${WORKLIN_RUNTIME_MODE}" == "control-plane" ]]; then
+  mkdir -p "${WORKLIN_RUNTIME_ROOT}"
+  chown -R assistant:vellum "${WORKLIN_RUNTIME_ROOT}"
+  chmod 2775 "${WORKLIN_RUNTIME_ROOT}"
+  start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
+  start_as assistant bash -lc "cd /app/control-plane && exec bun run src/public-edge.ts"
+  wait_for_process_exit
+fi
+
 mkdir -p \
   "${WORKLIN_RUNTIME_ROOT}" \
   "${VELLUM_WORKSPACE_DIR}" \
@@ -155,28 +198,6 @@ chown -R assistant:vellum "${workspace_credentials_dir}"
 find "${workspace_credentials_dir}" -type d -exec chmod 2770 {} +
 find "${workspace_credentials_dir}" -type f -exec chmod 660 {} +
 
-declare -a pids=()
-
-start_as() {
-  local user="$1"
-  shift
-  runuser -u "${user}" -g "${user}" -G vellum -- "$@" &
-  pids+=("$!")
-}
-
-shutdown() {
-  local exit_code="${1:-0}"
-  for pid in "${pids[@]:-}"; do
-    if kill -0 "${pid}" 2>/dev/null; then
-      kill "${pid}" 2>/dev/null || true
-    fi
-  done
-  wait || true
-  exit "${exit_code}"
-}
-
-trap 'shutdown 143' SIGTERM SIGINT
-
 start_as ces bash -lc "cd /app/credential-executor && exec bun run src/managed-main.ts"
 
 socket_path="${CES_BOOTSTRAP_SOCKET_DIR%/}/ces.sock"
@@ -215,13 +236,4 @@ if [[ "${WORKLIN_RUNTIME_MODE}" != "isolated" ]]; then
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/public-edge.ts"
 fi
 
-exit_code=0
-if ! wait -n "${pids[@]}"; then
-  exit_code=$?
-fi
-
-if [[ "${exit_code}" -eq 0 ]]; then
-  exit_code=1
-fi
-
-shutdown "${exit_code}"
+wait_for_process_exit
