@@ -147,10 +147,12 @@ export const INITIALIZING_TIMEOUT_MS = 300_000;
 export function buildInitializingTimeoutError(): {
   kind: "error";
   message: string;
+  retryAction: "restart_runtime";
 } {
   return {
     kind: "error",
     message:
-      "Your assistant is taking longer than expected to start. Please try again, or check the community for help.",
+      "Your assistant is taking longer than expected to start. Try again to restart setup.",
+    retryAction: "restart_runtime",
   };
 }

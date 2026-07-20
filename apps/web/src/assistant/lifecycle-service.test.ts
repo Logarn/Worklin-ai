@@ -795,6 +795,7 @@ describe("lifecycleService — watchdog timeout", () => {
     expect(state.kind).toBe("error");
     if (state.kind === "error") {
       expect(state.message).toEqual(buildInitializingTimeoutError().message);
+      expect(state.retryAction).toBe("restart_runtime");
     }
   });
 });
