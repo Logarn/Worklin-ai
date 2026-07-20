@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { createHmac, randomUUID } from "node:crypto";
 
+import { ensureRuntimeWorkerLeaseSchema } from "./runtime-worker-leases.js";
+
 export const RUNTIME_STACK_STATUSES = [
   "provisioning",
   "active",
@@ -325,6 +327,7 @@ export function ensureRuntimeStackSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_assistants_user_runtime
       ON assistants(user_id, runtime_stack_id);
   `);
+  ensureRuntimeWorkerLeaseSchema(db);
 }
 
 export function getRuntimeStackForAssistant(
