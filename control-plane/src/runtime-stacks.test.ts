@@ -11,8 +11,10 @@ import {
   getRuntimeStackById,
   isRuntimeStackRoutable,
   markRuntimeStackActive,
+  markRuntimeStackDeleted,
   markRuntimeStackFailed,
   markRuntimeStackProvisioning,
+  markRuntimeStackSuspended,
   operationalStateForRuntimeStack,
   recordRuntimeStackService,
   recordRuntimeStackVolume,
@@ -89,6 +91,31 @@ function config(
 const NOW = () => "2026-07-11T12:00:00.000Z";
 
 describe("runtime stack provisioning defaults", () => {
+  test("supports explicit suspend and delete lifecycle transitions", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        runtimeStackUrlTemplate: "https://runtime.test/{assistantId}",
+        runtimeStackProvider: "static_template",
+      }),
+      NOW,
+    );
+
+    markRuntimeStackSuspended(db, stack.id, "workspace disabled", NOW);
+    expect(getRuntimeStackById(db, stack.id)?.status).toBe("suspended");
+    expect(
+      operationalStateForRuntimeStack(getRuntimeStackById(db, stack.id)),
+    ).toBe("maintenance_mode");
+
+    markRuntimeStackDeleted(db, stack.id, "assistant deleted", NOW);
+    expect(getRuntimeStackById(db, stack.id)?.status).toBe("deleted");
+    expect(
+      assistantApiStatusForRuntimeStack(getRuntimeStackById(db, stack.id)),
+    ).toBe("to_be_deleted");
+  });
+
   test("new assistants fail closed when no isolated stack URL is configured", () => {
     const db = setupDb();
     const stack = ensureRuntimeStackForAssistant(
@@ -105,9 +132,10 @@ describe("runtime stack provisioning defaults", () => {
     expect(operationalStateForRuntimeStack(stack)).toBe("provisioning");
 
     const row = db
-      .query<{ runtime_stack_id: string | null }, []>(
-        "SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'",
-      )
+      .query<
+        { runtime_stack_id: string | null },
+        []
+      >("SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'")
       .get();
     expect(row?.runtime_stack_id).toBe(stack.id);
   });
@@ -312,9 +340,10 @@ describe("runtime stack provisioning defaults", () => {
     );
 
     const count = db
-      .query<{ count: number }, []>(
-        "SELECT COUNT(*) AS count FROM runtime_stacks",
-      )
+      .query<
+        { count: number },
+        []
+      >("SELECT COUNT(*) AS count FROM runtime_stacks")
       .get();
     expect(second.id).toBe(first.id);
     expect(second).toMatchObject({

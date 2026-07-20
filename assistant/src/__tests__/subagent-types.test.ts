@@ -27,7 +27,9 @@ describe("SUBAGENT_LIMITS", () => {
   test("has expected defaults", () => {
     expect(SUBAGENT_LIMITS.maxDepth).toBe(2);
     expect(SUBAGENT_LIMITS.maxActiveChildrenPerParent).toBe(8);
-    expect(SUBAGENT_LIMITS.maxActiveDescendantsPerRoot).toBe(24);
+    expect(SUBAGENT_LIMITS.maxActiveDescendantsPerRoot).toBe(8);
+    expect(SUBAGENT_LIMITS.maxTotalDescendantsPerRoot).toBe(16);
+    expect(SUBAGENT_LIMITS.maxRunDurationMs).toBe(15 * 60 * 1000);
   });
 });
 

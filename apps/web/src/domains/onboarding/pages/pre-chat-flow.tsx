@@ -8,6 +8,7 @@ import { useIsIOSWeb } from "@/runtime/platform-detection";
 import { setSelectedAssistant } from "@/assistant/selection";
 import { readIOSAppDownloaded } from "@/hooks/use-ios-app-nudge";
 import { fetchOnboardingRecipe } from "@/domains/onboarding/recipe-client.js";
+import { enqueueBrandResearchRun } from "@/lib/brand-research";
 import {
   emitOnboardingFunnelStepCompleted,
   onboardingFunnelVariantFromExperiment,
@@ -232,6 +233,23 @@ export function PreChatFlow() {
       } catch (err) {
         captureError(err, { context: "prechat_ensure_assistant" });
       }
+    }
+
+    if (
+      !isNative &&
+      !localMode &&
+      handoffAssistantId &&
+      (brandName.trim() || websiteUrl.trim())
+    ) {
+      // Queueing is durable and deliberately best-effort here: onboarding
+      // should never wait on research or strand the user at the handoff.
+      void enqueueBrandResearchRun({
+        assistantId: handoffAssistantId,
+        brandName,
+        websiteUrl,
+      }).catch((err) => {
+        captureError(err, { context: "onboarding_queue_brand_research" });
+      });
     }
 
     await lifecycleService.checkAssistant(handoffAssistantId ?? undefined);

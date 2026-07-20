@@ -257,17 +257,19 @@ export function getRuntimeStackForAssistant(
 ): RuntimeStackRow | null {
   if (assistant.runtime_stack_id) {
     const byId = db
-      .query<RuntimeStackRow, [string, string]>(
-        "SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string, string]
+      >("SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?")
       .get(assistant.runtime_stack_id, assistant.id);
     if (byId) return byId;
   }
   return (
     db
-      .query<RuntimeStackRow, [string]>(
-        "SELECT * FROM runtime_stacks WHERE assistant_id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string]
+      >("SELECT * FROM runtime_stacks WHERE assistant_id = ?")
       .get(assistant.id) ?? null
   );
 }
@@ -514,9 +516,10 @@ export function getRuntimeStackById(
 ): RuntimeStackRow | null {
   return (
     db
-      .query<RuntimeStackRow, [string]>(
-        "SELECT * FROM runtime_stacks WHERE id = ?",
-      )
+      .query<
+        RuntimeStackRow,
+        [string]
+      >("SELECT * FROM runtime_stacks WHERE id = ?")
       .get(stackId) ?? null
   );
 }
@@ -608,6 +611,21 @@ export function countAllocatedRuntimeServices(db: Database): number {
   );
 }
 
+export function countAllocatedRuntimeServicesForOrganization(
+  db: Database,
+  orgId: string,
+): number {
+  return (
+    db
+      .query<{ count: number }, [string]>(
+        `SELECT COUNT(*) AS count
+         FROM runtime_stacks
+         WHERE org_id = ? AND service_ref IS NOT NULL AND status != 'deleted'`,
+      )
+      .get(orgId)?.count ?? 0
+  );
+}
+
 export function markRuntimeStackProvisioning(
   db: Database,
   stackId: string,
@@ -685,6 +703,36 @@ export function markRuntimeStackFailed(
     WHERE id = ?
   `,
   ).run(error.slice(0, 2_000), nowIso(), stackId);
+}
+
+export function markRuntimeStackSuspended(
+  db: Database,
+  stackId: string,
+  reason: string,
+  nowIso: () => string,
+): void {
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET status = 'suspended', last_error = ?, updated_at = ?
+    WHERE id = ? AND status != 'deleted'
+  `,
+  ).run(reason.slice(0, 2_000), nowIso(), stackId);
+}
+
+export function markRuntimeStackDeleted(
+  db: Database,
+  stackId: string,
+  reason: string,
+  nowIso: () => string,
+): void {
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET status = 'deleted', last_error = ?, updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(reason.slice(0, 2_000), nowIso(), stackId);
 }
 
 export function assistantApiStatusForRuntimeStack(

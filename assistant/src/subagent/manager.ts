@@ -128,6 +128,8 @@ interface ManagedSubagent {
   processingParentNotification?: boolean;
   /** Retries notification delivery after the supervisor's current turn settles. */
   notificationDrainTimer?: ReturnType<typeof setTimeout>;
+  /** Cancels the entire delegation tree when its shared deadline expires. */
+  deadlineTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface SubagentNotificationInfo {
@@ -191,6 +193,14 @@ export class SubagentManager {
     const depth = (parentManaged?.state.depth ?? 0) + 1;
     const rootConversationId =
       parentManaged?.state.rootConversationId ?? config.parentConversationId;
+    const deadlineAt =
+      parentManaged?.state.deadlineAt ??
+      Date.now() + SUBAGENT_LIMITS.maxRunDurationMs;
+    if (deadlineAt <= Date.now()) {
+      throw new Error(
+        "Cannot spawn subagent: the delegation run deadline has expired.",
+      );
+    }
     if (parentManaged) {
       if (
         TERMINAL_STATUSES.has(parentManaged.state.status) ||
@@ -224,6 +234,12 @@ export class SubagentManager {
     if (activeInRoot >= SUBAGENT_LIMITS.maxActiveDescendantsPerRoot) {
       throw new Error(
         `Cannot spawn subagent: root delegation tree already has ${activeInRoot} active agents (limit ${SUBAGENT_LIMITS.maxActiveDescendantsPerRoot}).`,
+      );
+    }
+    const totalInRoot = this.countTotalInRoot(rootConversationId);
+    if (totalInRoot >= SUBAGENT_LIMITS.maxTotalDescendantsPerRoot) {
+      throw new Error(
+        `Cannot spawn subagent: root delegation tree already created ${totalInRoot} agents (limit ${SUBAGENT_LIMITS.maxTotalDescendantsPerRoot}).`,
       );
     }
 
@@ -326,6 +342,7 @@ export class SubagentManager {
       ...(parentManaged
         ? { parentSubagentId: parentManaged.state.config.id }
         : {}),
+      deadlineAt,
       createdAt: now,
       usage: { inputTokens: 0, outputTokens: 0, estimatedCost: 0 },
     };
@@ -342,6 +359,17 @@ export class SubagentManager {
       parentSendToClient:
         parentManaged?.parentSendToClient ?? parentSendToClient,
     };
+    managed.deadlineTimer = setTimeout(
+      () => {
+        const current = this.subagents.get(subagentId);
+        if (!current || TERMINAL_STATUSES.has(current.state.status)) return;
+        current.state.error = "Delegation run exceeded its 15-minute deadline.";
+        this.abort(subagentId, current.parentSendToClient, undefined, {
+          suppressNotification: false,
+        });
+      },
+      Math.max(0, deadlineAt - now),
+    );
 
     // Wrap sendToClient to envelope all events with the subagent ID.
     // Reads from managed.parentSendToClient so reconnects are picked up.
@@ -786,6 +814,17 @@ export class SubagentManager {
     return count;
   }
 
+  private countTotalInRoot(rootConversationId: string): number {
+    let count = 0;
+    for (const managed of this.subagents.values()) {
+      const stateRoot =
+        managed.state.rootConversationId ??
+        managed.state.config.parentConversationId;
+      if (stateRoot === rootConversationId) count++;
+    }
+    return count;
+  }
+
   private scheduleFinalization(subagentId: string, delayMs = 0): void {
     const managed = this.subagents.get(subagentId);
     if (!managed || TERMINAL_STATUSES.has(managed.state.status)) return;
@@ -1032,6 +1071,10 @@ export class SubagentManager {
       clearTimeout(managed.notificationDrainTimer);
       managed.notificationDrainTimer = undefined;
     }
+    if (managed.deadlineTimer) {
+      clearTimeout(managed.deadlineTimer);
+      managed.deadlineTimer = undefined;
+    }
     const conversation = managed.conversation;
     removeSubagentConversation(conversation.conversationId, conversation);
     conversation.dispose();
@@ -1068,6 +1111,10 @@ export class SubagentManager {
     if (managed.notificationDrainTimer) {
       clearTimeout(managed.notificationDrainTimer);
       managed.notificationDrainTimer = undefined;
+    }
+    if (managed.deadlineTimer) {
+      clearTimeout(managed.deadlineTimer);
+      managed.deadlineTimer = undefined;
     }
 
     if (managed.conversation) {

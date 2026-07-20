@@ -5,6 +5,7 @@ import {
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
   railwayRuntimeCapacityError,
+  railwayRuntimeWorkspaceCapacityError,
   railwayRuntimeServiceName,
   type RailwayProvisionerConfig,
 } from "./railway-runtime-provisioner.js";
@@ -101,6 +102,15 @@ describe("railwayRuntimeCapacityError", () => {
   test("allows capacity below the cap and resumable existing services", () => {
     expect(railwayRuntimeCapacityError(null, 1, 2)).toBeNull();
     expect(railwayRuntimeCapacityError("service-1", 2, 2)).toBeNull();
+  });
+});
+
+describe("railwayRuntimeWorkspaceCapacityError", () => {
+  test("limits a workspace independently of the global cap", () => {
+    expect(railwayRuntimeWorkspaceCapacityError(null, 1, 1)).toContain(
+      "workspace quota",
+    );
+    expect(railwayRuntimeWorkspaceCapacityError("service-1", 1, 1)).toBeNull();
   });
 });
 
