@@ -103,7 +103,7 @@ const validateEdgeTokenMock = mock(
   (
     _token: string,
   ):
-    | { ok: true; claims: Record<string, string | number> }
+    | { ok: true; claims: Record<string, unknown> }
     | { ok: false; reason: string } => ({
     ok: true,
     claims: { sub: "test", scope_profile: "test" },
@@ -156,6 +156,26 @@ function makeRequest(
     },
     body,
   });
+}
+
+const PLATFORM_TENANT_CONTEXT = {
+  version: 1,
+  organization_id: "org_1",
+  user_id: "user_1",
+  assistant_id: "asst_1",
+  actor_id: "vellum-principal-user_1",
+  request_id: "request_1",
+};
+
+function platformTenantHeaders(): Record<string, string> {
+  return {
+    "x-worklin-tenant-context-version": "1",
+    "x-worklin-org-id": PLATFORM_TENANT_CONTEXT.organization_id,
+    "x-worklin-user-id": PLATFORM_TENANT_CONTEXT.user_id,
+    "x-worklin-assistant-id": PLATFORM_TENANT_CONTEXT.assistant_id,
+    "x-worklin-actor-id": PLATFORM_TENANT_CONTEXT.actor_id,
+    "x-worklin-request-id": PLATFORM_TENANT_CONTEXT.request_id,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +346,7 @@ describe("tryIpcProxy", () => {
         scope_profile: "actor_client_v1",
         exp: Math.floor(Date.now() / 1000) + 3600,
         policy_epoch: 1,
+        tenant_context: PLATFORM_TENANT_CONTEXT,
       },
     }));
     const config = makeConfig({
@@ -338,6 +359,7 @@ describe("tryIpcProxy", () => {
         headers: {
           authorization: "Bearer valid",
           "x-vellum-platform-owner": "caller-value",
+          ...platformTenantHeaders(),
         },
       }),
       config,
@@ -354,6 +376,38 @@ describe("tryIpcProxy", () => {
       "vellum-principal-user_1",
     );
     expect(headers["x-vellum-platform-owner"]).toBe("true");
+    expect(headers["x-worklin-org-id"]).toBe("org_1");
+    expect(headers["x-worklin-user-id"]).toBe("user_1");
+    expect(headers["x-worklin-assistant-id"]).toBe("asst_1");
+    expect(headers["x-worklin-actor-id"]).toBe("vellum-principal-user_1");
+    expect(headers["x-worklin-request-id"]).toBe("request_1");
+  });
+
+  test("isolated IPC runtime rejects a platform token without tenant context", async () => {
+    validateEdgeTokenMock.mockImplementation(() => ({
+      ok: true,
+      claims: {
+        iss: "vellum-auth",
+        aud: "vellum-gateway",
+        sub: "actor:asst_1:user_1",
+        scope_profile: "actor_client_v1",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        policy_epoch: 1,
+      },
+    }));
+    const result = await tryIpcProxy(
+      makeRequest("/v1/health", {
+        headers: { authorization: "Bearer valid" },
+      }),
+      makeConfig({
+        runtimeProxyRequireAuth: true,
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "asst_1",
+      }),
+    );
+
+    expect(result!.status).toBe(403);
+    expect(ipcCallAssistantMock).not.toHaveBeenCalled();
   });
 
   test("strips a caller-supplied platform owner without trusted actor binding", async () => {

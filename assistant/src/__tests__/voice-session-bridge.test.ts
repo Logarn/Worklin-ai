@@ -352,6 +352,50 @@ describe("voice-session-bridge", () => {
     expect(capturedOptions?.callSite).toBe("callAgent");
   });
 
+  test("local live voice uses the same main-agent model routing as typed chat", async () => {
+    const conversation = createConversation(
+      "local live voice main model routing test",
+    );
+    const events: ServerMessage[] = [
+      { type: "message_complete", conversationId: conversation.id },
+    ];
+
+    let capturedOptions: Record<string, unknown> | undefined;
+    const session = {
+      ...makeStreamingSession(events),
+      runAgentLoop: async (
+        _content: string,
+        _messageId: string,
+        options?: Record<string, unknown>,
+      ) => {
+        capturedOptions = options;
+        const onEvent =
+          (options as { onEvent?: (msg: ServerMessage) => void })?.onEvent ??
+          (() => {});
+        for (const event of events) {
+          onEvent(event);
+        }
+      },
+    } as unknown as Conversation;
+
+    injectDeps(() => session);
+
+    await startVoiceTurn({
+      conversationId: conversation.id,
+      content: "Hello",
+      isInbound: true,
+      approvalMode: "local-live-voice",
+      onTextDelta: () => {},
+      onComplete: () => {},
+      onError: () => {},
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(capturedOptions).toBeDefined();
+    expect(capturedOptions?.callSite).toBe("mainAgent");
+  });
+
   test("external AbortSignal triggers turn abort", async () => {
     const conversation = createConversation("voice bridge signal test");
     let abortCalled = false;

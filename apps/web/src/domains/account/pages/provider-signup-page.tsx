@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
 import {
@@ -9,14 +15,14 @@ import {
 import { AccountShell } from "@/components/account/account-shell";
 import { PersonalPageShell } from "@/domains/account/components/personal-page-shell";
 import {
+  resolvePostAuthDestination,
+  resolvePostLoginDestination,
+} from "@/domains/account/login-flow";
+import {
   getProviderSignup,
   isConflict,
   submitProviderSignup,
 } from "@/lib/auth/allauth-client";
-import {
-  resolvePostAuthDestination,
-  resolvePostLoginDestination,
-} from "@/domains/account/login-flow";
 import { useAuthStore } from "@/stores/auth-store";
 import { useClientFeatureFlagStore } from "@/stores/client-feature-flag-store";
 import { routes } from "@/utils/routes";
@@ -27,12 +33,10 @@ import { routes } from "@/utils/routes";
  *
  * Default (control / variant-a): collect email + username.
  *
- * When `experiment-activation-flow-2026-06-03` serves `personal-page`: show the
- * OAuth-claim first/last name as read-only and collect an occupation, which is
- * forwarded into the pre-chat onboarding context. The account is still
- * completed via the same `submitProviderSignup` call using the provider-supplied
- * email + username (no username field — matching the standard sign-up, which
- * does not surface one to the user).
+ * When `experiment-activation-flow-2026-06-03` serves `personal-page`, complete
+ * the account automatically from the provider-supplied email and username. The
+ * onboarding flow collects the user's identity and role once, then persists
+ * those answers in the assistant handoff.
  */
 export function ProviderSignupPage() {
   const navigate = useNavigate();
@@ -45,18 +49,14 @@ export function ProviderSignupPage() {
     "control";
   const personalPage = activationArm === "personal-page";
 
-  // Provider-supplied identity. email + username are submitted to complete the
-  // account; firstName/lastName are display-only (read-only) in the
-  // personal-page variant. All come from the pending provider-signup context.
+  // Provider-supplied identity used to complete the account.
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [occupation, setOccupation] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingContext, setIsLoadingContext] = useState(true);
   const didLoad = useRef(false);
+  const didAutoComplete = useRef(false);
 
   useEffect(() => {
     if (didLoad.current) return;
@@ -72,8 +72,6 @@ export function ProviderSignupPage() {
 
         setEmail(result.data.user.email ?? "");
         setUsername(result.data.user.username ?? "");
-        setFirstName(result.data.user.first_name ?? "");
-        setLastName(result.data.user.last_name ?? "");
         setIsLoadingContext(false);
       } catch {
         navigate(routes.account.login, { replace: true });
@@ -81,7 +79,7 @@ export function ProviderSignupPage() {
     })();
   }, [navigate]);
 
-  const completeSignup = async () => {
+  const completeSignup = useCallback(async () => {
     const result = await submitProviderSignup({ email, username });
 
     if (!result.ok) {
@@ -111,10 +109,9 @@ export function ProviderSignupPage() {
     } else {
       navigate(post.destination);
     }
-  };
+  }, [email, navigate, refreshSession, returnTo, username]);
 
-  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const submitSignup = useCallback(async () => {
     setError(null);
     setIsSubmitting(true);
     try {
@@ -124,23 +121,25 @@ export function ProviderSignupPage() {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [completeSignup]);
 
-  const onPersonalPageSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!occupation.trim()) return;
-    setError(null);
-    setIsSubmitting(true);
-    try {
-      // NOTE: occupation is collected but not yet persisted. Forwarding it into
-      // the onboarding handoff requires a shared cross-domain contract (the
-      // `account` domain may not import `onboarding` directly). Deferred.
-      await completeSignup();
-    } catch {
-      setError("Something went wrong. Please try again.");
-    } finally {
-      setIsSubmitting(false);
+  useEffect(() => {
+    if (
+      !personalPage ||
+      isLoadingContext ||
+      !email ||
+      !username ||
+      didAutoComplete.current
+    ) {
+      return;
     }
+    didAutoComplete.current = true;
+    void submitSignup();
+  }, [email, isLoadingContext, personalPage, submitSignup, username]);
+
+  const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    void submitSignup();
   };
 
   if (isLoadingContext) {
@@ -154,77 +153,43 @@ export function ProviderSignupPage() {
     );
   }
 
-  // The personal-page step hides email/username and submits the provider-
-  // supplied values. If the provider didn't supply them (rare — WorkOS social
-  // always returns an email, and allauth suggests a username), fall through to
-  // the editable control form so the user can complete signup rather than hit
-  // an uncorrectable validation error.
+  // If the provider omitted a required value, fall through to the editable
+  // control form so the user can complete signup.
   if (personalPage && email && username) {
-    const canSubmit = occupation.trim().length > 0 && !isSubmitting;
+    if (!error) {
+      return (
+        <AccountShell>
+          <AccountHeading
+            title="Finishing signup..."
+            subtitle="We're getting your assistant ready."
+          />
+        </AccountShell>
+      );
+    }
+
     return (
       <PersonalPageShell>
-        <form onSubmit={onPersonalPageSubmit} className="cast-about__thread">
+        <div className="cast-about__thread">
           <h2 className="cast-about__heading">
-            Almost there,
-            <br />
-            one more detail
+            We couldn't finish
+            <br /> your signup
           </h2>
 
-          {error && <p className="cast-about__error">{error}</p>}
-
-          <div className="cast-about__step">
-            <span className="cast-about__label">
-              What should I call you? <span className="cast-about__req">*</span>
-            </span>
-            <input
-              className="cast-about__input"
-              type="text"
-              placeholder="First name"
-              value={firstName}
-              readOnly
-              disabled
-            />
-          </div>
-
-          <div className="cast-about__step">
-            <span className="cast-about__label">
-              And your last name? <span className="cast-about__req">*</span>
-            </span>
-            <input
-              className="cast-about__input"
-              type="text"
-              placeholder="Last name"
-              value={lastName}
-              readOnly
-              disabled
-            />
-          </div>
-
-          <div className="cast-about__step">
-            <span className="cast-about__label">
-              Your role <span className="cast-about__req">*</span>
-            </span>
-            <input
-              className="cast-about__input"
-              type="text"
-              autoComplete="organization-title"
-              placeholder="e.g. Software Engineer"
-              value={occupation}
-              onChange={(e) => setOccupation(e.target.value)}
-              autoFocus
-            />
-          </div>
+          <p className="cast-about__error" role="alert">
+            {error}
+          </p>
 
           <div className="cast-about__step">
             <button
-              type="submit"
+              type="button"
               className="cast-about__continue"
-              disabled={!canSubmit}
+              disabled={isSubmitting}
+              onClick={() => void submitSignup()}
             >
-              {isSubmitting ? "Setting up…" : "Continue →"}
+              {isSubmitting ? "Trying again…" : "Try again"}
             </button>
           </div>
-        </form>
+        </div>
       </PersonalPageShell>
     );
   }

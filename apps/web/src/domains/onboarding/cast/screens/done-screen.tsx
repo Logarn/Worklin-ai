@@ -33,7 +33,6 @@ import type { MemoryEntry, DoneScreenProps } from "@/domains/onboarding/cast/scr
 export function DoneScreen({
   character,
   box,
-  style,
   ascended,
   assistantId,
   onAction,
@@ -48,7 +47,7 @@ export function DoneScreen({
       // varies by them — pass empty defaults to satisfy the proof view's shape.
       jobs={[]}
       rathers={[]}
-      style={style}
+      style={{}}
       ascended={ascended}
       assistantId={assistantId}
       onAction={onAction}

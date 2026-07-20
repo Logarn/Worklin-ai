@@ -68,6 +68,10 @@ import {
   initAuthSigningKey,
   resolveSigningKey,
 } from "../runtime/auth/token-service.js";
+import {
+  markDaemonNotReady,
+  markDaemonReady,
+} from "../runtime/daemon-readiness.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { recoverInterruptedImport } from "../runtime/migrations/vbundle-streaming-importer.js";
 import { registerSecretsDeps } from "../runtime/routes/secrets-deps.js";
@@ -285,6 +289,7 @@ export async function runDaemon(): Promise<void> {
   // whatever was in the live environment at process spawn.
   loadDotEnv();
   validateEnv();
+  markDaemonNotReady("daemon_starting");
   log.info({ version: APP_VERSION }, "Daemon starting");
 
   try {
@@ -1449,6 +1454,11 @@ export async function runDaemon(): Promise<void> {
       },
     });
 
+    if (dbReady) {
+      markDaemonReady();
+    } else {
+      markDaemonNotReady("database_unavailable");
+    }
     log.info(
       {
         durationMs: Date.now() - startupStartedAt,
@@ -1457,6 +1467,7 @@ export async function runDaemon(): Promise<void> {
       "Daemon started",
     );
   } catch (err) {
+    markDaemonNotReady("daemon_startup_failed");
     log.error({ err }, "Daemon startup failed — cleaning up");
     stopDiskPressureGuardForLifecycle();
     stopOrphanReaper();

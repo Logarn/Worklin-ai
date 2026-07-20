@@ -16,7 +16,14 @@ import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
 import { resolveScopeProfile } from "../../auth/scopes.js";
 import { parseSub } from "../../auth/subject.js";
 import { validateEdgeToken } from "../../auth/token-exchange.js";
-import type { TokenClaims } from "../../auth/types.js";
+import {
+  applyRuntimeTenantContextRecord,
+  validateRuntimeTenantContext,
+} from "../../auth/runtime-tenant-context.js";
+import type {
+  RuntimeTenantContextClaim,
+  TokenClaims,
+} from "../../auth/types.js";
 import type { GatewayConfig } from "../../config.js";
 import { credentialKey } from "../../credential-key.js";
 import { readCredential } from "../../credential-reader.js";
@@ -102,6 +109,8 @@ export async function tryIpcProxy(
   // --- Auth: replicate the gateway's JWT validation -----------------------
   let claims: TokenClaims | undefined;
   let platformOwnerBound = false;
+  let tenantContext: RuntimeTenantContextClaim | null = null;
+  let runtimeAssistantId: string | null = null;
 
   if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
     const authHeader = req.headers.get("authorization");
@@ -163,6 +172,7 @@ export async function tryIpcProxy(
           { status: 503 },
         );
       }
+      runtimeAssistantId = expectedAssistantId;
       const boundClaims = bindPlatformOwnerClaims(claims, expectedAssistantId);
       if (!boundClaims) {
         log.warn(
@@ -174,6 +184,24 @@ export async function tryIpcProxy(
       claims = boundClaims;
       platformOwnerBound = true;
     }
+    const tenantValidation = validateRuntimeTenantContext(req.headers, claims, {
+      required:
+        config.runtimeAssistantScopeMode === "enforce" ||
+        config.runtimeAssistantScopeMode === "claim_once",
+      expectedAssistantId: runtimeAssistantId,
+    });
+    if (!tenantValidation.ok) {
+      log.warn(
+        {
+          method: req.method,
+          path: new URL(req.url).pathname,
+          reason: tenantValidation.reason,
+        },
+        "IPC proxy rejected tenant context",
+      );
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
+    tenantContext = tenantValidation.context;
   }
 
   // --- Route matching -----------------------------------------------------
@@ -259,6 +287,7 @@ export async function tryIpcProxy(
   if (platformOwnerBound) {
     headers["x-vellum-platform-owner"] = "true";
   }
+  applyRuntimeTenantContextRecord(headers, tenantContext);
 
   let body: Record<string, unknown> | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {

@@ -12,7 +12,14 @@ import {
   mintServiceToken,
 } from "../../auth/token-exchange.js";
 import { parseSub } from "../../auth/subject.js";
-import type { TokenClaims } from "../../auth/types.js";
+import {
+  applyRuntimeTenantContextHeaders,
+  validateRuntimeTenantContext,
+} from "../../auth/runtime-tenant-context.js";
+import type {
+  RuntimeTenantContextClaim,
+  TokenClaims,
+} from "../../auth/types.js";
 import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
 import type { GatewayConfig } from "../../config.js";
 import { credentialKey } from "../../credential-key.js";
@@ -155,6 +162,7 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
     //
     let exchangeToken: string;
     let platformOwnerBound = false;
+    let tenantContext: RuntimeTenantContextClaim | null = null;
     const authHeader = req.headers.get("authorization");
 
     if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
@@ -239,6 +247,29 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
         exchangeClaims = boundClaims;
         platformOwnerBound = true;
       }
+      const tenantValidation = validateRuntimeTenantContext(
+        req.headers,
+        exchangeClaims,
+        {
+          required:
+            config.runtimeAssistantScopeMode === "enforce" ||
+            config.runtimeAssistantScopeMode === "claim_once",
+          expectedAssistantId: actorScopeAssistantId,
+          requestedAssistantId: assistantScopedPath?.assistantId,
+        },
+      );
+      if (!tenantValidation.ok) {
+        log.warn(
+          {
+            method: req.method,
+            path: url.pathname,
+            reason: tenantValidation.reason,
+          },
+          "Runtime proxy rejected tenant context",
+        );
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+      }
+      tenantContext = tenantValidation.context;
       exchangeToken = mintExchangeToken(
         exchangeClaims,
         exchangeClaims.scope_profile,
@@ -304,6 +335,7 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
       new Headers(req.headers),
       exchangeToken,
     );
+    applyRuntimeTenantContextHeaders(reqHeaders, tenantContext);
     reqHeaders.delete("x-vellum-platform-owner");
     if (platformOwnerBound) {
       reqHeaders.set("x-vellum-platform-owner", "true");

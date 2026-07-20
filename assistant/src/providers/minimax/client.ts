@@ -17,28 +17,20 @@ export interface MinimaxProviderOptions {
 const DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1";
 const FALLBACK_MINIMAX_BASE_URL = "https://api.minimaxi.com/v1";
 
-/**
- * Validate a MiniMax API key by testing against the default URL first,
- * then the fallback URL if the default fails. Both URLs must fail with
- * definitive errors (401/403) for the key to be rejected. Transient errors
- * (429, 5xx, network) allow the key to be stored.
- */
+/** Validate a MiniMax API key against both supported API regions. */
 export async function validateMinimaxApiKey(
   apiKey: string,
 ): Promise<{ valid: true } | { valid: false; reason: string }> {
-  // Try default URL first
   const defaultResult = await tryValidate(apiKey, DEFAULT_MINIMAX_BASE_URL);
-  if (defaultResult.valid && !defaultResult.transient) {
+  if (defaultResult.valid) {
     return { valid: true };
   }
 
-  // Default failed or was transient — try fallback URL
   const fallbackResult = await tryValidate(apiKey, FALLBACK_MINIMAX_BASE_URL);
   if (fallbackResult.valid) {
     return { valid: true };
   }
 
-  // Both URLs failed definitively — reject the key
   return { valid: false, reason: fallbackResult.reason };
 }
 
@@ -46,9 +38,7 @@ async function tryValidate(
   apiKey: string,
   baseURL: string,
 ): Promise<
-  | { valid: true; transient: false }
-  | { valid: true; transient: true }
-  | { valid: false; reason: string }
+  { valid: true; transient: false } | { valid: false; reason: string }
 > {
   try {
     const client = new OpenAI({
@@ -70,22 +60,27 @@ async function tryValidate(
           reason: `MiniMax API error (${error.status}): ${error.message}`,
         };
       }
-      // Transient errors (429, 5xx, etc.) — try the other URL
       log.warn(
         { status: error.status, baseURL },
-        "MiniMax API returned a transient error during key validation — trying fallback",
+        "MiniMax API key validation could not complete — trying fallback",
       );
-      return { valid: true, transient: true };
+      return {
+        valid: false,
+        reason: `MiniMax could not verify this connection (${error.status}). Try again shortly.`,
+      };
     }
-    // Network errors — try the other URL
     log.warn(
       {
         error: error instanceof Error ? error.message : String(error),
         baseURL,
       },
-      "Network error during MiniMax key validation — trying fallback",
+      "MiniMax API key validation request failed — trying fallback",
     );
-    return { valid: true, transient: true };
+    return {
+      valid: false,
+      reason:
+        "MiniMax could not verify this connection. Check your network and try again.",
+    };
   }
 }
 

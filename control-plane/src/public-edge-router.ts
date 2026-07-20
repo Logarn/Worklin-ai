@@ -6,34 +6,17 @@ import {
 } from "node:net";
 import { connect as connectTls } from "node:tls";
 
-export const ELEVENLABS_SPEECH_ENGINE_UPSTREAM_PATH =
-  "/v1/live-voice/providers/elevenlabs/upstream";
-
 const MAX_INITIAL_REQUEST_BYTES = 64 * 1024;
 const ROUTE_TIMEOUT_MS = 10_000;
 
 export type PublicEdgeRouterOptions = {
   controlPlaneUrl: string;
-  gatewayUrl: string;
 };
 
 export function routeInitialRequest(
-  initialRequest: Buffer,
+  _initialRequest: Buffer,
   options: PublicEdgeRouterOptions,
 ): URL {
-  const firstLineEnd = initialRequest.indexOf("\r\n");
-  if (firstLineEnd === -1) return new URL(options.controlPlaneUrl);
-  const firstLine = initialRequest.subarray(0, firstLineEnd).toString("latin1");
-  const requestTarget = firstLine.split(" ")[1];
-  if (!requestTarget) return new URL(options.controlPlaneUrl);
-  try {
-    const pathname = new URL(requestTarget, "http://public-edge.local").pathname;
-    if (pathname === ELEVENLABS_SPEECH_ENGINE_UPSTREAM_PATH) {
-      return new URL(options.gatewayUrl);
-    }
-  } catch {
-    // Malformed requests remain the control plane's responsibility.
-  }
   return new URL(options.controlPlaneUrl);
 }
 
@@ -97,7 +80,8 @@ function connectUpstream(
           host: target.hostname,
           port: Number(target.port || 80),
         });
-  const connectEvent = target.protocol === "https:" ? "secureConnect" : "connect";
+  const connectEvent =
+    target.protocol === "https:" ? "secureConnect" : "connect";
 
   upstreamSocket.once(connectEvent, () => {
     connected = true;

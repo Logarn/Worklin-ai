@@ -141,6 +141,7 @@ export function mintToken(params: {
   ttlSeconds: number;
   artifact_id?: string;
   collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
+  tenant_context?: TokenClaims["tenant_context"];
 }): string {
   const now = Math.floor(Date.now() / 1000);
   const claims: TokenClaims = {
@@ -154,6 +155,7 @@ export function mintToken(params: {
     ...(params.collaboration_role
       ? { collaboration_role: params.collaboration_role }
       : {}),
+    ...(params.tenant_context ? { tenant_context: params.tenant_context } : {}),
     iat: now,
     jti: randomBytes(16).toString("hex"),
   };

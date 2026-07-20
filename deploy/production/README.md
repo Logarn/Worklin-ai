@@ -6,12 +6,14 @@ real container backend.
 ## Production Shape
 
 - `apps/web` runs on Vercel.
-- Railway can run Worklin as a single public container built from
-  `runtime/Dockerfile`.
-- That container starts the public `control-plane` plus the private
-  `assistant`, `gateway`, and `credential-executor` processes together.
-- The control-plane is the only public HTTP surface. The gateway stays private
-  on the container loopback network and should not be exposed directly.
+- Railway runs one public control-plane container plus one private runtime
+  container per customer assistant. Both use `runtime/Dockerfile`.
+- The public container uses `WORKLIN_RUNTIME_MODE=control-plane`; it starts
+  only the control plane and public edge on a clean volume.
+- Each customer container uses `WORKLIN_RUNTIME_MODE=isolated`; it starts its
+  own assistant, gateway, and credential executor on a dedicated volume.
+- The control plane is the only browser-facing HTTP surface. Customer gateways
+  stay private and are selected only after ownership verification.
 
 This is the smallest backend that matches the current Worklin web architecture:
 the browser signs in through the control-plane, receives a self-hosted assistant
@@ -49,18 +51,18 @@ test.
 
 ## Backend
 
-For Railway, the repo-root `railway.json` is now the fast-path config for the
-single-service production deploy:
+For Railway, the repo-root `railway.json` builds both service shapes:
 
 - Dockerfile: `runtime/Dockerfile`
 - Health check: `/readyz`
-- Persistent volume: `/data`
+- Persistent volume: `/data` on each service
 
-The service listens publicly through the control-plane and wires
-`WORKLIN_GATEWAY_URL` to the co-located gateway over `127.0.0.1`.
-Production defaults `WORKLIN_REQUIRE_ISOLATED_RUNTIME=true`, so that gateway is
-not used for user chat unless the assistant has an active isolated runtime
-stack.
+The public service listens through the control plane and must set
+`WORKLIN_RUNTIME_MODE=control-plane`,
+`WORKLIN_REQUIRE_ISOLATED_RUNTIME=true`, and
+`WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=false`. Its readiness check validates the
+isolated provisioner configuration without depending on a co-located gateway.
+The old combined volume remains detached and quarantined.
 
 ### Isolated Railway runtime provisioning
 
@@ -71,12 +73,14 @@ WORKLIN_RAILWAY_PROVISIONING_ENABLED=true
 WORKLIN_RAILWAY_PROJECT_TOKEN=<project-scoped token>
 WORKLIN_RAILWAY_PROJECT_ID=<project id>
 WORKLIN_RAILWAY_ENVIRONMENT_ID=<production environment id>
-WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES=1
+WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES=5
+WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY=2
 ```
 
-The maximum-service value is a required cost guard. Start at `1` for the
-production test account and raise it only alongside an approved customer and
-infrastructure budget. Optional settings include:
+The maximum-service value is a required cost guard. The initial production
+value of `5` supports five isolated customer assistants on the current Railway
+plan. Keep provisioning concurrency at `2` unless Railway capacity and launch
+telemetry justify raising it. Optional settings include:
 
 ```bash
 WORKLIN_RAILWAY_RUNTIME_REPOSITORY=Logarn/Worklin-ai
@@ -84,14 +88,31 @@ WORKLIN_RAILWAY_RUNTIME_BRANCH=main
 WORKLIN_RAILWAY_RUNTIME_REGION=<Railway region>
 WORKLIN_RAILWAY_RUNTIME_MOUNT_PATH=/data
 WORKLIN_RAILWAY_RUNTIME_PORT=8080
+WORKLIN_RAILWAY_REQUEST_TIMEOUT_MS=30000
+WORKLIN_RAILWAY_SERVICE_RECONCILE_TIMEOUT_MS=30000
+WORKLIN_RAILWAY_PROVISIONING_LEASE_TTL_MS=120000
 ```
 
 For each assistant, the provisioner creates one GitHub-backed service and one
 persistent volume, applies assistant-scoped runtime variables, deploys the
 service, waits for Railway deployment success and `/readyz`, then stores its
 private `SERVICE_NAME.railway.internal` gateway URL. Partial attempts persist
-their service and volume IDs so retries do not intentionally create duplicate
-resources.
+their service and volume IDs, and reserve service capacity durably until the
+service identity is recorded. A database-backed lease fences overlapping
+control-plane processes. Ambiguous service or volume creates remain marked
+until the deterministic resource appears. Automatic retries never issue a
+second create; if the resource never appears, an operator must verify its
+absence in Railway before clearing `service_create_attempted_at` or
+`volume_create_attempted_at` for that stack. Retries reconcile Railway before
+rejecting a retry at the configured cap.
+An isolated runtime does not become active until database initialization,
+daemon startup, and the credential service are complete and `/readyz`
+succeeds.
+
+The public edge does not forward the unscoped ElevenLabs Speech Engine
+WebSocket path to a shared gateway. Managed ElevenLabs voice remains
+fail-closed until its callback is routed with an assistant-bound token to the
+matching isolated runtime.
 
 Create a real env file from the template:
 

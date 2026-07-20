@@ -28,6 +28,7 @@ import { WORKSPACE_MIGRATIONS } from "../../workspace/migrations/registry.js";
 import { getLastWorkspaceMigrationId } from "../../workspace/migrations/runner.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { runBtwSidechain } from "../btw-sidechain.js";
+import { getDaemonReadiness } from "../daemon-readiness.js";
 import { NotFoundError } from "./errors.js";
 import {
   getCachedIntro,
@@ -365,14 +366,38 @@ export function handleDetailedHealth(): Response {
 }
 
 export function handleReadyz(): Response {
+  const isolatedRuntime =
+    process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() === "isolated";
+  if (isolatedRuntime) {
+    const daemonReadiness = getDaemonReadiness();
+    if (!daemonReadiness.ready) {
+      return Response.json(
+        {
+          status: "starting",
+          reason: daemonReadiness.reason ?? "daemon_starting",
+        },
+        { status: 503 },
+      );
+    }
+  }
+
   const cesClient = getCesClient();
   if (!cesClient?.isReady()) {
-    // TODO: Return 503 once we confirm via logs that this won't cause
-    // regressions in the K8s readinessProbe.
     getLogger("health").warn(
       { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
-      "CES not ready — pod would be unready if 503 were enabled",
+      isolatedRuntime
+        ? "CES not ready — isolated runtime remains unavailable"
+        : "CES not ready — continuing in compatibility mode",
     );
+    if (isolatedRuntime) {
+      return Response.json(
+        {
+          status: "starting",
+          reason: cesClient ? "ces_not_ready" : "ces_unavailable",
+        },
+        { status: 503 },
+      );
+    }
   }
   return Response.json({ status: "ok" });
 }

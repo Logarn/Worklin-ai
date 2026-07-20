@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { AccountHeading } from "@/components/account/account-form";
 import { AccountShell } from "@/components/account/account-shell";
 import { PROVIDER_CALLBACK_URL, PROVIDER_ID } from "@/domains/account/login-flow";
-import { hardNavigate } from "@/lib/auth/hard-navigate";
+import { handleLogout } from "@/lib/auth/handle-logout";
 import { startAuthFlow } from "@/runtime/native-auth";
 import {
   useAuthStore,
@@ -20,8 +20,8 @@ import { routes } from "@/utils/routes";
 export function AccountPage() {
   const isAuthenticated = useIsAuthenticated();
   const isSessionInitializing = useIsSessionInitializing();
+  const navigate = useNavigate();
   const user = useAuthStore.use.user();
-  const logout = useAuthStore.use.logout();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
 
@@ -86,10 +86,7 @@ export function AccountPage() {
         </Link>
         <button
           type="button"
-          onClick={async () => {
-            await logout();
-            hardNavigate(routes.account.login);
-          }}
+          onClick={() => void handleLogout(navigate)}
           className="cursor-pointer bg-transparent text-sm font-normal text-[var(--content-secondary)] transition-colors hover:text-[var(--content-default)]"
         >
           Sign out

@@ -9,13 +9,12 @@
  *
  * Every slot gets the common navigation pair (`onAdvance` / `onBack`); phases
  * that need shared per-step inputs (the selected character, its name, the user's
- * first name, the accumulated memory list, the collected style profile, hero
- * geometry) extend `BaseScreenProps` with their own slice. The
+ * first name, the accumulated memory list, or hero geometry) extend
+ * `BaseScreenProps` with their own slice. The
  * props the orchestrator already passes each phase in the prototype are the
  * source of truth for these shapes.
  */
 
-import type { StyleProfile } from "@/domains/onboarding/cast/cast-templates";
 import type { CastCharacter } from "@/domains/onboarding/cast/cast-roster";
 import type { Rect } from "@/domains/onboarding/cast/cast-hero-types";
 import type { AssistantCharacter } from "@/components/avatar/assistant-character-packs";
@@ -103,21 +102,10 @@ export interface DialogueScreenProps extends BaseScreenProps {
   onComplete: () => void;
 }
 
-/** `style` — the "how should I work" rounds, rendered in the two-panel demo. */
-export interface StyleScreenProps extends BaseScreenProps {
-  character: CastCharacter;
-  name: string;
-  heroBox: Rect;
-  onChoose: (value: string) => void;
-  onRoundPicked: (next: StyleProfile) => void;
-  onDone: (next: StyleProfile) => void;
-}
-
 /** `done` — the proof / endpoint screen that finishes onboarding. */
 export interface DoneScreenProps extends BaseScreenProps {
   character: CastCharacter;
   box: Rect;
-  style: StyleProfile;
   ascended: boolean;
   assistantId: string | null;
   onAction: (which: string) => void;
