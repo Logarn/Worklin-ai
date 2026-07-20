@@ -520,6 +520,43 @@ describe("ProviderCreateForm submit sequence", () => {
     expect(getInputByPlaceholder("Enter your API key")).toBeDefined();
   });
 
+  test("does not offer Worklin credits when managed inference is unavailable", () => {
+    const { getByRole, queryByText } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="anthropic"
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    expect(getInputByPlaceholder("Enter your API key")).toBeDefined();
+    fireEvent.click(getByRole("combobox", { name: "Auth type" }));
+    expect(queryByText("Worklin credits")).toBeNull();
+  });
+
+  test("keeps Worklin credits available for assistants with platform auth", () => {
+    const { getAllByText, getByRole } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="anthropic"
+          managedInferenceAvailable
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    expect(document.querySelector('input[placeholder="Enter your API key"]')).toBeNull();
+    fireEvent.click(getByRole("combobox", { name: "Auth type" }));
+    expect(getAllByText("Worklin credits").length).toBeGreaterThan(0);
+  });
+
   test("a provider without platform auth (e.g. openrouter) seeds api_key, not platform", () => {
     // openrouter has no managed proxy, so defaulting to `platform` would let the
     // user create an unusable connection. The initial auth seed must fall back

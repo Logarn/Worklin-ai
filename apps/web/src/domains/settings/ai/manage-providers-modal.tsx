@@ -15,6 +15,7 @@ import { inferenceProviderconnectionsByNameDelete } from "@/generated/daemon/sdk
 
 import type { ProviderConnection } from "@/generated/daemon/types.gen";
 import { PROVIDER_DISPLAY_NAMES } from "@/assistant/llm-model-catalog";
+import { connectionsAvailableForManagedInference } from "@/assistant/managed-inference";
 import {
     ProviderEditorContent,
     type ProviderEditorCreateSeed,
@@ -49,6 +50,7 @@ export interface ProviderCreateSeed extends ProviderEditorCreateSeed {
 interface ManageProvidersModalProps {
   isOpen: boolean;
   assistantId: string;
+  managedInferenceAvailable?: boolean;
   createSeed?: ProviderCreateSeed | null;
   onClose: () => void;
 }
@@ -56,6 +58,7 @@ interface ManageProvidersModalProps {
 export function ManageProvidersModal({
   isOpen,
   assistantId,
+  managedInferenceAvailable = false,
   createSeed,
   onClose,
 }: ManageProvidersModalProps) {
@@ -73,9 +76,17 @@ export function ManageProvidersModal({
     enabled: isOpen,
   });
 
-  const connections = useMemo(
+  const allConnections = useMemo(
     () => data?.connections ?? [],
     [data],
+  );
+  const connections = useMemo(
+    () =>
+      connectionsAvailableForManagedInference(
+        allConnections,
+        managedInferenceAvailable,
+      ),
+    [allConnections, managedInferenceAvailable],
   );
 
   function handleEditorSave(_saved: ProviderConnection) {
@@ -89,7 +100,7 @@ export function ManageProvidersModal({
     setActiveCreateSeed(null);
   }
 
-  const existingNames = connections.map((c) => c.name);
+  const existingNames = allConnections.map((c) => c.name);
 
   useEffect(() => {
     if (!isOpen || !createSeed) return;
@@ -149,6 +160,7 @@ export function ManageProvidersModal({
             createSeed={activeCreateSeed ?? undefined}
             assistantId={assistantId}
             existingNames={existingNames}
+            managedInferenceAvailable={managedInferenceAvailable}
             onSave={handleEditorSave}
             onCancel={cancelEditor}
           />

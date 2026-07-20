@@ -25,6 +25,11 @@ import {
   PROVIDER_DISPLAY_NAMES,
 } from "@/assistant/llm-model-catalog";
 import {
+  connectionsAvailableForManagedInference,
+  profilesAvailableForManagedInference,
+} from "@/assistant/managed-inference";
+import { useManagedInferenceAvailability } from "@/assistant/managed-inference-availability";
+import {
   connectionMatchesPreset,
   XAI_PROVIDER_PRESET,
   type ProviderConnectionPreset,
@@ -190,7 +195,7 @@ function resolvePowerSource(
   profile: ProfileWithName | null,
   connection: ProviderConnection | null,
 ): PowerSource {
-  if (!profile) return "worklin-credits";
+  if (!profile) return "api-key";
   if (
     profile.source === "managed" ||
     connection?.isManaged ||
@@ -212,13 +217,19 @@ function getConnectionStatus(
   return "Key connected";
 }
 
-function getMethodOptions(provider: ConnectionProvider): AuthType[] {
+function getMethodOptions(
+  provider: ConnectionProvider,
+  managedInferenceAvailable: boolean,
+): AuthType[] {
   if (provider === "ollama") return ["none"];
   const options: AuthType[] = ["api_key"];
   if (provider === "openai") {
     options.push("oauth_subscription");
   }
-  if (providerSupportsPlatformAuth(provider)) {
+  if (
+    managedInferenceAvailable &&
+    providerSupportsPlatformAuth(provider)
+  ) {
     options.push("platform");
   }
   return options;
@@ -307,6 +318,8 @@ export function LanguageModelCard() {
 
 function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   const queryClient = useQueryClient();
+  const { available: managedInferenceAvailable } =
+    useManagedInferenceAvailability(assistantId);
 
   const { data: config } = useQuery({
     ...configGetOptions({ path: { assistant_id: assistantId } }),
@@ -318,9 +331,17 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
     }),
     staleTime: 30_000,
   });
-  const connections = useMemo(
+  const allConnections = useMemo(
     () => connectionsData?.connections ?? [],
     [connectionsData?.connections],
+  );
+  const connections = useMemo(
+    () =>
+      connectionsAvailableForManagedInference(
+        allConnections,
+        managedInferenceAvailable,
+      ),
+    [allConnections, managedInferenceAvailable],
   );
   const { data: secretsData } = useQuery({
     ...secretsGetOptions({ path: { assistant_id: assistantId } }),
@@ -337,8 +358,13 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   // can't blank the main model surface until the next good fetch.
   const { profiles, profileOrder } = useStickyProfiles(config?.llm, assistantId);
   const orderedProfiles = useMemo(
-    () => buildOrderedProfiles(profiles, profileOrder),
-    [profiles, profileOrder],
+    () =>
+      profilesAvailableForManagedInference(
+        buildOrderedProfiles(profiles, profileOrder),
+        allConnections,
+        managedInferenceAvailable,
+      ),
+    [profiles, profileOrder, allConnections, managedInferenceAvailable],
   );
 
   const configMutation = useConfigPatchMutation({
@@ -490,14 +516,16 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
         subtitle="Choose how Worklin should power replies, then pick the provider and model."
       >
         <div className="space-y-4">
-          <div className="grid gap-3 lg:grid-cols-2">
-            <PowerSourceTile
-              selected={selectedPowerSource === "worklin-credits"}
-              icon={<CreditCard className="h-5 w-5" />}
-              title="Use Worklin credits"
-              description="No API key needed. Usage comes from your Worklin balance."
-              onClick={() => handlePowerSourceSelect("worklin-credits")}
-            />
+          <div className={cn("grid gap-3", managedInferenceAvailable && "lg:grid-cols-2")}>
+            {managedInferenceAvailable ? (
+              <PowerSourceTile
+                selected={selectedPowerSource === "worklin-credits"}
+                icon={<CreditCard className="h-5 w-5" />}
+                title="Use Worklin credits"
+                description="No API key needed. Usage comes from your Worklin balance."
+                onClick={() => handlePowerSourceSelect("worklin-credits")}
+              />
+            ) : null}
             <PowerSourceTile
               selected={selectedPowerSource === "api-key"}
               icon={<KeyRound className="h-5 w-5" />}
@@ -533,7 +561,14 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
                     {getProfileSubtitle(selectedProfile)}
                   </p>
                   <p className="mt-2 flex items-center gap-2 text-body-small-default text-[var(--content-secondary)]">
-                    <span className="h-2 w-2 rounded-full bg-[var(--system-positive-strong)]" />
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full",
+                        selectedStatus === "Key required"
+                          ? "bg-[var(--content-disabled)]"
+                          : "bg-[var(--system-positive-strong)]",
+                      )}
+                    />
                     {selectedStatus}
                   </p>
                 </div>
@@ -616,7 +651,10 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
                     providerSupportsPlatformAuth(provider)
                       ? "platform"
                       : "api_key");
-                  const methodOptions = getMethodOptions(provider);
+                  const methodOptions = getMethodOptions(
+                    provider,
+                    managedInferenceAvailable,
+                  );
                   const fallbackMethod = methodOptions[0] ?? "api_key";
                   const effectiveMethod = methodOptions.includes(method)
                     ? method
@@ -769,6 +807,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
         <ManageProfilesModal
           isOpen={manageProfilesOpen}
           assistantId={assistantId}
+          managedInferenceAvailable={managedInferenceAvailable}
           onClose={() => setManageProfilesOpen(false)}
         />
       )}
@@ -778,6 +817,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
           isOpen={overridesOpen}
           onClose={() => setOverridesOpen(false)}
           assistantId={assistantId}
+          managedInferenceAvailable={managedInferenceAvailable}
         />
       )}
 
@@ -785,6 +825,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
         <ManageProvidersModal
           isOpen={manageProvidersOpen}
           assistantId={assistantId}
+          managedInferenceAvailable={managedInferenceAvailable}
           createSeed={providerCreateSeed}
           onClose={() => setManageProvidersOpen(false)}
         />

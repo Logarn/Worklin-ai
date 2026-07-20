@@ -69,6 +69,7 @@ export interface ProviderEditorContentProps {
   createSeed?: ProviderEditorCreateSeed;
   assistantId: string;
   existingNames: string[];
+  managedInferenceAvailable?: boolean;
   onSave: (connection: ProviderConnection) => void;
   onCancel: () => void;
 }
@@ -79,6 +80,7 @@ export function ProviderEditorContent({
   createSeed,
   assistantId,
   existingNames,
+  managedInferenceAvailable = false,
   onSave,
   onCancel,
 }: ProviderEditorContentProps) {
@@ -92,7 +94,7 @@ export function ProviderEditorContent({
 
   // Auth type to seed the create form with when entering create mode via the
   // Save as New clone flow. `undefined` for a genuine "create" open so the
-  // form keeps its own default (platform for managed-capable providers).
+  // form keeps its own capability-aware default.
   const [createAuthTypeSeed, setCreateAuthTypeSeed] = useState<
     AuthType | undefined
   >(undefined);
@@ -403,6 +405,7 @@ export function ProviderEditorContent({
         existingNames={existingNames}
         defaultProviderType={provider}
         defaultAuthType={createAuthTypeSeed ?? createSeed?.authType}
+        managedInferenceAvailable={managedInferenceAvailable}
         preset={createSeed?.preset}
         onCreated={onSave}
         onCancel={onCancel}

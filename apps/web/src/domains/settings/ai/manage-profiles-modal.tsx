@@ -16,6 +16,10 @@ import { BlockedDeleteModal } from "@/domains/settings/ai/manage-profiles-blocke
 import { ProfileListItem } from "@/domains/settings/ai/manage-profiles-list-item";
 import { ProfileEditorModal } from "@/domains/settings/ai/profile-editor-modal";
 import { gateAutoProfile } from "@/assistant/profile-pickers";
+import {
+  connectionsAvailableForManagedInference,
+  profilesAvailableForManagedInference,
+} from "@/assistant/managed-inference";
 import { configGetOptions, configGetSetQueryData, inferenceProviderconnectionsGetOptions, useConfigPatchMutation } from "@/generated/daemon/@tanstack/react-query.gen";
 
 // ---------------------------------------------------------------------------
@@ -25,6 +29,7 @@ import { configGetOptions, configGetSetQueryData, inferenceProviderconnectionsGe
 interface ManageProfilesModalProps {
   isOpen: boolean;
   assistantId: string;
+  managedInferenceAvailable?: boolean;
   onClose: () => void;
 }
 
@@ -35,6 +40,7 @@ interface ManageProfilesModalProps {
 export function ManageProfilesModal({
   isOpen,
   assistantId,
+  managedInferenceAvailable = false,
   onClose,
 }: ManageProfilesModalProps) {
   const queryClient = useQueryClient();
@@ -48,11 +54,6 @@ export function ManageProfilesModal({
   const profileOrder = useMemo(() => config?.llm?.profileOrder ?? [], [config?.llm?.profileOrder]);
   const activeProfile = config?.llm?.activeProfile ?? null;
   const callSites = config?.llm?.callSites ?? {};
-  const orderedProfiles = useMemo(
-    () => buildOrderedProfiles(profiles, profileOrder),
-    [profiles, profileOrder],
-  );
-
   const configMutation = useConfigPatchMutation({
     onSuccess: (data) => {
       configGetSetQueryData(queryClient, { path: { assistant_id: assistantId } }, data);
@@ -69,7 +70,27 @@ export function ManageProfilesModal({
     }),
     enabled: isOpen,
   });
-  const connections = connectionsData?.connections;
+  const allConnections = useMemo(
+    () => connectionsData?.connections ?? [],
+    [connectionsData?.connections],
+  );
+  const connections = useMemo(
+    () =>
+      connectionsAvailableForManagedInference(
+        allConnections,
+        managedInferenceAvailable,
+      ),
+    [allConnections, managedInferenceAvailable],
+  );
+  const orderedProfiles = useMemo(
+    () =>
+      profilesAvailableForManagedInference(
+        buildOrderedProfiles(profiles, profileOrder),
+        allConnections,
+        managedInferenceAvailable,
+      ),
+    [profiles, profileOrder, allConnections, managedInferenceAvailable],
+  );
 
   const existingNames = Object.keys(profiles);
 
@@ -179,6 +200,7 @@ export function ManageProfilesModal({
         initialValues={editingProfile ?? undefined}
         existingNames={existingNames}
         connections={connections}
+        managedInferenceAvailable={managedInferenceAvailable}
         assistantId={assistantId}
         onSave={handleEditorSave}
         onCancel={() => {

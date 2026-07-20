@@ -2,6 +2,7 @@ import {
   getDefaultModelForProvider,
   PROVIDER_DISPLAY_NAMES,
 } from "@/assistant/llm-model-catalog";
+import { isManagedInferenceProfile } from "@/assistant/managed-inference";
 import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
 import {
   configGet,
@@ -32,6 +33,17 @@ export interface EnsureRunnableProfileOptions {
   activateConnection?: boolean;
 }
 
+const unavailableManagedRepairInFlight = new Map<
+  string,
+  Promise<ProviderProfileRepairResult>
+>();
+
+export function canSendAfterManagedProfileRepair(
+  result: ProviderProfileRepairResult,
+): boolean {
+  return result.repaired || result.reason === "already-runnable";
+}
+
 function profileHasRunnableModel(
   profile:
     | NonNullable<NonNullable<ConfigGetResponse["llm"]>["profiles"]>[string]
@@ -47,12 +59,27 @@ function profileHasRunnableModel(
   );
 }
 
-function profileUsesManagedProvider(
+function profileHasReadyPersonalConnection(
   profile:
     | NonNullable<NonNullable<ConfigGetResponse["llm"]>["profiles"]>[string]
     | undefined,
+  connections: readonly ProviderConnection[],
+  secrets: readonly SecretsGetResponse["secrets"][number][],
 ): boolean {
-  return profile?.source === "managed";
+  if (
+    !profile ||
+    !profileHasRunnableModel(profile) ||
+    isManagedInferenceProfile(profile, connections) ||
+    !profile.provider_connection
+  ) {
+    return false;
+  }
+
+  const connection = connections.find(
+    (candidate) => candidate.name === profile.provider_connection,
+  );
+  if (!connection || connection.provider !== profile.provider) return false;
+  return isProviderConnectionReady(connection, secrets);
 }
 
 function findExistingProfileForConnection(
@@ -167,8 +194,9 @@ export async function ensureRunnableProfileForConnection(
   if (
     !options.activateConnection &&
     activeProfile &&
+    currentActiveProfile &&
     profileHasRunnableModel(currentActiveProfile) &&
-    !profileUsesManagedProvider(currentActiveProfile)
+    !isManagedInferenceProfile(currentActiveProfile)
   ) {
     return {
       repaired: false,
@@ -247,4 +275,77 @@ export async function ensureRunnableProfileFromStoredConnection(
   }
 
   return ensureRunnableProfileForConnection(assistantId, connection);
+}
+
+/**
+ * Replace an active managed profile only when managed proxy auth has already
+ * been confirmed unavailable by the caller. Existing personal profiles are
+ * left alone, and ambiguous/missing personal connections never cause a
+ * speculative selection.
+ */
+async function performUnavailableManagedProfileRepair(
+  assistantId: string,
+): Promise<ProviderProfileRepairResult> {
+  const [
+    { data: config },
+    { data: connectionsData },
+    { data: secretsData },
+  ] = await Promise.all([
+    configGet({
+      path: { assistant_id: assistantId },
+      throwOnError: true,
+    }),
+    inferenceProviderconnectionsGet({
+      path: { assistant_id: assistantId },
+      throwOnError: true,
+    }),
+    secretsGet({
+      path: { assistant_id: assistantId },
+      throwOnError: true,
+    }),
+  ]);
+
+  const profiles = config?.llm?.profiles ?? {};
+  const activeProfileName = config?.llm?.activeProfile;
+  const activeProfile =
+    typeof activeProfileName === "string"
+      ? profiles[activeProfileName]
+      : undefined;
+  const connections = connectionsData?.connections ?? [];
+  const secrets = secretsData?.secrets ?? [];
+
+  if (profileHasReadyPersonalConnection(activeProfile, connections, secrets)) {
+    return { repaired: false, reason: "already-runnable" };
+  }
+
+  if (connections.length === 0) {
+    return { repaired: false, reason: "no-connections" };
+  }
+
+  const connection = selectRepairConnection(
+    connections,
+    secrets,
+  );
+  if (!connection) {
+    return { repaired: false, reason: "ambiguous" };
+  }
+
+  return ensureRunnableProfileForConnection(assistantId, connection, {
+    activateConnection: true,
+  });
+}
+
+export function repairUnavailableManagedProfile(
+  assistantId: string,
+): Promise<ProviderProfileRepairResult> {
+  const current = unavailableManagedRepairInFlight.get(assistantId);
+  if (current) return current;
+
+  const repair = performUnavailableManagedProfileRepair(assistantId);
+  unavailableManagedRepairInFlight.set(assistantId, repair);
+  void repair.then(
+    () => unavailableManagedRepairInFlight.delete(assistantId),
+    () => unavailableManagedRepairInFlight.delete(assistantId),
+  );
+  return repair;
 }

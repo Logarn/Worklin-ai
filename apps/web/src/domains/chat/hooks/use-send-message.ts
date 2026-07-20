@@ -75,7 +75,11 @@ import {
 import { useComposerStore } from "@/domains/chat/composer-store";
 import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
-import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
+import {
+  authInfoGetOptions,
+  authInfoGetQueryKey,
+  configGetQueryKey,
+} from "@/generated/daemon/@tanstack/react-query.gen";
 import type { Conversation } from "@/types/conversation-types";
 import {
   fetchConversationMessages,
@@ -99,8 +103,13 @@ import {
   ConversationNotFoundError,
   fetchConversationDetail,
 } from "@/utils/fetch-conversation-detail";
-import { ensureRunnableProfileFromStoredConnection } from "@/assistant/provider-profile-repair";
+import {
+  canSendAfterManagedProfileRepair,
+  ensureRunnableProfileFromStoredConnection,
+  repairUnavailableManagedProfile,
+} from "@/assistant/provider-profile-repair";
 import { shouldAttemptProviderProfileRepair } from "@/domains/chat/utils/provider-profile-repair-trigger";
+import type { AuthInfoGetResponse } from "@/generated/daemon/types.gen";
 
 // ---------------------------------------------------------------------------
 // Stream send result
@@ -203,6 +212,7 @@ export function useSendMessage({
     },
     [assistantId, activeConversationId],
   );
+  const personalProviderReadyAssistantIdRef = useRef<string | null>(null);
 
   // -------------------------------------------------------------------------
   // Queue management (delegated to useMessageQueue)
@@ -261,6 +271,54 @@ export function useSendMessage({
         return null;
       }
     }, [assistantId, queryClient]);
+
+  const ensureProviderReadyForSend = useCallback(async (): Promise<boolean> => {
+    if (!assistantId) return false;
+    let authInfo = queryClient.getQueryData<AuthInfoGetResponse>(
+      authInfoGetQueryKey({ path: { assistant_id: assistantId } }),
+    );
+    if (!authInfo) {
+      try {
+        authInfo = await queryClient.fetchQuery({
+          ...authInfoGetOptions({
+            path: { assistant_id: assistantId },
+          }),
+          staleTime: 30_000,
+        });
+      } catch (error) {
+        captureError(error, {
+          context: "check_managed_provider_before_send",
+        });
+        return true;
+      }
+    }
+    if (authInfo?.authenticated !== false) return true;
+    if (personalProviderReadyAssistantIdRef.current === assistantId) return true;
+
+    try {
+      const repair = await repairUnavailableManagedProfile(assistantId);
+      if (repair.repaired) {
+        void queryClient.invalidateQueries({
+          queryKey: configGetQueryKey({ path: { assistant_id: assistantId } }),
+        });
+      }
+      if (canSendAfterManagedProfileRepair(repair)) {
+        personalProviderReadyAssistantIdRef.current = assistantId;
+        return true;
+      }
+    } catch (error) {
+      captureError(error, {
+        context: "guard_unavailable_managed_provider_send",
+      });
+    }
+
+    setError({
+      message:
+        "Worklin needs a personal AI provider before it can answer. Connect ChatGPT or add an API key in Models & Services.",
+      code: "PROVIDER_NOT_CONFIGURED",
+    });
+    return false;
+  }, [assistantId, queryClient, setError]);
 
   const surfaceConversationAfterUserSend = useCallback(
     async (conversationId: string) => {
@@ -777,6 +835,7 @@ export function useSendMessage({
         });
         return;
       }
+      if (!(await ensureProviderReadyForSend())) return;
       setError(null);
       useInteractionStore.getState().resetSecretAndConfirmation();
       useChatSessionStore.getState().clearConfirmationToolCallMap();
@@ -1088,6 +1147,7 @@ export function useSendMessage({
       revertQueuedMessage,
       persistDismissedSurfaces,
       repairMissingProviderProfile,
+      ensureProviderReadyForSend,
       queryClient,
       surfaceConversationAfterUserSend,
     ],

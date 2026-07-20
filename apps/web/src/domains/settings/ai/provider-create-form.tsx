@@ -57,12 +57,12 @@ export interface ProviderCreateFormProps {
   /** Pre-selected provider type (e.g. when cloning a managed connection). */
   defaultProviderType?: ConnectionProvider;
   /**
-   * Pre-selected auth type. When omitted, managed-capable providers default
-   * to `platform` (and ollama to `none`). The Save-as-New clone flow passes
-   * `api_key` here so cloning a managed connection seeds the "bring your own
-   * credential" path rather than another managed-proxy connection.
+   * Pre-selected auth type. A platform value is honored only when managed
+   * inference is confirmed available for this assistant.
    */
   defaultAuthType?: AuthType;
+  /** Whether this assistant can actually dispatch through Worklin credits. */
+  managedInferenceAvailable?: boolean;
   /** Branded defaults for a first-class OpenAI-compatible service. */
   preset?: ProviderConnectionPreset;
   onCreated: (connection: ProviderConnection) => void;
@@ -76,6 +76,7 @@ export function ProviderCreateForm({
   existingNames,
   defaultProviderType,
   defaultAuthType,
+  managedInferenceAvailable = false,
   preset,
   onCreated,
   onCancel,
@@ -107,10 +108,13 @@ export function ProviderCreateForm({
   const [provider, setProvider] = useState<ConnectionProvider>(initialProvider);
   const [authType, setAuthType] = useState<AuthType>(
     () =>
-      defaultAuthType ??
+      (defaultAuthType === "platform" && !managedInferenceAvailable
+        ? "api_key"
+        : defaultAuthType) ??
       (initialProvider === "ollama"
         ? "none"
-        : providerSupportsPlatformAuth(initialProvider)
+        : managedInferenceAvailable &&
+            providerSupportsPlatformAuth(initialProvider)
           ? "platform"
           : "api_key"),
   );
@@ -405,7 +409,8 @@ export function ProviderCreateForm({
                 }
                 if (
                   prev === "platform" &&
-                  !providerSupportsPlatformAuth(newProvider)
+                  (!managedInferenceAvailable ||
+                    !providerSupportsPlatformAuth(newProvider))
                 ) {
                   return "api_key";
                 }
@@ -486,7 +491,10 @@ export function ProviderCreateForm({
             let types: AuthType[];
             if (provider === "ollama") {
               types = ["none"];
-            } else if (providerSupportsPlatformAuth(provider)) {
+            } else if (
+              managedInferenceAvailable &&
+              providerSupportsPlatformAuth(provider)
+            ) {
               types = ["api_key", "platform"];
             } else {
               types = ["api_key"];

@@ -5,6 +5,7 @@ import { cleanup, render } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import {
+  authInfoGetQueryKey,
   configGetQueryKey,
   inferenceProviderconnectionsGetQueryKey,
   secretsGetQueryKey,
@@ -37,16 +38,20 @@ const { LanguageModelCard } = await import(
 function Wrapper({
   children,
   hasKimiSecret = true,
+  managedInferenceAvailable = true,
+  activeProfile = "kimi-personal",
 }: {
   children: ReactNode;
   hasKimiSecret?: boolean;
+  managedInferenceAvailable?: boolean;
+  activeProfile?: "balanced" | "kimi-personal";
 }) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   const config: ConfigGetResponse = {
     llm: {
-      activeProfile: "kimi-personal",
+      activeProfile,
       profileOrder: ["balanced", "kimi-personal"],
       profiles: {
         balanced: {
@@ -74,6 +79,18 @@ function Wrapper({
     models: null,
   } as unknown as ProviderConnection;
 
+  client.setQueryData(
+    authInfoGetQueryKey({ path: { assistant_id: "asst-1" } }),
+    {
+      platformUrl: managedInferenceAvailable
+        ? "https://platform.example.com"
+        : null,
+      assistantId: "asst-1",
+      organizationId: null,
+      userId: null,
+      authenticated: managedInferenceAvailable,
+    },
+  );
   client.setQueryData(
     configGetQueryKey({ path: { assistant_id: "asst-1" } }),
     config,
@@ -126,7 +143,11 @@ describe("LanguageModelCard", () => {
       </Wrapper>,
     );
 
-    expect(getByText("Key required")).toBeTruthy();
+    const keyRequired = getByText("Key required");
+    expect(keyRequired).toBeTruthy();
+    expect(keyRequired.querySelector("span")?.className).toContain(
+      "content-disabled",
+    );
     expect(queryByText("Key connected")).toBeNull();
   });
 
@@ -157,5 +178,33 @@ describe("LanguageModelCard", () => {
     ).toBeTruthy();
     expect(queryByText("Use Worklin credits")).toBeNull();
     expect(queryByText("Manage providers")).toBeNull();
+  });
+
+  test("hides Worklin credits when managed inference is unavailable", () => {
+    const { getByText, queryByText } = render(
+      <Wrapper managedInferenceAvailable={false}>
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(queryByText("Use Worklin credits")).toBeNull();
+    expect(getByText("Use my API key")).toBeTruthy();
+    expect(getByText("Key connected")).toBeTruthy();
+  });
+
+  test("does not present a stale managed active profile as usable", () => {
+    const { getByText, queryByText } = render(
+      <Wrapper
+        managedInferenceAvailable={false}
+        activeProfile="balanced"
+      >
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(queryByText("Use Worklin credits")).toBeNull();
+    expect(getByText("No model selected")).toBeTruthy();
+    expect(getByText("Key required")).toBeTruthy();
+    expect(queryByText("Using Worklin credits")).toBeNull();
   });
 });

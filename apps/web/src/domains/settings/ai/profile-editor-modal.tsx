@@ -55,6 +55,7 @@ export interface ProfileEditorModalProps {
    *   the daemon can't dispatch through.
    */
   connections?: ProviderConnection[];
+  managedInferenceAvailable?: boolean;
   /**
    * Assistant whose provider connections the inline "+ Create new provider"
    * sub-form writes to. Required for the create-mode quick-add flow.
@@ -90,6 +91,7 @@ export function ProfileEditorModal({
   initialValues,
   existingNames,
   connections,
+  managedInferenceAvailable = false,
   assistantId,
   onSave,
   onCancel,
@@ -108,6 +110,7 @@ export function ProfileEditorModal({
           initialValues={initialValues}
           existingNames={existingNames}
           connections={connections}
+          managedInferenceAvailable={managedInferenceAvailable}
           assistantId={assistantId}
           onSave={onSave}
           onCancel={onCancel}
@@ -128,6 +131,7 @@ interface ProfileEditorModalInnerProps {
   existingNames: string[];
   // See `ProfileEditorModalProps.connections` for nil-vs-empty semantics.
   connections: ProviderConnection[] | undefined;
+  managedInferenceAvailable: boolean;
   assistantId: string;
   onSave: (
     name: string,
@@ -143,6 +147,7 @@ function ProfileEditorModalInner({
   initialValues,
   existingNames,
   connections,
+  managedInferenceAvailable,
   assistantId,
   onSave,
   onCancel,
@@ -742,6 +747,7 @@ function ProfileEditorModalInner({
           existingNames={effectiveConnections.map((c) => c.name)}
           defaultProviderType={provider || undefined}
           defaultAuthType="api_key"
+          managedInferenceAvailable={managedInferenceAvailable}
           onCreated={handleProviderCreated}
           onCancel={() => setCreatingProvider(false)}
         />

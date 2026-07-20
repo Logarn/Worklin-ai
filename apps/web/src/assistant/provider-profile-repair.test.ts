@@ -53,7 +53,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
     }),
 }));
 
-const { ensureRunnableProfileFromStoredConnection } = await import(
+const {
+  canSendAfterManagedProfileRepair,
+  ensureRunnableProfileFromStoredConnection,
+  repairUnavailableManagedProfile,
+} = await import(
   "@/assistant/provider-profile-repair"
 );
 
@@ -349,5 +353,160 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
     expect(result).toEqual({ repaired: false, reason: "ambiguous" });
     expect(configGetCalls).toHaveLength(0);
     expect(configPatchCalls).toHaveLength(0);
+  });
+});
+
+describe("repairUnavailableManagedProfile", () => {
+  test("replaces a stale managed selection with the only ready personal connection", async () => {
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal", "anthropic"),
+    ];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result.repaired).toBe(true);
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            provider_connection: "anthropic-personal",
+          },
+        },
+      },
+    });
+  });
+
+  test("replaces a user profile that still points at a platform connection", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "legacy-platform",
+        profileOrder: ["legacy-platform"],
+        profiles: {
+          "legacy-platform": {
+            source: "user",
+            provider: "anthropic",
+            provider_connection: "anthropic-managed",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      },
+    };
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal", "anthropic"),
+    ];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result.repaired).toBe(true);
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: { activeProfile: "custom-balanced" },
+    });
+  });
+
+  test("leaves an already runnable personal selection unchanged", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "personal",
+        profileOrder: ["personal"],
+        profiles: {
+          personal: {
+            source: "user",
+            provider: "anthropic",
+            provider_connection: "anthropic-personal",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      },
+    };
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [apiKeyConnection("anthropic-personal", "anthropic")];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toEqual({
+      repaired: false,
+      reason: "already-runnable",
+    });
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("does not treat a personal profile with a missing credential as runnable", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "personal",
+        profileOrder: ["personal"],
+        profiles: {
+          personal: {
+            source: "user",
+            provider: "anthropic",
+            provider_connection: "anthropic-personal",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      },
+    };
+    connections = [apiKeyConnection("anthropic-personal", "anthropic")];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(canSendAfterManagedProfileRepair(result)).toBe(false);
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("does not guess when multiple personal connections are equally eligible", async () => {
+    secrets = [
+      { type: "api_key", name: "anthropic" },
+      { type: "api_key", name: "openai" },
+    ];
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal", "anthropic"),
+      apiKeyConnection("openai-personal", "openai"),
+    ];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("shares an in-flight repair for the same assistant", async () => {
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [apiKeyConnection("anthropic-personal", "anthropic")];
+
+    const [first, second] = await Promise.all([
+      repairUnavailableManagedProfile(ASSISTANT_ID),
+      repairUnavailableManagedProfile(ASSISTANT_ID),
+    ]);
+
+    expect(first.repaired).toBe(true);
+    expect(second.repaired).toBe(true);
+    expect(configPatchCalls).toHaveLength(1);
+  });
+});
+
+describe("canSendAfterManagedProfileRepair", () => {
+  test("allows repaired or already-personal profiles and blocks unresolved setup", () => {
+    expect(canSendAfterManagedProfileRepair({ repaired: true })).toBe(true);
+    expect(
+      canSendAfterManagedProfileRepair({
+        repaired: false,
+        reason: "already-runnable",
+      }),
+    ).toBe(true);
+    expect(
+      canSendAfterManagedProfileRepair({
+        repaired: false,
+        reason: "ambiguous",
+      }),
+    ).toBe(false);
   });
 });
