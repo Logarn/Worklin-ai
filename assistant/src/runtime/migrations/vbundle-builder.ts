@@ -201,7 +201,10 @@ function computeHeaderChecksum(header: Uint8Array): number {
  * contains "key=value" records. The following data entry uses a truncated name
  * in its ustar header, but tar extractors use the PAX path attribute instead.
  */
-function createPaxPathEntry(name: string): Uint8Array {
+function createPaxPathEntry(
+  name: string,
+  mtimeSeconds = Math.floor(Date.now() / 1000),
+): Uint8Array {
   const encoder = new TextEncoder();
 
   // Build PAX payload: "<length> path=<name>\n"
@@ -228,7 +231,7 @@ function createPaxPathEntry(name: string): Uint8Array {
   writeOctal(header, 108, 8, 0);
   writeOctal(header, 116, 8, 0);
   writeOctal(header, 124, 12, paxData.length);
-  writeOctal(header, 136, 12, Math.floor(Date.now() / 1000));
+  writeOctal(header, 136, 12, mtimeSeconds);
 
   // Type flag 'x' = PAX extended header for the next entry
   header[156] = "x".charCodeAt(0);
@@ -376,10 +379,11 @@ function buildManifestObject(input: {
   exportOptions: VBundleExportOptions;
   secretsRedacted: boolean;
   now: Date;
+  bundleId?: string;
 }): { manifest: ManifestType; manifestData: Uint8Array } {
   const manifestWithEmptyChecksum = {
     schema_version: 1 as const,
-    bundle_id: randomUUID(),
+    bundle_id: input.bundleId ?? randomUUID(),
     created_at: input.now.toISOString(),
     assistant: input.assistant,
     origin: input.origin,
@@ -691,6 +695,22 @@ export interface BuildExportVBundleOptions {
   checkpoint?: () => void | Promise<void>;
   /** Optional credential entries to include in the archive under credentials/ prefix. */
   credentials?: Array<{ account: string; value: string }>;
+  /** Additional workspace-relative directories to exclude. Defaults preserve teleport behavior. */
+  additionalSkipDirs?: readonly string[];
+  /** Additional workspace basenames to exclude. Defaults preserve teleport behavior. */
+  additionalSkipFiles?: readonly string[];
+  /** Fail instead of archiving or dropping any symlink. Used by pooled state. */
+  rejectSymlinks?: boolean;
+  /** Stable UUID for retry-identical internal exports. Defaults to a random UUID. */
+  bundleId?: string;
+  /** Stable manifest creation time for retry-identical internal exports. */
+  createdAt?: Date;
+  /** Stable tar header mtime for retry-identical internal exports. */
+  tarMtimeSeconds?: number;
+  /** Sort archive entries by path. Existing export order is unchanged by default. */
+  sortEntries?: boolean;
+  /** Override config sanitization for stricter internal export modes. */
+  configSanitizer?: (configJson: string) => string;
 }
 
 /**
@@ -918,6 +938,7 @@ function createTarHeaderBlock(
   name: string,
   size: number,
   linkTarget?: string,
+  mtimeSeconds = Math.floor(Date.now() / 1000),
 ): Uint8Array {
   const encoder = new TextEncoder();
   const nameBytes = encoder.encode(name);
@@ -940,7 +961,7 @@ function createTarHeaderBlock(
   writeOctal(header, 124, 12, linkTarget !== undefined ? 0 : size);
 
   // Modification time (136-147)
-  writeOctal(header, 136, 12, Math.floor(Date.now() / 1000));
+  writeOctal(header, 136, 12, mtimeSeconds);
 
   // Type flag (156): regular file ("0") or symlink ("2")
   header[156] =
@@ -987,15 +1008,16 @@ function createPaxAndHeaderBlocks(
   name: string,
   size: number,
   linkTarget?: string,
+  mtimeSeconds = Math.floor(Date.now() / 1000),
 ): Uint8Array {
   const encoder = new TextEncoder();
   const nameBytes = encoder.encode(name);
   const needsPax = nameBytes.length > 100;
 
-  const header = createTarHeaderBlock(name, size, linkTarget);
+  const header = createTarHeaderBlock(name, size, linkTarget, mtimeSeconds);
 
   if (needsPax) {
-    const paxEntry = createPaxPathEntry(name);
+    const paxEntry = createPaxPathEntry(name, mtimeSeconds);
     const result = new Uint8Array(paxEntry.length + header.length);
     result.set(paxEntry, 0);
     result.set(header, paxEntry.length);
@@ -1022,9 +1044,15 @@ function tarPaddingBytes(dataSize: number): Uint8Array {
 async function* generateTarStream(
   manifestJson: Uint8Array,
   files: TarStreamEntry[],
+  mtimeSeconds?: number,
 ): AsyncGenerator<Uint8Array> {
   // Manifest entry
-  yield createPaxAndHeaderBlocks("manifest.json", manifestJson.length);
+  yield createPaxAndHeaderBlocks(
+    "manifest.json",
+    manifestJson.length,
+    undefined,
+    mtimeSeconds,
+  );
   yield manifestJson;
   yield tarPaddingBytes(manifestJson.length);
 
@@ -1034,12 +1062,22 @@ async function* generateTarStream(
       // Symlink entry: typeflag-2 header carries the linkname; no body, no
       // padding. Skip the entrySize/body/padding logic entirely so the
       // surrounding stream stays block-aligned.
-      yield createPaxAndHeaderBlocks(file.archivePath, 0, file.linkTarget);
+      yield createPaxAndHeaderBlocks(
+        file.archivePath,
+        0,
+        file.linkTarget,
+        mtimeSeconds,
+      );
       continue;
     }
 
     const entrySize = file.size;
-    yield createPaxAndHeaderBlocks(file.archivePath, entrySize);
+    yield createPaxAndHeaderBlocks(
+      file.archivePath,
+      entrySize,
+      undefined,
+      mtimeSeconds,
+    );
 
     if (isInMemoryEntry(file)) {
       // In-memory entry — yield data directly
@@ -1124,6 +1162,14 @@ export async function streamExportVBundle(
     checkpoint,
     workspaceDir,
     credentials,
+    additionalSkipDirs = [],
+    additionalSkipFiles = [],
+    rejectSymlinks = false,
+    bundleId,
+    createdAt,
+    tarMtimeSeconds,
+    sortEntries = false,
+    configSanitizer = sanitizeConfigForTransfer,
   } = options;
 
   // Flush WAL to the main database file before reading. Awaiting allows
@@ -1148,9 +1194,21 @@ export async function streamExportVBundle(
       droppedSymlinks,
     } = walkDirectoryForMetadata(workspaceDir, "workspace", {
       includeBinary: true,
-      skipDirs: ["embedding-models", "data/qdrant", "signals", "deprecated"],
-      skipFiles: [".backup.key"],
+      skipDirs: [
+        "embedding-models",
+        "data/qdrant",
+        "signals",
+        "deprecated",
+        ...additionalSkipDirs,
+      ],
+      skipFiles: [".backup.key", ...additionalSkipFiles],
     });
+    if (
+      rejectSymlinks &&
+      (walkedSymlinks.length > 0 || droppedSymlinks.length > 0)
+    ) {
+      throw new Error("VBundle export rejected workspace symlinks.");
+    }
     allFileMetadata.push(...walkedFiles);
     symlinkEntries.push(...walkedSymlinks);
     if (droppedSymlinks.length > 0) {
@@ -1172,7 +1230,7 @@ export async function streamExportVBundle(
   if (configMetadataIdx !== -1) {
     const configMeta = allFileMetadata[configMetadataIdx];
     const rawConfigData = readFileSync(configMeta.diskPath, "utf8");
-    const sanitized = sanitizeConfigForTransfer(rawConfigData);
+    const sanitized = configSanitizer(rawConfigData);
     const sanitizedData = new TextEncoder().encode(sanitized);
 
     // Remove the disk-backed entry and replace with an in-memory entry
@@ -1195,6 +1253,21 @@ export async function streamExportVBundle(
         size: data.length,
       });
     }
+  }
+
+  if (sortEntries) {
+    allFileMetadata.sort((left, right) =>
+      left.archivePath.localeCompare(right.archivePath),
+    );
+    sanitizedConfigEntries.sort((left, right) =>
+      left.archivePath.localeCompare(right.archivePath),
+    );
+    inMemoryEntries.sort((left, right) =>
+      left.archivePath.localeCompare(right.archivePath),
+    );
+    symlinkEntries.sort((left, right) =>
+      left.archivePath.localeCompare(right.archivePath),
+    );
   }
 
   // ------------------------------------------------------------------
@@ -1241,7 +1314,8 @@ export async function streamExportVBundle(
     compatibility,
     exportOptions,
     secretsRedacted,
-    now: new Date(),
+    now: createdAt ?? new Date(),
+    bundleId,
   });
 
   // ------------------------------------------------------------------
@@ -1256,7 +1330,11 @@ export async function streamExportVBundle(
     ...inMemoryEntries,
     ...symlinkEntries,
   ];
-  const tarGenerator = generateTarStream(manifestData, allEntries);
+  const tarGenerator = generateTarStream(
+    manifestData,
+    allEntries,
+    tarMtimeSeconds,
+  );
   const tarReadable = Readable.from(tarGenerator);
   const gzipStream = createGzip();
   const writeStream = createWriteStream(tempPath, { mode: 0o600 });
