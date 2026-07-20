@@ -83,7 +83,11 @@ export function verifyManagedVoiceSessionToken(
 
   const expected = sign(payloadPart);
   const actual = Buffer.from(signaturePart, "base64url");
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+  if (
+    encode(actual) !== signaturePart ||
+    expected.length !== actual.length ||
+    !timingSafeEqual(expected, actual)
+  ) {
     return null;
   }
 
