@@ -6,7 +6,6 @@ import {
   type OrganizationRole,
   ensureOrganizationMembershipSchema,
   getOrganizationMembership,
-  getOrCreateOrganizationMembership,
 } from "./organization-membership-store.js";
 
 export interface WorkspaceMemberRow extends OrganizationMembershipRow {
@@ -20,6 +19,22 @@ export interface AssistantAssignmentRow {
   org_id: string;
   assistant_id: string;
   user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceInvitationSummary {
+  id: string;
+  email: string;
+  role: OrganizationRole;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface WorkspaceOrganizationSummary {
+  id: string;
+  user_id: string;
+  name: string;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +98,75 @@ export function listWorkspaceMembers(
     .all(orgId);
 }
 
+export function listWorkspaceOrganizationsForUser(
+  db: Database,
+  userId: string,
+): WorkspaceOrganizationSummary[] {
+  ensureWorkspaceManagementSchema(db);
+  return db
+    .query<
+      WorkspaceOrganizationSummary,
+      [string, string]
+    >(
+      `SELECT organization.id,
+              organization.user_id,
+              organization.name,
+              organization.created_at,
+              organization.updated_at
+       FROM organization_memberships AS membership
+       JOIN organizations AS organization
+         ON organization.id = membership.org_id
+       WHERE membership.user_id = ? AND membership.status = 'active'
+       ORDER BY
+         CASE WHEN organization.user_id = ? THEN 1 ELSE 0 END,
+         membership.updated_at DESC,
+         membership.created_at DESC,
+         organization.id`,
+    )
+    .all(userId, userId);
+}
+
+export function getWorkspaceOrganizationContext(
+  db: Database,
+  userId: string,
+  requestedOrgId?: string | null,
+): {
+  organization: WorkspaceOrganizationSummary;
+  membership: OrganizationMembershipRow;
+} | null {
+  ensureWorkspaceManagementSchema(db);
+  const membership = requestedOrgId
+    ? getOrganizationMembership(db, requestedOrgId, userId)
+    : db
+        .query<OrganizationMembershipRow, [string, string]>(
+          `SELECT membership.*
+           FROM organization_memberships AS membership
+           JOIN organizations AS organization
+             ON organization.id = membership.org_id
+           WHERE membership.user_id = ? AND membership.status = 'active'
+           ORDER BY
+             CASE WHEN organization.user_id = ? THEN 1 ELSE 0 END,
+             membership.updated_at DESC,
+             membership.created_at DESC,
+             membership.org_id
+           LIMIT 1`,
+        )
+        .get(userId, userId);
+  if (!membership) return null;
+
+  const organization = db
+    .query<
+      WorkspaceOrganizationSummary,
+      [string]
+    >(
+      `SELECT id, user_id, name, created_at, updated_at
+       FROM organizations
+       WHERE id = ?`,
+    )
+    .get(membership.org_id);
+  return organization ? { organization, membership } : null;
+}
+
 export function canManageMembers(role: OrganizationRole | undefined): boolean {
   return role === "admin";
 }
@@ -129,6 +213,28 @@ export function createWorkspaceInvitation(
   return { token, id, expiresAt };
 }
 
+export function listPendingWorkspaceInvitations(
+  db: Database,
+  orgId: string,
+  now: Date,
+): WorkspaceInvitationSummary[] {
+  ensureWorkspaceManagementSchema(db);
+  return db
+    .query<
+      WorkspaceInvitationSummary,
+      [string, string]
+    >(
+      `SELECT id, email, role, expires_at, created_at
+       FROM workspace_invitations
+       WHERE org_id = ?
+         AND used_at IS NULL
+         AND revoked_at IS NULL
+         AND expires_at > ?
+       ORDER BY created_at DESC, id`,
+    )
+    .all(orgId, now.toISOString());
+}
+
 export function acceptWorkspaceInvitationForUser(
   db: Database,
   token: string,
@@ -136,45 +242,72 @@ export function acceptWorkspaceInvitationForUser(
   now: Date,
 ): OrganizationMembershipRow {
   ensureWorkspaceManagementSchema(db);
-  const invitation = db
-    .query<
-      {
-        id: string;
-        org_id: string;
-        email: string;
-        role: OrganizationRole;
-        expires_at: string;
-        used_at: string | null;
-        revoked_at: string | null;
-      },
-      [string]
-    >("SELECT * FROM workspace_invitations WHERE token_hash = ?")
-    .get(hashToken(token));
-  if (!invitation) throw new Error("Invitation not found.");
-  if (invitation.used_at) throw new Error("Invitation has already been used.");
-  if (invitation.revoked_at) throw new Error("Invitation has been revoked.");
-  if (Date.parse(invitation.expires_at) <= now.getTime()) {
-    throw new Error("Invitation has expired.");
-  }
-  if (normalizeEmail(user.email) !== invitation.email) {
-    throw new Error("Invitation email does not match the signed-in account.");
-  }
-  const timestamp = now.toISOString();
-  const membership = getOrCreateOrganizationMembership(
-    db,
-    invitation.org_id,
-    user.id,
-    invitation.role,
-    () => timestamp,
-  );
-  const result = db
-    .query(
-      "UPDATE workspace_invitations SET used_at = ? WHERE id = ? AND used_at IS NULL",
-    )
-    .run(timestamp, invitation.id);
-  if (result.changes === 0)
-    throw new Error("Invitation has already been used.");
-  return membership;
+  const accept = db.transaction(() => {
+    const invitation = db
+      .query<
+        {
+          id: string;
+          org_id: string;
+          email: string;
+          role: OrganizationRole;
+          expires_at: string;
+          used_at: string | null;
+          revoked_at: string | null;
+        },
+        [string]
+      >("SELECT * FROM workspace_invitations WHERE token_hash = ?")
+      .get(hashToken(token));
+    if (!invitation) throw new Error("Invitation not found.");
+    if (invitation.used_at)
+      throw new Error("Invitation has already been used.");
+    if (invitation.revoked_at) throw new Error("Invitation has been revoked.");
+    if (Date.parse(invitation.expires_at) <= now.getTime()) {
+      throw new Error("Invitation has expired.");
+    }
+    if (normalizeEmail(user.email) !== invitation.email) {
+      throw new Error("Invitation email does not match the signed-in account.");
+    }
+
+    const timestamp = now.toISOString();
+    const claimed = db
+      .query(
+        `UPDATE workspace_invitations
+         SET used_at = ?
+         WHERE id = ?
+           AND used_at IS NULL
+           AND revoked_at IS NULL
+           AND expires_at > ?`,
+      )
+      .run(timestamp, invitation.id, timestamp);
+    if (claimed.changes === 0)
+      throw new Error("Invitation is no longer available.");
+
+    db.query(
+      `INSERT INTO organization_memberships (
+         org_id, user_id, role, status, created_at, updated_at
+       ) VALUES (?, ?, ?, 'active', ?, ?)
+       ON CONFLICT(org_id, user_id) DO UPDATE SET
+         role = excluded.role,
+         status = 'active',
+         updated_at = excluded.updated_at`,
+    ).run(
+      invitation.org_id,
+      user.id,
+      invitation.role,
+      timestamp,
+      timestamp,
+    );
+    const membership = getOrganizationMembership(
+      db,
+      invitation.org_id,
+      user.id,
+    );
+    if (!membership) {
+      throw new Error("Workspace membership could not be created.");
+    }
+    return membership;
+  });
+  return accept.immediate();
 }
 
 export function setWorkspaceMemberRole(

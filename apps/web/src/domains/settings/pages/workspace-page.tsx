@@ -14,10 +14,12 @@ import {
   inviteWorkspaceMember,
   removeWorkspaceMember,
   disconnectWorkspaceResearchProvider,
+  revokeWorkspaceInvitation,
   unassignWorkspaceAssistant,
   type WorkspaceResearchProviderId,
   type WorkspaceRole,
 } from "@/domains/settings/api/workspace";
+import { useOrganizationStore } from "@/stores/organization-store";
 
 const ROLE_OPTIONS: WorkspaceRole[] = ["admin", "manager", "collaborator"];
 const RESEARCH_PROVIDERS: Array<{
@@ -33,6 +35,11 @@ const RESEARCH_PROVIDERS: Array<{
 
 export function WorkspacePage() {
   const queryClient = useQueryClient();
+  const organizations = useOrganizationStore.use.organizations();
+  const currentOrganizationId =
+    useOrganizationStore.use.currentOrganizationId();
+  const setCurrentOrganizationId =
+    useOrganizationStore.use.setCurrentOrganizationId();
   const [email, setEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<WorkspaceRole>("collaborator");
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
@@ -97,6 +104,31 @@ export function WorkspacePage() {
   return (
     <div className="space-y-4">
       {error && <Notice tone="warning">{error}</Notice>}
+      {organizations.length > 1 && (
+        <DetailCard
+          title="Current workspace"
+          subtitle="Choose which team and assistants you want to work with."
+        >
+          <label className="flex max-w-md flex-col gap-1 text-body-small-default text-[var(--content-secondary)]">
+            Workspace
+            <select
+              className="h-9 rounded-md border border-[var(--border-element)] bg-[var(--surface-base)] px-2 text-body-medium-default text-[var(--content-default)]"
+              value={currentOrganizationId ?? ""}
+              onChange={(event) => {
+                setInviteUrl(null);
+                setError(null);
+                setCurrentOrganizationId(event.target.value);
+              }}
+            >
+              {organizations.map((organization) => (
+                <option key={organization.id} value={organization.id}>
+                  {organization.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </DetailCard>
+      )}
       <DetailCard
         title="Workspace members"
         subtitle="Invite people, choose their access level, and keep assistant access assigned to the right team members."
@@ -228,6 +260,42 @@ export function WorkspacePage() {
               >
                 Copy invite link
               </Button>
+            </div>
+          )}
+          {data.invitations.length > 0 && (
+            <div className="mt-5 border-t border-[var(--border-element)] pt-4">
+              <h3 className="text-body-medium-default text-[var(--content-default)]">
+                Pending invites
+              </h3>
+              <div className="mt-2 space-y-2">
+                {data.invitations.map((invitation) => (
+                  <div
+                    key={invitation.id}
+                    className="flex flex-col gap-2 border-b border-[var(--border-element)] pb-2 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-body-small-default text-[var(--content-default)]">
+                        {invitation.email}
+                      </div>
+                      <div className="text-body-small-default capitalize text-[var(--content-tertiary)]">
+                        {invitation.role} · expires{" "}
+                        {new Date(invitation.expires_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="compact"
+                      onClick={() =>
+                        void mutateMember(
+                          revokeWorkspaceInvitation(invitation.id),
+                        )
+                      }
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </DetailCard>

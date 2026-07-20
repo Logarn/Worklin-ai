@@ -30,6 +30,14 @@ export interface WorkspaceAssignment {
   updated_at: string;
 }
 
+export interface WorkspaceInvitation {
+  id: string;
+  email: string;
+  role: WorkspaceRole;
+  expires_at: string;
+  created_at: string;
+}
+
 export interface WorkspaceState {
   organization: { id: string; name: string; owner_user_id: string };
   current_user: { user_id: string; role: WorkspaceRole };
@@ -37,6 +45,7 @@ export interface WorkspaceState {
   assistants: WorkspaceAssistant[];
   assignments: WorkspaceAssignment[];
   research_providers: WorkspaceResearchProvider[];
+  invitations: WorkspaceInvitation[];
 }
 
 export type WorkspaceResearchProviderId =
@@ -81,11 +90,32 @@ export function fetchWorkspace(): Promise<WorkspaceState> {
 export function inviteWorkspaceMember(input: {
   email: string;
   role: WorkspaceRole;
-}): Promise<{ invite_url: string; expires_at: string }> {
+}): Promise<{ id: string; invite_url: string; expires_at: string }> {
   return request("post", {
     url: "/v1/workspace/members/invite/",
     body: input,
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function acceptWorkspaceInvitation(
+  token: string,
+): Promise<{
+  org_id: string;
+  user_id: string;
+  role: WorkspaceRole;
+  status: "active";
+}> {
+  return request("post", {
+    url: "/v1/workspace/invitations/{token}/accept/",
+    path: { token },
+  });
+}
+
+export function revokeWorkspaceInvitation(invitationId: string) {
+  return request<{ ok: boolean }>("post", {
+    url: "/v1/workspace/invitations/{invitation_id}/revoke/",
+    path: { invitation_id: invitationId },
   });
 }
 
