@@ -415,9 +415,9 @@ class RailwayGraphqlClient {
   }
 
   async deploy(serviceId: string): Promise<string> {
-    const data = await this.request<{ serviceInstanceDeploy: string }>(
-      `mutation serviceInstanceDeploy($environmentId: String!, $serviceId: String!) {
-        serviceInstanceDeploy(
+    const data = await this.request<{ serviceInstanceDeployV2: string }>(
+      `mutation serviceInstanceDeployV2($environmentId: String!, $serviceId: String!) {
+        serviceInstanceDeployV2(
           environmentId: $environmentId
           serviceId: $serviceId
         )
@@ -427,7 +427,7 @@ class RailwayGraphqlClient {
         serviceId,
       },
     );
-    return data.serviceInstanceDeploy;
+    return data.serviceInstanceDeployV2;
   }
 
   async deploymentStatus(deploymentId: string): Promise<string> {

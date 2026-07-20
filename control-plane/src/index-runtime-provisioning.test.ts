@@ -883,9 +883,9 @@ describe("control-plane runtime provisioning guards", () => {
             data: { variableCollectionUpsert: true },
           });
         }
-        if (payload.query.includes("serviceInstanceDeploy")) {
+        if (payload.query.includes("serviceInstanceDeployV2")) {
           return Response.json({
-            data: { serviceInstanceDeploy: "deploy-accepted" },
+            data: { serviceInstanceDeployV2: "deploy-accepted" },
           });
         }
         if (payload.query.includes("query deployment")) {

@@ -254,8 +254,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         deploymentPolls += 1;
@@ -323,6 +323,13 @@ describe("provisionRailwayRuntime", () => {
     expect(
       (volumeMutation?.variables.input as { mountPath?: string }).mountPath,
     ).toBe("/runtime/customer");
+    const deployMutation = graphqlOperations.find((operation) =>
+      operation.query.includes("serviceInstanceDeployV2"),
+    );
+    expect(deployMutation?.query).toContain(
+      "mutation serviceInstanceDeployV2",
+    );
+    expect(deployMutation?.query).not.toContain("serviceInstanceDeploy(");
     expect(
       graphqlOperations.map((operation) => {
         if (operation.query.includes("runtimeProjectServices"))
@@ -333,7 +340,8 @@ describe("provisionRailwayRuntime", () => {
         if (operation.query.includes("volumeCreate")) return "volume";
         if (operation.query.includes("variableCollectionUpsert"))
           return "variables";
-        if (operation.query.includes("serviceInstanceDeploy")) return "deploy";
+        if (operation.query.includes("serviceInstanceDeployV2"))
+          return "deploy";
         return "status";
       }),
     ).toEqual([
@@ -411,8 +419,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
@@ -615,8 +623,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
@@ -693,8 +701,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
