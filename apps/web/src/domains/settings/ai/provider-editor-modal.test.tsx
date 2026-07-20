@@ -19,6 +19,7 @@ let configPatchCalls: Array<{
 }> = [];
 let savedConnection: ProviderConnection | null = null;
 let updatedConnection: ProviderConnection;
+let apiKeySectionProps: Record<string, unknown> | null = null;
 
 mock.module("@vellumai/design-library/components/modal", () => {
   const passthrough = ({ children }: { children?: ReactNode }) =>
@@ -104,7 +105,10 @@ mock.module("@/domains/settings/ai/provider-create-form", () => ({
 }));
 
 mock.module("@/domains/settings/ai/provider-editor-api-key-section", () => ({
-  ProviderEditorApiKeySection: () => null,
+  ProviderEditorApiKeySection: (props: Record<string, unknown>) => {
+    apiKeySectionProps = props;
+    return null;
+  },
 }));
 
 mock.module("@/domains/settings/ai/use-stored-credential-presence", () => ({
@@ -233,6 +237,7 @@ beforeEach(() => {
   configPatchCalls = [];
   savedConnection = null;
   updatedConnection = makeConnection();
+  apiKeySectionProps = null;
 });
 
 afterEach(() => {
@@ -240,6 +245,36 @@ afterEach(() => {
 });
 
 describe("ProviderEditorContent", () => {
+  test("editing xAI keeps the xAI credential namespace", () => {
+    const xaiConnection: ProviderConnection = {
+      ...makeConnection(),
+      name: "xai-personal",
+      provider: "openai-compatible",
+      auth: {
+        type: "api_key",
+        credential: "credential/xai/api_key",
+      },
+      label: "xAI",
+      baseUrl: "https://api.x.ai/v1",
+      models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+    };
+
+    render(
+      <Wrapper>
+        <ProviderEditorContent
+          mode="edit"
+          connection={xaiConnection}
+          assistantId={ASSISTANT_ID}
+          existingNames={["xai-personal"]}
+          onSave={() => {}}
+          onCancel={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    expect(apiKeySectionProps?.credentialService).toBe("xai");
+  });
+
   test("editing a user-owned connection selects a runnable provider profile", async () => {
     render(
       <Wrapper>

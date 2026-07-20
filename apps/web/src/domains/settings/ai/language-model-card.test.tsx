@@ -113,6 +113,7 @@ describe("LanguageModelCard", () => {
     expect(getByText("Kimi K2.6")).toBeTruthy();
     expect(getByText("Key connected")).toBeTruthy();
     expect(getByText("Available services")).toBeTruthy();
+    expect(getByText("xAI")).toBeTruthy();
     expect(getByText("Advanced model settings")).toBeTruthy();
   });
 

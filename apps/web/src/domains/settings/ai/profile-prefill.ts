@@ -15,7 +15,10 @@ function slugify(input: string): string {
  * numeric suffix (`-2`, `-3`, ...) until the result is unique. Comparison is
  * case-insensitive.
  */
-function dedupeKey(base: string, existing: string[]): string {
+export function dedupeProviderConnectionName(
+  base: string,
+  existing: string[],
+): string {
   const taken = new Set(existing.map((name) => name.toLowerCase()));
   if (!taken.has(base.toLowerCase())) {
     return base;
@@ -40,7 +43,10 @@ export function deriveProviderDefaults(
 ): { name: string; key: string } {
   return {
     name: PROVIDER_DISPLAY_NAMES[providerType] ?? providerType,
-    key: dedupeKey(slugify(providerType), existingConnectionNames),
+    key: dedupeProviderConnectionName(
+      slugify(providerType),
+      existingConnectionNames,
+    ),
   };
 }
 
@@ -54,6 +60,9 @@ export function deriveProfileDefaults(
 ): { name: string; key: string } {
   return {
     name: modelDisplayName,
-    key: dedupeKey(slugify(modelDisplayName), existingProfileNames),
+    key: dedupeProviderConnectionName(
+      slugify(modelDisplayName),
+      existingProfileNames,
+    ),
   };
 }
