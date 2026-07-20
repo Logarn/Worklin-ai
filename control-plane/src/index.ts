@@ -1975,6 +1975,110 @@ async function handleAssistants(
     return true;
   }
 
+  const restartMatch =
+    /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(url.pathname);
+  if (restartMatch && req.method === "POST") {
+    const assistant = accessibleAssistantsForUser(user).find(
+      (candidate) => candidate.id === restartMatch[1],
+    );
+    if (!assistant) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    if (!hasAcceptedAssistantConsent(user.consent_json)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Assistant consent must be accepted before use." },
+        403,
+      );
+      return true;
+    }
+
+    const currentRuntimeStack = runtimeStackForPayload(assistant);
+    if (isRuntimeStackRoutable(currentRuntimeStack)) {
+      // Preserve the existing restart behavior for a healthy runtime by
+      // forwarding the request to its gateway.
+      return false;
+    }
+
+    if (!assistantOwnerHasAcceptedConsent(assistant)) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "The assistant owner must accept the current consent terms before restarting it.",
+          code: "assistant_owner_consent_required",
+        },
+        409,
+      );
+      return true;
+    }
+
+    const runtimeStack = ensureAssistantRuntime(assistant);
+    if (isRuntimeStackRoutable(runtimeStack)) {
+      // A reserved runtime slot can become active during this retry.
+      return false;
+    }
+
+    if (runtimeStack.provider !== "railway") {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "This assistant runtime cannot be restarted automatically.",
+          code: "runtime_not_retryable",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        503,
+      );
+      return true;
+    }
+
+    const provisioningError = runtimeProvisioningConfigurationError();
+    if (provisioningError) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Managed assistant provisioning is not available.",
+          code: "platform_hosted_disabled",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        503,
+      );
+      return true;
+    }
+
+    if (
+      runtimeStack.status === "provisioning" ||
+      runtimeStack.status === "failed"
+    ) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Assistant runtime restart requested.",
+          code: "runtime_provisioning",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        202,
+      );
+      return true;
+    }
+
+    sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
+    return true;
+  }
+
   const operationalStatusMatch =
     /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(url.pathname);
   if (operationalStatusMatch && req.method === "GET") {

@@ -9,7 +9,12 @@ export type ResolvedAssistantLifecycleState =
   | { kind: "initializing" }
   | { kind: "cleaning_up" }
   | { kind: "auto_hatch" }
-  | { kind: "error"; message: string; transient?: boolean };
+  | {
+      kind: "error";
+      message: string;
+      transient?: boolean;
+      retryAction?: "restart_runtime";
+    };
 
 /**
  * Error code the Electron main process's platform proxy puts in its
@@ -53,6 +58,7 @@ export function resolveAssistantLifecycleState(
         kind: "error",
         message:
           "Worklin could not start your managed assistant. Please try again or contact support.",
+        retryAction: "restart_runtime",
       };
     }
     switch (result.data.status) {

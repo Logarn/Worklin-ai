@@ -28,6 +28,7 @@ import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import {
   getAssistant,
   getAssistantHealthz,
+  restartAssistant,
   type GetAssistantResult,
 } from "@/assistant/api";
 import { subscribeAssistantUnreachable } from "@/assistant/unreachable-bus";
@@ -59,6 +60,7 @@ import {
 } from "@/lib/local-mode";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { isAuthenticated, type SessionStatus } from "@/stores/session-status";
+import { extractErrorMessage } from "@/utils/api-errors";
 
 const PROBE_RETRY_DELAY_MS = 4_000;
 const PROBE_RETRY_LIMIT_MS = 60_000;
@@ -343,9 +345,36 @@ class AssistantLifecycleService {
     );
   }
 
-  retryAssistant(): void {
+  async retryAssistant(): Promise<void> {
     if (!this.ready) return;
-    void this.checkAssistant();
+    const assistantId =
+      useAssistantLifecycleStore.getState().operationalStatusAssistantId ??
+      this.inputs.selectedPlatformAssistantId ??
+      null;
+    if (
+      assistantId &&
+      this.state.kind === "error" &&
+      this.state.retryAction === "restart_runtime"
+    ) {
+      try {
+        const result = await restartAssistant(assistantId);
+        if (!result.ok) {
+          this.transition({
+            kind: "error",
+            message: extractErrorMessage(
+              result.error,
+              undefined,
+              "Worklin could not restart your managed assistant.",
+            ),
+            retryAction: "restart_runtime",
+          });
+          return;
+        }
+      } catch (error) {
+        captureError(error, { context: "retry_assistant" });
+      }
+    }
+    await this.checkAssistant(assistantId ?? undefined);
   }
 
   /**
