@@ -9,6 +9,7 @@ import {
 import {
   type ApiKeyValidationResult,
   validateOpenAICompatibleApiKey,
+  type ValidationFetch,
 } from "./validate-api-key.js";
 
 // Re-export the canonical names so callers that know about the new transport
@@ -33,11 +34,14 @@ export {
  */
 export async function validateOpenAIApiKey(
   apiKey: string,
-  fetchImpl?: typeof fetch,
+  fetchImpl?: ValidationFetch,
 ): Promise<ApiKeyValidationResult> {
   return validateOpenAICompatibleApiKey(apiKey, {
     baseUrl: "https://api.openai.com/v1",
     providerLabel: "OpenAI",
     fetchImpl,
+    // Restricted project keys can authenticate without permission to list models.
+    acceptedStatuses: [403],
+    rejectionStatuses: [401],
   });
 }

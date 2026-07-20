@@ -16,7 +16,7 @@ export type ApiKeyValidationResult =
       reason: string;
     };
 
-type ValidationFetch = (
+export type ValidationFetch = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
@@ -30,6 +30,7 @@ export async function validateOpenAICompatibleApiKey(
     method?: "GET" | "POST";
     path?: string;
     body?: Record<string, unknown>;
+    acceptedStatuses?: readonly number[];
     rejectionStatuses?: readonly number[];
   },
 ): Promise<ApiKeyValidationResult> {
@@ -49,6 +50,14 @@ export async function validateOpenAICompatibleApiKey(
       signal: AbortSignal.timeout(VALIDATION_TIMEOUT_MS),
     });
     if (response.ok) return { valid: true };
+
+    if (options.acceptedStatuses?.includes(response.status)) {
+      log.warn(
+        { provider: options.providerLabel, status: response.status },
+        "Provider API key accepted without complete verification",
+      );
+      return { valid: true };
+    }
 
     log.warn(
       { provider: options.providerLabel, status: response.status },
