@@ -40,6 +40,34 @@ function mintEdgeToken(): string {
 }
 
 const TOKEN = mintEdgeToken();
+const PLATFORM_TENANT_CONTEXT = {
+  version: 1 as const,
+  organization_id: "org-test",
+  user_id: "test-user",
+  assistant_id: "test-assistant",
+  actor_id: "vellum-principal-test-user",
+  request_id: "request-test",
+};
+const PLATFORM_TOKEN = mintToken({
+  aud: "vellum-gateway",
+  sub: "actor:test-assistant:vellum-principal-test-user",
+  scope_profile: "actor_client_v1",
+  policy_epoch: CURRENT_POLICY_EPOCH,
+  ttlSeconds: 300,
+  tenant_context: PLATFORM_TENANT_CONTEXT,
+});
+
+function platformHeaders(): Record<string, string> {
+  return {
+    authorization: `Bearer ${PLATFORM_TOKEN}`,
+    "x-worklin-tenant-context-version": "1",
+    "x-worklin-org-id": PLATFORM_TENANT_CONTEXT.organization_id,
+    "x-worklin-user-id": PLATFORM_TENANT_CONTEXT.user_id,
+    "x-worklin-assistant-id": PLATFORM_TENANT_CONTEXT.assistant_id,
+    "x-worklin-actor-id": PLATFORM_TENANT_CONTEXT.actor_id,
+    "x-worklin-request-id": PLATFORM_TENANT_CONTEXT.request_id,
+  };
+}
 const originalGatewaySecurityDir = process.env.GATEWAY_SECURITY_DIR;
 const claimDirectories: string[] = [];
 
@@ -160,7 +188,7 @@ describe("runtime proxy auth enforcement", () => {
     expect(upstreamAuth).not.toBe(`Bearer ${TOKEN}`);
   });
 
-  test("isolated runtime binds a legacy platform actor to the default owner namespace", async () => {
+  test("isolated runtime binds a tenant-scoped platform actor to the default owner namespace", async () => {
     let capturedHeaders: Headers | undefined;
     fetchMock = mock(
       async (_input: string | URL | Request, init?: RequestInit) => {
@@ -177,7 +205,7 @@ describe("runtime proxy auth enforcement", () => {
     );
     const res = await handler(
       new Request("http://localhost:7830/v1/health", {
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: platformHeaders(),
       }),
     );
 
@@ -189,7 +217,36 @@ describe("runtime proxy auth enforcement", () => {
     expect(verified.ok).toBe(true);
     if (verified.ok) {
       expect(verified.claims.sub).toBe("actor:self:vellum-principal-test-user");
+      expect(verified.claims.tenant_context).toEqual(PLATFORM_TENANT_CONTEXT);
     }
+    expect(capturedHeaders!.get("x-worklin-org-id")).toBe("org-test");
+    expect(capturedHeaders!.get("x-worklin-user-id")).toBe("test-user");
+    expect(capturedHeaders!.get("x-worklin-assistant-id")).toBe(
+      "test-assistant",
+    );
+    expect(capturedHeaders!.get("x-worklin-actor-id")).toBe(
+      "vellum-principal-test-user",
+    );
+    expect(capturedHeaders!.get("x-worklin-request-id")).toBe("request-test");
+  });
+
+  test("isolated runtime rejects a platform token without tenant context", async () => {
+    mockUpstream();
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+    );
+
+    const res = await handler(
+      new Request("http://localhost:7830/v1/health", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test("isolated runtime rejects an actor token scoped to another assistant", async () => {
@@ -227,7 +284,7 @@ describe("runtime proxy auth enforcement", () => {
 
     const first = await handler(
       new Request("http://localhost:7830/v1/health", {
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: platformHeaders(),
       }),
     );
     expect(first.status).toBe(200);
