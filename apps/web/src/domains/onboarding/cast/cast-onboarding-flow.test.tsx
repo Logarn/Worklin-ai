@@ -1,5 +1,5 @@
 /**
- * Tests for the cast onboarding flow's PR-6 handoff:
+ * Tests for the cast onboarding flow handoff:
  *   - login-phase entry starts the background hatch exactly once
  *   - completion builds a PreChatOnboardingContext (occupation + research
  *     directive as initialMessage) and stashes it via setPendingPreChatContext
@@ -7,13 +7,20 @@
  *   - a terminal hatch failure surfaces a retry affordance instead of navigating
  *
  * Heavy cast screens are mocked down to single buttons so the test can drive
- * the phase machine (login -> starter -> dialogue completion) deterministically.
+ * the phase machine (login -> starter -> dialogue -> done) deterministically.
  * The background hatch, prechat handoff, lifecycle service, and navigation are
  * all mocked so we can assert the orchestration without real I/O.
  *
  * Single-file `bun test` — multi-file runs leak `mock.module` across files.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { CAST_RESEARCH_DIRECTIVE } from "@/domains/onboarding/cast/cast-prechat-mapping";
@@ -150,19 +157,19 @@ mock.module("@/domains/onboarding/cast/screens/starter-screen", () => ({
 }));
 
 mock.module("@/domains/onboarding/cast/screens/dialogue-screen", () => ({
-  DialogueScreen: ({ onAdvance }: { onAdvance: () => void }) => (
-    <button type="button" data-testid="dialogue-complete" onClick={onAdvance}>
+  DialogueScreen: ({ onComplete }: { onComplete: () => void }) => (
+    <button type="button" data-testid="dialogue-complete" onClick={onComplete}>
       dialogue
     </button>
   ),
 }));
 
-mock.module("@/domains/onboarding/cast/screens/style-screen", () => ({
-  StyleScreen: () => null,
-}));
-
 mock.module("@/domains/onboarding/cast/screens/done-screen", () => ({
-  DoneScreen: () => null,
+  DoneScreen: ({ onEndpoint }: { onEndpoint: () => void }) => (
+    <button type="button" data-testid="done-complete" onClick={onEndpoint}>
+      done
+    </button>
+  ),
 }));
 
 const { CastOnboardingFlow } = await import(
@@ -173,12 +180,13 @@ function drainMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/** Walk login -> preamble -> starter -> dialogue completion. */
+/** Walk login -> preamble -> starter -> dialogue -> done completion. */
 async function completeFlow(): Promise<void> {
   fireEvent.click(await screen.findByTestId("login-continue"));
   fireEvent.click(await screen.findByTestId("preamble-continue"));
   fireEvent.click(await screen.findByTestId("starter-choose"));
   fireEvent.click(await screen.findByTestId("dialogue-complete"));
+  fireEvent.click(await screen.findByTestId("done-complete"));
 }
 
 beforeEach(() => {
@@ -249,7 +257,7 @@ describe("CastOnboardingFlow handoff", () => {
     expect(setPendingPreChatContextMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
 
-    resolveReady("asst-ready");
+    act(() => resolveReady("asst-ready"));
 
     await waitFor(() => expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
