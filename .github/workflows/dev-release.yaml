@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  GCP_REGISTRY_HOST: ${{ vars.GCP_REGISTRY_HOST || 'gcr.io' }}
   ASSISTANT_IMAGE_NAME: sandbox-images/assistant-server
   GATEWAY_IMAGE_NAME: sandbox-images/assistant-gateway
   CREDENTIAL_EXECUTOR_IMAGE_NAME: sandbox-images/credential-executor
@@ -282,7 +283,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+        run: gcloud auth configure-docker ${{ env.GCP_REGISTRY_HOST }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
@@ -292,7 +293,7 @@ jobs:
       - name: Compute image name
         id: image
         run: |
-          echo "gcp=${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+          echo "gcp=${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
 
       - name: Stamp dev version into package.json
         run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' assistant/package.json > assistant/package.json.tmp && mv assistant/package.json.tmp assistant/package.json
@@ -350,7 +351,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+        run: gcloud auth configure-docker ${{ env.GCP_REGISTRY_HOST }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
@@ -368,7 +369,7 @@ jobs:
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
           SHORT_SHA="${{ needs.compute-version.outputs.short_sha }}"
-          GCP_IMAGE="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GCP_IMAGE="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
           GCP_TAGS="${GCP_IMAGE}:${GITHUB_SHA}"
           GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:${VERSION}")
           GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:dev")
@@ -431,7 +432,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+        run: gcloud auth configure-docker ${{ env.GCP_REGISTRY_HOST }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
@@ -441,7 +442,7 @@ jobs:
       - name: Compute image name
         id: image
         run: |
-          echo "gcp=${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+          echo "gcp=${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
 
       - name: Stamp dev version into package.json
         run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' gateway/package.json > gateway/package.json.tmp && mv gateway/package.json.tmp gateway/package.json
@@ -499,7 +500,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+        run: gcloud auth configure-docker ${{ env.GCP_REGISTRY_HOST }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
@@ -516,7 +517,7 @@ jobs:
         id: tags
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
-          GCP_IMAGE="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          GCP_IMAGE="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
           GCP_TAGS="${GCP_IMAGE}:${GITHUB_SHA}"
           GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:${VERSION}")
           GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:dev")
@@ -579,7 +580,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+        run: gcloud auth configure-docker ${{ env.GCP_REGISTRY_HOST }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
@@ -589,7 +590,7 @@ jobs:
       - name: Compute image name
         id: image
         run: |
-          echo "gcp=${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+          echo "gcp=${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
 
       - name: Stamp dev version into package.json
         run: jq --arg v "${{ needs.compute-version.outputs.version }}" '.version = $v' credential-executor/package.json > credential-executor/package.json.tmp && mv credential-executor/package.json.tmp credential-executor/package.json
@@ -644,7 +645,7 @@ jobs:
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ vars.GCP_REGISTRY_HOST }}
+        run: gcloud auth configure-docker ${{ env.GCP_REGISTRY_HOST }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
@@ -661,7 +662,7 @@ jobs:
         id: tags
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
-          GCP_IMAGE="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+          GCP_IMAGE="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
           GCP_TAGS="${GCP_IMAGE}:${GITHUB_SHA}"
           GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:${VERSION}")
           GCP_TAGS=$(printf "%s\n%s" "$GCP_TAGS" "${GCP_IMAGE}:dev")
@@ -757,9 +758,9 @@ jobs:
           CREDENTIAL_EXECUTOR_SOURCE_REPO=$(cat /tmp/credential-executor-digest/repository)
           CREDENTIAL_EXECUTOR_SOURCE_DIGEST=$(cat /tmp/credential-executor-digest/digest)
 
-          ASSISTANT_DEST_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
-          GATEWAY_DEST_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
-          CREDENTIAL_EXECUTOR_DEST_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+          ASSISTANT_DEST_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GATEWAY_DEST_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          CREDENTIAL_EXECUTOR_DEST_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
 
           echo "assistant_source_repo=${ASSISTANT_SOURCE_REPO}" >> "$GITHUB_OUTPUT"
           echo "assistant_source_digest=${ASSISTANT_SOURCE_DIGEST}" >> "$GITHUB_OUTPUT"
@@ -952,9 +953,9 @@ jobs:
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
           SHA="${GITHUB_SHA}"
-          ASSISTANT_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
-          GATEWAY_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
-          CREDENTIAL_EXECUTOR_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+          ASSISTANT_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GATEWAY_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          CREDENTIAL_EXECUTOR_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
           IS_STABLE="false"
 
           PAYLOAD=$(jq -n \
@@ -1076,9 +1077,9 @@ jobs:
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
           SHA="${GITHUB_SHA}"
-          ASSISTANT_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
-          GATEWAY_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
-          CREDENTIAL_EXECUTOR_REPO="${{ vars.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
+          ASSISTANT_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.ASSISTANT_IMAGE_NAME }}"
+          GATEWAY_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.GATEWAY_IMAGE_NAME }}"
+          CREDENTIAL_EXECUTOR_REPO="${{ env.GCP_REGISTRY_HOST }}/${{ vars.GCP_PROJECT_ID }}/${{ env.CREDENTIAL_EXECUTOR_IMAGE_NAME }}"
 
           PAYLOAD=$(jq -n \
             --arg version "$VERSION" \
