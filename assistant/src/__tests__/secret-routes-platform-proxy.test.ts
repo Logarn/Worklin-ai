@@ -12,7 +12,12 @@ let providerRefreshCalls = 0;
 const PLATFORM_BASE_URL = "https://platform.example.com";
 const ASSISTANT_API_KEY_PATH = credentialKey("vellum", "assistant_api_key");
 const PLATFORM_BASE_URL_PATH = credentialKey("vellum", "platform_base_url");
-const MANAGED_PROVIDERS = ["anthropic", "openai", "gemini", "fireworks"] as const;
+const MANAGED_PROVIDERS = [
+  "anthropic",
+  "openai",
+  "gemini",
+  "fireworks",
+] as const;
 
 let platformBaseUrlOverride: string | undefined;
 
@@ -109,6 +114,10 @@ mock.module("../tools/credentials/metadata-store.js", () => ({
   },
 }));
 
+mock.module("../providers/openai/validate-api-key.js", () => ({
+  validateOpenAICompatibleApiKey: async () => ({ valid: true }),
+}));
+
 mock.module("../util/logger.js", () => ({
   getLogger: () =>
     new Proxy({} as Record<string, unknown>, {
@@ -199,7 +208,9 @@ describe("secret routes managed proxy registry sync", () => {
   test("provider API key writes notify live-conversation refresh listeners", async () => {
     await addApiKey("fireworks", "fw-key");
 
-    expect(secureKeyStore[credentialKey("fireworks", "api_key")]).toBe("fw-key");
+    expect(secureKeyStore[credentialKey("fireworks", "api_key")]).toBe(
+      "fw-key",
+    );
     expect(providerRefreshCalls).toBe(1);
 
     await deleteApiKey("fireworks");
