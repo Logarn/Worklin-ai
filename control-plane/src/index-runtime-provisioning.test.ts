@@ -419,11 +419,21 @@ describe("control-plane runtime provisioning guards", () => {
 
   test("runtime proxy replaces client auth with a stack-scoped token", async () => {
     let runtimeAuthorization = "";
+    let runtimeTenantHeaders: Record<string, string> = {};
     const runtime = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
         runtimeAuthorization = request.headers.get("authorization") ?? "";
+        runtimeTenantHeaders = {
+          version:
+            request.headers.get("x-worklin-tenant-context-version") ?? "",
+          organization: request.headers.get("x-worklin-org-id") ?? "",
+          user: request.headers.get("x-worklin-user-id") ?? "",
+          assistant: request.headers.get("x-worklin-assistant-id") ?? "",
+          actor: request.headers.get("x-worklin-actor-id") ?? "",
+          request: request.headers.get("x-worklin-request-id") ?? "",
+        };
         return Response.json({ ok: true });
       },
     });
@@ -505,6 +515,11 @@ describe("control-plane runtime provisioning guards", () => {
         headers: {
           ...authenticatedHeaders("session-token"),
           Authorization: "Bearer client-supplied-token",
+          "X-Worklin-Org-Id": "org-forged",
+          "X-Worklin-User-Id": "user-forged",
+          "X-Worklin-Assistant-Id": "asst-forged",
+          "X-Worklin-Actor-Id": "actor-forged",
+          "X-Worklin-Request-Id": "request-forged",
         },
       },
     );
@@ -529,6 +544,218 @@ describe("control-plane runtime provisioning guards", () => {
         .update(signingInput)
         .digest("base64url"),
     );
+    const claims = JSON.parse(
+      Buffer.from(payload!, "base64url").toString("utf8"),
+    ) as {
+      sub: string;
+      tenant_context: Record<string, unknown>;
+    };
+    expect(claims.sub).toBe("actor:asst-token:vellum-principal-user-token");
+    expect(claims.tenant_context).toEqual({
+      version: 1,
+      organization_id: "org-token",
+      user_id: "user-token",
+      assistant_id: "asst-token",
+      actor_id: "vellum-principal-user-token",
+      request_id: runtimeTenantHeaders.request,
+    });
+    expect(runtimeTenantHeaders).toEqual({
+      version: "1",
+      organization: "org-token",
+      user: "user-token",
+      assistant: "asst-token",
+      actor: "vellum-principal-user-token",
+      request: runtimeTenantHeaders.request,
+    });
+    expect(runtimeTenantHeaders.request).not.toBe("");
+    expect(runtimeTenantHeaders.request).not.toBe("request-forged");
+  });
+
+  test("runtime proxy rejects an assistant whose organization belongs to another user", async () => {
+    let runtimeRequests = 0;
+    const runtime = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        runtimeRequests += 1;
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(runtime);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const timestamp = new Date().toISOString();
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES
+        ('user-owner', 'owner@example.com', 'owner', '', '', ?, ?, ?),
+        ('user-other', 'other@example.com', 'other', '', '', ?, ?, ?)`,
+    ).run(
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO organizations (
+        id, user_id, name, is_default, created_at, updated_at
+      ) VALUES
+        ('org-owner', 'user-owner', 'Owner', 1, ?, ?),
+        ('org-other', 'user-other', 'Other', 1, ?, ?)`,
+    ).run(timestamp, timestamp, timestamp, timestamp);
+    db.query(
+      `INSERT INTO assistants (
+        id, user_id, org_id, name, runtime_stack_id, isolation_version,
+        is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Worklin', ?, 2, 1, ?, ?)`,
+    ).run(
+      "asst-cross-org",
+      "user-owner",
+      "org-other",
+      "rt-cross-org",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, 'active', 'railway', ?, ?, ?, ?, ?, '200', NULL, ?, ?)`,
+    ).run(
+      "rt-cross-org",
+      "org-other",
+      "asst-cross-org",
+      `http://127.0.0.1:${runtime.port}`,
+      "https://worklin.example.com",
+      "volume-cross-org",
+      "service-cross-org",
+      "runtime_v1:rt-cross-org",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      "session-owner",
+      "user-owner",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+    );
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath);
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/asst-cross-org/conversations/`,
+      { headers: authenticatedHeaders("session-owner") },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ detail: "Assistant not found." });
+    expect(runtimeRequests).toBe(0);
+  });
+
+  test("runtime proxy rejects a stack whose organization was swapped", async () => {
+    let runtimeRequests = 0;
+    const runtime = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        runtimeRequests += 1;
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(runtime);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const timestamp = new Date().toISOString();
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, '', '', ?, ?, ?)`,
+    ).run(
+      "user-stack-swap",
+      "stack-swap@example.com",
+      "stack-swap",
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO organizations (
+        id, user_id, name, is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?)`,
+    ).run("org-stack-owner", "user-stack-swap", "Owner", timestamp, timestamp);
+    db.query(
+      `INSERT INTO assistants (
+        id, user_id, org_id, name, runtime_stack_id, isolation_version,
+        is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Worklin', ?, 2, 1, ?, ?)`,
+    ).run(
+      "asst-stack-swap",
+      "user-stack-swap",
+      "org-stack-owner",
+      "rt-stack-swap",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, 'active', 'railway', ?, ?, ?, ?, ?, '200', NULL, ?, ?)`,
+    ).run(
+      "rt-stack-swap",
+      "org-swapped",
+      "asst-stack-swap",
+      `http://127.0.0.1:${runtime.port}`,
+      "https://worklin.example.com",
+      "volume-stack-swap",
+      "service-stack-swap",
+      "runtime_v1:rt-stack-swap",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      "session-stack-swap",
+      "user-stack-swap",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+    );
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath);
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/asst-stack-swap/conversations/`,
+      { headers: authenticatedHeaders("session-stack-swap") },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      detail: "Assistant runtime identity is unavailable.",
+      code: "runtime_tenant_context_invalid",
+    });
+    expect(runtimeRequests).toBe(0);
   });
 
   test("startup resumes only assistants whose owners accepted consent", async () => {
