@@ -25,7 +25,9 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 // Self-contained OAuth flow for connecting a ChatGPT subscription.
 // Renders anywhere Worklin needs ChatGPT subscription setup. Manages a
 // state machine:
-//   idle -> starting -> waiting -> exchanging -> completed | failed
+//   idle -> starting -> waiting -> exchanging -> activating -> completed
+//   authentication failures -> failed
+//   profile or parent completion failures -> activation_failed
 //
 // On successful exchange the component calls `onConnected` with the
 // resulting connection so the parent can persist it.
@@ -35,12 +37,14 @@ type ChatgptOAuthState =
   | "starting"
   | "waiting"
   | "exchanging"
+  | "activating"
   | "completed"
-  | "failed";
+  | "failed"
+  | "activation_failed";
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
-  onConnected: (connection: ProviderConnection) => void;
+  onConnected: (connection: ProviderConnection) => void | Promise<void>;
 }
 
 interface ChatgptStartAuthResponse {
@@ -179,27 +183,35 @@ export function ChatgptOAuthSection({
         isManaged: false,
       } satisfies ProviderConnection);
 
-    try {
-      const repair = await ensureRunnableProfileForConnection(
-        assistantId,
-        connection,
-        { activateConnection: true },
-      );
-      if (repair.repaired) {
-        void queryClient.invalidateQueries({
-          queryKey: configGetQueryKey({
-            path: { assistant_id: assistantId },
-          }),
-        });
-      }
-    } catch {
-      setOauthError(
-        "ChatGPT is connected, but Worklin could not select it as the active provider. Open Profiles and choose ChatGPT Subscription, or try again.",
-      );
+    const repair = await ensureRunnableProfileForConnection(
+      assistantId,
+      connection,
+      { activateConnection: true },
+    );
+    if (repair.repaired) {
+      void queryClient.invalidateQueries({
+        queryKey: configGetQueryKey({
+          path: { assistant_id: assistantId },
+        }),
+      });
     }
 
-    onConnected(connection);
+    await onConnected(connection);
   }, [assistantId, onConnected, queryClient]);
+
+  const finishConnectionSetup = useCallback(async () => {
+    setOauthState("activating");
+    setOauthError(null);
+    try {
+      await notifyConnectedConnection();
+      setOauthState("completed");
+    } catch {
+      setOauthState("activation_failed");
+      setOauthError(
+        "ChatGPT is connected, but Worklin could not finish setting it up for this assistant. Retry setup; you will not need to sign in again.",
+      );
+    }
+  }, [notifyConnectedConnection]);
 
   useEffect(() => {
     if (oauthState !== "waiting" || !authState) {
@@ -247,9 +259,7 @@ export function ChatgptOAuthSection({
         setCallbackListening(data.callback_listening);
 
         if (data.status === "completed") {
-          setOauthState("completed");
-          setOauthError(null);
-          await notifyConnectedConnection();
+          await finishConnectionSetup();
           return;
         }
 
@@ -293,7 +303,7 @@ export function ChatgptOAuthSection({
     deviceCode,
     deviceExpiresAt,
     deviceStartedAt,
-    notifyConnectedConnection,
+    finishConnectionSetup,
     oauthState,
     pollIntervalSeconds,
     userCode,
@@ -441,8 +451,7 @@ export function ChatgptOAuthSection({
         body,
         throwOnError: true,
       });
-      setOauthState("completed");
-      await notifyConnectedConnection();
+      await finishConnectionSetup();
     } catch (error) {
       setOauthState("failed");
       const detail = extractErrorMessage(
@@ -668,6 +677,18 @@ export function ChatgptOAuthSection({
         </div>
       ) : null}
 
+      {oauthState === "activating" ? (
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-[var(--content-tertiary)]" />
+          <Typography
+            variant="body-small-default"
+            className="text-[var(--content-tertiary)]"
+          >
+            Finishing setup...
+          </Typography>
+        </div>
+      ) : null}
+
       {oauthState === "completed" ? (
         <Typography
           variant="body-small-default"
@@ -691,6 +712,16 @@ export function ChatgptOAuthSection({
       {oauthState === "failed" ? (
         <Button variant="outlined" size="compact" onClick={handleReset}>
           Try Again
+        </Button>
+      ) : null}
+
+      {oauthState === "activation_failed" ? (
+        <Button
+          variant="outlined"
+          size="compact"
+          onClick={() => void finishConnectionSetup()}
+        >
+          Retry Setup
         </Button>
       ) : null}
     </div>

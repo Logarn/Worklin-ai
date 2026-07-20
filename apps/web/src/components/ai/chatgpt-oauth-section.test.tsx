@@ -22,6 +22,7 @@ let configPatchCalls: Array<AssistantPathCall & { body: Record<string, unknown> 
 let queryInvalidationCalls: unknown[] = [];
 let connectedConnection: ProviderConnection | null = null;
 let providerConnections: ProviderConnection[] = [];
+let configPatchError: Error | null = null;
 
 mock.module("@vellumai/design-library/components/button", () => ({
   Button: ({
@@ -129,6 +130,9 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
     opts: AssistantPathCall & { body: Record<string, unknown> },
   ) => {
     configPatchCalls.push(opts);
+    if (configPatchError) {
+      return Promise.reject(configPatchError);
+    }
     return Promise.resolve({
       data: undefined,
       response: { ok: true, status: 200 },
@@ -199,6 +203,7 @@ beforeEach(() => {
   queryInvalidationCalls = [];
   connectedConnection = null;
   providerConnections = [chatgptConnection()];
+  configPatchError = null;
 });
 
 afterEach(() => {
@@ -225,11 +230,14 @@ describe("ChatgptOAuthSection", () => {
     });
     expect(startAuthCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
 
-    fireEvent.change(getInputByPlaceholder("Paste backup callback URL here..."), {
-      target: {
-        value: "https://worklin.local/callback?code=code-1&state=state-1",
+    fireEvent.change(
+      getInputByPlaceholder("Paste backup callback URL here..."),
+      {
+        target: {
+          value: "https://worklin.local/callback?code=code-1&state=state-1",
+        },
       },
-    });
+    );
     fireEvent.click(getButton("Complete Sign In"));
 
     await waitFor(() => {
@@ -272,5 +280,54 @@ describe("ChatgptOAuthSection", () => {
     expect(document.body.textContent).toContain(
       "ChatGPT subscription connected successfully.",
     );
+  });
+
+  test("does not report completion when profile activation fails and retries setup without another sign-in", async () => {
+    let onConnectedCalls = 0;
+    configPatchError = new Error("profile activation failed");
+
+    render(
+      <Wrapper>
+        <ChatgptOAuthSection
+          assistantId={ASSISTANT_ID}
+          onConnected={() => {
+            onConnectedCalls += 1;
+          }}
+        />
+      </Wrapper>,
+    );
+
+    fireEvent.click(getButton("Continue with ChatGPT"));
+    await waitFor(() => expect(startAuthCalls).toHaveLength(1));
+
+    fireEvent.change(
+      getInputByPlaceholder("Paste backup callback URL here..."),
+      {
+        target: {
+          value: "https://worklin.local/callback?code=code-1&state=state-1",
+        },
+      },
+    );
+    fireEvent.click(getButton("Complete Sign In"));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        "ChatGPT is connected, but Worklin could not finish setting it up for this assistant.",
+      );
+    });
+    expect(onConnectedCalls).toBe(0);
+    expect(document.body.textContent).not.toContain(
+      "ChatGPT subscription connected successfully.",
+    );
+    expect(startAuthCalls).toHaveLength(1);
+
+    configPatchError = null;
+    fireEvent.click(getButton("Retry Setup"));
+
+    await waitFor(() => expect(onConnectedCalls).toBe(1));
+    expect(document.body.textContent).toContain(
+      "ChatGPT subscription connected successfully.",
+    );
+    expect(startAuthCalls).toHaveLength(1);
   });
 });

@@ -41,9 +41,15 @@ let applyPendingProviderKeyImpl: (
 const applyPendingProviderKeyMock = mock((assistantId: string) =>
   applyPendingProviderKeyImpl(assistantId),
 );
-const applyChatgptSubscriptionProviderMock = mock(
-  async (_assistantId: string) => {},
+let applyChatgptSubscriptionProviderImpl: (
+  assistantId: string,
+) => Promise<void> = async () => {};
+const applyChatgptSubscriptionProviderMock = mock((assistantId: string) =>
+  applyChatgptSubscriptionProviderImpl(assistantId),
 );
+let chatgptOnConnected:
+  | ((connection: unknown) => void | Promise<void>)
+  | null = null;
 
 const hatchAssistantMock = mock(async () => ({
   ok: true,
@@ -154,7 +160,14 @@ mock.module("@/assistant/api", () => ({
 }));
 
 mock.module("@/components/ai/chatgpt-oauth-section", () => ({
-  ChatgptOAuthSection: () => null,
+  ChatgptOAuthSection: ({
+    onConnected,
+  }: {
+    onConnected: (connection: unknown) => void | Promise<void>;
+  }) => {
+    chatgptOnConnected = onConnected;
+    return <div>ChatGPT setup controls</div>;
+  },
 }));
 
 mock.module("@/stores/organization-store", () => ({
@@ -260,7 +273,8 @@ mock.module("@/domains/onboarding/recipe-client.js", () => ({
 mock.module("@/domains/onboarding/provider-key", () => ({
   applyChatgptSubscriptionProvider: applyChatgptSubscriptionProviderMock,
   applyPendingProviderKey: applyPendingProviderKeyMock,
-  pendingProviderRequiresOAuth: () => false,
+  pendingProviderRequiresOAuth: (pending: { authType?: string } | null) =>
+    pending?.authType === "oauth_subscription",
   peekPendingProviderKey: () => pendingProviderKey,
 }));
 
@@ -516,6 +530,8 @@ beforeEach(() => {
   localStorage.clear();
   pendingProviderKey = null;
   applyPendingProviderKeyImpl = async () => {};
+  applyChatgptSubscriptionProviderImpl = async () => {};
+  chatgptOnConnected = null;
 
   navigateMock.mockClear();
   checkAssistantMock.mockClear();
@@ -644,6 +660,40 @@ describe("onboarding lifecycle sync", () => {
       ),
     ).toBeTruthy();
     expect(applyPendingProviderKeyMock).toHaveBeenCalledWith("asst-1");
+    expect(checkAssistantMock).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
+      replace: true,
+    });
+  });
+
+  test("ChatGPT configuration failure keeps onboarding on the connection screen", async () => {
+    pendingProviderKey = {
+      provider: "openai",
+      key: "",
+      authType: "oauth_subscription",
+    };
+    applyChatgptSubscriptionProviderImpl = async () => {
+      throw new Error("profile configuration failed");
+    };
+
+    render(<HatchingScreen />);
+
+    expect(await screen.findByText("Connect ChatGPT")).toBeTruthy();
+    expect(screen.getByText("ChatGPT setup controls")).toBeTruthy();
+    expect(chatgptOnConnected).not.toBeNull();
+
+    let completionError: unknown;
+    try {
+      await chatgptOnConnected?.({});
+    } catch (err) {
+      completionError = err;
+    }
+
+    expect(completionError).toBeInstanceOf(Error);
+    expect(applyChatgptSubscriptionProviderMock).toHaveBeenCalledWith(
+      "asst-1",
+    );
+    expect(screen.getByText("Connect ChatGPT")).toBeTruthy();
     expect(checkAssistantMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
       replace: true,
