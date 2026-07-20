@@ -83,7 +83,7 @@ describe("SendMessageOptions.config.overrideProfile", () => {
     });
   });
 
-  test("CallSiteConfiguredProvider preserves explicit per-call call sites", async () => {
+  test("CallSiteConfiguredProvider preserves explicit call sites and bound routing metadata", async () => {
     let captured: SendMessageOptions | undefined;
     const inner: Provider = {
       name: "anthropic",
@@ -96,12 +96,21 @@ describe("SendMessageOptions.config.overrideProfile", () => {
       },
     };
 
-    const provider = new CallSiteConfiguredProvider(inner, "mainAgent");
+    const provider = new CallSiteConfiguredProvider(inner, "mainAgent", {
+      forceOverrideProfile: true,
+      overrideProfile: "custom-balanced",
+      selectionSeed: "conv-1",
+    });
     await provider.sendMessage(DUMMY_MESSAGES, {
       config: { callSite: "conversationTitle" },
     });
 
-    expect(captured?.config?.callSite).toBe("conversationTitle");
+    expect(captured?.config).toMatchObject({
+      callSite: "conversationTitle",
+      forceOverrideProfile: true,
+      overrideProfile: "custom-balanced",
+      selectionSeed: "conv-1",
+    });
   });
 
   test("RetryProvider resolves model from named profile when overrideProfile is set", async () => {

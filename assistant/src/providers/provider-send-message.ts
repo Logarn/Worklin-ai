@@ -4,7 +4,10 @@
  * and response extraction helpers.
  */
 
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
+import {
+  resolveCallSiteConfig,
+  type ResolveCallSiteOpts,
+} from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
 import { getDb } from "../memory/db-connection.js";
@@ -32,6 +35,11 @@ export interface ConfiguredProviderResult {
   configuredProviderName: string;
 }
 
+export type ConfiguredProviderOptions = Pick<
+  ResolveCallSiteOpts,
+  "forceOverrideProfile" | "overrideProfile" | "selectionSeed"
+>;
+
 /**
  * Cached promise for the lazy initialization path inside
  * `resolveConfiguredProvider`. When multiple concurrent callers enter before
@@ -47,7 +55,7 @@ export class CallSiteConfiguredProvider implements Provider {
   constructor(
     private readonly inner: Provider,
     private readonly callSite: LLMCallSite,
-    private readonly overrideProfile?: string,
+    private readonly routingOptions: ConfiguredProviderOptions = {},
   ) {
     this.name = inner.name;
     this.tokenEstimationProvider = inner.tokenEstimationProvider;
@@ -58,18 +66,22 @@ export class CallSiteConfiguredProvider implements Provider {
     options?: SendMessageOptions,
   ): Promise<ProviderResponse> {
     const config = options?.config;
-    if (config?.callSite) {
-      return this.inner.sendMessage(messages, options);
-    }
-
     return this.inner.sendMessage(messages, {
       ...options,
       config: {
         ...config,
-        callSite: this.callSite,
+        callSite: config?.callSite ?? this.callSite,
+        ...(config?.forceOverrideProfile === undefined &&
+        this.routingOptions.forceOverrideProfile !== undefined
+          ? { forceOverrideProfile: this.routingOptions.forceOverrideProfile }
+          : {}),
         ...(config?.overrideProfile === undefined &&
-        this.overrideProfile !== undefined
-          ? { overrideProfile: this.overrideProfile }
+        this.routingOptions.overrideProfile !== undefined
+          ? { overrideProfile: this.routingOptions.overrideProfile }
+          : {}),
+        ...(config?.selectionSeed === undefined &&
+        this.routingOptions.selectionSeed !== undefined
+          ? { selectionSeed: this.routingOptions.selectionSeed }
           : {}),
       },
     });
@@ -94,7 +106,7 @@ export class CallSiteConfiguredProvider implements Provider {
  */
 export async function resolveConfiguredProvider(
   callSite: LLMCallSite,
-  opts: { overrideProfile?: string } = {},
+  opts: ConfiguredProviderOptions = {},
 ): Promise<ConfiguredProviderResult | null> {
   const config = getConfig();
 
@@ -173,7 +185,7 @@ export async function resolveConfiguredProvider(
     provider: new CallSiteConfiguredProvider(
       connectionProvider,
       callSite,
-      opts.overrideProfile,
+      opts,
     ),
     configuredProviderName: inferenceProvider,
   };
@@ -189,7 +201,7 @@ export async function resolveConfiguredProvider(
  */
 export async function getConfiguredProvider(
   callSite: LLMCallSite,
-  opts: { overrideProfile?: string } = {},
+  opts: ConfiguredProviderOptions = {},
 ): Promise<Provider | null> {
   const result = await resolveConfiguredProvider(callSite, opts);
   return result?.provider ?? null;

@@ -7,6 +7,8 @@
  * overwritten, never user-provided custom titles.
  */
 
+import { resolveDefaultProfileKey } from "../config/llm-resolver.js";
+import { getConfig } from "../config/loader.js";
 import { getConfiguredProvider } from "../providers/provider-send-message.js";
 import type { Provider } from "../providers/types.js";
 import { runBtwSidechain } from "../runtime/btw-sidechain.js";
@@ -17,6 +19,7 @@ import {
   getConversation,
   getMessages,
   type MessageRow,
+  resolveOverrideProfile,
   updateConversationTitle,
 } from "./conversation-crud.js";
 
@@ -142,6 +145,36 @@ export interface GenerateTitleParams {
   signal?: AbortSignal;
 }
 
+function resolveConversationTitleProfile(
+  conversation: ReturnType<typeof getConversation>,
+): string | undefined {
+  if (conversation && conversation.conversationType !== "standard") {
+    return undefined;
+  }
+
+  const conversationProfile = resolveOverrideProfile(conversation);
+  if (conversationProfile) return conversationProfile;
+
+  const { llm } = getConfig();
+  return llm.activeProfile ?? resolveDefaultProfileKey("mainAgent", llm);
+}
+
+async function resolveConversationTitleProvider(
+  conversationId: string,
+  conversation: ReturnType<typeof getConversation>,
+  provider?: Provider,
+): Promise<Provider | null> {
+  if (provider) return provider;
+
+  const titleProfile = resolveConversationTitleProfile(conversation);
+  return getConfiguredProvider("conversationTitle", {
+    ...(titleProfile
+      ? { forceOverrideProfile: true, overrideProfile: titleProfile }
+      : {}),
+    selectionSeed: conversationId,
+  });
+}
+
 /**
  * Generate a conversation title via LLM and persist it, but only if the
  * current title is still replaceable (safe overwrite policy).
@@ -158,8 +191,11 @@ export async function generateAndPersistConversationTitle(
     return { title: conversation.title!, updated: false };
   }
 
-  const provider =
-    params.provider ?? (await getConfiguredProvider("conversationTitle"));
+  const provider = await resolveConversationTitleProvider(
+    conversationId,
+    conversation,
+    params.provider,
+  );
   if (!provider) {
     // No provider available — fall back to context-derived title or untitled.
     // Deterministic, so keep it upgradeable by a later generation pass.
@@ -285,8 +321,11 @@ export async function regenerateConversationTitle(
     return { title: conversation?.title ?? UNTITLED_FALLBACK, updated: false };
   }
 
-  const provider =
-    params.provider ?? (await getConfiguredProvider("conversationTitle"));
+  const provider = await resolveConversationTitleProvider(
+    conversationId,
+    conversation,
+    params.provider,
+  );
   if (!provider) {
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
   }
