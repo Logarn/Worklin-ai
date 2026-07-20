@@ -646,6 +646,29 @@ describe("loadConfig startup behavior", () => {
     expect(raw.llm.profiles["cost-optimized"].provider).toBe("anthropic");
   });
 
+  test("off-platform hatch with fireworks avoids non-serverless Kimi K2.5 profiles", () => {
+    const overlayPath = join(WORKSPACE_DIR, "hatch-fireworks-overlay.json");
+    writeFileSync(
+      overlayPath,
+      JSON.stringify({ llm: { default: { provider: "fireworks" } } }, null, 2) +
+        "\n",
+    );
+    process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
+
+    mergeDefaultConfigAndSeedInferenceProfiles();
+    const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+
+    expect(raw.llm.profiles["custom-balanced"].model).toBe(
+      "accounts/fireworks/models/minimax-m3",
+    );
+    expect(raw.llm.profiles["custom-quality-optimized"].model).toBe(
+      "accounts/fireworks/models/kimi-k2p6",
+    );
+    expect(raw.llm.profiles["custom-cost-optimized"].model).toBe(
+      "accounts/fireworks/models/kimi-k2p6",
+    );
+  });
+
   test("off-platform managed profiles are overwritten on every boot", () => {
     // Simulate a previous boot that left managed profiles on disk.
     writeConfig({
