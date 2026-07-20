@@ -536,7 +536,9 @@ async function main() {
   const handleListBackups = createListBackupsHandler(backupDeps);
   const handleCreateBackup = createBackupSnapshotHandler(backupDeps);
 
-  const handleRuntimeProxy = createRuntimeProxyHandler(config);
+  const handleRuntimeProxy = createRuntimeProxyHandler(config, {
+    upsertContact: contactsControlPlaneProxy.handleUpsertContact,
+  });
 
   // Helper to reject when an integration isn't configured
   const requireConfigured = (

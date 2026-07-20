@@ -246,6 +246,9 @@ export function ContactsPage({
       );
       setSelection({ kind: "contact", contactId: contact.id });
     },
+    onError: () => {
+      toast.error("Couldn't add contact. Please try again.");
+    },
     onSettled: () => invalidateContacts(),
   });
 
