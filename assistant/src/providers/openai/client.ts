@@ -1,4 +1,3 @@
-import { getProviderDefaultModel } from "../model-intents.js";
 import {
   OpenAIChatCompletionsProvider,
   type OpenAIChatCompletionsProviderOptions,
@@ -7,7 +6,11 @@ import {
   OpenAIResponsesProvider,
   type OpenAIResponsesProviderOptions,
 } from "./responses-provider.js";
-import { validateOpenAICompatibleApiKey } from "./validate-api-key.js";
+import {
+  type ApiKeyValidationResult,
+  validateOpenAICompatibleApiKey,
+  type ValidationFetch,
+} from "./validate-api-key.js";
 
 // Re-export the canonical names so callers that know about the new transport
 // class can import directly from `openai/client.js`.
@@ -27,21 +30,16 @@ export {
 };
 
 /**
- * Validate an OpenAI API key with a minimal request to the Responses API.
- * Returns `{ valid: true }` on success or `{ valid: false, reason: string }` on failure.
+ * Validate an OpenAI API key without requiring access to a specific model.
  */
 export async function validateOpenAIApiKey(
   apiKey: string,
-): Promise<{ valid: true } | { valid: false; reason: string }> {
+  fetchImpl?: ValidationFetch,
+): Promise<ApiKeyValidationResult> {
   return validateOpenAICompatibleApiKey(apiKey, {
     baseUrl: "https://api.openai.com/v1",
     providerLabel: "OpenAI",
-    method: "POST",
-    path: "responses",
-    body: {
-      model: getProviderDefaultModel("openai"),
-      input: "Reply with OK.",
-      max_output_tokens: 16,
-    },
+    fetchImpl,
+    rejectionStatuses: [401],
   });
 }

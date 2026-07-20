@@ -53,7 +53,12 @@ import {
 } from "../../tools/credentials/metadata-store.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
-import { BadRequestError, InternalError, NotFoundError } from "./errors.js";
+import {
+  BadRequestError,
+  InternalError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "./errors.js";
 import { getSecretsDeps } from "./secrets-deps.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
@@ -76,9 +81,17 @@ let apiKeyGeneration = 0;
 
 export function assertApiKeyAccepted(
   provider: string,
-  validation: ApiKeyValidationResult,
+  validation: ApiKeyValidationResult | { valid: false; reason: string },
 ): void {
   if (validation.valid) return;
+  if (
+    "outcome" in validation &&
+    validation.outcome === "verification_unavailable"
+  ) {
+    throw new ServiceUnavailableError(
+      `${provider} API key could not be verified right now and was not saved. ${validation.reason}`,
+    );
+  }
   throw new BadRequestError(
     `${provider} API key was not saved. ${validation.reason}`,
   );
@@ -333,7 +346,8 @@ async function handleAddSecret({ body }: RouteHandlerArgs) {
     if (
       err instanceof BadRequestError ||
       err instanceof InternalError ||
-      err instanceof NotFoundError
+      err instanceof NotFoundError ||
+      err instanceof ServiceUnavailableError
     ) {
       throw err;
     }
