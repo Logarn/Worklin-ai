@@ -52,6 +52,22 @@ describe("provider connection readiness", () => {
     ).toBe(true);
   });
 
+  test("accepts a namespaced API key stored as credential metadata", () => {
+    const xaiConnection = {
+      ...connection({
+        type: "api_key",
+        credential: "credential/xai/api_key",
+      }),
+      provider: "openai-compatible",
+    } as ProviderConnection;
+
+    expect(
+      isProviderConnectionReady(xaiConnection, [
+        { type: "credential", name: "xai:api_key" },
+      ]),
+    ).toBe(true);
+  });
+
   test("accepts keyless local connections without secret metadata", () => {
     expect(isProviderConnectionReady(connection({ type: "none" }), [])).toBe(
       true,

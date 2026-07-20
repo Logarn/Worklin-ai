@@ -24,6 +24,11 @@ import {
   providerSupportsPlatformAuth,
   PROVIDER_DISPLAY_NAMES,
 } from "@/assistant/llm-model-catalog";
+import {
+  connectionMatchesPreset,
+  XAI_PROVIDER_PRESET,
+  type ProviderConnectionPreset,
+} from "@/assistant/provider-connection-presets";
 import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
@@ -57,25 +62,65 @@ import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-st
 
 type PowerSource = "worklin-credits" | "api-key";
 
-const LANGUAGE_MODEL_PROVIDERS: readonly ConnectionProvider[] = [
-  "openai",
-  "anthropic",
-  "gemini",
-  "kimi",
-  "openrouter",
-  "fireworks",
-  "minimax",
-];
+interface LanguageModelService {
+  readonly id: string;
+  readonly provider: ConnectionProvider;
+  readonly displayName: string;
+  readonly description: string;
+  readonly preset?: ProviderConnectionPreset;
+}
 
-const PROVIDER_DESCRIPTIONS: Partial<Record<ConnectionProvider, string>> = {
-  openai: "GPT models, API key, or ChatGPT subscription.",
-  anthropic: "Claude models for careful reasoning.",
-  gemini: "Google models for fast everyday work.",
-  kimi: "Long-context Kimi models.",
-  openrouter: "Many model families through one key.",
-  fireworks: "Hosted open and frontier models.",
-  minimax: "Long-context MiniMax models.",
-};
+const LANGUAGE_MODEL_SERVICES: readonly LanguageModelService[] = [
+  {
+    id: "openai",
+    provider: "openai",
+    displayName: "OpenAI",
+    description: "GPT models, API key, or ChatGPT subscription.",
+  },
+  {
+    id: XAI_PROVIDER_PRESET.id,
+    provider: XAI_PROVIDER_PRESET.provider,
+    displayName: XAI_PROVIDER_PRESET.displayName,
+    description: "Grok models through your xAI account.",
+    preset: XAI_PROVIDER_PRESET,
+  },
+  {
+    id: "anthropic",
+    provider: "anthropic",
+    displayName: "Anthropic",
+    description: "Claude models for careful reasoning.",
+  },
+  {
+    id: "gemini",
+    provider: "gemini",
+    displayName: "Google Gemini",
+    description: "Google models for fast everyday work.",
+  },
+  {
+    id: "kimi",
+    provider: "kimi",
+    displayName: "Kimi",
+    description: "Long-context Kimi models.",
+  },
+  {
+    id: "openrouter",
+    provider: "openrouter",
+    displayName: "OpenRouter",
+    description: "Many model families through one key.",
+  },
+  {
+    id: "fireworks",
+    provider: "fireworks",
+    displayName: "Fireworks",
+    description: "Hosted open and frontier models.",
+  },
+  {
+    id: "minimax",
+    provider: "minimax",
+    displayName: "MiniMax",
+    description: "Long-context MiniMax models.",
+  },
+];
 
 const METHOD_LABELS: Record<AuthType, string> = {
   api_key: "API key",
@@ -94,6 +139,8 @@ function getProviderMark(provider: string): string {
   switch (provider) {
     case "openai":
       return "O";
+    case "xai":
+      return "X";
     case "anthropic":
       return "AI";
     case "gemini":
@@ -174,6 +221,15 @@ function getMethodOptions(provider: ConnectionProvider): AuthType[] {
   return options;
 }
 
+function serviceMatchesConnection(
+  service: LanguageModelService,
+  connection: ProviderConnection,
+): boolean {
+  return service.preset
+    ? connectionMatchesPreset(connection, service.preset)
+    : connection.provider === service.provider;
+}
+
 function PowerSourceTile({
   selected,
   icon,
@@ -224,7 +280,7 @@ function PowerSourceTile({
   );
 }
 
-function ProviderMark({ provider }: { provider: ConnectionProvider }) {
+function ProviderMark({ provider }: { provider: string }) {
   return (
     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-base)] bg-[var(--surface-sunken)] text-body-small-default font-semibold text-[var(--content-emphasised)]">
       {getProviderMark(provider)}
@@ -284,7 +340,7 @@ export function LanguageModelCard() {
   const [servicesOpen, setServicesOpen] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [providerMethods, setProviderMethods] = useState<
-    Partial<Record<ConnectionProvider, AuthType>>
+    Partial<Record<string, AuthType>>
   >({});
   const [providerCreateSeed, setProviderCreateSeed] =
     useState<ProviderCreateSeed | null>(null);
@@ -325,6 +381,17 @@ export function LanguageModelCard() {
     (profile) => profile.source !== "managed",
   );
   const selectedProvider = selectedProfile?.provider ?? null;
+  const selectedService =
+    (selectedConnection
+      ? LANGUAGE_MODEL_SERVICES.find((service) =>
+          serviceMatchesConnection(service, selectedConnection),
+        )
+      : null) ??
+    LANGUAGE_MODEL_SERVICES.find(
+      (service) =>
+        !service.preset && service.provider === selectedProvider,
+    ) ??
+    null;
   const selectedStatus = getConnectionStatus(
     selectedPowerSource,
     selectedConnection && isProviderConnectionReady(selectedConnection, secrets)
@@ -370,21 +437,26 @@ export function LanguageModelCard() {
   );
 
   const handleProviderMethodChange = useCallback(
-    (provider: ConnectionProvider, method: AuthType) => {
+    (serviceId: string, method: AuthType) => {
       setProviderMethods((current) => ({
         ...current,
-        [provider]: method,
+        [serviceId]: method,
       }));
     },
     [],
   );
 
   const openProviderFlow = useCallback(
-    (provider?: ConnectionProvider, method?: AuthType) => {
+    (
+      provider?: ConnectionProvider,
+      method?: AuthType,
+      preset?: ProviderConnectionPreset,
+    ) => {
       if (provider && method) {
         setProviderCreateSeed((current) => ({
           provider,
           authType: method,
+          preset,
           nonce: (current?.nonce ?? 0) + 1,
         }));
       } else {
@@ -431,7 +503,11 @@ export function LanguageModelCard() {
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[var(--border-base)] bg-[var(--surface-sunken)] text-body-medium-default font-semibold text-[var(--content-emphasised)]">
-                  {selectedProvider ? getProviderMark(selectedProvider) : "M"}
+                  {selectedService
+                    ? getProviderMark(selectedService.id)
+                    : selectedProvider
+                      ? getProviderMark(selectedProvider)
+                      : "M"}
                 </span>
                 <div className="min-w-0">
                   <p className="text-body-large-default font-semibold text-[var(--content-emphasised)]">
@@ -509,16 +585,17 @@ export function LanguageModelCard() {
 
             {servicesOpen ? (
               <div className="grid gap-3 border-t border-[var(--border-subtle)] p-4 sm:grid-cols-2 xl:grid-cols-3">
-                {LANGUAGE_MODEL_PROVIDERS.map((provider) => {
+                {LANGUAGE_MODEL_SERVICES.map((service) => {
+                  const { provider } = service;
                   const providerConnections = connections.filter(
                     (connection) =>
-                      connection.provider === provider &&
+                      serviceMatchesConnection(service, connection) &&
                       isProviderConnectionReady(connection, secrets),
                   );
                   const hasConnection = providerConnections.length > 0;
-                  const isActive = selectedProvider === provider;
+                  const isActive = selectedService?.id === service.id;
                   const method =
-                    providerMethods[provider] ??
+                    providerMethods[service.id] ??
                     (selectedPowerSource === "worklin-credits" &&
                     providerSupportsPlatformAuth(provider)
                       ? "platform"
@@ -531,7 +608,7 @@ export function LanguageModelCard() {
 
                   return (
                     <div
-                      key={provider}
+                      key={service.id}
                       className={cn(
                         "flex min-h-[178px] flex-col rounded-lg border bg-[var(--surface-base)] p-3",
                         isActive
@@ -540,13 +617,13 @@ export function LanguageModelCard() {
                       )}
                     >
                       <div className="flex items-start gap-3">
-                        <ProviderMark provider={provider} />
+                        <ProviderMark provider={service.id} />
                         <div className="min-w-0">
                           <p className="text-body-medium-default font-semibold text-[var(--content-emphasised)]">
-                            {getProviderLabel(provider)}
+                            {service.displayName}
                           </p>
                           <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
-                            {PROVIDER_DESCRIPTIONS[provider]}
+                            {service.description}
                           </p>
                         </div>
                       </div>
@@ -559,7 +636,7 @@ export function LanguageModelCard() {
                           <Dropdown
                             value={effectiveMethod}
                             onChange={(next) =>
-                              handleProviderMethodChange(provider, next)
+                              handleProviderMethodChange(service.id, next)
                             }
                             options={methodOptions.map((option) => ({
                               value: option,
@@ -573,7 +650,11 @@ export function LanguageModelCard() {
                           onClick={() =>
                             hasConnection
                               ? openProviderFlow()
-                              : openProviderFlow(provider, effectiveMethod)
+                              : openProviderFlow(
+                                  provider,
+                                  effectiveMethod,
+                                  service.preset,
+                                )
                           }
                           className="w-full justify-center"
                         >

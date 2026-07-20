@@ -1,3 +1,5 @@
+import { XAI_PROVIDER_PRESET } from "@/assistant/provider-connection-presets";
+
 // Trimmed model-provider catalog for the onboarding "Connect a Model Provider"
 // step. Ported from the daemon/macOS catalog
 // (clients/shared/Resources/llm-provider-catalog.json), limited to the
@@ -81,20 +83,20 @@ export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
     requiresKey: true,
   },
   {
-    id: "xai",
-    provider: "openai-compatible",
+    id: XAI_PROVIDER_PRESET.id,
+    provider: XAI_PROVIDER_PRESET.provider,
     authType: "api_key",
-    displayName: "xAI",
+    displayName: XAI_PROVIDER_PRESET.displayName,
     subtitle: "Use Grok with an xAI API key.",
     apiKeyPlaceholder: "xai-...",
     docsUrl: "https://console.x.ai/",
     requiresKey: true,
-    connectionName: "xai-personal",
-    credentialName: "xai",
-    connectionLabel: "xAI",
-    baseUrl: "https://api.x.ai/v1",
-    models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
-    defaultModel: "grok-4.3",
+    connectionName: XAI_PROVIDER_PRESET.connectionName,
+    credentialName: XAI_PROVIDER_PRESET.credentialName,
+    connectionLabel: XAI_PROVIDER_PRESET.displayName,
+    baseUrl: XAI_PROVIDER_PRESET.baseUrl,
+    models: XAI_PROVIDER_PRESET.models,
+    defaultModel: XAI_PROVIDER_PRESET.defaultModel,
   },
   {
     id: "kimi",
