@@ -39,7 +39,7 @@ mock.module("../secrets-deps.js", () => ({
   getSecretsDeps: () => undefined,
 }));
 
-import { BadRequestError } from "../errors.js";
+import { BadRequestError, ServiceUnavailableError } from "../errors.js";
 import { ROUTES } from "../secret-routes.js";
 
 const addSecret = ROUTES.find(
@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 describe("OpenAI API key secret route", () => {
-  test("saves a restricted key when OpenAI model listing returns 403", async () => {
+  test("does not save a key when OpenAI model listing is forbidden", async () => {
     globalThis.fetch = fetchReturning(403);
 
     await expect(
@@ -66,14 +66,8 @@ describe("OpenAI API key secret route", () => {
           value: "restricted-test-key",
         },
       }),
-    ).resolves.toEqual({
-      success: true,
-      type: "api_key",
-      name: "openai",
-    });
-    expect(secureWrites).toEqual({
-      "credential/openai/api_key": "restricted-test-key",
-    });
+    ).rejects.toBeInstanceOf(ServiceUnavailableError);
+    expect(secureWrites).toEqual({});
   });
 
   test("rejects a 401 OpenAI key without storing it", async () => {

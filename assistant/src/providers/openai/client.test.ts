@@ -20,13 +20,18 @@ describe("validateOpenAIApiKey", () => {
     ).resolves.toEqual({ valid: true });
   });
 
-  test("accepts a restricted key when model listing is forbidden", async () => {
+  test("does not claim a forbidden key is connected", async () => {
     const fetchImpl: ValidationFetch = async () =>
       new Response("forbidden", { status: 403 });
 
     await expect(
       validateOpenAIApiKey("restricted-key", fetchImpl),
-    ).resolves.toEqual({ valid: true });
+    ).resolves.toEqual({
+      valid: false,
+      outcome: "verification_unavailable",
+      reason:
+        "OpenAI could not verify this connection (403). Try again shortly.",
+    });
   });
 
   test("rejects a key when OpenAI reports invalid authentication", async () => {

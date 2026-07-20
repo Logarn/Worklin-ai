@@ -40,8 +40,6 @@ export async function validateOpenAIApiKey(
     baseUrl: "https://api.openai.com/v1",
     providerLabel: "OpenAI",
     fetchImpl,
-    // Restricted project keys can authenticate without permission to list models.
-    acceptedStatuses: [403],
     rejectionStatuses: [401],
   });
 }
