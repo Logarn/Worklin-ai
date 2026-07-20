@@ -20,6 +20,10 @@ export interface BrandResearchRun {
   error: string | null;
 }
 
+interface BrandResearchRunListResponse {
+  results?: BrandResearchRun[];
+}
+
 export async function listBrandResearchRuns(): Promise<BrandResearchRun[]> {
   const { data, error, response } = await client.get<
     BrandResearchRun[],
@@ -38,7 +42,15 @@ export async function listBrandResearchRuns(): Promise<BrandResearchRun[]> {
       ),
     );
   }
-  return data ?? [];
+  // The control plane uses the same paginated envelope as the other list
+  // routes. Keep accepting a bare array so older preview gateways remain
+  // compatible while they roll forward.
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object" && "results" in data) {
+    const results = (data as BrandResearchRunListResponse).results;
+    return Array.isArray(results) ? results : [];
+  }
+  return [];
 }
 
 export async function enqueueBrandResearchRun(input: {
