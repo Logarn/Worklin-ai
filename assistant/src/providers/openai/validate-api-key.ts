@@ -5,7 +5,16 @@ const VALIDATION_TIMEOUT_MS = 10_000;
 
 export type ApiKeyValidationResult =
   | { valid: true }
-  | { valid: false; reason: string };
+  | {
+      valid: false;
+      outcome: "invalid_credentials";
+      reason: string;
+    }
+  | {
+      valid: false;
+      outcome: "verification_unavailable";
+      reason: string;
+    };
 
 type ValidationFetch = (
   input: string | URL | Request,
@@ -48,11 +57,13 @@ export async function validateOpenAICompatibleApiKey(
     if (rejectionStatuses.includes(response.status)) {
       return {
         valid: false,
+        outcome: "invalid_credentials",
         reason: `${options.providerLabel} rejected this API key.`,
       };
     }
     return {
       valid: false,
+      outcome: "verification_unavailable",
       reason: `${options.providerLabel} could not verify this connection (${response.status}). Try again shortly.`,
     };
   } catch (error) {
@@ -65,6 +76,7 @@ export async function validateOpenAICompatibleApiKey(
     );
     return {
       valid: false,
+      outcome: "verification_unavailable",
       reason: `${options.providerLabel} could not verify this connection. Check your network and try again.`,
     };
   }
