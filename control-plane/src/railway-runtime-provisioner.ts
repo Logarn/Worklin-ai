@@ -28,6 +28,8 @@ export interface RailwayProvisionerConfig {
   mountPath: string;
   runtimePort: number;
   maxRuntimeServices: number;
+  /** Safety quota for one workspace; defaults to one when omitted. */
+  maxRuntimeServicesPerWorkspace?: number;
   maxConcurrentProvisioning: number;
   requestTimeoutMs: number;
   serviceReconcileTimeoutMs: number;
@@ -102,6 +104,10 @@ export function railwayProvisionerConfigFromEnv(
       rawEnv.WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES,
       0,
     ),
+    maxRuntimeServicesPerWorkspace: positiveIntegerEnv(
+      rawEnv.WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES_PER_WORKSPACE,
+      1,
+    ),
     maxConcurrentProvisioning: positiveIntegerEnv(
       rawEnv.WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY,
       2,
@@ -161,6 +167,16 @@ export function railwayRuntimeCapacityError(
   if (existingServiceRef) return null;
   if (allocatedRuntimeServices < maxRuntimeServices) return null;
   return `Railway runtime service limit (${maxRuntimeServices}) has been reached.`;
+}
+
+export function railwayRuntimeWorkspaceCapacityError(
+  existingServiceRef: string | null,
+  allocatedRuntimeServices: number,
+  maxRuntimeServices: number,
+): string | null {
+  if (existingServiceRef) return null;
+  if (allocatedRuntimeServices < maxRuntimeServices) return null;
+  return `Railway runtime workspace quota (${maxRuntimeServices}) has been reached.`;
 }
 
 export function railwayRuntimeServiceName(assistantId: string): string {

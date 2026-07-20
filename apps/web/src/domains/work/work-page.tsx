@@ -5,6 +5,7 @@ import { Link, Navigate } from "react-router";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
+import { BrandResearchStatus } from "@/components/brand-research-status";
 import { routes } from "@/utils/routes";
 
 import { useWorkData } from "./use-work-data";
@@ -51,6 +52,7 @@ export function WorkPage() {
             Every copybook, document, app, design, image, and campaign asset
             lives with its brand.
           </p>
+          <BrandResearchStatus assistantId={assistantId} />
         </div>
 
         {hasPartialError ? (

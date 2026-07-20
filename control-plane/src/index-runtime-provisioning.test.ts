@@ -377,7 +377,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toMatchObject({
       code: "platform_hosted_disabled",
-      runtime_status: "failed",
+      runtime_status: "provisioning",
     });
 
     const assistant = db
@@ -815,7 +815,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(runtimeRequests).toBe(0);
   });
 
-  test("startup resumes only assistants whose owners accepted consent", async () => {
+  test("startup does not provision assistants before their first real request", async () => {
     const dbPath = createTempDbPath();
     const db = new Database(dbPath);
     createControlPlaneSchema(db);
@@ -914,48 +914,23 @@ describe("control-plane runtime provisioning guards", () => {
     });
     await waitForHealth(origin);
 
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (
-        railwayOperations.some((operation) =>
-          operation.query.includes("serviceCreate"),
-        )
-      ) {
-        break;
-      }
-      await Bun.sleep(10);
-    }
-    await Bun.sleep(50);
+    await Bun.sleep(100);
     railway.stop(true);
 
     expect(
       railwayOperations.filter((operation) =>
         operation.query.includes("serviceCreate"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     const verificationDb = new Database(dbPath);
-    const stacks = verificationDb
-      .query<
-        RuntimeStackRow,
-        []
-      >("SELECT * FROM runtime_stacks ORDER BY assistant_id")
-      .all();
-    expect(stacks.map((stack) => stack.assistant_id)).toEqual([
-      "asst-accepted",
-    ]);
-    const variablesMutation = railwayOperations.find((operation) =>
-      operation.query.includes("variableCollectionUpsert"),
-    );
-    const input = variablesMutation?.variables.input as {
-      variables: Record<string, string>;
-    };
-    expect(stacks[0]?.actor_signing_key_scope).toStartWith("runtime_v1:");
-    expect(input.variables.ACTOR_TOKEN_SIGNING_KEY).toBe(
-      deriveRuntimeActorSigningKey(
-        ACTOR_SIGNING_KEY,
-        stacks[0]!.actor_signing_key_scope,
-      ),
-    );
-    expect(input.variables.ACTOR_TOKEN_SIGNING_KEY).not.toBe(ACTOR_SIGNING_KEY);
+    expect(
+      verificationDb
+        .query<
+          { count: number },
+          []
+        >("SELECT COUNT(*) AS count FROM runtime_stacks")
+        .get()?.count,
+    ).toBe(0);
     verificationDb.close();
   });
 });

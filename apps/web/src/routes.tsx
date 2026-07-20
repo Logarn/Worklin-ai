@@ -496,6 +496,15 @@ export const routeTree = [
                     },
                   },
                   {
+                    path: "workspace",
+                    lazy: {
+                      Component: () =>
+                        import("@/domains/settings/pages/workspace-page").then(
+                          (m) => m.WorkspacePage,
+                        ),
+                    },
+                  },
+                  {
                     path: "schedules",
                     lazy: {
                       Component: () =>

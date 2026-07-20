@@ -159,6 +159,7 @@ export const routes = {
     bookmarks: r("/assistant/settings/bookmarks"),
     billing: r("/assistant/settings/billing"),
     community: r("/assistant/settings/community"),
+    workspace: r("/assistant/settings/workspace"),
     debug: r("/assistant/settings/debug"),
     developer: r("/assistant/settings/developer"),
     advanced: r("/assistant/settings/advanced"),

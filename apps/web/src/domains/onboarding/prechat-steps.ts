@@ -95,7 +95,10 @@ export function resolveWebSteps(caps: WebStepCapabilities): PreChatStep[] {
     {
       id: "brand",
       funnelStep: null,
-      enabled: !paredDown,
+      // Keep the brand seed available in both web arms. The screen itself is
+      // skippable, so pared-down onboarding stays lightweight without losing
+      // the only durable brand input we collect.
+      enabled: true,
     },
     {
       id: "taskTone",

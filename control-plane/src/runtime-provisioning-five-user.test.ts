@@ -422,6 +422,23 @@ describe("five-customer isolated runtime launch", () => {
       new Set(customers.map((customer) => customer.assistantId)).size,
     ).toBe(CUSTOMER_COUNT);
 
+    // Hatch only prepares the assistant. The first real assistant request is
+    // what claims capacity and starts each isolated runtime.
+    const preparingResponses = await Promise.all(
+      customers.map((customer) =>
+        fetch(
+          `${origin}/v1/assistants/${customer.assistantId}/conversations/`,
+          { headers: authenticatedHeaders(customer.sessionId) },
+        ),
+      ),
+    );
+    for (const response of preparingResponses) {
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: "runtime_not_ready",
+      });
+    }
+
     const settledStacks = await waitForProvisioningToSettle(dbPath);
     expect(maxActiveServiceCreates).toBe(PROVISIONING_CONCURRENCY);
     expect(maxActiveServiceCreates).toBeLessThanOrEqual(
