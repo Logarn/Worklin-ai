@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 
 export const RUNTIME_WORKER_STATE_FORMAT = "vbundle-v1" as const;
 export const RUNTIME_WORKER_STATE_PROVIDER = "gcs" as const;
+export const RUNTIME_WORKER_STATE_CREDENTIAL_POLICY =
+  "exclude-ces-credentials" as const;
 
 export type RuntimeWorkerStateStatus =
   | "checkpointed"
@@ -75,11 +77,16 @@ export interface RuntimeWorkerStateExportPlan {
 }
 
 export interface RuntimeWorkerStateStorage {
+  /**
+   * Pooled snapshots contain assistant files/state only. Credentials are
+   * deliberately excluded because CES owns credential persistence and lookup.
+   */
   restore(input: {
     tenant: RuntimeWorkerStateTenant;
     workerStackId: string;
     generation: number;
     object: RuntimeWorkerStateObject | null;
+    credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
   }): Promise<{ checksumSha256: string | null }>;
   export(input: {
     tenant: RuntimeWorkerStateTenant;
@@ -87,6 +94,7 @@ export interface RuntimeWorkerStateStorage {
     currentGeneration: number;
     nextGeneration: number;
     objectKey: string;
+    credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
   }): Promise<RuntimeWorkerStateObject>;
 }
 
@@ -688,6 +696,7 @@ export async function restoreRuntimeWorkerStateWithStorage(
       workerStackId,
       generation: plan.generation,
       object: plan.object,
+      credentialPolicy: RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
     });
     return completeRuntimeWorkerStateRestore(
       db,
@@ -745,6 +754,7 @@ export async function exportRuntimeWorkerStateWithStorage(
       currentGeneration: plan.currentGeneration,
       nextGeneration: plan.nextGeneration,
       objectKey: plan.objectKey,
+      credentialPolicy: RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
     });
     return completeRuntimeWorkerStateExport(
       db,

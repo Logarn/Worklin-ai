@@ -9,6 +9,7 @@ import {
   releaseDispatchedRuntimeWorker,
   renewDispatchedRuntimeWorker,
   runtimeWorkerPoolConfigFromEnv,
+  type RuntimeWorkerLifecycleAdapter,
   type RuntimeWorkerPoolConfig,
 } from "./runtime-worker-dispatcher.js";
 import { RUNTIME_WORKER_POOL_PROVIDER } from "./runtime-worker-leases.js";
@@ -81,6 +82,26 @@ function config(
 
 const assistantOne = { id: "asst-1", org_id: "org-1" };
 const assistantTwo = { id: "asst-2", org_id: "org-2" };
+const CHECKSUM = "a".repeat(64);
+
+function lifecycle(): RuntimeWorkerLifecycleAdapter {
+  return {
+    storage: {
+      restore: async ({ object }) => ({
+        checksumSha256: object?.checksumSha256 ?? null,
+      }),
+      export: async ({ objectKey }) => ({
+        provider: "gcs",
+        bucket: "worklin-runtime-state",
+        objectKey,
+        checksumSha256: CHECKSUM,
+        byteSize: 4_096,
+        format: "vbundle-v1",
+      }),
+    },
+    sanitize: async () => {},
+  };
+}
 
 describe("runtime worker pool config", () => {
   test("is disabled with no registered workers by default", () => {
@@ -111,9 +132,9 @@ describe("runtime worker pool config", () => {
 });
 
 describe("runtime worker dispatcher", () => {
-  test("does not inspect or lease workers while disabled", () => {
+  test("does not inspect or lease workers while disabled", async () => {
     const db = setupDb();
-    const result = dispatchRuntimeWorker(
+    const result = await dispatchRuntimeWorker(
       db,
       assistantOne,
       runtimeWorkerPoolConfigFromEnv({}),
@@ -136,9 +157,9 @@ describe("runtime worker dispatcher", () => {
     ).toBe(0);
   });
 
-  test("reports explicitly enabled empty capacity without claiming", () => {
+  test("reports explicitly enabled empty capacity without claiming", async () => {
     const db = setupDb();
-    const result = dispatchRuntimeWorker(
+    const result = await dispatchRuntimeWorker(
       db,
       assistantOne,
       config({ candidateStackIds: [], maxConcurrentLeases: 0 }),
@@ -158,7 +179,7 @@ describe("runtime worker dispatcher", () => {
     });
   });
 
-  test("excludes unhealthy and unregistered runtime stacks", () => {
+  test("excludes unhealthy and unregistered runtime stacks", async () => {
     const db = setupDb();
     const poolConfig = config({
       candidateStackIds: ["worker-2", "missing-worker"],
@@ -169,7 +190,7 @@ describe("runtime worker dispatcher", () => {
       { stackId: "missing-worker", readiness: "missing", stack: null },
     ]);
 
-    const result = dispatchRuntimeWorker(
+    const result = await dispatchRuntimeWorker(
       db,
       assistantOne,
       poolConfig,
@@ -189,27 +210,29 @@ describe("runtime worker dispatcher", () => {
     });
   });
 
-  test("enforces max concurrency and exposes saturation telemetry", () => {
+  test("enforces max concurrency and exposes saturation telemetry", async () => {
     const db = setupDb();
     db.query(
       "UPDATE runtime_stacks SET last_health_status = '200' WHERE id = 'worker-2'",
     ).run();
     const poolConfig = config({ maxConcurrentLeases: 1 });
-    const first = dispatchRuntimeWorker(
+    const first = await dispatchRuntimeWorker(
       db,
       assistantOne,
       poolConfig,
       "lease-1",
       1_000,
       NOW_ISO,
+      lifecycle(),
     );
-    const blocked = dispatchRuntimeWorker(
+    const blocked = await dispatchRuntimeWorker(
       db,
       assistantTwo,
       poolConfig,
       "lease-2",
       1_001,
       NOW_ISO,
+      lifecycle(),
     );
 
     expect(first.status).toBe("leased");
@@ -226,97 +249,95 @@ describe("runtime worker dispatcher", () => {
     });
   });
 
-  test("returns a typed lease-loss result for renewal and release", () => {
+  test("returns a typed lease-loss result for renewal and release", async () => {
     const db = setupDb();
     const poolConfig = config({ candidateStackIds: ["worker-1"] });
-    expect(
-      dispatchRuntimeWorker(
-        db,
-        assistantOne,
-        poolConfig,
-        "lease-1",
-        1_000,
-        NOW_ISO,
-      ).status,
-    ).toBe("leased");
-
-    expect(
-      renewDispatchedRuntimeWorker(
-        db,
-        assistantOne,
-        poolConfig,
-        "wrong-token",
-        1_001,
-        NOW_ISO,
-      ),
-    ).toEqual({ status: "lease_lost" });
-    expect(
-      releaseDispatchedRuntimeWorker(
-        db,
-        assistantOne,
-        "wrong-token",
-        1_001,
-        NOW_ISO,
-      ),
-    ).toEqual({ status: "lease_lost" });
-  });
-
-  test("keeps a released worker bound until a real sanitizer clears it", () => {
-    const db = setupDb();
-    const poolConfig = config({
-      candidateStackIds: ["worker-1"],
-      maxConcurrentLeases: 1,
-    });
-    expect(
-      dispatchRuntimeWorker(
-        db,
-        assistantOne,
-        poolConfig,
-        "lease-1",
-        1_000,
-        NOW_ISO,
-      ).status,
-    ).toBe("leased");
-    expect(
-      releaseDispatchedRuntimeWorker(
-        db,
-        assistantOne,
-        "lease-1",
-        1_001,
-        NOW_ISO,
-      ),
-    ).toEqual({ status: "released" });
-
-    const denied = dispatchRuntimeWorker(
-      db,
-      assistantTwo,
-      poolConfig,
-      "lease-2",
-      1_002,
-      NOW_ISO,
-    );
-    expect(denied).toMatchObject({
-      status: "unavailable",
-      reason: "capacity_exhausted",
-      telemetry: {
-        state: "sanitization_required",
-        activeLeaseCount: 0,
-        boundIdleWorkerCount: 1,
-        availableNewAssistantCapacity: 0,
-      },
-    });
-  });
-
-  test("renews only while the registered worker remains healthy", () => {
-    const db = setupDb();
-    const poolConfig = config({ candidateStackIds: ["worker-1"] });
-    dispatchRuntimeWorker(
+    const assignment = await dispatchRuntimeWorker(
       db,
       assistantOne,
       poolConfig,
       "lease-1",
       1_000,
       NOW_ISO,
+      lifecycle(),
+    );
+    expect(assignment.status).toBe("leased");
+
+    expect(
+      renewDispatchedRuntimeWorker(
+        db,
+        assistantOne,
+        poolConfig,
+        "wrong-token",
+        1_001,
+        NOW_ISO,
+        lifecycle(),
+      ),
+    ).toEqual({ status: "lease_lost" });
+    expect(
+      await releaseDispatchedRuntimeWorker(
+        db,
+        assistantOne,
+        "wrong-token",
+        1_001,
+        NOW_ISO,
+        lifecycle(),
+      ),
+    ).toEqual({ status: "lease_lost" });
+  });
+
+  test("releases a worker only after the sanitizer clears it", async () => {
+    const db = setupDb();
+    const poolConfig = config({
+      candidateStackIds: ["worker-1"],
+      maxConcurrentLeases: 1,
+    });
+    const assignment = await dispatchRuntimeWorker(
+      db,
+      assistantOne,
+      poolConfig,
+      "lease-1",
+      1_000,
+      NOW_ISO,
+      lifecycle(),
+    );
+    expect(assignment.status).toBe("leased");
+    expect(
+      await releaseDispatchedRuntimeWorker(
+        db,
+        assistantOne,
+        "lease-1",
+        1_001,
+        NOW_ISO,
+        lifecycle(),
+      ),
+    ).toEqual({ status: "released" });
+
+    const denied = await dispatchRuntimeWorker(
+      db,
+      assistantTwo,
+      poolConfig,
+      "lease-2",
+      1_002,
+      NOW_ISO,
+      lifecycle(),
+    );
+    expect(denied).toMatchObject({
+      status: "leased",
+    });
+  });
+
+  test("renews only while the registered worker remains healthy", async () => {
+    const db = setupDb();
+    const poolConfig = config({ candidateStackIds: ["worker-1"] });
+    await dispatchRuntimeWorker(
+      db,
+      assistantOne,
+      poolConfig,
+      "lease-1",
+      1_000,
+      NOW_ISO,
+      lifecycle(),
     );
     expect(
       renewDispatchedRuntimeWorker(
@@ -326,6 +347,7 @@ describe("runtime worker dispatcher", () => {
         "lease-1",
         1_001,
         NOW_ISO,
+        lifecycle(),
       ),
     ).toMatchObject({ status: "renewed" });
 
@@ -340,6 +362,7 @@ describe("runtime worker dispatcher", () => {
         "lease-1",
         1_002,
         NOW_ISO,
+        lifecycle(),
       ),
     ).toEqual({ status: "worker_unavailable" });
   });
@@ -368,19 +391,20 @@ describe("runtime worker dispatcher", () => {
     });
   });
 
-  test("counts active leases removed from registration against the global cap", () => {
+  test("counts active leases removed from registration against the global cap", async () => {
     const db = setupDb();
     const firstConfig = config({
       candidateStackIds: ["worker-1"],
       maxConcurrentLeases: 1,
     });
-    dispatchRuntimeWorker(
+    await dispatchRuntimeWorker(
       db,
       assistantOne,
       firstConfig,
       "lease-1",
       1_000,
       NOW_ISO,
+      lifecycle(),
     );
     db.query(
       "UPDATE runtime_stacks SET last_health_status = '200' WHERE id = 'worker-2'",

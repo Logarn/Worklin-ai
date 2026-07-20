@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
+
 import type { Database } from "bun:sqlite";
 
 import {
   claimRuntimeWorkerLease,
   getActiveRuntimeWorkerLease,
+  markRuntimeWorkerSanitized,
   releaseRuntimeWorkerLease,
   renewRuntimeWorkerLease,
   RUNTIME_WORKER_POOL_PROVIDER,
@@ -10,6 +13,18 @@ import {
   type RuntimeWorkerLeaseAssistant,
   type RuntimeWorkerStackRow,
 } from "./runtime-worker-leases.js";
+import {
+  assertRuntimeWorkerStateExportedForRelease,
+  assertRuntimeWorkerStateReadyForLease,
+  ensureRuntimeWorkerStateCheckpointSchema,
+  exportRuntimeWorkerStateWithStorage,
+  getRuntimeWorkerStateCheckpoint,
+  markRuntimeWorkerStateReleased,
+  restoreRuntimeWorkerStateWithStorage,
+  RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
+  RuntimeWorkerStateError,
+  type RuntimeWorkerStateStorage,
+} from "./runtime-worker-state-checkpoints.js";
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -69,7 +84,10 @@ export type RuntimeWorkerDispatchResult =
         | "no_ready_workers"
         | "capacity_exhausted"
         | "assistant_not_found"
-        | "assistant_busy";
+        | "assistant_busy"
+        | "state_lifecycle_unavailable"
+        | "state_restore_failed"
+        | "state_quarantined";
       retryAfterMs: number | null;
       telemetry: RuntimeWorkerCapacityTelemetry;
     }
@@ -87,7 +105,25 @@ export type RuntimeWorkerRenewResult =
 
 export type RuntimeWorkerReleaseResult =
   | { status: "lease_lost" }
+  | { status: "state_lifecycle_unavailable" }
+  | { status: "state_export_failed" }
+  | { status: "state_quarantined" }
+  | { status: "sanitization_failed" }
   | { status: "released" };
+
+export interface RuntimeWorkerLifecycleAdapter {
+  storage: RuntimeWorkerStateStorage;
+  /**
+   * Deletes tenant files and process-local state from the worker. Credentials
+   * are never part of pooled state: CES remains their only source of truth.
+   * Implementations must be idempotent so a release can safely retry.
+   */
+  sanitize(input: {
+    assistant: RuntimeWorkerLeaseAssistant;
+    workerStackId: string;
+    credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
+  }): Promise<void>;
+}
 
 interface CandidateStackRecord extends RuntimeWorkerStackRow {
   last_health_status: string | null;
@@ -367,14 +403,42 @@ export function getRuntimeWorkerCapacityTelemetry(
   };
 }
 
-export function dispatchRuntimeWorker(
+function stateTenant(assistant: RuntimeWorkerLeaseAssistant): {
+  orgId: string;
+  assistantId: string;
+} {
+  return { orgId: assistant.org_id, assistantId: assistant.id };
+}
+
+function stateOperationId(
+  kind: "restore" | "export",
+  assistant: RuntimeWorkerLeaseAssistant,
+  workerStackId: string,
+  generation: number,
+): string {
+  const digest = createHash("sha256")
+    .update(
+      [
+        kind,
+        assistant.org_id,
+        assistant.id,
+        workerStackId,
+        String(generation),
+      ].join("\u0000"),
+    )
+    .digest("hex");
+  return `${kind}-${digest}`;
+}
+
+export async function dispatchRuntimeWorker(
   db: Database,
   assistant: RuntimeWorkerLeaseAssistant,
   config: RuntimeWorkerPoolConfig,
   leaseToken: string,
   nowMs: number,
   nowIso: () => string,
-): RuntimeWorkerDispatchResult {
+  lifecycle?: RuntimeWorkerLifecycleAdapter,
+): Promise<RuntimeWorkerDispatchResult> {
   const telemetry = getRuntimeWorkerCapacityTelemetry(db, config, nowMs);
   if (!config.enabled) return { status: "disabled", telemetry };
   if (
@@ -388,7 +452,6 @@ export function dispatchRuntimeWorker(
       telemetry,
     };
   }
-
   const readyStackIds = inspectRuntimeWorkerCandidates(db, config)
     .filter(({ readiness }) => readiness === "ready")
     .map(({ stackId }) => stackId);
@@ -400,7 +463,21 @@ export function dispatchRuntimeWorker(
       telemetry,
     };
   }
+  if (!lifecycle) {
+    return {
+      status: "unavailable",
+      reason: "state_lifecycle_unavailable",
+      retryAfterMs: null,
+      telemetry,
+    };
+  }
 
+  const activeBeforeClaim = getActiveRuntimeWorkerLease(
+    db,
+    assistant,
+    leaseToken,
+    nowMs,
+  );
   const claim = claimRuntimeWorkerLease(
     db,
     assistant,
@@ -413,6 +490,61 @@ export function dispatchRuntimeWorker(
   );
   const updatedTelemetry = getRuntimeWorkerCapacityTelemetry(db, config, nowMs);
   if (claim.leaseAcquired && claim.assignment) {
+    ensureRuntimeWorkerStateCheckpointSchema(db);
+    const tenant = stateTenant(assistant);
+    const checkpoint = getRuntimeWorkerStateCheckpoint(db, tenant);
+    try {
+      const isIdempotentRoute =
+        activeBeforeClaim?.stack.id === claim.assignment.stack.id &&
+        checkpoint?.status === "ready";
+      if (isIdempotentRoute) {
+        assertRuntimeWorkerStateReadyForLease(
+          db,
+          tenant,
+          claim.assignment.stack.id,
+        );
+      } else {
+        if (checkpoint?.status === "ready") {
+          throw new RuntimeWorkerStateError(
+            "state_not_ready",
+            "A new lease cannot reuse unexported worker state.",
+          );
+        }
+        const expectedGeneration = checkpoint?.generation ?? 0;
+        await restoreRuntimeWorkerStateWithStorage(
+          db,
+          lifecycle.storage,
+          tenant,
+          claim.assignment.stack.id,
+          expectedGeneration,
+          stateOperationId(
+            "restore",
+            assistant,
+            claim.assignment.stack.id,
+            expectedGeneration,
+          ),
+          nowIso,
+        );
+        assertRuntimeWorkerStateReadyForLease(
+          db,
+          tenant,
+          claim.assignment.stack.id,
+        );
+      }
+    } catch (error) {
+      const failedCheckpoint = getRuntimeWorkerStateCheckpoint(db, tenant);
+      return {
+        status: "unavailable",
+        reason:
+          failedCheckpoint?.status === "quarantined" ||
+          (error instanceof RuntimeWorkerStateError &&
+            error.code === "quarantined")
+            ? "state_quarantined"
+            : "state_restore_failed",
+        retryAfterMs: null,
+        telemetry: getRuntimeWorkerCapacityTelemetry(db, config, nowMs),
+      };
+    }
     return {
       status: "leased",
       assignment: claim.assignment,
@@ -435,8 +567,10 @@ export function renewDispatchedRuntimeWorker(
   leaseToken: string,
   nowMs: number,
   nowIso: () => string,
+  lifecycle?: RuntimeWorkerLifecycleAdapter,
 ): RuntimeWorkerRenewResult {
   if (!config.enabled) return { status: "disabled" };
+  if (!lifecycle) return { status: "worker_unavailable" };
   const current = getActiveRuntimeWorkerLease(
     db,
     assistant,
@@ -448,6 +582,16 @@ export function renewDispatchedRuntimeWorker(
     ({ stackId }) => stackId === current.stack.id,
   );
   if (!candidate || candidate.readiness !== "ready") {
+    return { status: "worker_unavailable" };
+  }
+  try {
+    ensureRuntimeWorkerStateCheckpointSchema(db);
+    assertRuntimeWorkerStateReadyForLease(
+      db,
+      stateTenant(assistant),
+      current.stack.id,
+    );
+  } catch {
     return { status: "worker_unavailable" };
   }
   try {
@@ -474,18 +618,89 @@ export function renewDispatchedRuntimeWorker(
   }
 }
 
-export function releaseDispatchedRuntimeWorker(
+export async function releaseDispatchedRuntimeWorker(
   db: Database,
   assistant: RuntimeWorkerLeaseAssistant,
   leaseToken: string,
   nowMs: number,
   nowIso: () => string,
-): RuntimeWorkerReleaseResult {
+  lifecycle?: RuntimeWorkerLifecycleAdapter,
+): Promise<RuntimeWorkerReleaseResult> {
+  if (!lifecycle) return { status: "state_lifecycle_unavailable" };
+  const current = getActiveRuntimeWorkerLease(
+    db,
+    assistant,
+    leaseToken,
+    nowMs,
+  );
+  if (!current) return { status: "lease_lost" };
+  ensureRuntimeWorkerStateCheckpointSchema(db);
+  const tenant = stateTenant(assistant);
+  const checkpoint = getRuntimeWorkerStateCheckpoint(db, tenant);
+  if (!checkpoint) return { status: "state_export_failed" };
+
+  try {
+    if (checkpoint.status !== "exported") {
+      await exportRuntimeWorkerStateWithStorage(
+        db,
+        lifecycle.storage,
+        tenant,
+        current.stack.id,
+        checkpoint.generation,
+        stateOperationId(
+          "export",
+          assistant,
+          current.stack.id,
+          checkpoint.generation,
+        ),
+        nowIso,
+      );
+    }
+    assertRuntimeWorkerStateExportedForRelease(
+      db,
+      tenant,
+      current.stack.id,
+    );
+  } catch (error) {
+    const failedCheckpoint = getRuntimeWorkerStateCheckpoint(db, tenant);
+    return {
+      status:
+        failedCheckpoint?.status === "quarantined" ||
+        (error instanceof RuntimeWorkerStateError &&
+          error.code === "quarantined")
+          ? "state_quarantined"
+          : "state_export_failed",
+    };
+  }
+
+  try {
+    await lifecycle.sanitize({
+      assistant,
+      workerStackId: current.stack.id,
+      credentialPolicy: RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
+    });
+  } catch {
+    return { status: "sanitization_failed" };
+  }
+
   try {
     releaseRuntimeWorkerLease(
       db,
       assistant,
       leaseToken,
+      nowMs,
+      nowIso,
+    );
+    markRuntimeWorkerStateReleased(
+      db,
+      tenant,
+      current.stack.id,
+      nowIso,
+    );
+    markRuntimeWorkerSanitized(
+      db,
+      current.stack.id,
+      assistant,
       nowMs,
       nowIso,
     );
