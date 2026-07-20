@@ -17,10 +17,17 @@ export const RUNTIME_CUTOVER_PHASES = [
 export type RuntimeCutoverPhase = (typeof RUNTIME_CUTOVER_PHASES)[number];
 export type RuntimeHealthGate = "healthy" | "unhealthy";
 
+const TERMINAL_RUNTIME_CUTOVER_PHASES = [
+  "rolled_back",
+  "failed",
+  "retirement_authorized",
+] as const satisfies readonly RuntimeCutoverPhase[];
+
 export interface RuntimeCutoverRow {
   id: string;
   org_id: string;
   assistant_id: string;
+  sequence: number;
   source_runtime_id: string;
   target_runtime_id: string;
   start_idempotency_key: string;
@@ -82,6 +89,7 @@ export type RuntimeCutoverMutationResult =
       reason:
         | "assistant_not_found"
         | "runtime_identity_mismatch"
+        | "cutover_identity_mismatch"
         | "active_cutover_exists"
         | "idempotency_conflict"
         | "stale_version"
@@ -114,12 +122,13 @@ function tableExists(db: Database, table: string): boolean {
   );
 }
 
-export function ensureRuntimeCutoverSchema(db: Database): void {
+function createRuntimeCutoverTables(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS runtime_cutovers (
       id TEXT PRIMARY KEY,
       org_id TEXT NOT NULL,
       assistant_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK(sequence >= 1),
       source_runtime_id TEXT NOT NULL,
       target_runtime_id TEXT NOT NULL,
       start_idempotency_key TEXT NOT NULL,
@@ -146,7 +155,7 @@ export function ensureRuntimeCutoverSchema(db: Database): void {
       last_error TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      UNIQUE(org_id, assistant_id),
+      UNIQUE(org_id, assistant_id, sequence),
       UNIQUE(org_id, start_idempotency_key),
       CHECK(source_runtime_id != target_runtime_id)
     );
@@ -164,14 +173,117 @@ export function ensureRuntimeCutoverSchema(db: Database): void {
       UNIQUE(cutover_id, version),
       UNIQUE(cutover_id, idempotency_key)
     );
+  `);
+}
+
+function createRuntimeCutoverIndexes(db: Database): void {
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runtime_cutovers_phase
       ON runtime_cutovers(phase, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_runtime_cutovers_latest
+      ON runtime_cutovers(org_id, assistant_id, sequence DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_cutovers_one_nonterminal
+      ON runtime_cutovers(org_id, assistant_id)
+      WHERE phase NOT IN ('rolled_back', 'failed', 'retirement_authorized');
     CREATE INDEX IF NOT EXISTS idx_runtime_cutover_events_cutover
       ON runtime_cutover_events(cutover_id, version);
   `);
 }
 
-export function getRuntimeCutover(
+function runtimeCutoverSchemaNeedsMigration(db: Database): boolean {
+  if (!tableExists(db, "runtime_cutovers")) return false;
+  const columns = db
+    .query<{ name: string }, []>("PRAGMA table_info(runtime_cutovers)")
+    .all();
+  if (!columns.some((column) => column.name === "sequence")) return true;
+  const table = db
+    .query<{ sql: string | null }, []>(
+      `SELECT sql
+       FROM sqlite_master
+       WHERE type = 'table' AND name = 'runtime_cutovers'`,
+    )
+    .get();
+  return /UNIQUE\s*\(\s*org_id\s*,\s*assistant_id\s*\)/i.test(
+    table?.sql ?? "",
+  );
+}
+
+function migrateRuntimeCutoverSchema(db: Database): void {
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE runtime_cutover_events
+        RENAME TO runtime_cutover_events_before_sequence;
+      ALTER TABLE runtime_cutovers
+        RENAME TO runtime_cutovers_before_sequence;
+    `);
+    createRuntimeCutoverTables(db);
+    db.exec(`
+      INSERT INTO runtime_cutovers (
+        id,
+        org_id,
+        assistant_id,
+        sequence,
+        source_runtime_id,
+        target_runtime_id,
+        start_idempotency_key,
+        phase,
+        version,
+        checkpoint_checksum,
+        restored_checksum,
+        verification_status,
+        canary_status,
+        source_health_status,
+        target_health_status,
+        cooling_until,
+        last_error,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        org_id,
+        assistant_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY org_id, assistant_id
+          ORDER BY created_at ASC, id ASC
+        ),
+        source_runtime_id,
+        target_runtime_id,
+        start_idempotency_key,
+        phase,
+        version,
+        checkpoint_checksum,
+        restored_checksum,
+        verification_status,
+        canary_status,
+        source_health_status,
+        target_health_status,
+        cooling_until,
+        last_error,
+        created_at,
+        updated_at
+      FROM runtime_cutovers_before_sequence;
+
+      INSERT INTO runtime_cutover_events
+      SELECT *
+      FROM runtime_cutover_events_before_sequence;
+
+      DROP TABLE runtime_cutover_events_before_sequence;
+      DROP TABLE runtime_cutovers_before_sequence;
+    `);
+  }).immediate();
+}
+
+export function ensureRuntimeCutoverSchema(db: Database): void {
+  if (runtimeCutoverSchemaNeedsMigration(db)) {
+    migrateRuntimeCutoverSchema(db);
+  } else {
+    createRuntimeCutoverTables(db);
+  }
+  createRuntimeCutoverIndexes(db);
+}
+
+export function getLatestRuntimeCutover(
   db: Database,
   orgId: string,
   assistantId: string,
@@ -184,9 +296,61 @@ export function getRuntimeCutover(
       >(
         `SELECT *
          FROM runtime_cutovers
-         WHERE org_id = ? AND assistant_id = ?`,
+         WHERE org_id = ? AND assistant_id = ?
+         ORDER BY sequence DESC
+         LIMIT 1`,
       )
       .get(orgId, assistantId) ?? null
+  );
+}
+
+export function getActiveRuntimeCutover(
+  db: Database,
+  orgId: string,
+  assistantId: string,
+): RuntimeCutoverRow | null {
+  return (
+    db
+      .query<
+        RuntimeCutoverRow,
+        [string, string]
+      >(
+        `SELECT *
+         FROM runtime_cutovers
+         WHERE org_id = ?
+           AND assistant_id = ?
+           AND phase NOT IN ('rolled_back', 'failed', 'retirement_authorized')
+         ORDER BY sequence DESC
+         LIMIT 1`,
+      )
+      .get(orgId, assistantId) ?? null
+  );
+}
+
+export function getRuntimeCutover(
+  db: Database,
+  orgId: string,
+  assistantId: string,
+): RuntimeCutoverRow | null {
+  return getLatestRuntimeCutover(db, orgId, assistantId);
+}
+
+function getRuntimeCutoverByStartKey(
+  db: Database,
+  orgId: string,
+  idempotencyKey: string,
+): RuntimeCutoverRow | null {
+  return (
+    db
+      .query<
+        RuntimeCutoverRow,
+        [string, string]
+      >(
+        `SELECT *
+         FROM runtime_cutovers
+         WHERE org_id = ? AND start_idempotency_key = ?`,
+      )
+      .get(orgId, idempotencyKey) ?? null
   );
 }
 
@@ -397,28 +561,41 @@ export function startRuntimeCutover(
           cutover: null,
         };
       }
-      const existing = getRuntimeCutover(
+      const replayedStart = getRuntimeCutoverByStartKey(
         db,
         input.orgId,
-        input.assistantId,
+        input.idempotencyKey,
       );
-      if (existing) {
+      if (replayedStart) {
         const event = getAuditEventByIdempotencyKey(
           db,
-          existing.id,
+          replayedStart.id,
           input.idempotencyKey,
         );
         if (
           event?.event_type === "cutover_started" &&
-          existing.source_runtime_id === input.sourceRuntimeId &&
-          existing.target_runtime_id === input.targetRuntimeId
+          replayedStart.assistant_id === input.assistantId &&
+          replayedStart.source_runtime_id === input.sourceRuntimeId &&
+          replayedStart.target_runtime_id === input.targetRuntimeId
         ) {
-          return { status: "duplicate", cutover: existing, event };
+          return { status: "duplicate", cutover: replayedStart, event };
         }
         return {
           status: "rejected",
-          reason: event ? "idempotency_conflict" : "active_cutover_exists",
-          cutover: existing,
+          reason: "idempotency_conflict",
+          cutover: replayedStart,
+        };
+      }
+      const active = getActiveRuntimeCutover(
+        db,
+        input.orgId,
+        input.assistantId,
+      );
+      if (active) {
+        return {
+          status: "rejected",
+          reason: "active_cutover_exists",
+          cutover: active,
         };
       }
       if (
@@ -444,10 +621,28 @@ export function startRuntimeCutover(
         };
       }
 
+      const latest = getLatestRuntimeCutover(
+        db,
+        input.orgId,
+        input.assistantId,
+      );
+      if (
+        latest &&
+        !TERMINAL_RUNTIME_CUTOVER_PHASES.includes(
+          latest.phase as (typeof TERMINAL_RUNTIME_CUTOVER_PHASES)[number],
+        )
+      ) {
+        return {
+          status: "rejected",
+          reason: "active_cutover_exists",
+          cutover: latest,
+        };
+      }
       const cutover: RuntimeCutoverRow = {
         id: "cutover-" + randomUUID(),
         org_id: input.orgId,
         assistant_id: input.assistantId,
+        sequence: (latest?.sequence ?? 0) + 1,
         source_runtime_id: input.sourceRuntimeId,
         target_runtime_id: input.targetRuntimeId,
         start_idempotency_key: input.idempotencyKey,
@@ -469,6 +664,7 @@ export function startRuntimeCutover(
            id,
            org_id,
            assistant_id,
+           sequence,
            source_runtime_id,
            target_runtime_id,
            start_idempotency_key,
@@ -484,11 +680,12 @@ export function startRuntimeCutover(
            last_error,
            created_at,
            updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
       ).run(
         cutover.id,
         cutover.org_id,
         cutover.assistant_id,
+        cutover.sequence,
         cutover.source_runtime_id,
         cutover.target_runtime_id,
         cutover.start_idempotency_key,
@@ -730,6 +927,7 @@ export function transitionRuntimeCutover(
   input: {
     orgId: string;
     assistantId: string;
+    cutoverId: string;
     expectedVersion: number;
     idempotencyKey: string;
     action: RuntimeCutoverAction;
@@ -748,6 +946,13 @@ export function transitionRuntimeCutover(
           status: "rejected",
           reason: "assistant_not_found",
           cutover: null,
+        };
+      }
+      if (cutover.id !== input.cutoverId) {
+        return {
+          status: "rejected",
+          reason: "cutover_identity_mismatch",
+          cutover,
         };
       }
       const payloadJson = eventPayload(input.action);
@@ -821,6 +1026,7 @@ export function authorizeRuntimeCutoverSourceRetirement(
   input: {
     orgId: string;
     assistantId: string;
+    cutoverId: string;
     expectedVersion: number;
     idempotencyKey: string;
     checkpointChecksum: string;
@@ -840,6 +1046,13 @@ export function authorizeRuntimeCutoverSourceRetirement(
           status: "rejected",
           reason: "assistant_not_found",
           cutover: null,
+        };
+      }
+      if (cutover.id !== input.cutoverId) {
+        return {
+          status: "rejected",
+          reason: "cutover_identity_mismatch",
+          cutover,
         };
       }
       const payloadJson = eventPayload({
@@ -947,4 +1160,34 @@ export function routedRuntimeIdForCutover(
     cutover.phase === "retirement_authorized"
     ? cutover.target_runtime_id
     : cutover.source_runtime_id;
+}
+
+export interface RuntimeCutoverRoutingResolution {
+  runtimeId: string;
+  cutoverId: string;
+  cutoverSequence: number;
+  cutoverVersion: number;
+  phase: RuntimeCutoverPhase;
+}
+
+/**
+ * Read-only routing decision derived exclusively from durable cutover state.
+ * The source remains selected through export, restore, verification, canary,
+ * and the pre-commit phase. Only a verified committed cutover selects the
+ * target; failed and rolled-back migrations continue selecting their source.
+ */
+export function resolveRuntimeCutoverRouting(
+  db: Database,
+  orgId: string,
+  assistantId: string,
+): RuntimeCutoverRoutingResolution | null {
+  const cutover = getLatestRuntimeCutover(db, orgId, assistantId);
+  if (!cutover) return null;
+  return {
+    runtimeId: routedRuntimeIdForCutover(cutover),
+    cutoverId: cutover.id,
+    cutoverSequence: cutover.sequence,
+    cutoverVersion: cutover.version,
+    phase: cutover.phase,
+  };
 }

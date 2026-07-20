@@ -5,8 +5,11 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import {
   authorizeRuntimeCutoverSourceRetirement,
   ensureRuntimeCutoverSchema,
+  getActiveRuntimeCutover,
+  getLatestRuntimeCutover,
   getRuntimeCutover,
   listRuntimeCutoverAuditEvents,
+  resolveRuntimeCutoverRouting,
   routedRuntimeIdForCutover,
   startRuntimeCutover,
   transitionRuntimeCutover,
@@ -118,15 +121,17 @@ describe("runtime cutover controller", () => {
 
   function start(
     targetRuntimeId = "worker-1",
+    idempotencyKey = "start-1",
+    nowMs = BASE_TIME,
   ): RuntimeCutoverMutationResult {
     return startRuntimeCutover(db, {
       orgId: "org-1",
       assistantId: "assistant-1",
       sourceRuntimeId: "source-1",
       targetRuntimeId,
-      idempotencyKey: "start-1",
-      nowMs: BASE_TIME,
-      nowIso: "2033-05-18T03:33:20.000Z",
+      idempotencyKey,
+      nowMs,
+      nowIso: new Date(nowMs).toISOString(),
     });
   }
 
@@ -136,9 +141,12 @@ describe("runtime cutover controller", () => {
     action: RuntimeCutoverAction,
     nowMs = BASE_TIME + expectedVersion,
   ): RuntimeCutoverMutationResult {
+    const cutover = getLatestRuntimeCutover(db, "org-1", "assistant-1");
+    if (!cutover) throw new Error("Expected a current cutover");
     return transitionRuntimeCutover(db, {
       orgId: "org-1",
       assistantId: "assistant-1",
+      cutoverId: cutover.id,
       expectedVersion,
       idempotencyKey,
       action,
@@ -193,8 +201,12 @@ describe("runtime cutover controller", () => {
 
   test("keeps source routable through verified canary and switches only on commit", () => {
     let cutover = expectApplied(start());
+    expect(cutover.sequence).toBe(1);
     expect(cutover.phase).toBe("export");
     expect(routedRuntimeIdForCutover(cutover)).toBe("source-1");
+    expect(
+      resolveRuntimeCutoverRouting(db, "org-1", "assistant-1")?.runtimeId,
+    ).toBe("source-1");
 
     cutover = expectApplied(
       transition(1, "export-1", {
@@ -233,6 +245,9 @@ describe("runtime cutover controller", () => {
     );
     expect(cutover.phase).toBe("commit");
     expect(routedRuntimeIdForCutover(cutover)).toBe("source-1");
+    expect(
+      resolveRuntimeCutoverRouting(db, "org-1", "assistant-1")?.runtimeId,
+    ).toBe("source-1");
 
     cutover = expectApplied(
       transition(5, "commit-1", {
@@ -242,6 +257,13 @@ describe("runtime cutover controller", () => {
     );
     expect(cutover.phase).toBe("committed");
     expect(routedRuntimeIdForCutover(cutover)).toBe("worker-1");
+    expect(resolveRuntimeCutoverRouting(db, "org-1", "assistant-1")).toEqual({
+      runtimeId: "worker-1",
+      cutoverId: cutover.id,
+      cutoverSequence: 1,
+      cutoverVersion: 6,
+      phase: "committed",
+    });
     expect(
       listRuntimeCutoverAuditEvents(db, cutover.id).map(
         (event) => event.version,
@@ -309,7 +331,7 @@ describe("runtime cutover controller", () => {
     db = new Database(path);
     const competitor = new Database(path);
     try {
-      expectApplied(start());
+      const started = expectApplied(start());
       expectApplied(
         transition(1, "controller-a", {
           type: "export_completed",
@@ -320,6 +342,7 @@ describe("runtime cutover controller", () => {
         transitionRuntimeCutover(competitor, {
           orgId: "org-1",
           assistantId: "assistant-1",
+          cutoverId: started.id,
           expectedVersion: 1,
           idempotencyKey: "controller-b",
           action: {
@@ -339,6 +362,299 @@ describe("runtime cutover controller", () => {
       );
     } finally {
       competitor.close();
+      db.close();
+      unlinkSync(path);
+      db = new Database(":memory:");
+    }
+  });
+
+  test("allows sequential migrations only after the previous cutover is terminal", () => {
+    const first = expectApplied(start());
+    expect(first.sequence).toBe(1);
+    expectRejected(start("worker-1", "start-too-soon"), "active_cutover_exists");
+
+    expectApplied(
+      transition(1, "rollback-start", {
+        type: "begin_rollback",
+        error: "operator aborted migration",
+      }),
+    );
+    const terminal = expectApplied(
+      transition(2, "rollback-complete", {
+        type: "rollback_completed",
+        sourceHealth: "healthy",
+      }),
+    );
+    expect(terminal.phase).toBe("rolled_back");
+    expect(getActiveRuntimeCutover(db, "org-1", "assistant-1")).toBeNull();
+
+    const second = expectApplied(
+      start("worker-1", "start-2", BASE_TIME + 100),
+    );
+    expect(second.sequence).toBe(2);
+    expect(second.id).not.toBe(first.id);
+    expect(getLatestRuntimeCutover(db, "org-1", "assistant-1")?.id).toBe(
+      second.id,
+    );
+    expect(getActiveRuntimeCutover(db, "org-1", "assistant-1")?.id).toBe(
+      second.id,
+    );
+    expectRejected(
+      transitionRuntimeCutover(db, {
+        orgId: "org-1",
+        assistantId: "assistant-1",
+        cutoverId: first.id,
+        expectedVersion: 1,
+        idempotencyKey: "delayed-first-export",
+        action: {
+          type: "export_completed",
+          checkpointChecksum: CHECKSUM,
+        },
+        nowMs: BASE_TIME + 101,
+        nowIso: new Date(BASE_TIME + 101).toISOString(),
+      }),
+      "cutover_identity_mismatch",
+    );
+    expect(getLatestRuntimeCutover(db, "org-1", "assistant-1")).toMatchObject({
+      id: second.id,
+      version: 1,
+      phase: "export",
+    });
+    expect(
+      db
+        .query<{ count: number }, [string, string]>(
+          `SELECT COUNT(*) AS count
+           FROM runtime_cutovers
+           WHERE org_id = ? AND assistant_id = ?`,
+        )
+        .get("org-1", "assistant-1")?.count,
+    ).toBe(2);
+  });
+
+  test("serializes concurrent second starts after a terminal migration", () => {
+    expectApplied(start());
+    expectApplied(
+      transition(1, "rollback-start", {
+        type: "begin_rollback",
+        error: "retry on another worker",
+      }),
+    );
+    expectApplied(
+      transition(2, "rollback-complete", {
+        type: "rollback_completed",
+        sourceHealth: "healthy",
+      }),
+    );
+
+    const path = `/tmp/worklin-runtime-second-cutover-${randomUUID()}.sqlite`;
+    writeFileSync(path, db.serialize());
+    db.close();
+    db = new Database(path);
+    const competitor = new Database(path);
+    try {
+      const winner = expectApplied(
+        startRuntimeCutover(db, {
+          orgId: "org-1",
+          assistantId: "assistant-1",
+          sourceRuntimeId: "source-1",
+          targetRuntimeId: "worker-1",
+          idempotencyKey: "second-controller-a",
+          nowMs: BASE_TIME + 200,
+          nowIso: new Date(BASE_TIME + 200).toISOString(),
+        }),
+      );
+      expect(winner.sequence).toBe(2);
+      expectRejected(
+        startRuntimeCutover(competitor, {
+          orgId: "org-1",
+          assistantId: "assistant-1",
+          sourceRuntimeId: "source-1",
+          targetRuntimeId: "worker-1",
+          idempotencyKey: "second-controller-b",
+          nowMs: BASE_TIME + 201,
+          nowIso: new Date(BASE_TIME + 201).toISOString(),
+        }),
+        "active_cutover_exists",
+      );
+      expect(
+        getActiveRuntimeCutover(
+          competitor,
+          "org-1",
+          "assistant-1",
+        )?.start_idempotency_key,
+      ).toBe("second-controller-a");
+      expect(
+        competitor
+          .query<{ count: number }, []>(
+            `SELECT COUNT(*) AS count
+             FROM runtime_cutovers
+             WHERE org_id = 'org-1' AND assistant_id = 'assistant-1'`,
+          )
+          .get()?.count,
+      ).toBe(2);
+    } finally {
+      competitor.close();
+      db.close();
+      unlinkSync(path);
+      db = new Database(":memory:");
+    }
+  });
+
+  test("replays an earlier start key from durable history without targeting the latest cutover", () => {
+    const first = expectApplied(start());
+    expectApplied(
+      transition(1, "rollback-start", {
+        type: "begin_rollback",
+        error: "retry",
+      }),
+    );
+    expectApplied(
+      transition(2, "rollback-complete", {
+        type: "rollback_completed",
+        sourceHealth: "healthy",
+      }),
+    );
+    const second = expectApplied(
+      start("worker-1", "start-2", BASE_TIME + 100),
+    );
+
+    const replay = start("worker-1", "start-1", BASE_TIME + 200);
+    expect(replay.status).toBe("duplicate");
+    if (replay.status !== "duplicate") {
+      throw new Error("Expected historical duplicate");
+    }
+    expect(replay.cutover.id).toBe(first.id);
+    expect(replay.cutover.sequence).toBe(1);
+    expect(getLatestRuntimeCutover(db, "org-1", "assistant-1")?.id).toBe(
+      second.id,
+    );
+
+    const conflict = start("worker-2", "start-1", BASE_TIME + 201);
+    expectRejected(conflict, "idempotency_conflict");
+    if (conflict.status === "rejected") {
+      expect(conflict.cutover?.id).toBe(first.id);
+    }
+  });
+
+  test("migrates the one-cutover schema and preserves durable history across restart", () => {
+    const path = `/tmp/worklin-runtime-cutover-schema-${randomUUID()}.sqlite`;
+    db.close();
+    db = new Database(path);
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE runtime_cutovers (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        source_runtime_id TEXT NOT NULL,
+        target_runtime_id TEXT NOT NULL,
+        start_idempotency_key TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        checkpoint_checksum TEXT,
+        restored_checksum TEXT,
+        verification_status TEXT,
+        canary_status TEXT,
+        source_health_status TEXT,
+        target_health_status TEXT,
+        cooling_until INTEGER,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(org_id, assistant_id),
+        UNIQUE(org_id, start_idempotency_key)
+      );
+      CREATE TABLE runtime_cutover_events (
+        id TEXT PRIMARY KEY,
+        cutover_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        from_phase TEXT,
+        to_phase TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(cutover_id) REFERENCES runtime_cutovers(id) ON DELETE RESTRICT,
+        UNIQUE(cutover_id, version),
+        UNIQUE(cutover_id, idempotency_key)
+      );
+      CREATE INDEX idx_runtime_cutovers_phase
+        ON runtime_cutovers(phase, updated_at);
+      CREATE INDEX idx_runtime_cutover_events_cutover
+        ON runtime_cutover_events(cutover_id, version);
+      INSERT INTO runtime_cutovers (
+        id,
+        org_id,
+        assistant_id,
+        source_runtime_id,
+        target_runtime_id,
+        start_idempotency_key,
+        phase,
+        version,
+        created_at,
+        updated_at
+      ) VALUES (
+        'legacy-cutover',
+        'org-1',
+        'assistant-1',
+        'source-1',
+        'worker-1',
+        'legacy-start',
+        'rolled_back',
+        3,
+        '2033-05-18T03:33:20.000Z',
+        '2033-05-18T03:33:22.000Z'
+      );
+      INSERT INTO runtime_cutover_events (
+        id,
+        cutover_id,
+        version,
+        idempotency_key,
+        event_type,
+        from_phase,
+        to_phase,
+        payload_json,
+        created_at
+      ) VALUES (
+        'legacy-event',
+        'legacy-cutover',
+        1,
+        'legacy-start',
+        'cutover_started',
+        NULL,
+        'export',
+        '{}',
+        '2033-05-18T03:33:20.000Z'
+      );
+    `);
+    try {
+      ensureRuntimeCutoverSchema(db);
+      ensureRuntimeCutoverSchema(db);
+      expect(getLatestRuntimeCutover(db, "org-1", "assistant-1")).toMatchObject(
+        {
+          id: "legacy-cutover",
+          sequence: 1,
+          phase: "rolled_back",
+        },
+      );
+      expect(listRuntimeCutoverAuditEvents(db, "legacy-cutover")).toHaveLength(
+        1,
+      );
+      db.close();
+      db = new Database(path);
+      ensureRuntimeCutoverSchema(db);
+      expect(getActiveRuntimeCutover(db, "org-1", "assistant-1")).toBeNull();
+      expect(
+        db
+          .query<{ name: string }, []>(
+            `SELECT name
+             FROM sqlite_master
+             WHERE type = 'index'
+               AND name = 'idx_runtime_cutovers_one_nonterminal'`,
+          )
+          .get()?.name,
+      ).toBe("idx_runtime_cutovers_one_nonterminal");
+    } finally {
       db.close();
       unlinkSync(path);
       db = new Database(":memory:");
@@ -462,6 +778,7 @@ describe("runtime cutover controller", () => {
       authorizeRuntimeCutoverSourceRetirement(db, {
         orgId: "org-1",
         assistantId: "assistant-1",
+        cutoverId: committed.id,
         expectedVersion: 6,
         idempotencyKey: "retire-too-soon",
         checkpointChecksum: CHECKSUM,
@@ -475,6 +792,7 @@ describe("runtime cutover controller", () => {
       authorizeRuntimeCutoverSourceRetirement(db, {
         orgId: "org-1",
         assistantId: "assistant-1",
+        cutoverId: committed.id,
         expectedVersion: 6,
         idempotencyKey: "retire-unhealthy",
         checkpointChecksum: CHECKSUM,
@@ -488,6 +806,7 @@ describe("runtime cutover controller", () => {
       authorizeRuntimeCutoverSourceRetirement(db, {
         orgId: "org-1",
         assistantId: "assistant-1",
+        cutoverId: committed.id,
         expectedVersion: 6,
         idempotencyKey: "retire-authorize",
         checkpointChecksum: CHECKSUM,
@@ -508,11 +827,12 @@ describe("runtime cutover controller", () => {
   });
 
   test("cannot retire a source from failed or incomplete cutovers", () => {
-    advanceToCanary();
+    const cutover = advanceToCanary();
     expectRejected(
       authorizeRuntimeCutoverSourceRetirement(db, {
         orgId: "org-1",
         assistantId: "assistant-1",
+        cutoverId: cutover.id,
         expectedVersion: 4,
         idempotencyKey: "retire-incomplete",
         checkpointChecksum: CHECKSUM,
@@ -538,6 +858,7 @@ describe("runtime cutover controller", () => {
       authorizeRuntimeCutoverSourceRetirement(db, {
         orgId: "org-1",
         assistantId: "assistant-1",
+        cutoverId: cutover.id,
         expectedVersion: 6,
         idempotencyKey: "retire-failed",
         checkpointChecksum: CHECKSUM,
