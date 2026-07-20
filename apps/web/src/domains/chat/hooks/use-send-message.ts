@@ -77,7 +77,6 @@ import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
 import {
   authInfoGetOptions,
-  authInfoGetQueryKey,
   configGetQueryKey,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { Conversation } from "@/types/conversation-types";
@@ -274,26 +273,26 @@ export function useSendMessage({
 
   const ensureProviderReadyForSend = useCallback(async (): Promise<boolean> => {
     if (!assistantId) return false;
-    let authInfo = queryClient.getQueryData<AuthInfoGetResponse>(
-      authInfoGetQueryKey({ path: { assistant_id: assistantId } }),
-    );
-    if (!authInfo) {
-      try {
-        authInfo = await queryClient.fetchQuery({
-          ...authInfoGetOptions({
-            path: { assistant_id: assistantId },
-          }),
-          staleTime: 30_000,
-        });
-      } catch (error) {
-        captureError(error, {
-          context: "check_managed_provider_before_send",
-        });
-        return true;
-      }
+    let authInfo: AuthInfoGetResponse;
+    try {
+      authInfo = await queryClient.fetchQuery({
+        ...authInfoGetOptions({
+          path: { assistant_id: assistantId },
+        }),
+        staleTime: 0,
+      });
+    } catch (error) {
+      captureError(error, {
+        context: "check_managed_provider_before_send",
+      });
+      setError({
+        message:
+          "Worklin could not verify your AI provider. Check your connection and try again.",
+        code: "PROVIDER_NOT_CONFIGURED",
+      });
+      return false;
     }
     if (authInfo?.authenticated !== false) return true;
-    if (personalProviderReadyAssistantIdRef.current === assistantId) return true;
 
     try {
       const repair = await repairUnavailableManagedProfile(assistantId);
@@ -303,7 +302,6 @@ export function useSendMessage({
         });
       }
       if (canSendAfterManagedProfileRepair(repair)) {
-        personalProviderReadyAssistantIdRef.current = assistantId;
         return true;
       }
     } catch (error) {

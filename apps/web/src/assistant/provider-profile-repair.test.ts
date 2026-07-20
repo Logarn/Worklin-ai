@@ -20,6 +20,7 @@ interface ConnectionsGetCall {
 }
 
 let configGetData: ConfigGetResponse;
+let configGetResponses: ConfigGetResponse[] = [];
 let connections: ProviderConnection[] = [];
 let secrets: Array<{
   type: "api_key" | "credential";
@@ -33,7 +34,10 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
   ...sdkGen,
   configGet: (opts: ConfigGetCall) => {
     configGetCalls.push(opts);
-    return Promise.resolve({ data: configGetData, response: { ok: true } });
+    return Promise.resolve({
+      data: configGetResponses.shift() ?? configGetData,
+      response: { ok: true },
+    });
   },
   configPatch: (opts: ConfigPatchCall) => {
     configPatchCalls.push(opts);
@@ -57,9 +61,7 @@ const {
   canSendAfterManagedProfileRepair,
   ensureRunnableProfileFromStoredConnection,
   repairUnavailableManagedProfile,
-} = await import(
-  "@/assistant/provider-profile-repair"
-);
+} = await import("@/assistant/provider-profile-repair");
 
 const ASSISTANT_ID = "asst-1";
 
@@ -132,6 +134,7 @@ function oauthSubscriptionConnection(
 
 beforeEach(() => {
   configGetCalls = [];
+  configGetResponses = [];
   configPatchCalls = [];
   connectionsGetCalls = [];
   connections = [];
@@ -163,7 +166,8 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
       apiKeyConnection("anthropic-personal", "anthropic"),
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result.repaired).toBe(true);
     expect(connectionsGetCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
@@ -185,7 +189,7 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
     });
   });
 
-  test("prefers the most recently changed user provider over older user providers", async () => {
+  test("does not guess between multiple ready user providers", async () => {
     secrets = [
       { type: "api_key", name: "openai" },
       { type: "api_key", name: "gemini" },
@@ -202,44 +206,28 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
       }),
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
-    expect(result.repaired).toBe(true);
-    expect(configPatchCalls).toHaveLength(1);
-    expect(configPatchCalls[0].body).toMatchObject({
-      llm: {
-        activeProfile: "custom-balanced",
-        profiles: {
-          "custom-balanced": {
-            source: "user",
-            label: "Balanced",
-            provider: "gemini",
-            provider_connection: "gemini-personal",
-            model: "gemini-2.5-flash",
-          },
-        },
-      },
+    expect(result).toEqual({
+      repaired: false,
+      reason: "ambiguous",
     });
+    expect(configPatchCalls).toHaveLength(0);
   });
 
   test("uses a ChatGPT subscription model when activating OAuth subscription auth", async () => {
-    secrets = [
-      { type: "api_key", name: "openai" },
-      { type: "credential", name: "chatgpt:access_token" },
-    ];
+    secrets = [{ type: "credential", name: "chatgpt:access_token" }];
     connections = [
       platformConnection("openai-managed", "openai"),
-      apiKeyConnection("openai-personal", "openai", {
-        createdAt: 10,
-        updatedAt: 10,
-      }),
       oauthSubscriptionConnection({
         createdAt: 20,
         updatedAt: 30,
       }),
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result.repaired).toBe(true);
     expect(configPatchCalls).toHaveLength(1);
@@ -269,7 +257,8 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
       }),
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result.repaired).toBe(true);
     expect(configPatchCalls).toHaveLength(1);
@@ -307,7 +296,8 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
       },
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result.repaired).toBe(true);
     expect(configPatchCalls[0].body).toMatchObject({
@@ -336,7 +326,8 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
       apiKeyConnection("openai-personal", "openai"),
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result).toEqual({ repaired: false, reason: "ambiguous" });
     expect(configPatchCalls).toHaveLength(0);
@@ -348,7 +339,8 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
       apiKeyConnection("anthropic-personal", "anthropic"),
     ];
 
-    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+    const result =
+      await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
 
     expect(result).toEqual({ repaired: false, reason: "ambiguous" });
     expect(configGetCalls).toHaveLength(0);
@@ -456,7 +448,10 @@ describe("repairUnavailableManagedProfile", () => {
 
     const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
 
-    expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(result).toEqual({
+      repaired: false,
+      reason: "selection-changed",
+    });
     expect(canSendAfterManagedProfileRepair(result)).toBe(false);
     expect(configPatchCalls).toHaveLength(0);
   });
@@ -475,6 +470,38 @@ describe("repairUnavailableManagedProfile", () => {
     const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
 
     expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("does not overwrite a provider selected while repair is in flight", async () => {
+    const managedConfig = configGetData;
+    const personalConfig: ConfigGetResponse = {
+      llm: {
+        activeProfile: "personal",
+        profileOrder: ["personal"],
+        profiles: {
+          personal: {
+            source: "user",
+            provider: "anthropic",
+            provider_connection: "anthropic-personal",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      },
+    };
+    configGetResponses = [managedConfig, personalConfig];
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal", "anthropic"),
+    ];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toMatchObject({
+      repaired: false,
+      reason: "selection-changed",
+    });
     expect(configPatchCalls).toHaveLength(0);
   });
 

@@ -25,12 +25,19 @@ const FALLBACK_DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
 export interface ProviderProfileRepairResult {
   repaired: boolean;
   providerLabel?: string;
-  reason?: "no-model" | "no-connections" | "ambiguous" | "already-runnable";
+  reason?:
+    | "no-model"
+    | "no-connections"
+    | "ambiguous"
+    | "already-runnable"
+    | "selection-changed";
 }
 
 export interface EnsureRunnableProfileOptions {
   /** Select the supplied connection even when another user profile is active. */
   activateConnection?: boolean;
+  /** Abort if the active profile changed after the caller inspected it. */
+  expectedActiveProfile?: string | null;
 }
 
 const unavailableManagedRepairInFlight = new Map<
@@ -135,10 +142,6 @@ function providerLabel(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 }
 
-function connectionLastChangedAt(connection: ProviderConnection): number {
-  return Math.max(connection.updatedAt, connection.createdAt);
-}
-
 function selectRepairConnection(
   connections: readonly ProviderConnection[],
   secrets: readonly SecretsGetResponse["secrets"][number][],
@@ -148,21 +151,7 @@ function selectRepairConnection(
       isProviderConnectionReady(connection, secrets) &&
       Boolean(defaultModelForConnection(connection)),
   );
-  if (runnable.length === 1) return runnable[0];
-
-  const byMostRecent = [...runnable].sort(
-    (a, b) => connectionLastChangedAt(b) - connectionLastChangedAt(a),
-  );
-  const [candidate, runnerUp] = byMostRecent;
-  if (
-    candidate &&
-    runnerUp &&
-    connectionLastChangedAt(candidate) > connectionLastChangedAt(runnerUp)
-  ) {
-    return candidate;
-  }
-
-  return null;
+  return runnable.length === 1 ? runnable[0] : null;
 }
 
 export async function ensureRunnableProfileForConnection(
@@ -190,6 +179,17 @@ export async function ensureRunnableProfileForConnection(
   const currentActiveProfile = activeProfile
     ? profiles[activeProfile]
     : undefined;
+
+  if (
+    options.expectedActiveProfile !== undefined &&
+    activeProfile !== options.expectedActiveProfile
+  ) {
+    return {
+      repaired: false,
+      providerLabel: providerLabel(connection.provider),
+      reason: "selection-changed",
+    };
+  }
 
   if (
     !options.activateConnection &&
@@ -286,24 +286,21 @@ export async function ensureRunnableProfileFromStoredConnection(
 async function performUnavailableManagedProfileRepair(
   assistantId: string,
 ): Promise<ProviderProfileRepairResult> {
-  const [
-    { data: config },
-    { data: connectionsData },
-    { data: secretsData },
-  ] = await Promise.all([
-    configGet({
-      path: { assistant_id: assistantId },
-      throwOnError: true,
-    }),
-    inferenceProviderconnectionsGet({
-      path: { assistant_id: assistantId },
-      throwOnError: true,
-    }),
-    secretsGet({
-      path: { assistant_id: assistantId },
-      throwOnError: true,
-    }),
-  ]);
+  const [{ data: config }, { data: connectionsData }, { data: secretsData }] =
+    await Promise.all([
+      configGet({
+        path: { assistant_id: assistantId },
+        throwOnError: true,
+      }),
+      inferenceProviderconnectionsGet({
+        path: { assistant_id: assistantId },
+        throwOnError: true,
+      }),
+      secretsGet({
+        path: { assistant_id: assistantId },
+        throwOnError: true,
+      }),
+    ]);
 
   const profiles = config?.llm?.profiles ?? {};
   const activeProfileName = config?.llm?.activeProfile;
@@ -318,20 +315,26 @@ async function performUnavailableManagedProfileRepair(
     return { repaired: false, reason: "already-runnable" };
   }
 
+  if (
+    !activeProfile ||
+    !isManagedInferenceProfile(activeProfile, connections)
+  ) {
+    return { repaired: false, reason: "selection-changed" };
+  }
+
   if (connections.length === 0) {
     return { repaired: false, reason: "no-connections" };
   }
 
-  const connection = selectRepairConnection(
-    connections,
-    secrets,
-  );
+  const connection = selectRepairConnection(connections, secrets);
   if (!connection) {
     return { repaired: false, reason: "ambiguous" };
   }
 
   return ensureRunnableProfileForConnection(assistantId, connection, {
     activateConnection: true,
+    expectedActiveProfile:
+      typeof activeProfileName === "string" ? activeProfileName : null,
   });
 }
 
