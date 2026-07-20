@@ -354,10 +354,10 @@ describe("five-customer isolated runtime launch", () => {
             data: { variableCollectionUpsert: true },
           });
         }
-        if (operation.query.includes("serviceInstanceDeploy")) {
+        if (operation.query.includes("serviceInstanceDeployV2")) {
           return Response.json({
             data: {
-              serviceInstanceDeploy: `deploy-${String(
+              serviceInstanceDeployV2: `deploy-${String(
                 operation.variables.serviceId,
               )}`,
             },
@@ -448,6 +448,16 @@ describe("five-customer isolated runtime launch", () => {
     expect([...serviceCreateCounts.values()]).toEqual(
       Array(CUSTOMER_COUNT).fill(1),
     );
+    expect(
+      railwayOperations.filter((operation) =>
+        operation.query.includes("serviceInstanceDeployV2"),
+      ),
+    ).toHaveLength(CUSTOMER_COUNT);
+    for (const stack of settledStacks) {
+      expect(stack.last_error).toContain(
+        "Railway runtime health check timed out",
+      );
+    }
 
     const stackByAssistant = new Map(
       settledStacks.map((stack) => [stack.assistant_id, stack]),
