@@ -1,8 +1,7 @@
 /**
- * Shared helpers for the OAuth popup completion flow. Used by:
- * - `DesktopOAuthCompletePage` (the popup landing page that sends the result)
- * - `GoogleConnectScreen` (the opener that listens for the result)
- * - `IntegrationDetailModal` (settings page integration connection flow)
+ * Shared helpers for the managed OAuth popup completion flow. The popup
+ * landing page produces these payloads; the managed flow consumes completion
+ * payloads and the detached launcher consumes the opener-isolation handshake.
  *
  * The bootstrap popup reports that it has severed `window.opener` before the
  * parent navigates it to an external provider. Web completion then uses a

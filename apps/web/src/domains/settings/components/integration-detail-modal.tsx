@@ -16,7 +16,7 @@ import { toast } from "@vellumai/design-library/components/toast";
 
 import { IntegrationIcon } from "@/components/integrations/integration-icon";
 import { useOAuthConnect } from "@/domains/settings/hooks/use-oauth-connect";
-import { isManagedOAuthProviderUnsupported } from "@/domains/settings/services/managed-oauth-start";
+import { isManagedOAuthProviderUnsupported } from "@/lib/auth/managed-oauth-api";
 import type { PlatformGateState } from "@/hooks/use-platform-gate";
 import { extractErrorMessage } from "@/utils/api-errors";
 

@@ -11,6 +11,7 @@ import {
 import { createElement, type ReactNode } from "react";
 
 import type { OAuthConnection } from "@/generated/api/types.gen";
+import { __resetForTesting as resetEventBus, publish } from "@/lib/event-bus";
 
 interface StartCall {
   path: { assistant_id: string; provider: string };
@@ -51,14 +52,6 @@ let openCalls: string[] = [];
 let nativeOpenCalls: string[] = [];
 let nativePlatform = false;
 let electronPlatform = false;
-let deepLinkListener:
-  | ((payload: {
-      requestId: string;
-      oauthStatus: string | null;
-      oauthProvider: string | null;
-      oauthCode: string | null;
-    }) => void)
-  | null = null;
 let browserFinishedListener: (() => void) | null = null;
 let browserFinishedUnsubscribeCount = 0;
 let fireBrowserFinishedOnSubscribe = false;
@@ -145,12 +138,6 @@ mock.module("@/generated/api/sdk.gen", () => ({
 
 mock.module("@/domains/settings/components/your-own-oauth-tab", () => ({
   YourOwnTab: () => createElement("div", null, "Your Own OAuth setup"),
-}));
-
-mock.module("@/hooks/use-oauth-complete-deep-link-listener", () => ({
-  useOAuthCompleteDeepLinkListener: (listener: typeof deepLinkListener) => {
-    deepLinkListener = listener;
-  },
 }));
 
 mock.module("@/runtime/native-auth", () => ({
@@ -246,8 +233,11 @@ const {
   ManagedOAuthStartError,
   startManagedOAuthAuthorization,
   verifyManagedOAuthConnection,
-} = await import("@/domains/settings/services/managed-oauth-start");
+} = await import("@/lib/auth/managed-oauth-api");
 const { getManagedOAuthPopupBootstrapUrl } =
+  await import("@/lib/auth/oauth-popup-launcher");
+const { connectManagedOAuth } = await import("@/lib/auth/managed-oauth-flow");
+const { useOAuthConnect } =
   await import("@/domains/settings/hooks/use-oauth-connect");
 
 function connectedGitHubAccount(): OAuthConnection {
@@ -284,6 +274,48 @@ function renderModal() {
   );
 }
 
+function OAuthConnectHarness({
+  assistantId,
+  providerKey,
+}: {
+  assistantId: string;
+  providerKey: string;
+}) {
+  const { connectError, handleConnect, oauthInProgress } = useOAuthConnect({
+    assistantId,
+    providerKey,
+    displayName: providerKey,
+    managedAvailable: true,
+    connectionsQueryKey: ["oauth-connections", assistantId],
+  });
+
+  return (
+    <div>
+      <button type="button" onClick={handleConnect}>
+        Connect harness
+      </button>
+      <span>{oauthInProgress ? "Connecting" : "Idle"}</span>
+      {connectError && <span role="alert">{connectError}</span>}
+    </div>
+  );
+}
+
+function renderOAuthConnectHarness(assistantId: string, providerKey: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const renderHarness = (nextAssistantId: string, nextProviderKey: string) => (
+    <QueryClientProvider client={queryClient}>
+      <OAuthConnectHarness
+        assistantId={nextAssistantId}
+        providerKey={nextProviderKey}
+      />
+    </QueryClientProvider>
+  );
+  const view = render(renderHarness(assistantId, providerKey));
+  return { ...view, renderHarness };
+}
+
 function openedOAuthRequest(): { requestId: string; origin: string } {
   const bootstrapUrl = new URL(openCalls[0]!);
   return {
@@ -315,6 +347,28 @@ function dispatchOAuthMessage({
   });
   Object.defineProperty(event, "source", { value: source });
   window.dispatchEvent(event);
+}
+
+function dispatchOAuthStorage({
+  requestId,
+  provider = "github",
+}: {
+  requestId: string;
+  provider?: string;
+}): void {
+  const payload = JSON.stringify({
+    type: "vellum:oauth-complete",
+    requestId,
+    oauthStatus: "connected",
+    oauthProvider: provider,
+    oauthCode: null,
+  });
+  window.dispatchEvent(
+    new StorageEvent("storage", {
+      key: `vellum:oauth-complete:${requestId}`,
+      newValue: payload,
+    }),
+  );
 }
 
 function dispatchOAuthReady(url: string): void {
@@ -355,7 +409,7 @@ beforeEach(() => {
   nativeOpenCalls = [];
   nativePlatform = false;
   electronPlatform = false;
-  deepLinkListener = null;
+  resetEventBus();
   browserFinishedListener = null;
   browserFinishedUnsubscribeCount = 0;
   fireBrowserFinishedOnSubscribe = false;
@@ -378,6 +432,7 @@ beforeEach(() => {
     configurable: true,
     value: (url: string) => {
       openCalls.push(url);
+      popup.closed = false;
       popup.location.href = url;
       queueMicrotask(() => dispatchOAuthReady(url));
       return popup;
@@ -458,6 +513,28 @@ describe("IntegrationDetailModal managed OAuth", () => {
     ).toBe(true);
     expect(view.queryByRole("button", { name: "Confirm" })).toBeNull();
     expect(view.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  test("keeps waiting when COOP detaches the popup handle after authorization starts", async () => {
+    const view = renderModal();
+    fireEvent.click(
+      await view.findByRole("button", { name: "Connect Account" }),
+    );
+    await waitFor(() => {
+      expect(popup.location.href).toContain("github.com/login/oauth");
+    });
+
+    const { requestId } = openedOAuthRequest();
+    popup.closed = true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(view.getByText("Waiting for authorization...")).toBeTruthy();
+    expect(view.queryByRole("alert")).toBeNull();
+
+    connections = [connectedGitHubAccount()];
+    act(() => dispatchOAuthStorage({ requestId }));
+
+    expect(await view.findByText("GitHub account")).toBeTruthy();
   });
 
   test("shows an actionable error when managed OAuth is unavailable", async () => {
@@ -663,7 +740,7 @@ describe("IntegrationDetailModal managed OAuth", () => {
     const requestId = callback.searchParams.get("requestId")!;
 
     act(() => {
-      deepLinkListener?.({
+      publish("oauth.complete", {
         requestId,
         oauthStatus: "denied",
         oauthProvider: "slack",
@@ -673,7 +750,7 @@ describe("IntegrationDetailModal managed OAuth", () => {
     expect(view.getByText("Waiting for authorization...")).toBeTruthy();
 
     act(() => {
-      deepLinkListener?.({
+      publish("oauth.complete", {
         requestId,
         oauthStatus: "denied",
         oauthProvider: "github",
@@ -703,7 +780,7 @@ describe("IntegrationDetailModal managed OAuth", () => {
     const requestId = callback.searchParams.get("requestId")!;
 
     act(() => {
-      deepLinkListener?.({
+      publish("oauth.complete", {
         requestId,
         oauthStatus: "denied",
         oauthProvider: "github",
@@ -818,6 +895,39 @@ describe("IntegrationDetailModal managed OAuth", () => {
   });
 });
 
+describe("useOAuthConnect request identity", () => {
+  test("aborts the captured assistant request when the selected assistant changes", async () => {
+    connectionListPending = true;
+    const view = renderOAuthConnectHarness("assistant-a", "github");
+
+    fireEvent.click(view.getByRole("button", { name: "Connect harness" }));
+    await waitFor(() => expect(connectionListCalls).toHaveLength(1));
+    expect(connectionListCalls[0]!.path.assistant_id).toBe("assistant-a");
+
+    view.rerender(view.renderHarness("assistant-b", "github"));
+
+    await waitFor(() => expect(connectionListAbortCount).toBe(1));
+    expect(view.getByText("Idle")).toBeTruthy();
+    expect(startCalls).toHaveLength(0);
+    expect(toastErrors).toHaveLength(0);
+  });
+
+  test("aborts the captured provider request when the provider changes", async () => {
+    connectionListPending = true;
+    const view = renderOAuthConnectHarness("assistant-a", "github");
+
+    fireEvent.click(view.getByRole("button", { name: "Connect harness" }));
+    await waitFor(() => expect(connectionListCalls).toHaveLength(1));
+
+    view.rerender(view.renderHarness("assistant-a", "slack"));
+
+    await waitFor(() => expect(connectionListAbortCount).toBe(1));
+    expect(view.getByText("Idle")).toBeTruthy();
+    expect(startCalls).toHaveLength(0);
+    expect(toastErrors).toHaveLength(0);
+  });
+});
+
 describe("managed OAuth popup bootstrap", () => {
   test("uses the configured HTTPS web route for a packaged Electron origin", () => {
     const url = getManagedOAuthPopupBootstrapUrl({
@@ -830,6 +940,33 @@ describe("managed OAuth popup bootstrap", () => {
     expect(url).toBe(
       "https://app.example.com/account/oauth/popup-complete?requestId=req-electron&oauth_provider=github&oauth_pending=1",
     );
+  });
+});
+
+describe("managed OAuth authorization deadline", () => {
+  test("remains bounded after external COOP navigation hides the real popup state", async () => {
+    const result = connectManagedOAuth({
+      assistantId: "assistant-123",
+      providerKey: "github",
+      providerLabel: "GitHub",
+      policy: {
+        authorizationTimeoutMs: 20,
+        verification: { attempts: 1, delayMs: 0, timeoutMs: 1_000 },
+      },
+    });
+
+    await waitFor(() => {
+      expect(startCalls).toHaveLength(1);
+      expect(popup.location.href).toContain("github.com/login/oauth");
+    });
+    popup.closed = true;
+
+    await expect(result).resolves.toEqual({
+      status: "error",
+      reason: "timeout",
+      message:
+        "GitHub authorization timed out before a connected account was found. Try again.",
+    });
   });
 });
 
@@ -909,7 +1046,10 @@ describe("verifyManagedOAuthConnection", () => {
 
     await expect(
       verifyManagedOAuthConnection(options, singleAttempt),
-    ).resolves.toEqual({ outcome: "connected" });
+    ).resolves.toEqual({
+      outcome: "connected",
+      connection: connectedGitHubAccount(),
+    });
   });
 
   test("returns absent only after a successful connection response", async () => {

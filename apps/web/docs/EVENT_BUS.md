@@ -76,7 +76,7 @@ Every event name in `BusEventMap` has a typed payload. Producers:
 | `deeplink.send` | `{ message }` | Electron host: inbound `vellum://send?message=…` URL routed by Launch Services. Chat domain consumes to pre-fill the composer. |
 | `deeplink.openThread` | `{ threadId }` | Electron host: inbound `vellum://thread/<id>` URL. Chat domain consumes to navigate. |
 | `deeplink.unknown` | `{ url }` | Parser fallback for foreign schemes / malformed URLs. Consumers typically log + drop; exists so the bridge surface is exhaustive. |
-| `oauth.complete` | `{ requestId; oauthStatus; oauthProvider; oauthCode }` | Capacitor or Electron host: a validated custom-scheme callback returned from managed OAuth. Consumers still match the active request/provider and verify the backend connection before reporting success. |
+| `oauth.complete` | `{ requestId; oauthStatus; oauthProvider; oauthCode }` | Capacitor or Electron host: a validated custom-scheme callback returned from managed OAuth. The shared flow matches the active request/provider and verifies the captured assistant's backend connection before reporting success. |
 
 ## Subscribing
 

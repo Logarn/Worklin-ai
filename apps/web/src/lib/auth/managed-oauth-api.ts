@@ -4,7 +4,7 @@ import {
 } from "@/generated/api/sdk.gen";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import { extractErrorMessage } from "@/utils/api-errors";
-import { hasNewOrChangedProviderConnection } from "@/utils/oauth-connection-utils";
+import { findNewOrChangedProviderConnection } from "@/utils/oauth-connection-utils";
 
 export type ManagedOAuthStartErrorReason =
   | "unsupported"
@@ -43,14 +43,14 @@ interface VerifyManagedOAuthConnectionOptions extends FetchManagedOAuthConnectio
   baselineConnectionSignatures: ReadonlyMap<string, string>;
 }
 
-interface ManagedOAuthVerificationPolicy {
+export interface ManagedOAuthVerificationPolicy {
   attempts: number;
   delayMs: number;
   timeoutMs: number;
 }
 
 export type ManagedOAuthVerificationResult =
-  | { outcome: "connected" }
+  | { outcome: "connected"; connection: OAuthConnection }
   | { outcome: "absent" }
   | {
       outcome: "failed";
@@ -382,14 +382,13 @@ export async function verifyManagedOAuthConnection(
         };
       }
 
-      if (
-        hasNewOrChangedProviderConnection(
-          connections,
-          providerKey,
-          baselineConnectionSignatures,
-        )
-      ) {
-        return { outcome: "connected" };
+      const connected = findNewOrChangedProviderConnection(
+        connections,
+        providerKey,
+        baselineConnectionSignatures,
+      );
+      if (connected) {
+        return { outcome: "connected", connection: connected };
       }
     }
 
