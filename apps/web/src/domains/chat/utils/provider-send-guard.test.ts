@@ -54,15 +54,13 @@ function dependencies(
 ) {
   const loadConnections = mock(async () => [] as ProviderConnection[]);
   const loadSecrets = mock(async () => [] as Secret[]);
-  const loadManagedStatus = mock(
-    async (): Promise<AuthInfoGetResponse> => ({
-      platformUrl: "https://platform.example.com",
-      assistantId: "asst-1",
-      organizationId: null,
-      userId: null,
-      authenticated: true,
-    }),
-  );
+  const loadManagedStatus = mock(async (): Promise<AuthInfoGetResponse> => ({
+    platformUrl: "https://platform.example.com",
+    assistantId: "asst-1",
+    organizationId: null,
+    userId: null,
+    authenticated: true,
+  }));
   const repairActiveSelection = mock(
     async (): Promise<ProviderProfileRepairResult> => ({
       repaired: false,
@@ -87,6 +85,18 @@ const managedProfile: Profile = {
 };
 
 describe("checkProviderReadyForSend", () => {
+  test("returns the exact verified workspace profile for the caller to pin on the send", async () => {
+    const deps = dependencies(
+      configWithProfiles("balanced", { balanced: managedProfile }),
+    );
+
+    expect(await checkProviderReadyForSend(deps)).toEqual({
+      allowed: true,
+      reason: "managed-configured",
+      profileName: "balanced",
+    });
+  });
+
   test("allows a ready API-key conversation override instead of checking the managed active profile", async () => {
     const deps = dependencies(
       configWithProfiles("balanced", {
@@ -101,11 +111,10 @@ describe("checkProviderReadyForSend", () => {
       { kind: "conversation-override", profileName: "personal" },
     );
     deps.loadConnections.mockImplementation(async () => [
-      connection(
-        "openai-personal",
-        "openai",
-        { type: "api_key", credential: "credential/openai/api_key" },
-      ),
+      connection("openai-personal", "openai", {
+        type: "api_key",
+        credential: "credential/openai/api_key",
+      }),
     ]);
     deps.loadSecrets.mockImplementation(async () => [
       { type: "api_key", name: "openai" },
@@ -114,6 +123,7 @@ describe("checkProviderReadyForSend", () => {
     expect(await checkProviderReadyForSend(deps)).toEqual({
       allowed: true,
       reason: "personal-configured",
+      profileName: "personal",
     });
     expect(deps.loadManagedStatus).not.toHaveBeenCalled();
   });
@@ -144,6 +154,7 @@ describe("checkProviderReadyForSend", () => {
     expect(await checkProviderReadyForSend(deps)).toEqual({
       allowed: true,
       reason: "personal-configured",
+      profileName: "chatgpt",
     });
     expect(deps.loadManagedStatus).not.toHaveBeenCalled();
   });
@@ -160,11 +171,10 @@ describe("checkProviderReadyForSend", () => {
     );
     deps.loadConnections.mockImplementation(async () => [
       connection("openai-managed", "openai", { type: "platform" }, true),
-      connection(
-        "openai-personal",
-        "openai",
-        { type: "api_key", credential: "credential/openai/api_key" },
-      ),
+      connection("openai-personal", "openai", {
+        type: "api_key",
+        credential: "credential/openai/api_key",
+      }),
     ]);
     deps.loadSecrets.mockImplementation(async () => [
       { type: "api_key", name: "openai" },
@@ -172,11 +182,13 @@ describe("checkProviderReadyForSend", () => {
     deps.repairActiveSelection.mockImplementation(async () => ({
       repaired: true,
       providerLabel: "OpenAI",
+      verifiedProfileName: "personal",
     }));
 
     expect(await checkProviderReadyForSend(deps)).toEqual({
       allowed: true,
       reason: "personal-repaired",
+      profileName: "personal",
     });
     expect(deps.repairActiveSelection).toHaveBeenCalledTimes(1);
     expect(deps.loadManagedStatus).not.toHaveBeenCalled();
@@ -196,11 +208,10 @@ describe("checkProviderReadyForSend", () => {
     );
     deps.loadConnections.mockImplementation(async () => [
       connection("openai-managed", "openai", { type: "platform" }, true),
-      connection(
-        "openai-personal",
-        "openai",
-        { type: "api_key", credential: "credential/openai/api_key" },
-      ),
+      connection("openai-personal", "openai", {
+        type: "api_key",
+        credential: "credential/openai/api_key",
+      }),
     ]);
     deps.loadSecrets.mockImplementation(async () => [
       { type: "api_key", name: "openai" },
@@ -230,16 +241,14 @@ describe("checkProviderReadyForSend", () => {
       { kind: "conversation-override", profileName: "personal" },
     );
     deps.loadConnections.mockImplementation(async () => [
-      connection(
-        "openai-primary",
-        "openai",
-        { type: "api_key", credential: "credential/openai/api_key" },
-      ),
-      connection(
-        "openai-secondary",
-        "openai",
-        { type: "api_key", credential: "credential/openai/api_key" },
-      ),
+      connection("openai-primary", "openai", {
+        type: "api_key",
+        credential: "credential/openai/api_key",
+      }),
+      connection("openai-secondary", "openai", {
+        type: "api_key",
+        credential: "credential/openai/api_key",
+      }),
     ]);
     deps.loadSecrets.mockImplementation(async () => [
       { type: "api_key", name: "openai" },
@@ -248,6 +257,7 @@ describe("checkProviderReadyForSend", () => {
     expect(await checkProviderReadyForSend(deps)).toEqual({
       allowed: true,
       reason: "personal-configured",
+      profileName: "personal",
     });
     expect(deps.repairActiveSelection).not.toHaveBeenCalled();
   });
@@ -309,6 +319,30 @@ describe("checkProviderReadyForSend", () => {
     });
   });
 
+  test("fails closed when a pinned connection is absent even if platform auth is available", async () => {
+    const deps = dependencies(
+      configWithProfiles("personal", {
+        personal: {
+          source: "user",
+          provider: "openai",
+          model: "gpt-5.4",
+          provider_connection: "deleted-personal-connection",
+        },
+      }),
+    );
+    deps.loadConnections.mockImplementation(async () => [
+      connection("openai-managed", "openai", { type: "platform" }, true),
+    ]);
+
+    expect(await checkProviderReadyForSend(deps)).toMatchObject({
+      allowed: false,
+      reason: "connection-unverified",
+      action: "open-model-settings",
+    });
+    expect(deps.loadManagedStatus).not.toHaveBeenCalled();
+    expect(deps.loadSecrets).not.toHaveBeenCalled();
+  });
+
   test("checks configured status and fails closed for a managed selection", async () => {
     const deps = dependencies(
       configWithProfiles("balanced", { balanced: managedProfile }),
@@ -362,11 +396,13 @@ describe("checkProviderReadyForSend", () => {
     deps.repairActiveSelection.mockImplementation(async () => ({
       repaired: true,
       providerLabel: "OpenAI",
+      verifiedProfileName: "custom-balanced",
     }));
 
     expect(await checkProviderReadyForSend(deps)).toEqual({
       allowed: true,
       reason: "managed-repaired",
+      profileName: "custom-balanced",
     });
   });
 

@@ -180,6 +180,7 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
     expect(configGetCalls[0].path.assistant_id).toBe(ASSISTANT_ID);
     expect(configPatchCalls).toHaveLength(1);
     expect(configPatchCalls[0].body).toMatchObject({
+      expectedProfileOrder: ["balanced"],
       llm: {
         activeProfile: "custom-balanced",
         profileOrder: ["balanced", "custom-balanced"],
@@ -455,10 +456,15 @@ describe("repairUnavailableManagedProfile", () => {
     expect(result).toEqual({
       repaired: true,
       providerLabel: "Anthropic",
+      verifiedProfileName: "personal",
     });
     expect(configPatchCalls).toHaveLength(1);
     expect(configPatchCalls[0].body).toMatchObject({
       expectedActiveProfile: "personal",
+      expectedCallSites: {
+        conversationTitle: null,
+        subagentSpawn: null,
+      },
       llm: {
         callSites: {
           conversationTitle: { profile: "personal" },
@@ -497,10 +503,15 @@ describe("repairUnavailableManagedProfile", () => {
     expect(result).toEqual({
       repaired: true,
       providerLabel: "OpenAI",
+      verifiedProfileName: "legacy-openai",
     });
     expect(configPatchCalls).toHaveLength(1);
     expect(configPatchCalls[0].body).toMatchObject({
       expectedActiveProfile: "legacy-openai",
+      expectedCallSites: {
+        conversationTitle: null,
+        subagentSpawn: null,
+      },
       llm: {
         profiles: {
           "legacy-openai": {
@@ -783,7 +794,7 @@ describe("buildInteractivePersonalCallSitePatch", () => {
     const patch = buildInteractivePersonalCallSitePatch(
       config.llm,
       "anthropic",
-      [],
+      [apiKeyConnection("openai-personal", "openai")],
       { replaceProfileName: "openai" },
     );
 
@@ -836,6 +847,10 @@ describe("buildInteractivePersonalCallSitePatch", () => {
         model: "claude-opus-4-8",
         provider_connection: null,
       },
+      expectedCallSites: {
+        conversationTitle: { profile: "balanced" },
+        subagentSpawn: null,
+      },
       llm: {
         activeProfile: "personal",
         callSites: {
@@ -879,6 +894,40 @@ describe("buildInteractivePersonalCallSitePatch", () => {
       config.llm,
       "personal",
       [managed],
+    );
+
+    expect(patch.replySuggestion).toEqual({
+      profile: "personal",
+      provider: null,
+      model: null,
+    });
+  });
+
+  test("clears a direct override when inventory has no matching personal provider", () => {
+    const config: ConfigGetResponse = {
+      llm: {
+        activeProfile: "personal",
+        profiles: {
+          personal: {
+            source: "user",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+            provider_connection: "anthropic-personal",
+          },
+        },
+        callSites: {
+          replySuggestion: {
+            provider: "openai",
+            model: "gpt-5.4-mini",
+          },
+        },
+      },
+    };
+
+    const patch = buildInteractivePersonalCallSitePatch(
+      config.llm,
+      "personal",
+      [apiKeyConnection("anthropic-personal", "anthropic")],
     );
 
     expect(patch.replySuggestion).toEqual({

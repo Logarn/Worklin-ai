@@ -92,7 +92,9 @@ export class ConnectionResolutionError extends Error {
       | "not_found"
       | "provider_mismatch"
       | "missing_connection"
-      | "model_incompatible",
+      | "model_incompatible"
+      | "personal_connection_required"
+      | "unavailable",
     message: string,
     public readonly cause?: unknown,
   ) {
@@ -105,6 +107,27 @@ export function isPersonalProviderConnection(
   connection: Pick<ProviderConnection, "auth" | "isManaged">,
 ): boolean {
   return connection.auth.type !== "platform" && connection.isManaged !== true;
+}
+
+export interface ConnectionResolutionRequirements {
+  requirePersonal?: boolean;
+}
+
+async function resolveRunnableProviderFromConnection(
+  connection: ProviderConnection,
+  config: ProvidersConfig,
+  model: string | undefined,
+  requestedConnectionName: string,
+): Promise<Provider | null> {
+  try {
+    return await resolveProviderFromConnection(connection, config, { model });
+  } catch (err) {
+    log.warn(
+      { err, connectionName: requestedConnectionName },
+      "provider_connection auth resolution failed transiently — returning null",
+    );
+    return null;
+  }
 }
 
 /**
@@ -136,8 +159,9 @@ export async function tryResolveProviderForConnectionName(
   config: ProvidersConfig,
   expectedProvider?: string,
   model?: string,
+  requirements: ConnectionResolutionRequirements = {},
 ): Promise<Provider | null> {
-  let connection;
+  let connection: ProviderConnection | null;
   try {
     connection = getConnection(getDb(), connectionName);
   } catch (err) {
@@ -155,41 +179,53 @@ export async function tryResolveProviderForConnectionName(
       `provider_connection "${connectionName}" not found in DB — check your config or run the boot-time backfill`,
     );
   }
-  if (expectedProvider && connection.provider !== expectedProvider) {
-    // Mismatch usually means the config deep-merge inherited a stale
-    // provider_connection from a lower layer (e.g. profile sets a BYOK
-    // provider with "Any active" but the default layer's
-    // "anthropic-managed" leaked through). Try to find an active connection
-    // for the expected provider before giving up.
-    let resolved = false;
+  const providerMismatch =
+    expectedProvider != null && connection.provider !== expectedProvider;
+  const personalConnectionRequired =
+    requirements.requirePersonal === true &&
+    !isPersonalProviderConnection(connection);
+  if (providerMismatch || personalConnectionRequired) {
+    // A stale inherited connection may point at the wrong provider or at
+    // platform auth. Recovery is intentionally restricted to a matching,
+    // model-compatible personal connection whose credentials resolve now.
+    // Managed rows and unusable personal rows are never speculative fallbacks.
+    const recoveryProvider = expectedProvider ?? connection.provider;
     let mismatchCandidates:
       | import("./inference/auth.js").ProviderConnection[]
       | undefined;
     try {
       const db = getDb();
-      mismatchCandidates = listConnections(db, { provider: expectedProvider });
-      const active = mismatchCandidates.find((c) =>
-        isConnectionCompatibleWithModel(c, model),
+      mismatchCandidates = listConnections(db, {
+        provider: recoveryProvider,
+      });
+      const personalCandidates = mismatchCandidates.filter(
+        isPersonalProviderConnection,
       );
-      if (active) {
+      const compatibleCandidates = personalCandidates.filter((candidate) =>
+        isConnectionCompatibleWithModel(candidate, model),
+      );
+      for (const candidate of compatibleCandidates) {
+        const provider = await resolveRunnableProviderFromConnection(
+          candidate,
+          config,
+          model,
+          candidate.name,
+        );
+        if (!provider) continue;
         log.info(
           {
             originalConnection: connectionName,
-            resolvedConnection: active.name,
-            expectedProvider,
+            resolvedConnection: candidate.name,
+            expectedProvider: recoveryProvider,
           },
-          "Auto-resolved stale provider_connection to matching connection",
+          "Auto-resolved stale provider_connection to matching runnable personal connection",
         );
-        connection = active;
-        resolved = true;
+        return provider;
       }
-    } catch {
-      // DB not available — fall through to the original error.
-    }
-    if (!resolved) {
-      const incompatMsg = mismatchCandidates
-        ? describeSubscriptionModelIncompatibility(mismatchCandidates, model)
-        : null;
+      const incompatMsg = describeSubscriptionModelIncompatibility(
+        personalCandidates,
+        model,
+      );
       if (incompatMsg) {
         throw new ConnectionResolutionError(
           connectionName,
@@ -197,12 +233,32 @@ export async function tryResolveProviderForConnectionName(
           incompatMsg,
         );
       }
+      if (compatibleCandidates.length > 0) {
+        throw new ConnectionResolutionError(
+          connectionName,
+          "unavailable",
+          `no runnable personal provider_connection for provider="${recoveryProvider}" and model="${model ?? "<default>"}"`,
+        );
+      }
+    } catch (error) {
+      // Preserve typed resolution errors from the bounded recovery above.
+      if (error instanceof ConnectionResolutionError) {
+        throw error;
+      }
+      // DB not available — fall through to a deterministic fail-closed error.
+    }
+    if (requirements.requirePersonal === true) {
       throw new ConnectionResolutionError(
         connectionName,
-        "provider_mismatch",
-        `provider_connection "${connectionName}" has provider="${connection.provider}" but resolving profile declared provider="${expectedProvider}" — set the profile's provider_connection to a row matching its provider`,
+        "personal_connection_required",
+        `provider_connection "${connectionName}" cannot satisfy personal routing for provider="${recoveryProvider}" — select a matching personal connection with usable credentials`,
       );
     }
+    throw new ConnectionResolutionError(
+      connectionName,
+      "provider_mismatch",
+      `provider_connection "${connectionName}" has provider="${connection.provider}" but resolving profile declared provider="${expectedProvider}" — set the profile's provider_connection to a runnable personal row matching its provider`,
+    );
   }
   // `resolveProviderFromConnection` reaches into auth resolution (credential
   // reads, managed-proxy context). A transient failure there is a soft
@@ -210,15 +266,12 @@ export async function tryResolveProviderForConnectionName(
   // "no usable credentials". Hard config errors are thrown above; this
   // catch is specifically for in-flight failures that should not take
   // dispatch offline.
-  try {
-    return await resolveProviderFromConnection(connection, config, { model });
-  } catch (err) {
-    log.warn(
-      { err, connectionName },
-      "provider_connection auth resolution failed transiently — returning null",
-    );
-    return null;
-  }
+  return resolveRunnableProviderFromConnection(
+    connection,
+    config,
+    model,
+    connectionName,
+  );
 }
 
 /**

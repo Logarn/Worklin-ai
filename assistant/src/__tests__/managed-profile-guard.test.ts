@@ -390,12 +390,16 @@ describe("PATCH /v1/config — managed profile deletion guard", () => {
           model: "claude-sonnet",
           provider_connection: null,
         },
+        expectedProfileOrder: [],
+        expectedCallSites: { conversationTitle: null },
         llm: { activeProfile: "my-custom" },
       },
     });
 
     expect(savedRaw).not.toHaveProperty("expectedActiveProfile");
     expect(savedRaw).not.toHaveProperty("expectedActiveProfileDecision");
+    expect(savedRaw).not.toHaveProperty("expectedProfileOrder");
+    expect(savedRaw).not.toHaveProperty("expectedCallSites");
     expect((savedRaw?.llm as Record<string, unknown>).activeProfile).toBe(
       "my-custom",
     );
@@ -423,6 +427,66 @@ describe("PATCH /v1/config — managed profile deletion guard", () => {
           llm: {
             profiles: {
               balanced: { provider_connection: "anthropic-personal" },
+            },
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(savedRaw).toBeNull();
+  });
+
+  test("rejects a stale profile order even when the active decision still matches", async () => {
+    const llm = rawConfig.llm as Record<string, unknown>;
+    llm.activeProfile = "balanced";
+    llm.profileOrder = ["balanced", "my-custom"];
+
+    await expect(
+      patchRoute.handler({
+        body: {
+          expectedActiveProfile: "balanced",
+          expectedActiveProfileDecision: {
+            profile: "balanced",
+            provider: "anthropic",
+            model: "claude-sonnet",
+            provider_connection: null,
+          },
+          expectedProfileOrder: ["balanced"],
+          llm: {
+            activeProfile: "my-custom",
+            profileOrder: ["balanced", "new-personal-profile"],
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(savedRaw).toBeNull();
+  });
+
+  test("rejects a stale patched call site even when the active decision still matches", async () => {
+    const llm = rawConfig.llm as Record<string, unknown>;
+    llm.activeProfile = "balanced";
+    llm.callSites = {
+      conversationTitle: { profile: "my-custom" },
+    };
+
+    await expect(
+      patchRoute.handler({
+        body: {
+          expectedActiveProfile: "balanced",
+          expectedActiveProfileDecision: {
+            profile: "balanced",
+            provider: "anthropic",
+            model: "claude-sonnet",
+            provider_connection: null,
+          },
+          expectedCallSites: {
+            conversationTitle: { profile: "balanced" },
+          },
+          llm: {
+            activeProfile: "my-custom",
+            callSites: {
+              conversationTitle: { profile: "my-custom" },
             },
           },
         },

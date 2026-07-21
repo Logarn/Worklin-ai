@@ -277,8 +277,8 @@ export function useSendMessage({
       }
     }, [assistantId, queryClient]);
 
-  const resolveProviderSendSelection = useCallback(
-    async (): Promise<ProviderSendSelection> => {
+  const resolveProviderSendSelection =
+    useCallback(async (): Promise<ProviderSendSelection> => {
       if (!assistantId || !activeConversationId) {
         return { kind: "unverified" };
       }
@@ -314,13 +314,11 @@ export function useSendMessage({
       } catch (error) {
         return { kind: "unverified", error };
       }
-    },
-    [activeConversationId, assistantId, queryClient],
-  );
+    }, [activeConversationId, assistantId, queryClient]);
 
   const ensureProviderReadyForSend = useCallback(
-    async (selection: ProviderSendSelection): Promise<boolean> => {
-      if (!assistantId) return false;
+    async (selection: ProviderSendSelection): Promise<string | null> => {
+      if (!assistantId) return null;
 
       const result = await checkProviderReadyForSend({
         selection,
@@ -377,14 +375,14 @@ export function useSendMessage({
         });
       }
       if (result.allowed) {
-        return true;
+        return result.profileName;
       }
 
       setError({
         message: result.message,
         code: "PROVIDER_NOT_CONFIGURED",
       });
-      return false;
+      return null;
     },
     [assistantId, queryClient, setError],
   );
@@ -909,11 +907,9 @@ export function useSendMessage({
         return;
       }
       const providerSelection = await resolveProviderSendSelection();
-      if (!(await ensureProviderReadyForSend(providerSelection))) return;
       const inferenceProfileForSend =
-        providerSelection.kind === "conversation-override"
-          ? providerSelection.profileName
-          : undefined;
+        await ensureProviderReadyForSend(providerSelection);
+      if (!inferenceProfileForSend) return;
       setError(null);
       useInteractionStore.getState().resetSecretAndConfirmation();
       useChatSessionStore.getState().clearConfirmationToolCallMap();

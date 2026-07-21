@@ -36,6 +36,7 @@ export type ProviderSendGuardResult =
   | {
       allowed: true;
       reason: ProviderSendGuardAllowedReason;
+      profileName: string;
     }
   | {
       allowed: false;
@@ -123,12 +124,21 @@ export async function checkProviderReadyForSend({
   }
 
   let connections: readonly ProviderConnection[] = [];
-  if (profile.source !== "managed") {
+  if (profile.source !== "managed" || profile.provider_connection) {
     try {
       connections = await loadConnections();
     } catch (error) {
       return blocked("connection-unverified", error);
     }
+  }
+
+  if (
+    profile.provider_connection &&
+    !connections.some(
+      (candidate) => candidate.name === profile.provider_connection,
+    )
+  ) {
+    return blocked("connection-unverified");
   }
 
   const managedSelection = isManagedInferenceProfile(profile, connections);
@@ -150,7 +160,11 @@ export async function checkProviderReadyForSend({
     }
 
     if (profile.provider_connection) {
-      return { allowed: true, reason: "personal-configured" };
+      return {
+        allowed: true,
+        reason: "personal-configured",
+        profileName,
+      };
     }
 
     const inheritedConnectionName = config?.llm?.default?.provider_connection;
@@ -178,7 +192,11 @@ export async function checkProviderReadyForSend({
             secrets,
           );
     if (unpinnedResolutionSafe) {
-      return { allowed: true, reason: "personal-configured" };
+      return {
+        allowed: true,
+        reason: "personal-configured",
+        profileName,
+      };
     }
 
     if (selection.kind === "conversation-override") {
@@ -187,8 +205,15 @@ export async function checkProviderReadyForSend({
 
     try {
       const repair = await repairActiveSelection(profileName);
-      if (canSendAfterManagedProfileRepair(repair)) {
-        return { allowed: true, reason: "personal-repaired" };
+      if (
+        canSendAfterManagedProfileRepair(repair) &&
+        repair.verifiedProfileName
+      ) {
+        return {
+          allowed: true,
+          reason: "personal-repaired",
+          profileName: repair.verifiedProfileName,
+        };
       }
     } catch (error) {
       return blocked("personal-unavailable", error);
@@ -204,7 +229,7 @@ export async function checkProviderReadyForSend({
   }
 
   if (managedStatus.authenticated === true) {
-    return { allowed: true, reason: "managed-configured" };
+    return { allowed: true, reason: "managed-configured", profileName };
   }
 
   if (selection.kind === "conversation-override") {
@@ -213,8 +238,15 @@ export async function checkProviderReadyForSend({
 
   try {
     const repair = await repairActiveSelection(profileName);
-    if (canSendAfterManagedProfileRepair(repair)) {
-      return { allowed: true, reason: "managed-repaired" };
+    if (
+      canSendAfterManagedProfileRepair(repair) &&
+      repair.verifiedProfileName
+    ) {
+      return {
+        allowed: true,
+        reason: "managed-repaired",
+        profileName: repair.verifiedProfileName,
+      };
     }
   } catch (error) {
     return blocked("managed-unavailable", error);

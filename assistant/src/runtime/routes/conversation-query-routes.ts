@@ -19,6 +19,8 @@
  * POST   /v1/messages/queued/:id/steer — steer to a queued message
  */
 
+import { isDeepStrictEqual } from "node:util";
+
 import { z } from "zod";
 
 import { LlmContextResponseSchema } from "../../api/responses/llm-context-response.js";
@@ -598,6 +600,11 @@ const ActiveProfileDecisionSchema = z
   })
   .meta({ id: "ActiveProfileDecision" });
 
+const ExpectedCallSitesSchema = z.record(
+  z.string(),
+  CallSiteOverrideDraftSchema.nullable(),
+);
+
 /**
  * Request body schema for `PATCH /v1/config`.
  *
@@ -611,6 +618,8 @@ const ConfigPatchRequestSchema = z
   .object({
     expectedActiveProfile: z.string().nullable().optional(),
     expectedActiveProfileDecision: ActiveProfileDecisionSchema.optional(),
+    expectedProfileOrder: z.array(z.string()).optional(),
+    expectedCallSites: ExpectedCallSitesSchema.optional(),
     llm: z
       .object({
         default: nullablePartial(
@@ -849,9 +858,41 @@ async function handlePatchConfig({ body }: RouteHandlerArgs) {
   const expectedActiveProfileDecision = hasExpectedActiveProfileDecision
     ? expectedActiveProfileDecisionResult.data
     : undefined;
+  const hasExpectedProfileOrder = Object.prototype.hasOwnProperty.call(
+    request,
+    "expectedProfileOrder",
+  );
+  const expectedProfileOrderResult = z
+    .array(z.string())
+    .safeParse(request.expectedProfileOrder);
+  if (hasExpectedProfileOrder && !expectedProfileOrderResult.success) {
+    throw new BadRequestError(
+      "`expectedProfileOrder` must be an array of strings",
+    );
+  }
+  const expectedProfileOrder = hasExpectedProfileOrder
+    ? expectedProfileOrderResult.data
+    : undefined;
+  const hasExpectedCallSites = Object.prototype.hasOwnProperty.call(
+    request,
+    "expectedCallSites",
+  );
+  const expectedCallSitesResult = ExpectedCallSitesSchema.safeParse(
+    request.expectedCallSites,
+  );
+  if (hasExpectedCallSites && !expectedCallSitesResult.success) {
+    throw new BadRequestError(
+      "`expectedCallSites` must map call-site names to their expected values or null",
+    );
+  }
+  const expectedCallSites = hasExpectedCallSites
+    ? expectedCallSitesResult.data
+    : undefined;
   const {
     expectedActiveProfile: _expectedActiveProfile,
     expectedActiveProfileDecision: _expectedActiveProfileDecision,
+    expectedProfileOrder: _expectedProfileOrder,
+    expectedCallSites: _expectedCallSites,
     ...patch
   } = request;
   if (Object.keys(patch).length === 0) {
@@ -917,6 +958,35 @@ async function handlePatchConfig({ body }: RouteHandlerArgs) {
       throw new ConflictError("The active model configuration changed", {
         expectedActiveProfileDecision,
         actualActiveProfileDecision,
+      });
+    }
+  }
+  if (expectedProfileOrder) {
+    const actualProfileOrder = Array.isArray(rawLlm?.profileOrder)
+      ? rawLlm.profileOrder
+      : [];
+    if (!isDeepStrictEqual(actualProfileOrder, expectedProfileOrder)) {
+      throw new ConflictError("The model profile order changed", {
+        expectedProfileOrder,
+        actualProfileOrder,
+      });
+    }
+  }
+  if (expectedCallSites) {
+    const rawCallSites = readPlainObject(rawLlm?.callSites);
+    const actualCallSites = Object.fromEntries(
+      Object.keys(expectedCallSites).map((callSite) => [
+        callSite,
+        rawCallSites &&
+        Object.prototype.hasOwnProperty.call(rawCallSites, callSite)
+          ? (rawCallSites[callSite] ?? null)
+          : null,
+      ]),
+    );
+    if (!isDeepStrictEqual(actualCallSites, expectedCallSites)) {
+      throw new ConflictError("The model call-site configuration changed", {
+        expectedCallSites,
+        actualCallSites,
       });
     }
   }

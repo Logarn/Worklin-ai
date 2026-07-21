@@ -19,7 +19,9 @@ let startAuthCalls: AssistantPathCall[] = [];
 let exchangeCalls: ExchangeCall[] = [];
 let providerConnectionsGetCalls: AssistantPathCall[] = [];
 let configGetCalls: AssistantPathCall[] = [];
-let configPatchCalls: Array<AssistantPathCall & { body: Record<string, unknown> }> = [];
+let configPatchCalls: Array<
+  AssistantPathCall & { body: Record<string, unknown> }
+> = [];
 let queryInvalidationCalls: unknown[] = [];
 let connectedConnection: ProviderConnection | null = null;
 let providerConnections: ProviderConnection[] = [];
@@ -141,9 +143,8 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
   },
 }));
 
-const { ChatgptOAuthSection } = await import(
-  "@/components/ai/chatgpt-oauth-section"
-);
+const { ChatgptOAuthSection } =
+  await import("@/components/ai/chatgpt-oauth-section");
 
 const ASSISTANT_ID = "asst-1";
 
@@ -336,5 +337,47 @@ describe("ChatgptOAuthSection", () => {
       "ChatGPT subscription connected successfully.",
     );
     expect(startAuthCalls).toHaveLength(1);
+  });
+
+  test("fails verification without fabricating a ChatGPT connection when inventory stays empty", async () => {
+    let onConnectedCalls = 0;
+    providerConnections = [];
+
+    render(
+      <Wrapper>
+        <ChatgptOAuthSection
+          assistantId={ASSISTANT_ID}
+          onConnected={() => {
+            onConnectedCalls += 1;
+          }}
+        />
+      </Wrapper>,
+    );
+
+    fireEvent.click(getButton("Continue with ChatGPT"));
+    await waitFor(() => expect(startAuthCalls).toHaveLength(1));
+
+    fireEvent.change(
+      getInputByPlaceholder("Paste backup callback URL here..."),
+      {
+        target: {
+          value: "https://worklin.local/callback?code=code-1&state=state-1",
+        },
+      },
+    );
+    fireEvent.click(getButton("Complete Sign In"));
+
+    await waitFor(() => {
+      expect(providerConnectionsGetCalls).toHaveLength(3);
+      expect(document.body.textContent).toContain(
+        "Worklin could not verify the saved connection",
+      );
+    });
+    expect(configGetCalls).toHaveLength(0);
+    expect(configPatchCalls).toHaveLength(0);
+    expect(onConnectedCalls).toBe(0);
+    expect(document.body.textContent).not.toContain(
+      "ChatGPT subscription connected successfully.",
+    );
   });
 });

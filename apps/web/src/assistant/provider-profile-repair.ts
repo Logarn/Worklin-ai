@@ -64,8 +64,12 @@ const STANDARD_INTERACTIVE_CALL_SITES = [
   "trustRuleSuggestion",
 ] as const;
 
-type WireProfile =
-  NonNullable<NonNullable<ConfigGetResponse["llm"]>["profiles"]>[string];
+type WireProfile = NonNullable<
+  NonNullable<ConfigGetResponse["llm"]>["profiles"]
+>[string];
+type WireCallSite = NonNullable<
+  NonNullable<ConfigGetResponse["llm"]>["callSites"]
+>[string];
 type SecretMetadata = SecretsGetResponse["secrets"][number];
 type ActiveProfileDecision = {
   profile: string | null;
@@ -75,11 +79,15 @@ type ActiveProfileDecision = {
 };
 type ConfigPatchRequestWithDecision = ConfigPatchRequest & {
   expectedActiveProfileDecision: ActiveProfileDecision;
+  expectedProfileOrder?: string[];
+  expectedCallSites?: Record<string, WireCallSite | null>;
 };
 
 export interface ProviderProfileRepairResult {
   repaired: boolean;
   providerLabel?: string;
+  /** Exact profile verified or activated by this repair attempt. */
+  verifiedProfileName?: string;
   reason?:
     | "no-model"
     | "no-connections"
@@ -110,9 +118,7 @@ export function canSendAfterManagedProfileRepair(
   return result.repaired || result.reason === "already-runnable";
 }
 
-function profileHasRunnableModel(
-  profile: WireProfile | undefined,
-): boolean {
+function profileHasRunnableModel(profile: WireProfile | undefined): boolean {
   return (
     profile != null &&
     profile.status !== "disabled" &&
@@ -170,62 +176,53 @@ function activeProfileDecision(
   };
 }
 
-function profileClearsInheritedConnection(profile: WireProfile): boolean {
-  return (
-    profile.source === "user" &&
-    profile.provider_connection == null &&
-    (profile.provider != null || profile.model != null)
-  );
-}
-
-function connectionIsManagedOrUnresolved(
-  connectionName: string,
-  connections: readonly ProviderConnection[],
-): boolean {
-  const connection = connections.find(
-    (candidate) => candidate.name === connectionName,
-  );
-  return connection ? isManagedInferenceConnection(connection) : true;
-}
-
-function directCallSiteUsesManagedTransport(
+function directCallSiteHasMatchingPersonalConnection(
   llm: ConfigGetResponse["llm"],
   configuredProfileName: string | undefined,
+  configured: WireCallSite | undefined,
   connections: readonly ProviderConnection[],
 ): boolean {
   const profiles = llm?.profiles ?? {};
-  if (configuredProfileName) {
-    const configuredProfile = profiles[configuredProfileName];
-    if (!configuredProfile) return true;
-    if (isManagedInferenceProfile(configuredProfile, connections)) return true;
-    if (profileClearsInheritedConnection(configuredProfile)) return false;
-    if (configuredProfile.provider_connection) {
-      return connectionIsManagedOrUnresolved(
-        configuredProfile.provider_connection,
-        connections,
-      );
-    }
-  }
-
+  const configuredProfile = configuredProfileName
+    ? profiles[configuredProfileName]
+    : undefined;
   const activeProfileName = llm?.activeProfile;
   const activeProfile = activeProfileName
     ? profiles[activeProfileName]
     : undefined;
-  if (activeProfile) {
-    if (isManagedInferenceProfile(activeProfile, connections)) return true;
-    if (profileClearsInheritedConnection(activeProfile)) return false;
-    if (activeProfile.provider_connection) {
-      return connectionIsManagedOrUnresolved(
-        activeProfile.provider_connection,
-        connections,
-      );
-    }
-  }
+  const provider =
+    configured?.provider ??
+    configuredProfile?.provider ??
+    activeProfile?.provider ??
+    llm?.default?.provider;
+  const model =
+    configured?.model ??
+    configuredProfile?.model ??
+    activeProfile?.model ??
+    llm?.default?.model;
 
-  const defaultConnection = llm?.default?.provider_connection;
-  return typeof defaultConnection === "string"
-    ? connectionIsManagedOrUnresolved(defaultConnection, connections)
-    : false;
+  if (!provider) return false;
+  return connections.some(
+    (connection) =>
+      !isManagedInferenceConnection(connection) &&
+      connection.provider === provider &&
+      isProviderConnectionCompatibleWithModel(connection, model),
+  );
+}
+
+function expectedCallSiteValues(
+  llm: ConfigGetResponse["llm"],
+  callSitePatch: NonNullable<
+    NonNullable<ConfigPatchRequest["llm"]>["callSites"]
+  >,
+): Record<string, WireCallSite | null> {
+  const currentCallSites = llm?.callSites ?? {};
+  return Object.fromEntries(
+    Object.keys(callSitePatch).map((callSite) => [
+      callSite,
+      currentCallSites[callSite] ?? null,
+    ]),
+  );
 }
 
 export function canSafelyResolveUnpinnedPersonalProfile(
@@ -346,9 +343,10 @@ export function buildInteractivePersonalCallSitePatch(
       ) {
         if (
           !hasDirectModelSelection ||
-          !directCallSiteUsesManagedTransport(
+          directCallSiteHasMatchingPersonalConnection(
             llm,
             configured.profile,
+            configured,
             connections,
           )
         ) {
@@ -357,7 +355,12 @@ export function buildInteractivePersonalCallSitePatch(
       }
     } else if (
       hasDirectModelSelection &&
-      !directCallSiteUsesManagedTransport(llm, undefined, connections)
+      directCallSiteHasMatchingPersonalConnection(
+        llm,
+        undefined,
+        configured,
+        connections,
+      )
     ) {
       continue;
     }
@@ -387,12 +390,9 @@ export function buildInteractiveProfileSelectionPatch(
   routeInteractiveCallSites: boolean,
 ): ConfigPatchRequestWithDecision {
   const callSites = routeInteractiveCallSites
-    ? buildInteractivePersonalCallSitePatch(
-        llm,
-        profileName,
-        connections,
-        { replaceProfileName: expectedActiveProfile },
-      )
+    ? buildInteractivePersonalCallSitePatch(llm, profileName, connections, {
+        replaceProfileName: expectedActiveProfile,
+      })
     : {};
 
   return {
@@ -401,6 +401,9 @@ export function buildInteractiveProfileSelectionPatch(
       llm,
       expectedActiveProfile,
     ),
+    ...(Object.keys(callSites).length > 0
+      ? { expectedCallSites: expectedCallSiteValues(llm, callSites) }
+      : {}),
     llm: {
       activeProfile: profileName,
       ...(Object.keys(callSites).length > 0 ? { callSites } : {}),
@@ -430,7 +433,11 @@ async function patchInteractiveCallSitesForProfile(
     connections,
   );
   if (Object.keys(callSites).length === 0 && !connectionName) {
-    return { repaired: false, reason: "already-runnable" };
+    return {
+      repaired: false,
+      reason: "already-runnable",
+      verifiedProfileName: profileName,
+    };
   }
 
   try {
@@ -440,6 +447,11 @@ async function patchInteractiveCallSitesForProfile(
       body: {
         expectedActiveProfile: profileName,
         expectedActiveProfileDecision: expectedDecision,
+        ...(Object.keys(callSites).length > 0
+          ? {
+              expectedCallSites: expectedCallSiteValues(config.llm, callSites),
+            }
+          : {}),
         llm: {
           ...(connectionName
             ? {
@@ -460,7 +472,7 @@ async function patchInteractiveCallSitesForProfile(
     throw error;
   }
 
-  return { repaired: true };
+  return { repaired: true, verifiedProfileName: profileName };
 }
 
 export async function ensureRunnableProfileForConnection(
@@ -505,15 +517,13 @@ export async function ensureRunnableProfileForConnection(
     activeProfile &&
     currentActiveProfile &&
     profileHasRunnableModel(currentActiveProfile) &&
-    !isManagedInferenceProfile(
-      currentActiveProfile,
-      options.connections ?? [],
-    )
+    !isManagedInferenceProfile(currentActiveProfile, options.connections ?? [])
   ) {
     return {
       repaired: false,
       providerLabel: providerLabel(connection.provider),
       reason: "already-runnable",
+      verifiedProfileName: activeProfile,
     };
   }
 
@@ -551,6 +561,10 @@ export async function ensureRunnableProfileForConnection(
   const body: ConfigPatchRequestWithDecision = {
     expectedActiveProfile: activeProfile,
     expectedActiveProfileDecision: activeProfileDecision(llm, activeProfile),
+    expectedProfileOrder: currentOrder,
+    ...(Object.keys(callSites).length > 0
+      ? { expectedCallSites: expectedCallSiteValues(llm, callSites) }
+      : {}),
     llm: {
       ...profilePatch,
       profileOrder,
@@ -579,6 +593,7 @@ export async function ensureRunnableProfileForConnection(
   return {
     repaired: true,
     providerLabel: providerLabel(connection.provider),
+    verifiedProfileName: profileName,
   };
 }
 
