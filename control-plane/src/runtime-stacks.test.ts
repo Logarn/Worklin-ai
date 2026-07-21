@@ -23,6 +23,7 @@ import {
   recordRuntimeStackService,
   recordRuntimeStackVolume,
   releaseRuntimeServiceProvisioningLease,
+  renewRuntimeServiceProvisioningLease,
   runtimeActorSigningKeyScope,
   runtimeNotReadyPayload,
   runtimeStackConfigFromEnv,
@@ -111,7 +112,11 @@ describe("runtime stack provisioning defaults", () => {
     );
 
     markRuntimeStackSuspended(db, stack.id, "workspace disabled", NOW);
-    expect(getRuntimeStackById(db, stack.id)?.status).toBe("suspended");
+    expect(getRuntimeStackById(db, stack.id)).toMatchObject({
+      status: "suspended",
+      gateway_url: null,
+      public_ingress_url: null,
+    });
     expect(
       operationalStateForRuntimeStack(getRuntimeStackById(db, stack.id)),
     ).toBe("maintenance_mode");
@@ -821,6 +826,74 @@ describe("runtime stack provisioning defaults", () => {
     });
   });
 
+  test("suspension fences an in-flight provisioner without losing returned resource ids", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    const claim = claimRuntimeServiceProvisioningLease(
+      db,
+      stack.id,
+      1,
+      "lease-provisioning",
+      1_000,
+      5_000,
+      NOW,
+    );
+    expect(claim.leaseAcquired).toBe(true);
+    expect(claim.stack?.service_capacity_reserved).toBe(1);
+
+    markRuntimeStackSuspended(db, stack.id, "assistant retirement", NOW);
+    expect(() =>
+      renewRuntimeServiceProvisioningLease(
+        db,
+        stack.id,
+        "lease-provisioning",
+        2_000,
+        5_000,
+        NOW,
+      ),
+    ).toThrow("lease was lost");
+
+    recordRuntimeStackService(
+      db,
+      stack.id,
+      "service-created-in-flight",
+      NOW,
+      "lease-provisioning",
+    );
+    expect(() =>
+      markRuntimeStackActive(
+        db,
+        stack.id,
+        "http://runtime.railway.internal:8080",
+        "200",
+        NOW,
+        "lease-provisioning",
+      ),
+    ).toThrow("lease was lost");
+    expect(
+      claimRuntimeServiceProvisioningLease(
+        db,
+        stack.id,
+        1,
+        "lease-after-retirement",
+        10_000,
+        5_000,
+        NOW,
+      ).leaseAcquired,
+    ).toBe(false);
+    expect(getRuntimeStackById(db, stack.id)).toMatchObject({
+      status: "suspended",
+      gateway_url: null,
+      service_ref: "service-created-in-flight",
+    });
+    expect(countAllocatedRuntimeServices(db)).toBe(1);
+  });
+
   test("atomically assigns one preprovisioned slot to only one assistant", () => {
     const db = setupDb();
     const slotConfig = config({
@@ -879,6 +952,84 @@ describe("runtime stack provisioning defaults", () => {
       service_ref: null,
       workspace_volume_ref: null,
       gateway_url: null,
+    });
+  });
+
+  test("never reuses a claimed preprovisioned slot after retirement", () => {
+    const db = setupDb();
+    const slotConfig = config({
+      preprovisionedRuntimeSlots: [
+        {
+          serviceRef: "reserved-service-1",
+          gatewayUrl: "http://reserved-runtime.railway.internal:8080",
+          workspaceVolumeRef: "reserved-volume-1",
+        },
+      ],
+    });
+    const firstAssistant = assistant();
+    const secondAssistant = assistant({
+      id: "asst-2",
+      user_id: "user-2",
+      org_id: "org-2",
+    });
+    const first = claimPreprovisionedRuntimeStack(
+      db,
+      firstAssistant,
+      ensureRuntimeStackForAssistant(db, firstAssistant, slotConfig, NOW),
+      slotConfig,
+      NOW,
+    );
+    markRuntimeStackDeleted(db, first.id, "assistant retired", NOW);
+
+    const second = claimPreprovisionedRuntimeStack(
+      db,
+      secondAssistant,
+      ensureRuntimeStackForAssistant(db, secondAssistant, slotConfig, NOW),
+      slotConfig,
+      NOW,
+    );
+
+    expect(second).toMatchObject({
+      status: "provisioning",
+      service_ref: null,
+      workspace_volume_ref: null,
+    });
+    expect(getRuntimeStackById(db, first.id)).toMatchObject({
+      status: "deleted",
+      service_ref: "reserved-service-1",
+      workspace_volume_ref: "reserved-volume-1",
+    });
+
+    const thirdAssistant = assistant({
+      id: "asst-3",
+      user_id: "user-3",
+      org_id: "org-3",
+    });
+    const changedServiceConfig = config({
+      preprovisionedRuntimeSlots: [
+        {
+          serviceRef: "reserved-service-2",
+          gatewayUrl: "http://replacement-runtime.railway.internal:8080",
+          workspaceVolumeRef: "reserved-volume-1",
+        },
+      ],
+    });
+    const third = claimPreprovisionedRuntimeStack(
+      db,
+      thirdAssistant,
+      ensureRuntimeStackForAssistant(
+        db,
+        thirdAssistant,
+        changedServiceConfig,
+        NOW,
+      ),
+      changedServiceConfig,
+      NOW,
+    );
+    expect(third).toMatchObject({
+      status: "provisioning",
+      service_ref: null,
+      workspace_volume_ref: null,
     });
   });
 

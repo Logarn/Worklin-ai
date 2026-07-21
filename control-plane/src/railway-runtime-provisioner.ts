@@ -37,6 +37,8 @@ export interface RailwayProvisionerConfig {
   pollIntervalMs: number;
   deployTimeoutMs: number;
   healthTimeoutMs: number;
+  /** Railway injects this into the control-plane service at runtime. */
+  controlPlaneServiceId?: string | null;
 }
 
 export interface RailwayProvisioningPersistence {
@@ -60,9 +62,56 @@ export interface ProvisionRailwayRuntimeOptions {
   now?: () => number;
 }
 
+export interface RailwayRuntimeRetirementPersistence {
+  renewLease(): void;
+  confirmVolumeCleanup(): void;
+  confirmServiceCleanup(): void;
+}
+
+export interface RetireRailwayRuntimeOptions {
+  serviceId: string | null;
+  volumeId: string | null;
+  serviceCleanupConfirmed: boolean;
+  volumeCleanupConfirmed: boolean;
+  config: RailwayProvisionerConfig;
+  persistence: RailwayRuntimeRetirementPersistence;
+  fetchImpl?: FetchLike;
+}
+
+export type RailwayRuntimeRetirementErrorCode =
+  | "configuration"
+  | "protected_service"
+  | "cleanup_unconfirmed";
+
+export class RailwayRuntimeRetirementError extends Error {
+  constructor(
+    readonly code: RailwayRuntimeRetirementErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "RailwayRuntimeRetirementError";
+  }
+}
+
 interface GraphqlEnvelope<T> {
   data?: T;
   errors?: Array<{ message?: string }>;
+}
+
+interface RailwayResourceConnection {
+  edges: Array<{ node: { id: string } }>;
+  pageInfo?: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+  };
+}
+
+interface RailwayProjectResourcesResponse {
+  project: {
+    services: RailwayResourceConnection;
+    volumes: RailwayResourceConnection;
+  } | null;
 }
 
 function boolEnv(value: string | undefined): boolean {
@@ -136,6 +185,10 @@ export function railwayProvisionerConfigFromEnv(
       rawEnv.WORKLIN_RAILWAY_HEALTH_TIMEOUT_MS,
       5 * 60_000,
     ),
+    controlPlaneServiceId:
+      rawEnv.WORKLIN_RAILWAY_CONTROL_PLANE_SERVICE_ID?.trim() ||
+      rawEnv.RAILWAY_SERVICE_ID?.trim() ||
+      null,
   };
 }
 
@@ -441,6 +494,220 @@ class RailwayGraphqlClient {
     );
     if (!data.deployment) throw new Error("Railway deployment was not found.");
     return data.deployment.status.toUpperCase();
+  }
+
+  async projectResourceIds(): Promise<{
+    serviceIds: Set<string>;
+    volumeIds: Set<string>;
+  }> {
+    const serviceIds = new Set<string>();
+    const volumeIds = new Set<string>();
+    let servicesAfter: string | null = null;
+    let volumesAfter: string | null = null;
+    let servicesComplete = false;
+    let volumesComplete = false;
+
+    for (let page = 0; page < 100; page += 1) {
+      const data: RailwayProjectResourcesResponse =
+        await this.request<RailwayProjectResourcesResponse>(
+          `query runtimeRetirementResources(
+            $projectId: String!
+            $servicesAfter: String
+            $volumesAfter: String
+          ) {
+            project(id: $projectId) {
+              services(first: 100, after: $servicesAfter) {
+                edges { node { id } }
+                pageInfo { hasNextPage endCursor }
+              }
+              volumes(first: 100, after: $volumesAfter) {
+                edges { node { id } }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }`,
+          { projectId: this.config.projectId, servicesAfter, volumesAfter },
+        );
+      if (!data.project) {
+        throw new Error("Configured Railway project was not found.");
+      }
+      for (const edge of data.project.services.edges) {
+        serviceIds.add(edge.node.id);
+      }
+      for (const edge of data.project.volumes.edges) {
+        volumeIds.add(edge.node.id);
+      }
+
+      const servicesPage: RailwayResourceConnection["pageInfo"] =
+        data.project.services.pageInfo;
+      const volumesPage: RailwayResourceConnection["pageInfo"] =
+        data.project.volumes.pageInfo;
+      servicesComplete = servicesPage?.hasNextPage !== true;
+      volumesComplete = volumesPage?.hasNextPage !== true;
+      if (servicesComplete && volumesComplete) {
+        return { serviceIds, volumeIds };
+      }
+      if (!servicesComplete) {
+        if (!servicesPage?.endCursor || servicesPage.endCursor === servicesAfter) {
+          throw new Error("Railway service pagination did not advance.");
+        }
+        servicesAfter = servicesPage.endCursor;
+      }
+      if (!volumesComplete) {
+        if (!volumesPage?.endCursor || volumesPage.endCursor === volumesAfter) {
+          throw new Error("Railway volume pagination did not advance.");
+        }
+        volumesAfter = volumesPage.endCursor;
+      }
+    }
+    throw new Error("Railway resource pagination exceeded the safe limit.");
+  }
+
+  async deleteVolume(volumeId: string): Promise<void> {
+    const data = await this.request<{ volumeDelete: boolean }>(
+      `mutation volumeDelete($volumeId: String!) {
+        volumeDelete(volumeId: $volumeId)
+      }`,
+      { volumeId },
+    );
+    if (data.volumeDelete !== true) {
+      throw new Error("Railway did not confirm volume deletion.");
+    }
+  }
+
+  async deleteService(serviceId: string): Promise<void> {
+    const data = await this.request<{ serviceDelete: boolean }>(
+      `mutation serviceDelete($id: String!) {
+        serviceDelete(id: $id)
+      }`,
+      { id: serviceId },
+    );
+    if (data.serviceDelete !== true) {
+      throw new Error("Railway did not confirm service deletion.");
+    }
+  }
+}
+
+function railwayRetirementConfigurationError(
+  options: RetireRailwayRuntimeOptions,
+): RailwayRuntimeRetirementError | null {
+  const needsCleanup =
+    !options.serviceCleanupConfirmed || !options.volumeCleanupConfirmed;
+  if (!needsCleanup) return null;
+  if (!options.config.projectToken) {
+    return new RailwayRuntimeRetirementError(
+      "configuration",
+      "WORKLIN_RAILWAY_PROJECT_TOKEN is required for runtime cleanup.",
+    );
+  }
+  if (!options.config.projectId) {
+    return new RailwayRuntimeRetirementError(
+      "configuration",
+      "WORKLIN_RAILWAY_PROJECT_ID is required for runtime cleanup.",
+    );
+  }
+  if (!options.config.controlPlaneServiceId) {
+    return new RailwayRuntimeRetirementError(
+      "configuration",
+      "RAILWAY_SERVICE_ID is required to protect the control-plane service.",
+    );
+  }
+  if (
+    options.config.provisioningLeaseTtlMs <= options.config.requestTimeoutMs
+  ) {
+    return new RailwayRuntimeRetirementError(
+      "configuration",
+      "The Railway cleanup lease TTL must exceed the API request timeout.",
+    );
+  }
+  if (
+    options.serviceId &&
+    options.serviceId === options.config.controlPlaneServiceId
+  ) {
+    return new RailwayRuntimeRetirementError(
+      "protected_service",
+      "Refusing to delete the Railway control-plane service.",
+    );
+  }
+  if (!options.volumeCleanupConfirmed && !options.serviceId) {
+    return new RailwayRuntimeRetirementError(
+      "configuration",
+      "A persisted runtime service is required to verify volume ownership.",
+    );
+  }
+  if (!options.volumeCleanupConfirmed && !options.volumeId) {
+    return new RailwayRuntimeRetirementError(
+      "cleanup_unconfirmed",
+      "The Railway volume cleanup outcome cannot be reconciled without its persisted ID.",
+    );
+  }
+  if (!options.serviceCleanupConfirmed && !options.serviceId) {
+    return new RailwayRuntimeRetirementError(
+      "cleanup_unconfirmed",
+      "The Railway service cleanup outcome cannot be reconciled without its persisted ID.",
+    );
+  }
+  return null;
+}
+
+async function reconcileRailwayDeletion(
+  client: RailwayGraphqlClient,
+  resource: "service" | "volume",
+  resourceId: string,
+  deleteResource: () => Promise<void>,
+): Promise<void> {
+  const before = await client.projectResourceIds();
+  const ids = resource === "service" ? before.serviceIds : before.volumeIds;
+  if (!ids.has(resourceId)) return;
+
+  try {
+    await deleteResource();
+  } catch (error) {
+    try {
+      const after = await client.projectResourceIds();
+      const remainingIds =
+        resource === "service" ? after.serviceIds : after.volumeIds;
+      if (!remainingIds.has(resourceId)) return;
+    } catch (reconcileError) {
+      throw new RailwayRuntimeRetirementError(
+        "cleanup_unconfirmed",
+        `Railway ${resource} cleanup could not be confirmed.`,
+        { cause: reconcileError },
+      );
+    }
+    throw new RailwayRuntimeRetirementError(
+      "cleanup_unconfirmed",
+      `Railway ${resource} cleanup failed and the resource still exists.`,
+      { cause: error },
+    );
+  }
+}
+
+export async function retireRailwayRuntime(
+  options: RetireRailwayRuntimeOptions,
+): Promise<void> {
+  const configurationError = railwayRetirementConfigurationError(options);
+  if (configurationError) throw configurationError;
+  if (options.serviceCleanupConfirmed && options.volumeCleanupConfirmed) return;
+
+  const client = new RailwayGraphqlClient(
+    options.config,
+    options.fetchImpl ?? fetch,
+    options.persistence.renewLease,
+  );
+  if (!options.volumeCleanupConfirmed) {
+    const volumeId = options.volumeId!;
+    await reconcileRailwayDeletion(client, "volume", volumeId, () =>
+      client.deleteVolume(volumeId),
+    );
+    options.persistence.confirmVolumeCleanup();
+  }
+  if (!options.serviceCleanupConfirmed) {
+    const serviceId = options.serviceId!;
+    await reconcileRailwayDeletion(client, "service", serviceId, () =>
+      client.deleteService(serviceId),
+    );
+    options.persistence.confirmServiceCleanup();
   }
 }
 

@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   BoundedKeyedTaskScheduler,
   provisionRailwayRuntime,
+  RailwayRuntimeRetirementError,
+  retireRailwayRuntime,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
   railwayRuntimeCapacityError,
@@ -209,6 +211,281 @@ describe("railwayRuntimeWorkspaceCapacityError", () => {
       "workspace quota",
     );
     expect(railwayRuntimeWorkspaceCapacityError("service-1", 1, 1)).toBeNull();
+  });
+});
+
+describe("retireRailwayRuntime", () => {
+  test("deletes the exact persisted volume before the exact persisted service", async () => {
+    const operations: string[] = [];
+    const services = new Set(["service-1", "control-plane-service"]);
+    const volumes = new Set(["volume-1"]);
+    const confirmations: string[] = [];
+    const fetchImpl = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
+      expect(new Headers(init?.headers).get("Project-Access-Token")).toBe(
+        "project-token",
+      );
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (request.query.includes("runtimeRetirementResources")) {
+        operations.push("query");
+        return jsonResponse({
+          data: {
+            project: {
+              services: {
+                edges: [...services].map((id) => ({ node: { id } })),
+              },
+              volumes: {
+                edges: [...volumes].map((id) => ({ node: { id } })),
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("mutation volumeDelete")) {
+        operations.push("volumeDelete");
+        expect(request.variables).toEqual({ volumeId: "volume-1" });
+        volumes.delete("volume-1");
+        return jsonResponse({ data: { volumeDelete: true } });
+      }
+      if (request.query.includes("mutation serviceDelete")) {
+        operations.push("serviceDelete");
+        expect(request.variables).toEqual({ id: "service-1" });
+        services.delete("service-1");
+        return jsonResponse({ data: { serviceDelete: true } });
+      }
+      throw new Error("Unexpected Railway operation.");
+    }) as typeof fetch;
+
+    await retireRailwayRuntime({
+      serviceId: "service-1",
+      volumeId: "volume-1",
+      serviceCleanupConfirmed: false,
+      volumeCleanupConfirmed: false,
+      config: config({ controlPlaneServiceId: "control-plane-service" }),
+      persistence: {
+        renewLease: () => {},
+        confirmVolumeCleanup: () => confirmations.push("volume"),
+        confirmServiceCleanup: () => confirmations.push("service"),
+      },
+      fetchImpl,
+    });
+
+    expect(operations).toEqual([
+      "query",
+      "volumeDelete",
+      "query",
+      "serviceDelete",
+    ]);
+    expect(confirmations).toEqual(["volume", "service"]);
+    expect(services).toEqual(new Set(["control-plane-service"]));
+    expect(volumes.size).toBe(0);
+  });
+
+  test("preserves partial progress and retries only the unconfirmed resource", async () => {
+    const services = new Set(["service-1"]);
+    const volumes = new Set(["volume-1"]);
+    const mutations: string[] = [];
+    const confirmations: string[] = [];
+    let failServiceDelete = true;
+    const fetchImpl = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        query: string;
+      };
+      if (request.query.includes("runtimeRetirementResources")) {
+        return jsonResponse({
+          data: {
+            project: {
+              services: {
+                edges: [...services].map((id) => ({ node: { id } })),
+              },
+              volumes: {
+                edges: [...volumes].map((id) => ({ node: { id } })),
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("mutation volumeDelete")) {
+        mutations.push("volume");
+        volumes.delete("volume-1");
+        return jsonResponse({ data: { volumeDelete: true } });
+      }
+      if (request.query.includes("mutation serviceDelete")) {
+        mutations.push("service");
+        if (failServiceDelete) {
+          return jsonResponse({ errors: [{ message: "service delete failed" }] });
+        }
+        services.delete("service-1");
+        return jsonResponse({ data: { serviceDelete: true } });
+      }
+      throw new Error("Unexpected Railway operation.");
+    }) as typeof fetch;
+    const retirementConfig = config({
+      controlPlaneServiceId: "control-plane-service",
+    });
+
+    await expect(
+      retireRailwayRuntime({
+        serviceId: "service-1",
+        volumeId: "volume-1",
+        serviceCleanupConfirmed: false,
+        volumeCleanupConfirmed: false,
+        config: retirementConfig,
+        persistence: {
+          renewLease: () => {},
+          confirmVolumeCleanup: () => confirmations.push("volume"),
+          confirmServiceCleanup: () => confirmations.push("service"),
+        },
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ code: "cleanup_unconfirmed" });
+    expect(confirmations).toEqual(["volume"]);
+    expect(mutations).toEqual(["volume", "service"]);
+
+    failServiceDelete = false;
+    await retireRailwayRuntime({
+      serviceId: "service-1",
+      volumeId: "volume-1",
+      serviceCleanupConfirmed: false,
+      volumeCleanupConfirmed: true,
+      config: retirementConfig,
+      persistence: {
+        renewLease: () => {},
+        confirmVolumeCleanup: () => confirmations.push("volume"),
+        confirmServiceCleanup: () => confirmations.push("service"),
+      },
+      fetchImpl,
+    });
+    expect(confirmations).toEqual(["volume", "service"]);
+    expect(mutations).toEqual(["volume", "service", "service"]);
+  });
+
+  test("treats already absent and uncertain-but-reconciled resources as deleted", async () => {
+    const services = new Set(["service-1"]);
+    const confirmations: string[] = [];
+    let serviceMutationCount = 0;
+    const fetchImpl = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("runtimeRetirementResources")) {
+        return jsonResponse({
+          data: {
+            project: {
+              services: {
+                edges: [...services].map((id) => ({ node: { id } })),
+              },
+              volumes: { edges: [] },
+            },
+          },
+        });
+      }
+      if (request.query.includes("mutation serviceDelete")) {
+        serviceMutationCount += 1;
+        services.delete("service-1");
+        return jsonResponse({ errors: [{ message: "response was uncertain" }] });
+      }
+      throw new Error("Unexpected Railway operation.");
+    }) as typeof fetch;
+
+    await retireRailwayRuntime({
+      serviceId: "service-1",
+      volumeId: "volume-already-absent",
+      serviceCleanupConfirmed: false,
+      volumeCleanupConfirmed: false,
+      config: config({ controlPlaneServiceId: "control-plane-service" }),
+      persistence: {
+        renewLease: () => {},
+        confirmVolumeCleanup: () => confirmations.push("volume"),
+        confirmServiceCleanup: () => confirmations.push("service"),
+      },
+      fetchImpl,
+    });
+
+    expect(serviceMutationCount).toBe(1);
+    expect(confirmations).toEqual(["volume", "service"]);
+  });
+
+  test("paginates before deciding that an exact persisted resource is absent", async () => {
+    const queryCursors: Array<string | null> = [];
+    let serviceDeleted = false;
+    const fetchImpl = (async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        query: string;
+        variables: { servicesAfter: string | null };
+      };
+      if (request.query.includes("runtimeRetirementResources")) {
+        queryCursors.push(request.variables.servicesAfter);
+        const secondPage = request.variables.servicesAfter === "services-page-1";
+        return jsonResponse({
+          data: {
+            project: {
+              services: {
+                edges: secondPage
+                  ? [{ node: { id: "service-on-page-2" } }]
+                  : [{ node: { id: "control-plane-service" } }],
+                pageInfo: {
+                  hasNextPage: !secondPage,
+                  endCursor: secondPage ? "services-page-2" : "services-page-1",
+                },
+              },
+              volumes: {
+                edges: [],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        });
+      }
+      if (request.query.includes("mutation serviceDelete")) {
+        serviceDeleted = true;
+        return jsonResponse({ data: { serviceDelete: true } });
+      }
+      throw new Error("Unexpected Railway operation.");
+    }) as typeof fetch;
+
+    await retireRailwayRuntime({
+      serviceId: "service-on-page-2",
+      volumeId: null,
+      serviceCleanupConfirmed: false,
+      volumeCleanupConfirmed: true,
+      config: config({ controlPlaneServiceId: "control-plane-service" }),
+      persistence: {
+        renewLease: () => {},
+        confirmVolumeCleanup: () => {},
+        confirmServiceCleanup: () => {},
+      },
+      fetchImpl,
+    });
+
+    expect(queryCursors).toEqual([null, "services-page-1"]);
+    expect(serviceDeleted).toBeTrue();
+  });
+
+  test("refuses the control-plane service before making a Railway request", async () => {
+    let requests = 0;
+    const fetchImpl = (async () => {
+      requests += 1;
+      return jsonResponse({ data: {} });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      retireRailwayRuntime({
+        serviceId: "control-plane-service",
+        volumeId: "volume-1",
+        serviceCleanupConfirmed: false,
+        volumeCleanupConfirmed: false,
+        config: config({ controlPlaneServiceId: "control-plane-service" }),
+        persistence: {
+          renewLease: () => {},
+          confirmVolumeCleanup: () => {},
+          confirmServiceCleanup: () => {},
+        },
+        fetchImpl,
+      }),
+    ).rejects.toBeInstanceOf(RailwayRuntimeRetirementError);
+    expect(requests).toBe(0);
   });
 });
 
