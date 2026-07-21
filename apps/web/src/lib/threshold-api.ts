@@ -56,6 +56,7 @@ export async function setGlobalThresholds(
       path: { assistant_id: assistantId },
       body: thresholds,
       headers: { "Content-Type": "application/json" },
+      keepalive: true,
       throwOnError: false,
     },
   );

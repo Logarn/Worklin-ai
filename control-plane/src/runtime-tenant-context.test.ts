@@ -14,6 +14,7 @@ const assistant: AssistantRow = {
   name: "Worklin",
   runtime_stack_id: "runtime-1",
   isolation_version: 2,
+  admin_access_consented: 0,
   is_default: 1,
   created_at: "2026-07-20T00:00:00.000Z",
   updated_at: "2026-07-20T00:00:00.000Z",
