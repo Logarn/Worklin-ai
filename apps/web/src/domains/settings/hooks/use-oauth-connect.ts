@@ -1,30 +1,33 @@
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  assistantsOauthConnectionsListOptions,
-  useAssistantsOauthStartCreateMutation,
-} from "@/generated/api/@tanstack/react-query.gen";
-import type { OAuthConnection } from "@/generated/api/types.gen";
+  fetchManagedOAuthConnectionBaseline,
+  isManagedOAuthProviderUnsupported,
+  ManagedOAuthStartError,
+  safeManagedOAuthUrl,
+  startManagedOAuthAuthorization,
+  verifyManagedOAuthConnection,
+} from "@/domains/settings/services/managed-oauth-start";
 import { useOAuthCompleteDeepLinkListener } from "@/hooks/use-oauth-complete-deep-link-listener";
 import {
   getOAuthCompleteMessagePayload,
   getOAuthCompleteStoragePayload,
+  getOAuthPopupReadyMessagePayload,
   oauthCompletionStorageKey,
   parseOAuthCompletePayload,
   type OAuthCompletePayload,
 } from "@/lib/auth/oauth-popup";
 import { openUrl, openUrlFinishedListener } from "@/runtime/browser";
+import { isElectron } from "@/runtime/is-electron";
 import { useIsNativePlatform } from "@/runtime/native-auth";
 import type { OAuthCompleteDeepLinkPayload } from "@/runtime/native-deep-link";
-import { extractErrorMessage } from "@/utils/api-errors";
-import {
-  getProviderConnectionSignatures,
-  hasNewOrChangedProviderConnection,
-  wait,
-} from "@/utils/oauth-connection-utils";
+import { getProviderConnectionSignatures } from "@/utils/oauth-connection-utils";
 import { routes } from "@/utils/routes";
-import type { QueryKey } from "@tanstack/react-query";
 import { toast } from "@vellumai/design-library/components/toast";
 
 interface UseOAuthConnectOptions {
@@ -33,19 +36,98 @@ interface UseOAuthConnectOptions {
   displayName: string;
   managedAvailable: boolean;
   connectionsQueryKey: QueryKey;
-  allConnections: OAuthConnection[] | undefined;
 }
 
 interface UseOAuthConnectResult {
   handleConnect: () => void;
   oauthInProgress: boolean;
   startOAuthPending: boolean;
+  connectError: string | null;
+  managedUnsupported: boolean;
+}
+
+interface PendingOAuthRequest {
+  requestId: string;
+  provider: string;
+  callbackOrigin: string;
+  baselineConnectionSignatures: ReadonlyMap<string, string>;
+  completionInFlight: boolean;
+  authorizationStarted: boolean;
+  startupComplete: boolean;
+  bootstrapReady: boolean;
+  connectUrl: string | null;
+  abortController: AbortController;
+  nativeBrowserFinishedUnsubscribe: (() => void) | null;
+}
+
+const OAUTH_STARTUP_TIMEOUT_MS = 30_000;
+const POPUP_CHECK_INTERVAL_MS = 100;
+const POPUP_CLOSE_GRACE_MS = 1_000;
+
+interface OAuthPopupUrlOptions {
+  requestId: string;
+  providerKey: string;
+  currentOrigin?: string;
+  configuredWebUrl?: string | null;
+}
+
+function configuredWebUrl(): string | null {
+  return (
+    (
+      window as unknown as {
+        __VELLUM_CONFIG__?: { webUrl?: string };
+      }
+    ).__VELLUM_CONFIG__?.webUrl ?? null
+  );
+}
+
+function resolveOAuthWebBaseUrl(
+  currentOrigin: string,
+  configuredUrl: string | null,
+): string | null {
+  for (const candidate of [currentOrigin, configuredUrl]) {
+    if (!candidate) continue;
+    const safe = safeManagedOAuthUrl(candidate);
+    if (safe) return safe;
+  }
+  return null;
+}
+
+export function getManagedOAuthPopupBootstrapUrl({
+  requestId,
+  providerKey,
+  currentOrigin = window.location.origin,
+  configuredWebUrl: configuredUrl = configuredWebUrl(),
+}: OAuthPopupUrlOptions): string | null {
+  const baseUrl = resolveOAuthWebBaseUrl(currentOrigin, configuredUrl);
+  if (!baseUrl) return null;
+
+  const url = new URL(routes.account.oauth.popupComplete, baseUrl);
+  url.searchParams.set("requestId", requestId);
+  url.searchParams.set("oauth_provider", providerKey);
+  url.searchParams.set("oauth_pending", "1");
+  return url.toString();
+}
+
+function getManagedOAuthCallbackUrl(
+  bootstrapUrl: string,
+  requestId: string,
+  providerKey: string,
+  usesDeepLinkHandoff: boolean,
+): string {
+  const url = new URL(routes.account.oauth.popupComplete, bootstrapUrl);
+  url.searchParams.set("requestId", requestId);
+  url.searchParams.set("oauth_provider", providerKey);
+  if (usesDeepLinkHandoff) {
+    url.searchParams.set("handoff", "deep-link");
+  }
+  return url.toString();
 }
 
 /**
- * Orchestrates the OAuth connect flow for both web (popup) and native
- * (SFSafariViewController) platforms. Manages popup lifecycle, message/storage
- * event listeners, native deep link completion, and connection polling.
+ * Orchestrates managed OAuth for web popups, packaged Electron, and
+ * Capacitor. External authorization only starts after the bootstrap popup has
+ * detached its opener. Completion is always re-verified against the backend.
  */
 export function useOAuthConnect({
   assistantId,
@@ -53,31 +135,50 @@ export function useOAuthConnect({
   displayName,
   managedAvailable,
   connectionsQueryKey,
-  allConnections,
 }: UseOAuthConnectOptions): UseOAuthConnectResult {
   const queryClient = useQueryClient();
-  const isNative = useIsNativePlatform();
+  const native = useIsNativePlatform();
+  const electron = isElectron();
+  const usesDeepLinkHandoff = native || electron;
 
   const popupRef = useRef<Window | null>(null);
-  const pendingRequestRef = useRef<{
-    requestId: string;
-    provider: string;
-    baselineConnectionSignatures: ReadonlyMap<string, string>;
-  } | null>(null);
-  const popupCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const popupClosedGraceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingRequestRef = useRef<PendingOAuthRequest | null>(null);
+  const popupCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
+  const popupClosedGraceTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const startupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [oauthInProgress, setOAuthInProgress] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [managedUnsupported, setManagedUnsupported] = useState(() =>
+    isManagedOAuthProviderUnsupported(assistantId, providerKey),
+  );
 
-  const clearPendingRequest = () => {
-    pendingRequestRef.current = null;
-    setOAuthInProgress(false);
-  };
+  useEffect(() => {
+    setManagedUnsupported(
+      isManagedOAuthProviderUnsupported(assistantId, providerKey),
+    );
+  }, [assistantId, providerKey]);
 
-  const closePopupWindow = () => {
+  const showConnectError = useCallback((message: string) => {
+    setConnectError(message);
+    toast.error(message);
+  }, []);
+
+  const clearStartupTimeout = useCallback(() => {
+    if (!startupTimeoutRef.current) return;
+    clearTimeout(startupTimeoutRef.current);
+    startupTimeoutRef.current = null;
+  }, []);
+
+  const closePopupWindow = useCallback(() => {
     if (popupRef.current && !popupRef.current.closed) {
       popupRef.current.close();
     }
     popupRef.current = null;
+
     if (popupCheckIntervalRef.current) {
       clearInterval(popupCheckIntervalRef.current);
       popupCheckIntervalRef.current = null;
@@ -86,108 +187,209 @@ export function useOAuthConnect({
       clearTimeout(popupClosedGraceTimeoutRef.current);
       popupClosedGraceTimeoutRef.current = null;
     }
-  };
+    clearStartupTimeout();
+  }, [clearStartupTimeout]);
 
-  const handleOAuthCompletePayload = useCallback(
-    (payload: OAuthCompletePayload) => {
-      if (payload.type !== "vellum:oauth-complete") {
+  const clearPendingRequest = useCallback(() => {
+    const pendingRequest = pendingRequestRef.current;
+    pendingRequestRef.current = null;
+    pendingRequest?.nativeBrowserFinishedUnsubscribe?.();
+    if (pendingRequest) {
+      pendingRequest.nativeBrowserFinishedUnsubscribe = null;
+      pendingRequest.abortController.abort();
+      window.localStorage.removeItem(
+        oauthCompletionStorageKey(pendingRequest.requestId),
+      );
+    }
+    setOAuthInProgress(false);
+  }, []);
+
+  const cancelPendingStartup = useCallback(
+    (pendingRequest: PendingOAuthRequest, message: string) => {
+      if (pendingRequestRef.current?.requestId !== pendingRequest.requestId) {
         return;
       }
+      closePopupWindow();
+      clearPendingRequest();
+      showConnectError(message);
+    },
+    [clearPendingRequest, closePopupWindow, showConnectError],
+  );
 
+  const finishConnected = useCallback(() => {
+    setConnectError(null);
+    void queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
+    toast.success(`${displayName} account connected.`);
+  }, [connectionsQueryKey, displayName, queryClient]);
+
+  const verifyPendingConnection = useCallback(
+    async (
+      pendingRequest: PendingOAuthRequest,
+      absentMessage: string,
+    ): Promise<void> => {
       if (
-        !pendingRequestRef.current ||
-        payload.requestId !== pendingRequestRef.current.requestId
+        pendingRequestRef.current?.requestId !== pendingRequest.requestId ||
+        pendingRequest.completionInFlight
       ) {
         return;
       }
 
-      const { oauthStatus, oauthCode } = payload;
+      pendingRequest.completionInFlight = true;
+      closePopupWindow();
 
+      try {
+        const result = await verifyManagedOAuthConnection({
+          assistantId,
+          providerKey,
+          providerLabel: displayName,
+          baselineConnectionSignatures:
+            pendingRequest.baselineConnectionSignatures,
+          signal: pendingRequest.abortController.signal,
+        });
+        if (pendingRequestRef.current?.requestId !== pendingRequest.requestId) {
+          return;
+        }
+
+        clearPendingRequest();
+        if (result.outcome === "connected") {
+          finishConnected();
+        } else if (result.outcome === "absent") {
+          showConnectError(absentMessage);
+        } else {
+          showConnectError(result.message);
+        }
+      } catch (error) {
+        if (
+          pendingRequestRef.current?.requestId !== pendingRequest.requestId ||
+          pendingRequest.abortController.signal.aborted
+        ) {
+          return;
+        }
+        clearPendingRequest();
+        showConnectError(
+          error instanceof Error
+            ? error.message
+            : `Worklin could not verify the ${displayName} account. Refresh the accounts and try again.`,
+        );
+      }
+    },
+    [
+      assistantId,
+      clearPendingRequest,
+      closePopupWindow,
+      displayName,
+      finishConnected,
+      providerKey,
+      showConnectError,
+    ],
+  );
+
+  const handleOAuthCompletePayload = useCallback(
+    async (payload: OAuthCompletePayload): Promise<boolean> => {
+      const pendingRequest = pendingRequestRef.current;
+      if (
+        payload.type !== "vellum:oauth-complete" ||
+        !pendingRequest ||
+        payload.requestId !== pendingRequest.requestId ||
+        payload.oauthProvider !== pendingRequest.provider ||
+        pendingRequest.completionInFlight
+      ) {
+        return false;
+      }
+
+      if (payload.oauthStatus === "connected") {
+        await verifyPendingConnection(
+          pendingRequest,
+          `${displayName} authorization finished, but no new or updated account was found. Try again, or choose Your Own to connect with your OAuth app.`,
+        );
+        return true;
+      }
+
+      pendingRequest.completionInFlight = true;
       closePopupWindow();
       clearPendingRequest();
-
-      if (oauthStatus === "connected") {
-        toast.success(`${displayName} account connected.`);
-        queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
-      } else {
-        const errorMsg = oauthCode
-          ? `Error: ${oauthCode}`
-          : "Authorization failed";
-        toast.error(`${displayName} ${errorMsg}`);
-      }
+      const message = payload.oauthCode
+        ? `Error: ${payload.oauthCode}`
+        : "Authorization failed";
+      showConnectError(
+        `${displayName} ${message}. Try again, or choose Your Own to connect with your OAuth app.`,
+      );
+      return true;
     },
-    [connectionsQueryKey, displayName, queryClient],
+    [
+      clearPendingRequest,
+      closePopupWindow,
+      displayName,
+      showConnectError,
+      verifyPendingConnection,
+    ],
   );
 
-  const waitForProviderConnection = useCallback(
-    async (
-      baselineSignatures: ReadonlyMap<string, string>,
-    ): Promise<boolean> => {
-      if (!managedAvailable) return false;
-
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        if (attempt > 0) {
-          await wait(750);
-        }
-
-        try {
-          queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
-          const connections = await queryClient.fetchQuery({
-            ...assistantsOauthConnectionsListOptions({
-              path: { assistant_id: assistantId },
-            }),
-            staleTime: 0,
-          });
-
-          if (
-            hasNewOrChangedProviderConnection(
-              connections,
-              providerKey,
-              baselineSignatures,
-            )
-          ) {
-            return true;
-          }
-        } catch {
-          // Keep polling briefly; auth/session refreshes can race the callback.
-        }
+  const navigatePopupWhenReady = useCallback(
+    (pendingRequest: PendingOAuthRequest) => {
+      if (
+        pendingRequestRef.current?.requestId !== pendingRequest.requestId ||
+        pendingRequest.authorizationStarted ||
+        !pendingRequest.bootstrapReady ||
+        !pendingRequest.connectUrl
+      ) {
+        return;
       }
 
-      return false;
+      const popup = popupRef.current;
+      if (!popup || popup.closed) {
+        cancelPendingStartup(
+          pendingRequest,
+          `${displayName} authorization popup closed before it could start. Try again, or choose Your Own to connect with your OAuth app.`,
+        );
+        return;
+      }
+
+      pendingRequest.authorizationStarted = true;
+      pendingRequest.startupComplete = true;
+      clearStartupTimeout();
+      popup.location.href = pendingRequest.connectUrl;
     },
-    [assistantId, connectionsQueryKey, managedAvailable, providerKey, queryClient],
+    [cancelPendingStartup, clearStartupTimeout, displayName],
   );
 
-  // Web: listen for postMessage / storage completion from popup
+  // Web bootstrap and legacy completion messages. Every accepted message is
+  // source-, origin-, request-, and provider-scoped before it mutates the flow.
   useEffect(() => {
     const handleOAuthMessage = (event: MessageEvent) => {
       const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) {
+      if (!pendingRequest || event.source !== popupRef.current) return;
+
+      const ready = getOAuthPopupReadyMessagePayload(
+        event,
+        pendingRequest.callbackOrigin,
+        pendingRequest.requestId,
+        pendingRequest.provider,
+      );
+      if (ready) {
+        pendingRequest.bootstrapReady = true;
+        navigatePopupWhenReady(pendingRequest);
         return;
       }
 
       const payload = getOAuthCompleteMessagePayload(
         event,
-        window.location.origin,
+        pendingRequest.callbackOrigin,
         pendingRequest.requestId,
       );
-      if (payload) {
-        handleOAuthCompletePayload(payload);
-      }
+      if (payload) void handleOAuthCompletePayload(payload);
     };
 
     const handleOAuthStorage = (event: StorageEvent) => {
       const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) {
-        return;
-      }
+      if (!pendingRequest) return;
 
       const payload = getOAuthCompleteStoragePayload(
         event,
         pendingRequest.requestId,
       );
       if (payload) {
-        handleOAuthCompletePayload(payload);
+        void handleOAuthCompletePayload(payload);
         window.localStorage.removeItem(
           oauthCompletionStorageKey(pendingRequest.requestId),
         );
@@ -200,19 +402,19 @@ export function useOAuthConnect({
       window.removeEventListener("message", handleOAuthMessage);
       window.removeEventListener("storage", handleOAuthStorage);
     };
-  }, [handleOAuthCompletePayload]);
+  }, [handleOAuthCompletePayload, navigatePopupWhenReady]);
 
-  // Native: deep link completion from SFSafariViewController
   const handleOAuthDeepLink = useCallback(
     (payload: OAuthCompleteDeepLinkPayload) => {
       const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) {
+      if (
+        !pendingRequest ||
+        payload.requestId !== pendingRequest.requestId ||
+        payload.oauthProvider !== pendingRequest.provider
+      ) {
         return;
       }
-      if (payload.requestId !== pendingRequest.requestId) {
-        return;
-      }
-      handleOAuthCompletePayload({
+      void handleOAuthCompletePayload({
         type: "vellum:oauth-complete",
         requestId: payload.requestId,
         oauthStatus: payload.oauthStatus,
@@ -224,196 +426,242 @@ export function useOAuthConnect({
   );
   useOAuthCompleteDeepLinkListener(handleOAuthDeepLink);
 
-  // Native: browserFinished fallback for cancelled sheets
-  useEffect(() => {
-    return openUrlFinishedListener(() => {
+  const installNativeBrowserFinishedListener = useCallback(
+    (pendingRequest: PendingOAuthRequest) => {
+      const requestId = pendingRequest.requestId;
+      const provider = pendingRequest.provider;
+      pendingRequest.nativeBrowserFinishedUnsubscribe = openUrlFinishedListener(
+        () => {
+          const current = pendingRequestRef.current;
+          if (
+            !current ||
+            current.requestId !== requestId ||
+            current.provider !== provider ||
+            !current.authorizationStarted ||
+            current.completionInFlight
+          ) {
+            return;
+          }
+
+          void verifyPendingConnection(
+            current,
+            `${displayName} authorization closed before an account connected. Try again, or choose Your Own to connect with your OAuth app.`,
+          );
+        },
+      );
+    },
+    [displayName, verifyPendingConnection],
+  );
+
+  const startPopupMonitoring = useCallback(() => {
+    popupCheckIntervalRef.current = setInterval(() => {
       const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) {
+      const popup = popupRef.current;
+      if (!pendingRequest || (popup && !popup.closed)) return;
+
+      if (!pendingRequest.authorizationStarted) {
+        cancelPendingStartup(
+          pendingRequest,
+          `${displayName} authorization popup closed before it could start. Try again, or choose Your Own to connect with your OAuth app.`,
+        );
         return;
       }
+      if (popupClosedGraceTimeoutRef.current) return;
 
-      void (async () => {
-        const providerConnected = await waitForProviderConnection(
-          pendingRequest.baselineConnectionSignatures,
+      popupClosedGraceTimeoutRef.current = setTimeout(() => {
+        popupClosedGraceTimeoutRef.current = null;
+        const current = pendingRequestRef.current;
+        if (!current || current.completionInFlight) return;
+
+        const storageKey = oauthCompletionStorageKey(current.requestId);
+        const storedCompletion = window.localStorage.getItem(storageKey);
+        if (storedCompletion) {
+          const parsed = parseOAuthCompletePayload(storedCompletion);
+          window.localStorage.removeItem(storageKey);
+          if (parsed) {
+            void handleOAuthCompletePayload(parsed);
+            return;
+          }
+        }
+
+        void verifyPendingConnection(
+          current,
+          `${displayName} authorization popup closed before an account connected. Try again, or choose Your Own to connect with your OAuth app.`,
         );
-        if (!pendingRequestRef.current) {
+      }, POPUP_CLOSE_GRACE_MS);
+    }, POPUP_CHECK_INTERVAL_MS);
+  }, [
+    cancelPendingStartup,
+    displayName,
+    handleOAuthCompletePayload,
+    verifyPendingConnection,
+  ]);
+
+  const startStartupDeadline = useCallback(
+    (pendingRequest: PendingOAuthRequest) => {
+      clearStartupTimeout();
+      startupTimeoutRef.current = setTimeout(() => {
+        const current = pendingRequestRef.current;
+        if (
+          !current ||
+          current.requestId !== pendingRequest.requestId ||
+          current.provider !== pendingRequest.provider ||
+          current.startupComplete
+        ) {
           return;
         }
-        clearPendingRequest();
-        if (providerConnected) {
-          toast.success(`${displayName} account connected.`);
-        }
-      })();
-    });
-  }, [waitForProviderConnection, displayName]);
+        cancelPendingStartup(
+          current,
+          `${displayName} authorization took too long to start. Try again, or choose Your Own to connect with your OAuth app.`,
+        );
+      }, OAUTH_STARTUP_TIMEOUT_MS);
+    },
+    [cancelPendingStartup, clearStartupTimeout, displayName],
+  );
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (popupCheckIntervalRef.current) {
-        clearInterval(popupCheckIntervalRef.current);
+      const pendingRequest = pendingRequestRef.current;
+      pendingRequestRef.current = null;
+      pendingRequest?.nativeBrowserFinishedUnsubscribe?.();
+      pendingRequest?.abortController.abort();
+      if (pendingRequest) {
+        window.localStorage.removeItem(
+          oauthCompletionStorageKey(pendingRequest.requestId),
+        );
       }
-      if (popupClosedGraceTimeoutRef.current) {
-        clearTimeout(popupClosedGraceTimeoutRef.current);
-      }
-      if (popupRef.current && !popupRef.current.closed) {
-        popupRef.current.close();
-      }
+      closePopupWindow();
     };
-  }, []);
+  }, [closePopupWindow]);
 
-  const startOAuth = useAssistantsOauthStartCreateMutation();
+  const startOAuth = useMutation({
+    mutationFn: startManagedOAuthAuthorization,
+  });
 
   const handleConnect = () => {
-    if (!managedAvailable) return;
+    if (!managedAvailable || managedUnsupported) {
+      showConnectError(
+        `Managed ${displayName} connections aren't available in this Worklin environment. Choose Your Own to connect with your OAuth app.`,
+      );
+      return;
+    }
+    if (pendingRequestRef.current) return;
 
+    setConnectError(null);
     const requestId = crypto.randomUUID();
-
-    if (isNative) {
-      setOAuthInProgress(true);
-      const cachedConnections =
-        queryClient.getQueryData<OAuthConnection[]>(connectionsQueryKey) ??
-        allConnections;
-      pendingRequestRef.current = {
-        requestId,
-        provider: providerKey,
-        baselineConnectionSignatures: getProviderConnectionSignatures(
-          cachedConnections,
-          providerKey,
-        ),
-      };
-      startOAuth.mutate(
-        {
-          path: { assistant_id: assistantId, provider: providerKey },
-          body: {
-            requested_scopes: [],
-            redirect_after_connect: `${routes.account.oauth.popupComplete}?requestId=${requestId}&native=1`,
-          },
-        },
-        {
-          onSuccess(data) {
-            void openUrl(data.connect_url);
-          },
-          onError(error) {
-            clearPendingRequest();
-            const detail = extractErrorMessage(
-              error,
-              undefined,
-              `Failed to start ${displayName} authorization.`,
-            );
-            toast.error(detail);
-          },
-        },
+    const bootstrapUrl = getManagedOAuthPopupBootstrapUrl({
+      requestId,
+      providerKey,
+    });
+    if (!bootstrapUrl) {
+      showConnectError(
+        `Worklin could not open a secure ${displayName} authorization window. Try again, or choose Your Own to connect with your OAuth app.`,
       );
       return;
     }
 
-    const popup = window.open("", "_blank", "width=500,height=600");
-
-    if (popup === null) {
-      toast.error("Popup blocked. Please enable popups and try again.");
-      return;
+    if (!native) {
+      const popup = window.open(bootstrapUrl, "_blank", "width=500,height=600");
+      if (popup === null) {
+        showConnectError(
+          "Authorization popup blocked. Enable popups and try again, or choose Your Own to connect with your OAuth app.",
+        );
+        return;
+      }
+      popupRef.current = popup;
     }
 
-    popupRef.current = popup;
-    setOAuthInProgress(true);
-    const cachedConnections =
-      queryClient.getQueryData<OAuthConnection[]>(connectionsQueryKey) ??
-      allConnections;
-    pendingRequestRef.current = {
+    const abortController = new AbortController();
+    const pendingRequest: PendingOAuthRequest = {
       requestId,
       provider: providerKey,
-      baselineConnectionSignatures: getProviderConnectionSignatures(
-        cachedConnections,
-        providerKey,
-      ),
+      callbackOrigin: new URL(bootstrapUrl).origin,
+      baselineConnectionSignatures: new Map(),
+      completionInFlight: false,
+      authorizationStarted: false,
+      startupComplete: false,
+      bootstrapReady: native,
+      connectUrl: null,
+      abortController,
+      nativeBrowserFinishedUnsubscribe: null,
     };
+    pendingRequestRef.current = pendingRequest;
+    setOAuthInProgress(true);
+    startStartupDeadline(pendingRequest);
+    if (!native) startPopupMonitoring();
 
-    popupCheckIntervalRef.current = setInterval(() => {
-      if (
-        popupRef.current &&
-        popupRef.current.closed &&
-        pendingRequestRef.current &&
-        !popupClosedGraceTimeoutRef.current
-      ) {
-        popupClosedGraceTimeoutRef.current = setTimeout(async () => {
-          popupClosedGraceTimeoutRef.current = null;
-          const pendingRequest = pendingRequestRef.current;
-          if (!pendingRequest) {
-            return;
-          }
+    void (async () => {
+      try {
+        const baselineConnections = await fetchManagedOAuthConnectionBaseline({
+          assistantId,
+          providerKey,
+          providerLabel: displayName,
+          signal: abortController.signal,
+        });
+        if (pendingRequestRef.current?.requestId !== requestId) return;
 
-          const storedCompletion = window.localStorage.getItem(
-            oauthCompletionStorageKey(pendingRequest.requestId),
+        pendingRequest.baselineConnectionSignatures =
+          getProviderConnectionSignatures(baselineConnections, providerKey);
+
+        if (!native && (!popupRef.current || popupRef.current.closed)) {
+          cancelPendingStartup(
+            pendingRequest,
+            `${displayName} authorization popup closed before it could start. Try again, or choose Your Own to connect with your OAuth app.`,
           );
-          if (storedCompletion) {
-            const parsed = parseOAuthCompletePayload(storedCompletion);
-            if (parsed && parsed.requestId === pendingRequest.requestId) {
-              handleOAuthCompletePayload(parsed);
-              window.localStorage.removeItem(
-                oauthCompletionStorageKey(pendingRequest.requestId),
-              );
-              return;
-            }
-          }
+          return;
+        }
 
-          const providerConnected = await waitForProviderConnection(
-            pendingRequest.baselineConnectionSignatures,
-          );
-          if (!pendingRequestRef.current) {
-            return;
-          }
-          if (providerConnected) {
-            closePopupWindow();
-            clearPendingRequest();
-            toast.success(`${displayName} account connected.`);
-            return;
-          }
+        const redirectAfterConnect = getManagedOAuthCallbackUrl(
+          bootstrapUrl,
+          requestId,
+          providerKey,
+          usesDeepLinkHandoff,
+        );
+        const connectUrl = await startOAuth.mutateAsync({
+          assistantId,
+          providerKey,
+          providerLabel: displayName,
+          redirectAfterConnect,
+          signal: abortController.signal,
+        });
+        if (pendingRequestRef.current?.requestId !== requestId) return;
 
-          closePopupWindow();
-          clearPendingRequest();
-          toast.error(
-            `${displayName} connection failed: authorization popup closed.`,
-          );
-        }, 1000);
+        if (native) {
+          installNativeBrowserFinishedListener(pendingRequest);
+          pendingRequest.authorizationStarted = true;
+          await openUrl(connectUrl);
+          if (pendingRequestRef.current?.requestId !== requestId) return;
+          pendingRequest.startupComplete = true;
+          clearStartupTimeout();
+          return;
+        }
+
+        pendingRequest.connectUrl = connectUrl;
+        navigatePopupWhenReady(pendingRequest);
+      } catch (error) {
+        if (pendingRequestRef.current?.requestId !== requestId) return;
+        if (
+          error instanceof ManagedOAuthStartError &&
+          error.reason === "unsupported"
+        ) {
+          setManagedUnsupported(true);
+        }
+        closePopupWindow();
+        clearPendingRequest();
+        showConnectError(
+          error instanceof Error
+            ? error.message
+            : `Worklin could not start ${displayName} authorization. Try again, or choose Your Own to connect with your OAuth app.`,
+        );
       }
-    }, 100);
-
-    startOAuth.mutate(
-      {
-        path: { assistant_id: assistantId, provider: providerKey },
-        body: {
-          requested_scopes: [],
-          redirect_after_connect: `${routes.account.oauth.popupComplete}?requestId=${requestId}`,
-        },
-      },
-      {
-        onSuccess(data) {
-          if (popupRef.current && !popupRef.current.closed) {
-            popupRef.current.location.href = data.connect_url;
-          } else if (pendingRequestRef.current) {
-            closePopupWindow();
-            clearPendingRequest();
-            toast.error(`${displayName} connection failed: popup closed.`);
-          }
-        },
-        onError(error) {
-          closePopupWindow();
-          clearPendingRequest();
-          const detail = extractErrorMessage(
-            error,
-            undefined,
-            `Failed to start ${displayName} authorization.`,
-          );
-          toast.error(detail);
-        },
-      }
-    );
+    })();
   };
 
   return {
     handleConnect,
     oauthInProgress,
     startOAuthPending: startOAuth.isPending,
+    connectError,
+    managedUnsupported,
   };
 }

@@ -48,14 +48,21 @@ export const openUrlFinishedListener = (
   if (!Capacitor.isNativePlatform()) return () => {};
 
   let handle: { remove: () => void } | null = null;
+  let removed = false;
 
   void import("@capacitor/browser").then(({ Browser }) => {
-    void Browser.addListener("browserFinished", callback).then((h) => {
-      handle = h;
+    void Browser.addListener("browserFinished", callback).then((registered) => {
+      if (removed) {
+        registered.remove();
+        return;
+      }
+      handle = registered;
     });
   });
 
   return () => {
+    removed = true;
     handle?.remove();
+    handle = null;
   };
 };

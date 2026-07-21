@@ -141,6 +141,12 @@ export interface BusEventMap {
   "deeplink.send": { message: string };
   "deeplink.openThread": { threadId: string };
   "deeplink.unknown": { url: string };
+  "oauth.complete": {
+    requestId: string;
+    oauthStatus: string | null;
+    oauthProvider: string;
+    oauthCode: string | null;
+  };
   /**
    * Connectivity state change from the Electron host. Main fuses
    * device-level online/offline with backend health-probe results into

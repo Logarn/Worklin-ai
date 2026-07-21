@@ -4,9 +4,9 @@
  * - `GoogleConnectScreen` (the opener that listens for the result)
  * - `IntegrationDetailModal` (settings page integration connection flow)
  *
- * The popup writes its result via `postMessage` to `window.opener` and a
- * `localStorage` item as a cross-tab fallback. The opener listens for both
- * and reconciles whichever arrives first.
+ * The bootstrap popup reports that it has severed `window.opener` before the
+ * parent navigates it to an external provider. Web completion then uses a
+ * same-origin storage handoff; native shells use a custom-scheme deep link.
  */
 
 export interface OAuthCompletePayload {
@@ -15,6 +15,12 @@ export interface OAuthCompletePayload {
   oauthStatus?: string | null;
   oauthProvider?: string | null;
   oauthCode?: string | null;
+}
+
+export interface OAuthPopupReadyPayload {
+  type: "vellum:oauth-popup-ready";
+  requestId: string;
+  oauthProvider: string;
 }
 
 export function oauthCompletionStorageKey(requestId: string): string {
@@ -47,6 +53,23 @@ export function getOAuthCompleteMessagePayload(
   }
 
   return event.data as OAuthCompletePayload;
+}
+
+export function getOAuthPopupReadyMessagePayload(
+  event: MessageEvent,
+  expectedOrigin: string,
+  requestId: string,
+  provider: string,
+): OAuthPopupReadyPayload | null {
+  if (event.origin !== expectedOrigin) return null;
+  if (typeof event.data !== "object" || event.data === null) return null;
+
+  const payload = event.data as Partial<OAuthPopupReadyPayload>;
+  return payload.type === "vellum:oauth-popup-ready" &&
+    payload.requestId === requestId &&
+    payload.oauthProvider === provider
+    ? (payload as OAuthPopupReadyPayload)
+    : null;
 }
 
 /**

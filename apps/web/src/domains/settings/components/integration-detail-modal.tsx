@@ -3,10 +3,10 @@ import { X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import {
-    assistantsOauthConnectionsListOptions,
-    assistantsOauthConnectionsListQueryKey,
-    assistantsOauthConnectionsListSetQueryData,
-    useAssistantsOauthDisconnectByConnectionCreateMutation,
+  assistantsOauthConnectionsListOptions,
+  assistantsOauthConnectionsListQueryKey,
+  assistantsOauthConnectionsListSetQueryData,
+  useAssistantsOauthDisconnectByConnectionCreateMutation,
 } from "@/generated/api/@tanstack/react-query.gen";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import { Button } from "@vellumai/design-library/components/button";
@@ -16,6 +16,7 @@ import { toast } from "@vellumai/design-library/components/toast";
 
 import { IntegrationIcon } from "@/components/integrations/integration-icon";
 import { useOAuthConnect } from "@/domains/settings/hooks/use-oauth-connect";
+import { isManagedOAuthProviderUnsupported } from "@/domains/settings/services/managed-oauth-start";
 import type { PlatformGateState } from "@/hooks/use-platform-gate";
 import { extractErrorMessage } from "@/utils/api-errors";
 
@@ -51,7 +52,10 @@ export function IntegrationDetailModal({
   const queryClient = useQueryClient();
   const managedAvailable = platformGate === "full";
   const [activeTab, setActiveTab] = useState<ModalTab>(
-    platformGate === "gated" ? "your-own" : "managed",
+    platformGate === "gated" ||
+      isManagedOAuthProviderUnsupported(assistantId, providerKey)
+      ? "your-own"
+      : "managed",
   );
   const [pendingDisconnectId, setPendingDisconnectId] = useState<string | null>(
     null,
@@ -74,39 +78,45 @@ export function IntegrationDetailModal({
     (c) => c.provider === providerKey && c.connected,
   );
 
-  const { handleConnect, oauthInProgress, startOAuthPending } = useOAuthConnect({
+  const {
+    handleConnect,
+    oauthInProgress,
+    startOAuthPending,
+    connectError,
+    managedUnsupported,
+  } = useOAuthConnect({
     assistantId,
     providerKey,
     displayName,
     managedAvailable,
     connectionsQueryKey,
-    allConnections,
   });
 
   const connectionsOpts = { path: { assistant_id: assistantId } };
 
-  const disconnectOAuth = useAssistantsOauthDisconnectByConnectionCreateMutation({
-    onSuccess(_data, variables) {
-      toast.success(`${displayName} account disconnected.`);
-      const connectionId = variables.path.connection_id;
-      assistantsOauthConnectionsListSetQueryData(
-        queryClient,
-        connectionsOpts,
-        (old) => old?.filter((c) => c.id !== connectionId),
-      );
-      queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
-      setPendingDisconnectId(null);
-    },
-    onError(error) {
-      const detail = extractErrorMessage(
-        error,
-        undefined,
-        `Failed to disconnect ${displayName} account.`,
-      );
-      toast.error(detail);
-      setPendingDisconnectId(null);
-    },
-  });
+  const disconnectOAuth =
+    useAssistantsOauthDisconnectByConnectionCreateMutation({
+      onSuccess(_data, variables) {
+        toast.success(`${displayName} account disconnected.`);
+        const connectionId = variables.path.connection_id;
+        assistantsOauthConnectionsListSetQueryData(
+          queryClient,
+          connectionsOpts,
+          (old) => old?.filter((c) => c.id !== connectionId),
+        );
+        queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
+        setPendingDisconnectId(null);
+      },
+      onError(error) {
+        const detail = extractErrorMessage(
+          error,
+          undefined,
+          `Failed to disconnect ${displayName} account.`,
+        );
+        toast.error(detail);
+        setPendingDisconnectId(null);
+      },
+    });
 
   // Modal: Escape key + body scroll lock
   useEffect(() => {
@@ -182,7 +192,7 @@ export function IntegrationDetailModal({
         </div>
 
         <div className="space-y-4 px-5 py-4">
-          {platformGate !== "gated" && (
+          {platformGate !== "gated" && !managedUnsupported && (
             <div
               role="tablist"
               aria-label="OAuth mode"
@@ -217,11 +227,14 @@ export function IntegrationDetailModal({
                 connectionsLoading={connectionsLoading}
                 startPending={startOAuthPending}
                 oauthInProgress={oauthInProgress}
+                connectError={connectError}
+                managedUnsupported={managedUnsupported}
                 disconnectingId={
                   disconnectOAuth.isPending ? pendingDisconnectId : null
                 }
                 onConnect={handleConnect}
                 onDisconnect={handleDisconnect}
+                onUseYourOwn={() => setActiveTab("your-own")}
               />
             )
           ) : (
@@ -236,7 +249,11 @@ export function IntegrationDetailModal({
 
         <div className="flex justify-end border-t border-[var(--border-base)] px-5 py-3 dark:border-[var(--border-base)]">
           <Button variant="outlined" size="compact" onClick={onClose}>
-            Confirm
+            {activeTab === "managed"
+              ? providerConnections.length > 0
+                ? "Done"
+                : "Cancel"
+              : "Close"}
           </Button>
         </div>
       </div>

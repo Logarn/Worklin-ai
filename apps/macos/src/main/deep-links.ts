@@ -115,6 +115,23 @@ export const parseVellumUrl = (input: string): DeepLink => {
     if (threadId) return { kind: "openThread", threadId };
     return { kind: "unknown", url: input };
   }
+  if (url.host === "oauth-complete") {
+    const requestId = url.searchParams.get("requestId");
+    const oauthProvider = url.searchParams.get("oauth_provider");
+    if (!requestId || !oauthProvider) {
+      return {
+        kind: "unknown",
+        url: `${url.protocol}//${url.host}${url.pathname}`,
+      };
+    }
+    return {
+      kind: "oauthComplete",
+      requestId,
+      oauthStatus: url.searchParams.get("oauth_status"),
+      oauthProvider,
+      oauthCode: url.searchParams.get("oauth_code"),
+    };
+  }
   if (url.host === "auth" && url.pathname.startsWith("/callback")) {
     // The deprecated `/accounts/native/*` flow returns its auth code here.
     // Strip the sensitive code from the query so it doesn't get captured downstream.
@@ -202,6 +219,35 @@ export const handleDeepLink = (input: string): void => {
   if (link.kind !== "unknown" && app.isReady()) {
     void ensureMainWindowVisible();
   }
+};
+
+/**
+ * Relay an OAuth callback from an HTTPS child window into the existing
+ * deep-link bridge. Electron does not guarantee that assigning an unhandled
+ * custom scheme to `window.location` re-enters the app through the OS, so the
+ * main process handles this navigation explicitly after the same parser check.
+ */
+export const interceptOAuthCompletionNavigation = (
+  event: { preventDefault: () => void },
+  input: string,
+): boolean => {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return false;
+  }
+  if (
+    !ACCEPTED_SCHEMES.includes(url.protocol) ||
+    url.host !== "oauth-complete"
+  ) {
+    return false;
+  }
+
+  event.preventDefault();
+  if (parseVellumUrl(input).kind !== "oauthComplete") return true;
+  handleDeepLink(input);
+  return true;
 };
 
 let installed = false;
