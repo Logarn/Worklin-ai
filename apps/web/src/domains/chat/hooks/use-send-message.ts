@@ -217,7 +217,6 @@ export function useSendMessage({
     },
     [assistantId, activeConversationId],
   );
-  const personalProviderReadyAssistantIdRef = useRef<string | null>(null);
 
   // -------------------------------------------------------------------------
   // Queue management (delegated to useMessageQueue)
@@ -491,16 +490,9 @@ export function useSendMessage({
       if (useServerMint || (usePooledPolling && isDraft)) {
         pendingDraftMintRef.current = requestConversationId;
       }
-      // A model profile the user picked in the composer before this
-      // conversation's row was available — a brand-new draft, or an existing
-      // conversation opened by URL while still loading (see
-      // `ComposerSettingsMenu`). Forward it so this turn, and the conversation's
-      // per-conversation override, use the chosen profile instead of the global
-      // default — covering the window before the menu's load-time promotion PUT
-      // lands. Keyed by id, so only this conversation's own stash is read.
-      const inferenceProfileForSend = useConversationStore
-        .getState()
-        .pendingDraftProfiles.get(requestConversationId);
+      // The caller resolved and verified this exact profile immediately before
+      // the send. Draft selections are included in that resolution, so pooled
+      // and dedicated requests use the same fail-closed provider decision.
       const correlationClientMessageId = clientMessageId ?? crypto.randomUUID();
 
       /**
