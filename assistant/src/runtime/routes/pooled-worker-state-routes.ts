@@ -78,8 +78,11 @@ const CONTENT_TYPE = "application/octet-stream";
 const DEFAULT_UPLOAD_TIMEOUT_MS = 60 * 60 * 1_000;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1_000;
 const MAX_STATE_BUNDLE_BYTES = 16 * 1_024 * 1_024 * 1_024;
+// Migration 104 is tenant-local and only rewrites an exact generated
+// Fireworks call-site default in config.json. It does not read host-global
+// identity, credentials, or state, so it is safe during pooled bootstrap.
 const REVIEWED_POOLED_WORKSPACE_MIGRATION_TAIL =
-  "103-upgrade-quality-profile-to-opus-4-8";
+  "104-upgrade-generated-fireworks-kimi-k2p5-defaults";
 const POOLED_UNSAFE_WORKSPACE_MIGRATIONS = new Set([
   "003-seed-device-id",
   "006-services-config",
