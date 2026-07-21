@@ -1,19 +1,20 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-
-import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
-import {
-    getGlobalThresholds,
-    setGlobalThresholds,
-} from "@/lib/threshold-api";
-import {
-    THRESHOLD_PRESETS,
-    presetFromThreshold,
-} from "@/utils/threshold-presets";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card } from "@vellumai/design-library/components/card";
 import { Dropdown } from "@vellumai/design-library/components/dropdown";
+
+import {
+  getGlobalThresholds,
+  setGlobalThresholds,
+  type GlobalThresholds,
+} from "@/lib/threshold-api";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import {
+  THRESHOLD_PRESETS,
+  presetFromThreshold,
+} from "@/utils/threshold-presets";
 
 function Divider() {
   return (
@@ -27,110 +28,157 @@ const PRESET_OPTIONS = THRESHOLD_PRESETS.map((p) => ({
   icon: <p.icon className="h-3.5 w-3.5" />,
 }));
 
-export function RiskToleranceSettings() {
-  const assistantId = useActiveAssistantId();
+interface PresetSelection {
+  interactiveId: string;
+  autonomousId: string;
+  headlessId: string;
+}
 
+const DEFAULT_SELECTION: PresetSelection = {
+  interactiveId: "relaxed",
+  autonomousId: "conservative",
+  headlessId: "strict",
+};
+
+function selectionFromThresholds(
+  thresholds: GlobalThresholds,
+): PresetSelection {
+  return {
+    interactiveId: presetFromThreshold(thresholds.interactive).id,
+    autonomousId: presetFromThreshold(thresholds.autonomous).id,
+    headlessId: presetFromThreshold(thresholds.headless).id,
+  };
+}
+
+function thresholdValuesFromSelection(
+  selection: PresetSelection,
+): GlobalThresholds | null {
+  const interactive = THRESHOLD_PRESETS.find(
+    (preset) => preset.id === selection.interactiveId,
+  )?.riskThreshold;
+  const autonomous = THRESHOLD_PRESETS.find(
+    (preset) => preset.id === selection.autonomousId,
+  )?.riskThreshold;
+  const headless = THRESHOLD_PRESETS.find(
+    (preset) => preset.id === selection.headlessId,
+  )?.riskThreshold;
+  if (!interactive || !autonomous || !headless) return null;
+  return { interactive, autonomous, headless };
+}
+
+export function RiskToleranceSettings() {
+  const assistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const queryClient = useQueryClient();
   const { data: thresholds, isError: loadError } = useQuery({
     queryKey: ["thresholds", assistantId],
-    queryFn: () => getGlobalThresholds(assistantId),
+    queryFn: () => getGlobalThresholds(assistantId!),
+    enabled: assistantId !== null,
     staleTime: 30_000,
+    retry: false,
   });
 
-  const [interactivePresetId, setInteractivePresetId] = useState<string>("relaxed");
-  const [autonomousPresetId, setAutonomousPresetId] = useState<string>("conservative");
-  const [headlessPresetId, setHeadlessPresetId] = useState<string>("strict");
+  const [optimisticSelection, setOptimisticSelection] =
+    useState<{
+      assistantId: string;
+      value: PresetSelection;
+    } | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [saveFailure, setSaveFailure] = useState<{
+    assistantId: string;
+    message: string;
+  } | null>(null);
 
-  const hasUserInteracted = useRef(false);
-  const [hasLoadedInitial, setHasLoadedInitial] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingFlushRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    if (!thresholds || hasUserInteracted.current) return;
-    setInteractivePresetId(presetFromThreshold(thresholds.interactive).id);
-    setAutonomousPresetId(presetFromThreshold(thresholds.autonomous).id);
-    setHeadlessPresetId(presetFromThreshold(thresholds.headless).id);
-    setHasLoadedInitial(true);
-  }, [thresholds]);
-
-  useEffect(() => {
-    return () => {
-      if (saveTimerRef.current !== null) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-        pendingFlushRef.current?.();
-        pendingFlushRef.current = null;
-      }
-    };
-  }, []);
-
-  const persistThresholds = useCallback(
-    (interactiveId: string, autonomousId: string, headlessId: string) => {
-      if (!assistantId || !hasLoadedInitial) return;
-      const interactive = THRESHOLD_PRESETS.find((p) => p.id === interactiveId)?.riskThreshold;
-      const autonomous = THRESHOLD_PRESETS.find((p) => p.id === autonomousId)?.riskThreshold;
-      const headless = THRESHOLD_PRESETS.find((p) => p.id === headlessId)?.riskThreshold;
-      if (!interactive || !autonomous || !headless) return;
-      setGlobalThresholds(assistantId, { interactive, autonomous, headless })
-        .then(() => {
-          queryClient.invalidateQueries({ queryKey: ["thresholds", assistantId] });
-        })
-        .catch(() => {
-          // Silent — optimistic update stays; user can retry by changing again
-        });
+  const saveThresholds = useMutation({
+    mutationFn: async ({
+      targetAssistantId,
+      next,
+    }: {
+      targetAssistantId: string;
+      next: PresetSelection;
+    }) => {
+      const values = thresholdValuesFromSelection(next);
+      if (!values) throw new Error("Invalid risk tolerance selection.");
+      return setGlobalThresholds(targetAssistantId, values);
     },
-    [assistantId, hasLoadedInitial, queryClient],
-  );
-
-  const scheduleSave = useCallback(
-    (interactiveId: string, autonomousId: string, headlessId: string) => {
-      if (saveTimerRef.current !== null) {
-        clearTimeout(saveTimerRef.current);
-      }
-      pendingFlushRef.current = () =>
-        persistThresholds(interactiveId, autonomousId, headlessId);
-      saveTimerRef.current = setTimeout(() => {
-        pendingFlushRef.current?.();
-        saveTimerRef.current = null;
-        pendingFlushRef.current = null;
-      }, 500);
+    onSuccess: (updated, variables) => {
+      queryClient.setQueryData(
+        ["thresholds", variables.targetAssistantId],
+        updated,
+      );
+      setOptimisticSelection((current) =>
+        current?.assistantId === variables.targetAssistantId ? null : current,
+      );
+      setSaveFailure((current) =>
+        current?.assistantId === variables.targetAssistantId ? null : current,
+      );
     },
-    [persistThresholds],
+    onError: (_error, variables) => {
+      setOptimisticSelection((current) =>
+        current?.assistantId === variables.targetAssistantId ? null : current,
+      );
+      setSaveFailure({
+        assistantId: variables.targetAssistantId,
+        message:
+          "Could not save risk tolerance. Your previous setting is still active.",
+      });
+    },
+  });
+
+  const confirmedSelection = thresholds
+    ? selectionFromThresholds(thresholds)
+    : DEFAULT_SELECTION;
+  const visibleSelection =
+    optimisticSelection?.assistantId === assistantId
+      ? optimisticSelection.value
+      : confirmedSelection;
+  const saveError =
+    saveFailure?.assistantId === assistantId ? saveFailure.message : null;
+
+  const persistSelection = useCallback(
+    (next: PresetSelection) => {
+      if (!assistantId || !thresholds || saveThresholds.isPending) return;
+      setOptimisticSelection({ assistantId, value: next });
+      setSaveFailure(null);
+      saveThresholds.mutate({
+        targetAssistantId: assistantId,
+        next,
+      });
+    },
+    [assistantId, saveThresholds, thresholds],
   );
 
   const handleInteractiveChange = useCallback(
     (presetId: string) => {
-      hasUserInteracted.current = true;
-      setInteractivePresetId(presetId);
-      scheduleSave(presetId, autonomousPresetId, headlessPresetId);
+      persistSelection({ ...visibleSelection, interactiveId: presetId });
     },
-    [autonomousPresetId, headlessPresetId, scheduleSave],
+    [persistSelection, visibleSelection],
   );
 
   const handleAutonomousChange = useCallback(
     (presetId: string) => {
-      hasUserInteracted.current = true;
-      setAutonomousPresetId(presetId);
-      scheduleSave(interactivePresetId, presetId, headlessPresetId);
+      persistSelection({ ...visibleSelection, autonomousId: presetId });
     },
-    [interactivePresetId, headlessPresetId, scheduleSave],
+    [persistSelection, visibleSelection],
   );
 
   const handleHeadlessChange = useCallback(
     (presetId: string) => {
-      hasUserInteracted.current = true;
-      setHeadlessPresetId(presetId);
-      scheduleSave(interactivePresetId, autonomousPresetId, presetId);
+      persistSelection({ ...visibleSelection, headlessId: presetId });
     },
-    [interactivePresetId, autonomousPresetId, scheduleSave],
+    [persistSelection, visibleSelection],
   );
 
-  const interactivePreset = THRESHOLD_PRESETS.find((p) => p.id === interactivePresetId);
-  const autonomousPreset = THRESHOLD_PRESETS.find((p) => p.id === autonomousPresetId);
-  const headlessPreset = THRESHOLD_PRESETS.find((p) => p.id === headlessPresetId);
-  const dropdownsDisabled = !assistantId || !hasLoadedInitial;
+  const interactivePreset = THRESHOLD_PRESETS.find(
+    (preset) => preset.id === visibleSelection.interactiveId,
+  );
+  const autonomousPreset = THRESHOLD_PRESETS.find(
+    (preset) => preset.id === visibleSelection.autonomousId,
+  );
+  const headlessPreset = THRESHOLD_PRESETS.find(
+    (preset) => preset.id === visibleSelection.headlessId,
+  );
+  const dropdownsDisabled =
+    !assistantId || !thresholds || saveThresholds.isPending;
 
   return (
     <Card>
@@ -147,6 +195,22 @@ export function RiskToleranceSettings() {
           Could not load threshold settings. Check your connection and reload.
         </p>
       )}
+      {saveThresholds.isPending && (
+        <p
+          className="mt-2 text-body-small-default text-[var(--content-tertiary)]"
+          role="status"
+        >
+          Saving risk tolerance…
+        </p>
+      )}
+      {saveError && (
+        <p
+          className="mt-2 text-body-small-default text-[var(--system-negative-strong)]"
+          role="alert"
+        >
+          {saveError}
+        </p>
+      )}
       <div className="mt-4 space-y-4">
         <div>
           <div className="text-body-medium-default text-[var(--content-default)]">
@@ -157,7 +221,8 @@ export function RiskToleranceSettings() {
           </p>
           <div className="mt-2" style={{ maxWidth: 280 }}>
             <Dropdown
-              value={interactivePresetId}
+              aria-label="Conversation risk tolerance"
+              value={visibleSelection.interactiveId}
               onChange={handleInteractiveChange}
               options={PRESET_OPTIONS}
               disabled={dropdownsDisabled}
@@ -198,7 +263,8 @@ export function RiskToleranceSettings() {
               </p>
               <div className="mt-2" style={{ maxWidth: 280 }}>
                 <Dropdown
-                  value={autonomousPresetId}
+                  aria-label="Background risk tolerance"
+                  value={visibleSelection.autonomousId}
                   onChange={handleAutonomousChange}
                   options={PRESET_OPTIONS}
                   disabled={dropdownsDisabled}
@@ -222,7 +288,8 @@ export function RiskToleranceSettings() {
               </p>
               <div className="mt-2" style={{ maxWidth: 280 }}>
                 <Dropdown
-                  value={headlessPresetId}
+                  aria-label="Headless risk tolerance"
+                  value={visibleSelection.headlessId}
                   onChange={handleHeadlessChange}
                   options={PRESET_OPTIONS}
                   disabled={dropdownsDisabled}

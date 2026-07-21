@@ -43,9 +43,11 @@ import {
 import { managedVoiceRoutingHintFromToken } from "./live-voice-provider-callback.js";
 import {
   ensureAssistantStoreSchema,
+  getAssistantAdminAccessConsent,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
   hasAcceptedAssistantConsent,
+  setAssistantAdminAccessConsent,
   type AssistantRow,
   type OrganizationRow,
 } from "./assistant-store.js";
@@ -347,6 +349,8 @@ db.exec(`
     name TEXT NOT NULL,
     runtime_stack_id TEXT,
     isolation_version INTEGER NOT NULL DEFAULT 2,
+    admin_access_consented INTEGER NOT NULL DEFAULT 0
+      CHECK(admin_access_consented IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -1029,7 +1033,7 @@ function assistantPayload(
     platform_actor_token: pooled
       ? null
       : mintActorToken(runtimeStack, tenantContext),
-    access_consented: hasAcceptedAssistantConsent(user.consent_json),
+    access_consented: row.admin_access_consented === 1,
   };
 }
 
@@ -1260,10 +1264,9 @@ function scheduleRuntimeProvisioning(
 
 function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
   const owner = db
-    .query<
-      { consent_json: string | null },
-      [string]
-    >("SELECT consent_json FROM users WHERE id = ?")
+    .query<{ consent_json: string | null }, [string]>(
+      "SELECT consent_json FROM users WHERE id = ?",
+    )
     .get(assistant.user_id);
   return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
 }
@@ -1576,11 +1579,7 @@ function requestedWorkspaceId(req: Request): string | null {
 
 function workspaceContext(req: Request, user: UserRow) {
   const requestedOrgId = requestedWorkspaceId(req);
-  const selected = getWorkspaceOrganizationContext(
-    db,
-    user.id,
-    requestedOrgId,
-  );
+  const selected = getWorkspaceOrganizationContext(db, user.id, requestedOrgId);
   if (selected) {
     if (selected.membership.status !== "active") {
       throw new WorkspaceAccessError();
@@ -1986,10 +1985,9 @@ async function handleWorkspace(
       parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
     const assistant = body.assistantId
       ? db
-          .query<
-            AssistantRow,
-            [string, string]
-          >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
+          .query<AssistantRow, [string, string]>(
+            "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
+          )
           .get(body.assistantId, context.org.id)
       : null;
     const member = body.userId
@@ -2159,10 +2157,9 @@ function accessibleAssistantsForUser(
   const workspace = workspaceContext(req, user);
   if (workspace.org.user_id === user.id) {
     const existing = db
-      .query<
-        AssistantRow,
-        [string]
-      >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
+      .query<AssistantRow, [string]>(
+        "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+      )
       .all(workspace.org.id);
     if (existing.length === 0) getOrCreateAssistant(user);
   }
@@ -2206,6 +2203,85 @@ async function handleAssistants(
       previous: null,
       results,
     });
+    return true;
+  }
+
+  const accessConsentMatch =
+    /^\/v1\/assistants\/([^/]+)\/access-consent\/?$/.exec(url.pathname);
+  if (accessConsentMatch) {
+    const assistantId = accessConsentMatch[1]!;
+    const workspace = workspaceContext(req, user);
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === assistantId,
+    );
+    if (!assistant || assistant.org_id !== workspace.org.id) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    const currentConsent = getAssistantAdminAccessConsent(
+      db,
+      assistantId,
+      workspace.org.id,
+    );
+    if (currentConsent === null) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    const canUpdateConsent =
+      assistant.user_id === user.id || workspace.membership.role === "admin";
+
+    if (req.method === "GET") {
+      sendJson(req, res, {
+        access_consented: currentConsent,
+        can_update: canUpdateConsent,
+      });
+      return true;
+    }
+
+    if (req.method === "PATCH") {
+      if (!canUpdateConsent) {
+        sendJson(
+          req,
+          res,
+          {
+            detail:
+              "Only the assistant owner or a workspace admin can change admin access.",
+          },
+          403,
+        );
+        return true;
+      }
+      if (!checkCsrf(req)) {
+        sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+        return true;
+      }
+      const body = parseJsonBody<{ access_consented?: unknown }>(req) ?? {};
+      if (typeof body.access_consented !== "boolean") {
+        sendJson(
+          req,
+          res,
+          { detail: "access_consented must be a boolean." },
+          400,
+        );
+        return true;
+      }
+      const updated = setAssistantAdminAccessConsent(
+        db,
+        assistantId,
+        workspace.org.id,
+        body.access_consented,
+        nowIso,
+      );
+      if (updated === null) {
+        sendJson(req, res, { detail: "Assistant not found." }, 404);
+        return true;
+      }
+      sendJson(req, res, { access_consented: updated, can_update: true });
+      return true;
+    }
+
+    res.setHeader("Allow", "GET, PATCH");
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
     return true;
   }
 
@@ -2253,10 +2329,9 @@ async function handleAssistants(
     const existing =
       workspace.org.user_id === user.id
         ? db
-            .query<
-              AssistantRow,
-              [string]
-            >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
+            .query<AssistantRow, [string]>(
+              "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+            )
             .get(workspace.org.id)
         : accessibleAssistantsForUser(req, user)[0];
     const assistant =
@@ -2311,8 +2386,9 @@ async function handleAssistants(
     return true;
   }
 
-  const restartMatch =
-    /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(url.pathname);
+  const restartMatch = /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(
+    url.pathname,
+  );
   if (restartMatch && req.method === "POST") {
     const assistant = accessibleAssistantsForUser(req, user).find(
       (candidate) => candidate.id === restartMatch[1],
@@ -2567,10 +2643,9 @@ async function handleArtifactInvitations(
       return true;
     }
     const assistant = db
-      .query<
-        AssistantRow,
-        [string, string]
-      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
+      .query<AssistantRow, [string, string]>(
+        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+      )
       .get(createMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);

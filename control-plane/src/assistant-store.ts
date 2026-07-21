@@ -22,6 +22,7 @@ export interface AssistantRow {
   name: string;
   runtime_stack_id: string | null;
   isolation_version: number;
+  admin_access_consented: number;
   is_default: number;
   created_at: string;
   updated_at: string;
@@ -45,6 +46,15 @@ function addDefaultMarkerIfMissing(db: Database, table: string): void {
   `);
 }
 
+function addAdminAccessConsentIfMissing(db: Database): void {
+  if (tableColumns(db, "assistants").has("admin_access_consented")) return;
+  db.exec(`
+    ALTER TABLE assistants
+      ADD COLUMN admin_access_consented INTEGER NOT NULL DEFAULT 0
+      CHECK(admin_access_consented IN (0, 1))
+  `);
+}
+
 export function ensureAssistantStoreSchema(db: Database): void {
   if (initializedDatabases.has(db)) return;
 
@@ -54,6 +64,7 @@ export function ensureAssistantStoreSchema(db: Database): void {
   const migrate = db.transaction(() => {
     addDefaultMarkerIfMissing(db, "organizations");
     addDefaultMarkerIfMissing(db, "assistants");
+    addAdminAccessConsentIfMissing(db);
 
     // Preserve an existing default where possible, otherwise choose the oldest
     // legacy row deterministically before adding the uniqueness constraints.
@@ -198,6 +209,40 @@ export function getActiveAssistant(
       [string]
     >("SELECT * FROM assistants WHERE user_id = ? AND is_default = 1")
     .get(userId);
+}
+
+export function getAssistantAdminAccessConsent(
+  db: Database,
+  assistantId: string,
+  organizationId: string,
+): boolean | null {
+  ensureAssistantStoreSchema(db);
+  const row = db
+    .query<{ admin_access_consented: number }, [string, string]>(
+      `SELECT admin_access_consented
+       FROM assistants
+       WHERE id = ?
+         AND org_id = ?`,
+    )
+    .get(assistantId, organizationId);
+  return row ? row.admin_access_consented === 1 : null;
+}
+
+export function setAssistantAdminAccessConsent(
+  db: Database,
+  assistantId: string,
+  organizationId: string,
+  accessConsented: boolean,
+  nowIso: () => string,
+): boolean | null {
+  ensureAssistantStoreSchema(db);
+  db.query(
+    `UPDATE assistants
+     SET admin_access_consented = ?, updated_at = ?
+     WHERE id = ?
+       AND org_id = ?`,
+  ).run(accessConsented ? 1 : 0, nowIso(), assistantId, organizationId);
+  return getAssistantAdminAccessConsent(db, assistantId, organizationId);
 }
 
 export function getOrCreateAssistant(
