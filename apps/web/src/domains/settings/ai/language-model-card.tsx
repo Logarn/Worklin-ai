@@ -30,10 +30,12 @@ import {
   type ProviderConnectionPreset,
 } from "@/assistant/provider-connection-presets";
 import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
+import { isPooledRuntimeProvider } from "@/assistant/pooled-model-provider";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
 import { CallSiteOverridesModal } from "@/domains/settings/ai/call-site-overrides-modal";
 import { ManageProfilesModal } from "@/domains/settings/ai/manage-profiles-modal";
+import { PooledLanguageModelCard } from "@/domains/settings/ai/pooled-language-model-card";
 import {
   ManageProvidersModal,
   type ProviderCreateSeed,
@@ -59,6 +61,7 @@ import type {
 } from "@/generated/daemon/types.gen";
 import { captureError } from "@/lib/sentry/capture-error";
 import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 type PowerSource = "worklin-credits" | "api-key";
 
@@ -290,6 +293,19 @@ function ProviderMark({ provider }: { provider: string }) {
 
 export function LanguageModelCard() {
   const assistantId = useActiveAssistantId();
+  const assistants = useResolvedAssistantsStore.use.assistants();
+  const runtimeProvider = assistants.find(
+    (assistant) => assistant.id === assistantId,
+  )?.runtimeProvider;
+
+  if (isPooledRuntimeProvider(runtimeProvider)) {
+    return <PooledLanguageModelCard assistantId={assistantId} />;
+  }
+
+  return <DedicatedLanguageModelCard assistantId={assistantId} />;
+}
+
+function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   const queryClient = useQueryClient();
 
   const { data: config } = useQuery({

@@ -12,11 +12,13 @@
 
 import type { z } from "zod";
 
+import { runWithPooledModelKeyRequestContext } from "../security/pooled-model-key-context.js";
 import type { RoutePolicy } from "./auth/route-policy.js";
 import { enforcePolicy } from "./auth/route-policy.js";
 import type { AuthContext } from "./auth/types.js";
 import { httpError } from "./http-errors.js";
 import { withErrorHandling } from "./middleware/error-handler.js";
+import { acquirePooledRuntimeRouteRequest } from "./pooled-runtime-drain-fence.js";
 import { routeDefinitionsToHTTPRoutes } from "./routes/http-adapter.js";
 import { ROUTES } from "./routes/index.js";
 import type {
@@ -234,14 +236,78 @@ export class HttpRouter {
       if (policyDenied) return policyDenied;
 
       return withErrorHandling(endpoint, () =>
-        Promise.resolve(
-          compiled.def.handler({ req, url, server, authContext, params }),
+        runWithPooledModelKeyRequestContext(
+          req,
+          authContext,
+          async (sanitizedReq) => {
+            const release = acquirePooledRuntimeRouteRequest(
+              authContext,
+              compiled.def.operationId,
+            );
+            try {
+              const response = await Promise.resolve(
+                compiled.def.handler({
+                  req: sanitizedReq,
+                  url,
+                  server,
+                  authContext,
+                  params,
+                }),
+              );
+              if (!response.body) {
+                release();
+                return response;
+              }
+              return responseWithActivityRelease(response, release);
+            } catch (error) {
+              release();
+              throw error;
+            }
+          },
         ),
       );
     }
 
     return null;
   }
+}
+
+function responseWithActivityRelease(
+  response: Response,
+  release: () => void,
+): Response {
+  const reader = response.body!.getReader();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    release();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          finish();
+          controller.close();
+          return;
+        }
+        controller.enqueue(result.value);
+      } catch (error) {
+        finish();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      finish();
+      await reader.cancel(reason);
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 // ---------------------------------------------------------------------------

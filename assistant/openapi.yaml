@@ -17970,6 +17970,14 @@ paths:
                         - attachments
                       additionalProperties: false
                     description: Array of message objects
+                  conversationId:
+                    description:
+                      Resolved internal conversation id. Null while a supplied conversationKey has not materialized yet.
+                      Request-polled clients use this to submit pending interactions while the originating message
+                      request is still open.
+                    anyOf:
+                      - type: string
+                      - type: "null"
                   hasMore:
                     description: Whether older messages exist beyond this page
                     type: boolean
@@ -17995,6 +18003,12 @@ paths:
                     anyOf:
                       - type: number
                       - type: "null"
+                  isProcessing:
+                    description:
+                      Whether this conversation's agent loop is currently processing a turn. Request-polled clients wait for
+                      false before treating the latest assistant row as complete. Optional only for wire compatibility
+                      with older daemons; this daemon always emits it.
+                    type: boolean
                 required:
                   - messages
                 additionalProperties: false

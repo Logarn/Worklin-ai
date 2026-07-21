@@ -27,6 +27,7 @@
  *      a conversation offline.
  */
 
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import { getDb } from "../memory/db-connection.js";
 import { getLogger } from "../util/logger.js";
@@ -40,6 +41,40 @@ import { resolveProviderFromConnection } from "./registry.js";
 import type { Provider } from "./types.js";
 
 const log = getLogger("providers/connection-resolution");
+
+type ConnectionProviderResolver = typeof tryResolveProviderForConnectionName;
+
+export class PooledRequestScopedProvider implements Provider {
+  readonly tokenEstimationProvider: string;
+
+  constructor(
+    readonly name: string,
+    private readonly connectionName: string,
+    private readonly model: string | undefined,
+    private readonly config: ProvidersConfig,
+    private readonly resolver: ConnectionProviderResolver = tryResolveProviderForConnectionName,
+  ) {
+    this.tokenEstimationProvider = name;
+  }
+
+  async sendMessage(
+    messages: Parameters<Provider["sendMessage"]>[0],
+    options?: Parameters<Provider["sendMessage"]>[1],
+  ): ReturnType<Provider["sendMessage"]> {
+    const provider = await this.resolver(
+      this.connectionName,
+      this.config,
+      this.name,
+      this.model,
+    );
+    if (!provider) {
+      throw new Error(
+        `Provider "${this.name}" is not available for this pooled request.`,
+      );
+    }
+    return provider.sendMessage(messages, options);
+  }
+}
 
 /**
  * Error raised when a `provider_connection` reference cannot be resolved
@@ -120,7 +155,9 @@ export async function tryResolveProviderForConnectionName(
     // "anthropic-managed" leaked through). Try to find an active connection
     // for the expected provider before giving up.
     let resolved = false;
-    let mismatchCandidates: import("./inference/auth.js").ProviderConnection[] | undefined;
+    let mismatchCandidates:
+      | import("./inference/auth.js").ProviderConnection[]
+      | undefined;
     try {
       const db = getDb();
       mismatchCandidates = listConnections(db, { provider: expectedProvider });
@@ -203,7 +240,9 @@ export async function resolveDefaultProvider(
     // provider without a connection ("Any active" selection), and the merge
     // cleared or failed to inherit one. Try to find an active connection
     // for the provider before giving up.
-    let autoResolveCandidates: import("./inference/auth.js").ProviderConnection[] | undefined;
+    let autoResolveCandidates:
+      | import("./inference/auth.js").ProviderConnection[]
+      | undefined;
     if (resolved.provider) {
       try {
         autoResolveCandidates = listConnections(getDb(), {
@@ -244,10 +283,23 @@ export async function resolveDefaultProvider(
       );
     }
   }
-  return tryResolveProviderForConnectionName(
+  const provider = await tryResolveProviderForConnectionName(
     connectionName,
     config,
     resolved.provider,
     resolved.model,
+  );
+  if (!provider || !isPooledWorkerRuntime()) return provider;
+
+  // The resolved adapter contains the plaintext tenant API key. It is useful
+  // only as an availability check here; never retain it in a long-lived
+  // Conversation or satellite. The indirection below resolves a fresh adapter
+  // inside each authenticated request and drops it when that provider call
+  // settles.
+  return new PooledRequestScopedProvider(
+    resolved.provider,
+    connectionName,
+    resolved.model,
+    config,
   );
 }

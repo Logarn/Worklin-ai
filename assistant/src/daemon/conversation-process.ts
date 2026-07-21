@@ -22,6 +22,7 @@ import {
   type TurnChannelContext,
   type TurnInterfaceContext,
 } from "../channels/types.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
 import { saveBrandBrain } from "../memory/brand-brain-store.js";
 import { listPendingRequestsByConversationScope } from "../memory/canonical-guardian-store.js";
@@ -36,6 +37,7 @@ import { extractPreferences } from "../notifications/preference-extractor.js";
 import { createPreference } from "../notifications/preferences-store.js";
 import type { ContextWindowResult } from "../plugins/defaults/compaction/window-manager.js";
 import { routeGuardianReply } from "../runtime/guardian-reply-router.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import {
   publishConversationMessagesChanged,
   publishConversationTitleChanged,
@@ -79,6 +81,58 @@ import { resolveTrustClass } from "./trust-context.js";
 import { resolveVerificationSessionIntent } from "./verification-session-intent.js";
 
 const log = getLogger("conversation-process");
+
+async function extractAndPersistPreferences(
+  conversation: Conversation,
+  content: string,
+  source: "batched" | "queued" | "turn",
+): Promise<void> {
+  try {
+    const result = await extractPreferences(content);
+    if (!result.detected) return;
+    for (const pref of result.preferences) {
+      createPreference({
+        preferenceText: pref.preferenceText,
+        appliesWhen: pref.appliesWhen,
+        priority: pref.priority,
+      });
+    }
+    log.info(
+      {
+        count: result.preferences.length,
+        conversationId: conversation.conversationId,
+      },
+      `Persisted extracted notification preferences${
+        source === "turn" ? "" : ` (${source})`
+      }`,
+    );
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    log.warn(
+      { err: errMsg, conversationId: conversation.conversationId },
+      `Background preference extraction failed${
+        source === "turn" ? "" : ` (${source})`
+      }`,
+    );
+  }
+}
+
+async function runPreferenceExtractionForRuntime(
+  conversation: Conversation,
+  content: string,
+  source: "batched" | "queued" | "turn",
+): Promise<void> {
+  const extraction = extractAndPersistPreferences(
+    conversation,
+    content,
+    source,
+  );
+  if (isPooledWorkerRuntime()) {
+    await extraction;
+  } else {
+    void extraction;
+  }
+}
 
 function trimTrailingUrlPunctuation(value: string): string {
   return value.replace(/[),.;:!?]+$/g, "");
@@ -852,6 +906,7 @@ export async function runRetentionKlaviyoConnectionTurn(
     onEvent: (msg: ServerMessage) => void;
   },
 ): Promise<void> {
+  assertPooledRuntimeAsyncOperationSupported("retention onboarding surfaces");
   const { content, requestId, onEvent } = params;
   const websiteUrl = findRecentWebsiteUrl(conversation, content);
   const brandName = findRecentRetentionBrandName(
@@ -961,6 +1016,7 @@ export async function runRetentionOnboardingTurn(
     onEvent: (msg: ServerMessage) => void;
   },
 ): Promise<void> {
+  assertPooledRuntimeAsyncOperationSupported("retention onboarding surfaces");
   const { content, requestId, onEvent } = params;
   log.info(
     { conversationId: conversation.conversationId, requestId },
@@ -2353,31 +2409,11 @@ async function drainSingleMessage(
   // Fire-and-forget: detect notification preferences in the queued message
   // and persist any that are found, mirroring the logic in processMessage.
   if (conversation.assistantId) {
-    extractPreferences(resolvedContent)
-      .then((result) => {
-        if (!result.detected) return;
-        for (const pref of result.preferences) {
-          createPreference({
-            preferenceText: pref.preferenceText,
-            appliesWhen: pref.appliesWhen,
-            priority: pref.priority,
-          });
-        }
-        log.info(
-          {
-            count: result.preferences.length,
-            conversationId: conversation.conversationId,
-          },
-          "Persisted extracted notification preferences (queued)",
-        );
-      })
-      .catch((err) => {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        log.warn(
-          { err: errMsg, conversationId: conversation.conversationId },
-          "Background preference extraction failed (queued)",
-        );
-      });
+    await runPreferenceExtractionForRuntime(
+      conversation,
+      resolvedContent,
+      "queued",
+    );
   }
 
   // Fire-and-forget: persistUserMessage set the processing flag to true
@@ -2708,31 +2744,11 @@ async function drainBatch(
     // Fire-and-forget: detect notification preferences in each batched user
     // message and persist any that are found, mirroring drainSingleMessage.
     if (conversation.assistantId) {
-      extractPreferences(qmContent)
-        .then((result) => {
-          if (!result.detected) return;
-          for (const pref of result.preferences) {
-            createPreference({
-              preferenceText: pref.preferenceText,
-              appliesWhen: pref.appliesWhen,
-              priority: pref.priority,
-            });
-          }
-          log.info(
-            {
-              count: result.preferences.length,
-              conversationId: conversation.conversationId,
-            },
-            "Persisted extracted notification preferences (batched)",
-          );
-        })
-        .catch((err) => {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          log.warn(
-            { err: errMsg, conversationId: conversation.conversationId },
-            "Background preference extraction failed (batched)",
-          );
-        });
+      await runPreferenceExtractionForRuntime(
+        conversation,
+        qmContent,
+        "batched",
+      );
     }
 
     // If the user hit abort mid-batch, stop persisting remaining tails.
@@ -3312,31 +3328,11 @@ export async function processMessage(
   // and persist any that are found. Runs in the background so it doesn't
   // block the main conversation flow.
   if (conversation.assistantId) {
-    extractPreferences(resolvedContent)
-      .then((result) => {
-        if (!result.detected) return;
-        for (const pref of result.preferences) {
-          createPreference({
-            preferenceText: pref.preferenceText,
-            appliesWhen: pref.appliesWhen,
-            priority: pref.priority,
-          });
-        }
-        log.info(
-          {
-            count: result.preferences.length,
-            conversationId: conversation.conversationId,
-          },
-          "Persisted extracted notification preferences",
-        );
-      })
-      .catch((err) => {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        log.warn(
-          { err: errMsg, conversationId: conversation.conversationId },
-          "Background preference extraction failed",
-        );
-      });
+    await runPreferenceExtractionForRuntime(
+      conversation,
+      resolvedContent,
+      "turn",
+    );
   }
 
   const loopOptions: {

@@ -1,7 +1,5 @@
 import { join } from "node:path";
 
-import { config as dotenvConfig } from "dotenv";
-
 import { refreshBackgroundWakeIntent } from "../background-wake/publisher.js";
 import { registerBackgroundWakeRuntime } from "../background-wake/runtime-registry.js";
 import { setPointerMessageProcessor } from "../calls/call-pointer-messages.js";
@@ -14,10 +12,18 @@ import {
   getPlatformAssistantId,
   getRuntimeHttpHost,
   getRuntimeHttpPort,
+  getRuntimeWorkerLeaseAuthorityFile,
+  getRuntimeWorkerStackId,
+  isPooledWorkerRuntime,
   setIngressPublicBaseUrl,
   validateEnv,
 } from "../config/env.js";
-import { loadConfig, mergeDefaultWorkspaceConfig } from "../config/loader.js";
+import {
+  installPooledRuntimeNeutralConfig,
+  loadConfig,
+  mergeDefaultWorkspaceConfig,
+} from "../config/loader.js";
+import { loadRuntimeDotEnv } from "../config/runtime-dotenv.js";
 import type { AssistantConfig } from "../config/schema.js";
 import { seedInferenceProfiles } from "../config/seed-inference-profiles.js";
 import type { CesClient } from "../credential-execution/client.js";
@@ -65,6 +71,7 @@ import { ensurePromptFiles } from "../prompts/system-prompt.js";
 import { runProviderConnectionsBackfill } from "../providers/inference/backfill.js";
 import { resolveManagedProxyContext } from "../providers/platform-proxy/context.js";
 import { broadcastMessage } from "../runtime/assistant-event-hub.js";
+import { assertPooledWorkerLeaseAuthorityFile } from "../runtime/auth/pooled-worker-service-auth.js";
 import {
   initAuthSigningKey,
   resolveSigningKey,
@@ -75,10 +82,12 @@ import {
 } from "../runtime/daemon-readiness.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { recoverInterruptedImport } from "../runtime/migrations/vbundle-streaming-importer.js";
+import { installProductionPooledRuntimeQuiescenceProbe } from "../runtime/pooled-runtime-quiescence.js";
 import { registerSecretsDeps } from "../runtime/routes/secrets-deps.js";
 import { publishConversationListChanged } from "../runtime/sync/resource-sync-events.js";
 import { recoverStaleSchedules } from "../schedule/schedule-recovery.js";
-import { startScheduler } from "../schedule/scheduler.js";
+import { type SchedulerHandle, startScheduler } from "../schedule/scheduler.js";
+import { assertPooledModelKeyRuntimeConfiguration } from "../security/pooled-model-key-context.js";
 import {
   getCesClient,
   onCesClientChanged,
@@ -93,11 +102,7 @@ import { syncFlagGatedTools } from "../tools/registry.js";
 import { registerBuiltinTtsProviders } from "../tts/providers/register-builtins.js";
 import { getDeviceId } from "../util/device-id.js";
 import { getLogger, initLogger } from "../util/logger.js";
-import {
-  ensureDataDir,
-  getDotEnvPath,
-  getWorkspaceDir,
-} from "../util/platform.js";
+import { ensureDataDir, getWorkspaceDir } from "../util/platform.js";
 import { APP_VERSION } from "../version.js";
 import {
   listWorkItems,
@@ -144,8 +149,22 @@ import { refreshSkillCapabilityMemoriesOnStartup } from "./skill-memory-refresh.
 const log = getLogger("lifecycle");
 let diskPressureStartupSampleTimer: ReturnType<typeof setTimeout> | null = null;
 
-function loadDotEnv(): void {
-  dotenvConfig({ path: getDotEnvPath(), quiet: true });
+function createPooledInteractiveOnlyScheduler(): SchedulerHandle {
+  return {
+    async runOnce(): Promise<number> {
+      return 0;
+    },
+    async runDueWorkOnce() {
+      return {
+        claimed: 0,
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+        stillPending: 0,
+      };
+    },
+    stop(): void {},
+  };
 }
 
 function runDeferredDiskPressureStartupSample(): void {
@@ -285,11 +304,24 @@ async function startCesProcess(
 // Entry point for the daemon process itself
 export async function runDaemon(): Promise<void> {
   const startupStartedAt = Date.now();
-  // dotenv loads before the first log call so the lazy root logger
-  // initializes against the final VELLUM_WORKSPACE_DIR / log path, not
-  // whatever was in the live environment at process spawn.
-  loadDotEnv();
+  const pooledInteractiveOnly = isPooledWorkerRuntime();
+  // A pooled worker can restart while the volume still contains the previous
+  // tenant. Never read that tenant's dotenv/config/log paths before the
+  // authenticated restore-or-prepare boundary.
+  loadRuntimeDotEnv();
+  if (pooledInteractiveOnly) {
+    installPooledRuntimeNeutralConfig();
+    initLogger({ dir: undefined, retentionDays: 0 });
+  }
   validateEnv();
+  if (pooledInteractiveOnly) {
+    assertPooledWorkerLeaseAuthorityFile(
+      getRuntimeWorkerLeaseAuthorityFile(),
+      getRuntimeWorkerStackId(),
+    );
+    assertPooledModelKeyRuntimeConfiguration();
+    installProductionPooledRuntimeQuiescenceProbe();
+  }
   markDaemonNotReady("daemon_starting");
   log.info({ version: APP_VERSION }, "Daemon starting");
 
@@ -297,9 +329,10 @@ export async function runDaemon(): Promise<void> {
     // Initialize crash reporting eagerly so early startup failures are
     // captured. After config loads we check the opt-out flag and call
     // closeSentry() if the user has disabled it.
-    initSentry();
-
-    ensureDataDir();
+    if (!pooledInteractiveOnly) {
+      initSentry();
+      ensureDataDir();
+    }
 
     // Recover from any streaming `.vbundle` import that was interrupted by a
     // crash or SIGKILL. If the previous process died between
@@ -310,25 +343,28 @@ export async function runDaemon(): Promise<void> {
     // recovery helper moves them back into the live workspace and cleans
     // up the temp tree. Running this BEFORE `initializeDb()` ensures the
     // DB singleton opens against the fully-restored `assistant.db`.
-    try {
-      const recoveryResult = await recoverInterruptedImport(getWorkspaceDir());
-      if (!recoveryResult.ok) {
-        // Rollback is intentionally unresolved — backup/temp/marker are
-        // preserved on disk so an operator (or a later retry) can finish
-        // the recovery. Log loudly so ops sees it, but don't block start-up:
-        // the daemon still needs to come up for diagnostics. The next
-        // `streamCommitImport` will refuse to start a new import until the
-        // marker is resolved.
-        log.error(
-          { failedCount: recoveryResult.failedCount },
-          "Interrupted-import recovery is INCOMPLETE; leftover .pre-import-* / .import-* scratch dirs remain in the workspace. Manual intervention may be required before the next import can run.",
+    if (!pooledInteractiveOnly) {
+      try {
+        const recoveryResult =
+          await recoverInterruptedImport(getWorkspaceDir());
+        if (!recoveryResult.ok) {
+          // Rollback is intentionally unresolved — backup/temp/marker are
+          // preserved on disk so an operator (or a later retry) can finish
+          // the recovery. Log loudly so ops sees it, but don't block start-up:
+          // the daemon still needs to come up for diagnostics. The next
+          // `streamCommitImport` will refuse to start a new import until the
+          // marker is resolved.
+          log.error(
+            { failedCount: recoveryResult.failedCount },
+            "Interrupted-import recovery is INCOMPLETE; leftover .pre-import-* / .import-* scratch dirs remain in the workspace. Manual intervention may be required before the next import can run.",
+          );
+        }
+      } catch (err) {
+        log.warn(
+          { err },
+          "recoverInterruptedImport threw during daemon startup; continuing",
         );
       }
-    } catch (err) {
-      log.warn(
-        { err },
-        "recoverInterruptedImport threw during daemon startup; continuing",
-      );
     }
 
     // Load (or generate + persist) the auth signing key so tokens survive
@@ -428,14 +464,20 @@ export async function runDaemon(): Promise<void> {
     // this fetch completes, so without this follow-up sync a flag-enabled
     // assistant would not expose the gated tools until a restart (which can lose
     // the same race). Enable-direction only; chained so it sees the fresh cache.
-    void initFeatureFlagOverrides()
-      .then(() => syncFlagGatedTools())
-      .catch((err) => log.warn({ err }, "Background feature flag init failed"));
+    if (!pooledInteractiveOnly) {
+      void initFeatureFlagOverrides()
+        .then(() => syncFlagGatedTools())
+        .catch((err) =>
+          log.warn({ err }, "Background feature flag init failed"),
+        );
 
-    startGatewayFlagListener();
+      startGatewayFlagListener();
+    }
 
     log.info("Daemon startup: initializing DB");
-    ensurePromptFiles();
+    if (!pooledInteractiveOnly) {
+      ensurePromptFiles();
+    }
 
     // DB must be initialized before workspace migrations because some
     // workspace migrations (e.g. 009-backfill-conversation-disk-view)
@@ -447,16 +489,18 @@ export async function runDaemon(): Promise<void> {
     // the HTTP server and config-based subsystems still start so the process
     // remains reachable for health checks and diagnostics.
     let dbReady = false;
-    try {
-      initializeDb();
-      dbReady = true;
-      log.info("Daemon startup: DB initialized");
-      await protectDatabaseOnStartup();
-    } catch (err) {
-      log.error(
-        { err },
-        "DB initialization failed — continuing startup in degraded mode",
-      );
+    if (!pooledInteractiveOnly) {
+      try {
+        initializeDb();
+        dbReady = true;
+        log.info("Daemon startup: DB initialized");
+        await protectDatabaseOnStartup();
+      } catch (err) {
+        log.error(
+          { err },
+          "DB initialization failed — continuing startup in degraded mode",
+        );
+      }
     }
 
     // Seed well-known OAuth provider configurations (insert-if-not-exists).
@@ -541,14 +585,16 @@ export async function runDaemon(): Promise<void> {
       // Failures are logged — not silenced — to match the pattern used by
       // other `void … .catch()` fire-and-forgets in this file and the
       // assistant/CLAUDE.md rule that all errors must be observable.
-      setImmediate(() => {
-        void backfillRelationshipStateIfMissing().catch((err) =>
-          log.warn(
-            { err },
-            "Relationship state backfill failed — continuing startup",
-          ),
-        );
-      });
+      if (!pooledInteractiveOnly) {
+        setImmediate(() => {
+          void backfillRelationshipStateIfMissing().catch((err) =>
+            log.warn(
+              { err },
+              "Relationship state backfill failed — continuing startup",
+            ),
+          );
+        });
+      }
 
       // Backfill injection templates on Slack bot token credentials so the
       // credential proxy can inject Authorization headers. Safe on every startup.
@@ -604,11 +650,13 @@ export async function runDaemon(): Promise<void> {
         );
       }
 
-      try {
-        const twilioProvider = new TwilioConversationRelayProvider();
-        await reconcileCallsOnStartup(twilioProvider, log);
-      } catch (err) {
-        log.warn({ err }, "Call recovery failed — continuing startup");
+      if (!pooledInteractiveOnly) {
+        try {
+          const twilioProvider = new TwilioConversationRelayProvider();
+          await reconcileCallsOnStartup(twilioProvider, log);
+        } catch (err) {
+          log.warn({ err }, "Call recovery failed — continuing startup");
+        }
       }
     } // end if (dbReady)
 
@@ -619,42 +667,52 @@ export async function runDaemon(): Promise<void> {
     // an HTTP-only call with no DB dependency, so it runs regardless of
     // dbReady.  A periodic refresh keeps the cache current when users
     // connect/disconnect managed providers while the assistant is running.
-    void refreshManagedConnectionCache().catch((err) =>
-      log.warn(
-        { err },
-        "Managed connection cache refresh failed — continuing startup",
-      ),
-    );
-    const MANAGED_CONNECTION_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-    setInterval(() => {
+    if (!pooledInteractiveOnly) {
       void refreshManagedConnectionCache().catch((err) =>
-        log.warn({ err }, "Periodic managed connection cache refresh failed"),
+        log.warn(
+          { err },
+          "Managed connection cache refresh failed — continuing startup",
+        ),
       );
-    }, MANAGED_CONNECTION_REFRESH_INTERVAL_MS);
+      const MANAGED_CONNECTION_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+      setInterval(() => {
+        void refreshManagedConnectionCache().catch((err) =>
+          log.warn({ err }, "Periodic managed connection cache refresh failed"),
+        );
+      }, MANAGED_CONNECTION_REFRESH_INTERVAL_MS);
+    }
 
     // Merge CLI-provided default config (from VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH)
     // into the workspace config file before profile seeding and the first
     // loadConfig() call so onboarding/platform preferences are visible to the
     // seeder and persisted alongside schema defaults.
-    const defaultConfigMerge = mergeDefaultWorkspaceConfig();
+    const defaultConfigMerge = pooledInteractiveOnly
+      ? {
+          hadOverlay: false,
+          providedLlmProfileNames: new Set<string>(),
+          providedLlmActiveProfile: false,
+        }
+      : mergeDefaultWorkspaceConfig();
 
     // Seed inference profiles into the workspace config. Managed Anthropic
     // profiles are overwritten on every boot so Vellum can push updates.
     // Off-platform hatches additionally create user profiles + a personal
     // provider connection for the hatch provider.
-    try {
-      seedInferenceProfiles({
-        preserveProfileNames: defaultConfigMerge.providedLlmProfileNames,
-        preserveActiveProfile: defaultConfigMerge.providedLlmActiveProfile,
-        isHatch: defaultConfigMerge.hadOverlay,
-        db: dbReady ? getDb() : undefined,
-      });
-      log.info("Inference profile seeding complete");
-    } catch (err) {
-      log.warn(
-        { err },
-        "Inference profile seeding failed — continuing startup",
-      );
+    if (!pooledInteractiveOnly) {
+      try {
+        seedInferenceProfiles({
+          preserveProfileNames: defaultConfigMerge.providedLlmProfileNames,
+          preserveActiveProfile: defaultConfigMerge.providedLlmActiveProfile,
+          isHatch: defaultConfigMerge.hadOverlay,
+          db: dbReady ? getDb() : undefined,
+        });
+        log.info("Inference profile seeding complete");
+      } catch (err) {
+        log.warn(
+          { err },
+          "Inference profile seeding failed — continuing startup",
+        );
+      }
     }
 
     // Re-run the adaptive thinking repair after overlay merge + profile seeding.
@@ -665,7 +723,7 @@ export async function runDaemon(): Promise<void> {
     // profiles without thinking enabled would be stuck permanently because the
     // migration is already checkpointed as completed. This idempotent repair
     // ensures thinking is enabled regardless of overlay ordering.
-    if (defaultConfigMerge.hadOverlay) {
+    if (!pooledInteractiveOnly && defaultConfigMerge.hadOverlay) {
       try {
         repairAdaptiveThinkingOnManagedProfiles(getWorkspaceDir());
         log.info("Post-overlay adaptive thinking repair complete");
@@ -685,7 +743,11 @@ export async function runDaemon(): Promise<void> {
     // startup (before any handleIngressConfig("set") call). Without this,
     // code paths that read the module-level state directly (e.g. session-slash
     // pairing info) would see undefined until an explicit set.
-    if (config.ingress.enabled && config.ingress.publicBaseUrl) {
+    if (
+      !pooledInteractiveOnly &&
+      config.ingress.enabled &&
+      config.ingress.publicBaseUrl
+    ) {
       setIngressPublicBaseUrl(config.ingress.publicBaseUrl);
       log.info(
         { url: config.ingress.publicBaseUrl },
@@ -693,7 +755,7 @@ export async function runDaemon(): Promise<void> {
       );
     }
 
-    if (config.logFile.dir) {
+    if (!pooledInteractiveOnly && config.logFile.dir) {
       initLogger({
         dir: config.logFile.dir,
         retentionDays: config.logFile.retentionDays,
@@ -706,7 +768,7 @@ export async function runDaemon(): Promise<void> {
     // point are still captured.
     const isDevMode = process.env.VELLUM_DEV === "1";
     const sendDiagnostics = !isDevMode && config.sendDiagnostics;
-    if (!sendDiagnostics) {
+    if (!pooledInteractiveOnly && !sendDiagnostics) {
       await closeSentry();
     }
 
@@ -725,7 +787,7 @@ export async function runDaemon(): Promise<void> {
     // covered. The reporter is degraded-mode safe — its constructor and
     // flush() treat DB errors as non-fatal.
     let telemetryReporter: UsageTelemetryReporter | null = null;
-    if (!isDevMode) {
+    if (!isDevMode && !pooledInteractiveOnly) {
       telemetryReporter = new UsageTelemetryReporter();
       setUsageTelemetryReporter(telemetryReporter);
       telemetryReporter.start();
@@ -738,7 +800,14 @@ export async function runDaemon(): Promise<void> {
     // CES lifecycle — kick off early so CES handshake runs concurrently with
     // provider/tool initialization. The CES sidecar accepts exactly one
     // bootstrap connection, so startup must happen at the process level.
-    const cesStartupPromise = startCesProcess(config);
+    const cesStartupPromise = pooledInteractiveOnly
+      ? Promise.resolve<CesStartupResult>({
+          client: undefined,
+          processManager: undefined,
+          clientPromise: undefined,
+          abortController: undefined,
+        })
+      : startCesProcess(config);
 
     // CES startup must complete BEFORE provider initialization so credential
     // reads can go through CES. Block with a 20-second timeout — fall back to
@@ -824,12 +893,12 @@ export async function runDaemon(): Promise<void> {
       });
     }
 
-    // Bring up the plugin layer: install the runtime bridge, register the
-    // first-party defaults, load user plugins, and run every plugin's
-    // `init()`. Ordering is load-bearing (defaults register ahead of user
-    // plugins so they compose innermost) and plugin failures are contained so
-    // they can't block daemon startup.
-    await initializePlugins();
+    // Plugin initialization can read tenant workspace state and installs
+    // process-global hooks. Pooled workers defer it until an authenticated
+    // assignment bootstrap; dedicated runtimes retain the normal lifecycle.
+    if (!pooledInteractiveOnly) {
+      await initializePlugins();
+    }
 
     // Start the DaemonServer (conversation manager) before Qdrant so HTTP
     // routes can begin accepting requests while Qdrant initializes.
@@ -843,8 +912,10 @@ export async function runDaemon(): Promise<void> {
 
     await server.start();
     log.info("Daemon startup: DaemonServer started");
-    startDiskPressureGuardForLifecycle();
-    startOrphanReaper();
+    if (!pooledInteractiveOnly) {
+      startDiskPressureGuardForLifecycle();
+      startOrphanReaper();
+    }
 
     // Mutable refs for Qdrant and memory worker so background
     // init can assign them and the shutdown handler always sees the latest value.
@@ -1013,13 +1084,15 @@ export async function runDaemon(): Promise<void> {
       }
     }
 
-    registerWatcherProviders();
-    registerMessagingProviders();
+    if (!pooledInteractiveOnly) {
+      registerWatcherProviders();
+      registerMessagingProviders();
 
-    try {
-      recoverStaleSchedules();
-    } catch (err) {
-      log.error({ err }, "Schedule recovery failed — continuing startup");
+      try {
+        recoverStaleSchedules();
+      } catch (err) {
+        log.error({ err }, "Schedule recovery failed — continuing startup");
+      }
     }
 
     // Reconcile workflow runs orphaned by a crash: any row still `running` was
@@ -1027,99 +1100,105 @@ export async function runDaemon(): Promise<void> {
     // exit), so flip it to `interrupted` to make it eligible for an explicit
     // resume. Status only — accounting counters are preserved. Never blocks
     // startup on failure.
-    try {
-      const reconciled = getWorkflowRunManager().reconcileOrphanedRuns();
-      if (reconciled > 0) {
-        log.info(
-          { reconciled },
-          "Reconciled orphaned workflow runs to interrupted",
+    if (!pooledInteractiveOnly) {
+      try {
+        const reconciled = getWorkflowRunManager().reconcileOrphanedRuns();
+        if (reconciled > 0) {
+          log.info(
+            { reconciled },
+            "Reconciled orphaned workflow runs to interrupted",
+          );
+        }
+      } catch (err) {
+        log.error(
+          { err },
+          "Workflow run reconciliation failed — continuing startup",
         );
       }
-    } catch (err) {
-      log.error(
-        { err },
-        "Workflow run reconciliation failed — continuing startup",
-      );
     }
 
-    const scheduler = startScheduler(
-      async (conversationId, message, options) => {
-        await processMessage(
-          conversationId,
-          message,
-          options
-            ? {
-                ...(options.trustClass
-                  ? {
-                      trustContext: {
-                        sourceChannel: "vellum",
-                        trustClass: options.trustClass,
-                      },
-                    }
-                  : {}),
-                ...(options.taskRunId ? { taskRunId: options.taskRunId } : {}),
-                ...(options.overrideProfile
-                  ? { overrideProfile: options.overrideProfile }
-                  : {}),
-              }
-            : undefined,
+    const scheduler = pooledInteractiveOnly
+      ? createPooledInteractiveOnlyScheduler()
+      : startScheduler(
+          async (conversationId, message, options) => {
+            await processMessage(
+              conversationId,
+              message,
+              options
+                ? {
+                    ...(options.trustClass
+                      ? {
+                          trustContext: {
+                            sourceChannel: "vellum",
+                            trustClass: options.trustClass,
+                          },
+                        }
+                      : {}),
+                    ...(options.taskRunId
+                      ? { taskRunId: options.taskRunId }
+                      : {}),
+                    ...(options.overrideProfile
+                      ? { overrideProfile: options.overrideProfile }
+                      : {}),
+                  }
+                : undefined,
+            );
+          },
+          async (schedule) => {
+            await emitNotificationSignal({
+              sourceEventName: "schedule.notify",
+              sourceChannel: "scheduler",
+              sourceContextId: schedule.id,
+              attentionHints: {
+                requiresAction: true,
+                urgency: "high",
+                isAsyncBackground: false,
+                visibleInSourceNow: false,
+              },
+              contextPayload: {
+                scheduleId: schedule.id,
+                label: schedule.label,
+                message: schedule.message,
+              },
+              routingIntent: schedule.routingIntent,
+              routingHints: schedule.routingHints,
+              conversationMetadata: {
+                groupId: "system:scheduled",
+                scheduleJobId: schedule.id,
+                source: "schedule",
+              },
+              dedupeKey: `schedule:notify:${schedule.id}:${Date.now()}`,
+              throwOnError: true,
+            });
+          },
+          (notification) => {
+            void emitNotificationSignal({
+              sourceEventName: "watcher.notification",
+              sourceChannel: "watcher",
+              sourceContextId: `watcher-${Date.now()}`,
+              attentionHints: {
+                requiresAction: false,
+                urgency: "low",
+                isAsyncBackground: true,
+                visibleInSourceNow: false,
+              },
+              contextPayload: {
+                title: notification.title,
+                body: notification.body,
+              },
+              dedupeKey: `watcher:notification:${crypto.randomUUID()}`,
+            });
+          },
+          (info) => {
+            broadcastMessage({
+              type: "schedule_conversation_created",
+              conversationId: info.conversationId,
+              scheduleJobId: info.scheduleJobId,
+              title: info.title,
+            });
+            publishConversationListChanged("created");
+          },
         );
-      },
-      async (schedule) => {
-        await emitNotificationSignal({
-          sourceEventName: "schedule.notify",
-          sourceChannel: "scheduler",
-          sourceContextId: schedule.id,
-          attentionHints: {
-            requiresAction: true,
-            urgency: "high",
-            isAsyncBackground: false,
-            visibleInSourceNow: false,
-          },
-          contextPayload: {
-            scheduleId: schedule.id,
-            label: schedule.label,
-            message: schedule.message,
-          },
-          routingIntent: schedule.routingIntent,
-          routingHints: schedule.routingHints,
-          conversationMetadata: {
-            groupId: "system:scheduled",
-            scheduleJobId: schedule.id,
-            source: "schedule",
-          },
-          dedupeKey: `schedule:notify:${schedule.id}:${Date.now()}`,
-          throwOnError: true,
-        });
-      },
-      (notification) => {
-        void emitNotificationSignal({
-          sourceEventName: "watcher.notification",
-          sourceChannel: "watcher",
-          sourceContextId: `watcher-${Date.now()}`,
-          attentionHints: {
-            requiresAction: false,
-            urgency: "low",
-            isAsyncBackground: true,
-            visibleInSourceNow: false,
-          },
-          contextPayload: {
-            title: notification.title,
-            body: notification.body,
-          },
-          dedupeKey: `watcher:notification:${crypto.randomUUID()}`,
-        });
-      },
-      (info) => {
-        broadcastMessage({
-          type: "schedule_conversation_created",
-          conversationId: info.conversationId,
-          scheduleJobId: info.scheduleJobId,
-          title: info.title,
-        });
-        publishConversationListChanged("created");
-      },
-    );
 
     // Wire up the runtime HTTP server's deferred dependencies. The server
     // itself was bound early in runDaemon (right after the auth signing key
@@ -1139,9 +1218,11 @@ export async function runDaemon(): Promise<void> {
     // available before the memory worker can claim leftover
     // `conversation_analyze` jobs from a prior run. See the daemon-startup
     // ordering test in `assistant/src/daemon/__tests__/`.
-    void initializeQdrantAndMemory().catch((err) =>
-      log.warn({ err }, "Background Qdrant init failed"),
-    );
+    if (!pooledInteractiveOnly) {
+      void initializeQdrantAndMemory().catch((err) =>
+        log.warn({ err }, "Background Qdrant init failed"),
+      );
+    }
 
     // Inject voice bridge deps so route handlers + the relay pipeline can
     // resolve a conversation by ID once a call lands. Module-level state,
@@ -1311,13 +1392,15 @@ export async function runDaemon(): Promise<void> {
 
     // Register built-in TTS providers so the provider abstraction can resolve
     // them by ID. Must happen before call controllers or routes are created.
-    try {
-      registerBuiltinTtsProviders();
-    } catch (err) {
-      log.warn(
-        { err },
-        "TTS provider registration failed — continuing with degraded TTS",
-      );
+    if (!pooledInteractiveOnly) {
+      try {
+        registerBuiltinTtsProviders();
+      } catch (err) {
+        log.warn(
+          { err },
+          "TTS provider registration failed — continuing with degraded TTS",
+        );
+      }
     }
 
     // Initialize providers and tools after the HTTP server is listening so
@@ -1335,56 +1418,64 @@ export async function runDaemon(): Promise<void> {
       );
     }
 
-    writePid(process.pid);
+    if (!pooledInteractiveOnly) {
+      writePid(process.pid);
+    }
 
     // Install the `assistant` CLI symlink idempotently on every daemon start.
     // Non-blocking — failures are logged but don't affect startup.
-    try {
-      installAssistantSymlink();
-    } catch (err) {
-      log.warn({ err }, "Assistant symlink installation failed — continuing");
+    if (!pooledInteractiveOnly) {
+      try {
+        installAssistantSymlink();
+      } catch (err) {
+        log.warn({ err }, "Assistant symlink installation failed — continuing");
+      }
     }
 
     // Seed preloaded apps (personal landing page) in background (non-blocking).
-    void import("../memory/preloaded-apps.js")
-      .then(({ seedPreloadedApps }) => seedPreloadedApps(config))
-      .catch((err) =>
-        log.warn({ err }, "Preloaded app seeding failed — continuing"),
-      );
+    if (!pooledInteractiveOnly) {
+      void import("../memory/preloaded-apps.js")
+        .then(({ seedPreloadedApps }) => seedPreloadedApps(config))
+        .catch((err) =>
+          log.warn({ err }, "Preloaded app seeding failed — continuing"),
+        );
+    }
 
     // Download embedding runtime in background (non-blocking).
     // If download fails, local embeddings gracefully fall back to cloud backends.
-    void (async () => {
-      try {
-        const { EmbeddingRuntimeManager } =
-          await import("../memory/embedding-runtime-manager.js");
-        const runtimeManager = new EmbeddingRuntimeManager();
-        if (!runtimeManager.isReady()) {
-          log.info("Downloading embedding runtime in background...");
-          await runtimeManager.ensureInstalled();
-          // Reset the sticky local-backend failure flag so auto mode retries
-          // local embeddings without evicting a worker that may already be live.
-          const { resetLocalEmbeddingFailureState } =
-            await import("../memory/embedding-backend.js");
-          resetLocalEmbeddingFailureState();
-          log.info("Embedding runtime download complete");
+    if (!pooledInteractiveOnly) {
+      void (async () => {
+        try {
+          const { EmbeddingRuntimeManager } =
+            await import("../memory/embedding-runtime-manager.js");
+          const runtimeManager = new EmbeddingRuntimeManager();
+          if (!runtimeManager.isReady()) {
+            log.info("Downloading embedding runtime in background...");
+            await runtimeManager.ensureInstalled();
+            // Reset the sticky local-backend failure flag so auto mode retries
+            // local embeddings without evicting a worker that may already be live.
+            const { resetLocalEmbeddingFailureState } =
+              await import("../memory/embedding-backend.js");
+            resetLocalEmbeddingFailureState();
+            log.info("Embedding runtime download complete");
+          }
+        } catch (err) {
+          log.warn(
+            { err },
+            "Embedding runtime download failed — local embeddings will use cloud fallback",
+          );
         }
-      } catch (err) {
-        log.warn(
-          { err },
-          "Embedding runtime download failed — local embeddings will use cloud fallback",
-        );
-      }
-    })();
+      })();
+    }
 
-    if (config.auditLog.retentionDays > 0) {
+    if (!pooledInteractiveOnly && config.auditLog.retentionDays > 0) {
       void rotateToolInvocations(config.auditLog.retentionDays).catch((err) => {
         log.warn({ err }, "Audit log rotation failed");
       });
     }
 
     const workspaceHeartbeat = new WorkspaceHeartbeatService();
-    workspaceHeartbeat.start();
+    if (!pooledInteractiveOnly) workspaceHeartbeat.start();
 
     const heartbeatConfig = config.heartbeat;
     const heartbeat = new HeartbeatService({
@@ -1396,9 +1487,11 @@ export async function runDaemon(): Promise<void> {
           title: info.title,
         }),
     });
-    heartbeat.start();
-    registerBackgroundWakeRuntime({ scheduler, heartbeat });
-    refreshBackgroundWakeIntent("daemon-startup");
+    if (!pooledInteractiveOnly) {
+      heartbeat.start();
+      registerBackgroundWakeRuntime({ scheduler, heartbeat });
+      refreshBackgroundWakeIntent("daemon-startup");
+    }
     log.info(
       {
         enabled: heartbeatConfig.enabled,
@@ -1413,7 +1506,7 @@ export async function runDaemon(): Promise<void> {
     // memory jobs worker (see `maybeEnqueueGraphMaintenanceJobs`).
     const memoryV2Enabled = config.memory.v2.enabled;
     let filing: FilingService | null = null;
-    if (!memoryV2Enabled) {
+    if (!pooledInteractiveOnly && !memoryV2Enabled) {
       const filingConfig = config.filing;
       filing = new FilingService();
       filing.start();
@@ -1424,7 +1517,7 @@ export async function runDaemon(): Promise<void> {
         },
         "Filing service configured",
       );
-    } else {
+    } else if (!pooledInteractiveOnly) {
       log.info(
         "Filing service skipped — memory v2 consolidation is the active background memory job",
       );
@@ -1433,7 +1526,9 @@ export async function runDaemon(): Promise<void> {
     // Retrieve the MCP manager if MCP servers were configured.
     // The manager is a singleton created during initializeProvidersAndTools().
     const mcpManager =
-      config.mcp?.servers && Object.keys(config.mcp.servers).length > 0
+      !pooledInteractiveOnly &&
+      config.mcp?.servers &&
+      Object.keys(config.mcp.servers).length > 0
         ? getMcpServerManager()
         : null;
 
@@ -1452,11 +1547,11 @@ export async function runDaemon(): Promise<void> {
         stopGatewayFlagListener();
         stopDiskPressureGuardForLifecycle();
         stopOrphanReaper();
-        cleanupPidFile();
+        if (!pooledInteractiveOnly) cleanupPidFile();
       },
     });
 
-    if (dbReady) {
+    if (dbReady || pooledInteractiveOnly) {
       markDaemonReady();
     } else {
       markDaemonNotReady("database_unavailable");
@@ -1473,7 +1568,7 @@ export async function runDaemon(): Promise<void> {
     log.error({ err }, "Daemon startup failed — cleaning up");
     stopDiskPressureGuardForLifecycle();
     stopOrphanReaper();
-    cleanupPidFileIfOwner(process.pid);
+    if (!pooledInteractiveOnly) cleanupPidFileIfOwner(process.pid);
     throw err;
   }
 }

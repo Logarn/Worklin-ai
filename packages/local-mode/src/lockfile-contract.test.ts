@@ -169,6 +169,32 @@ describe("parseLockfile", () => {
     ]);
   });
 
+  test("keeps the managed runtime provider and drops it when mistyped", () => {
+    const parsed = parseLockfile({
+      assistants: [
+        {
+          assistantId: "asst_pool",
+          cloud: "vellum",
+          runtimeProvider: "pooled_worker",
+        },
+        {
+          assistantId: "asst_bad",
+          cloud: "vellum",
+          runtimeProvider: 7,
+        },
+      ],
+    });
+
+    expect(parsed.assistants).toEqual([
+      {
+        assistantId: "asst_pool",
+        cloud: "vellum",
+        runtimeProvider: "pooled_worker",
+      },
+      { assistantId: "asst_bad", cloud: "vellum" },
+    ]);
+  });
+
   test("drops a resources object missing its numeric ports", () => {
     const raw = {
       assistants: [

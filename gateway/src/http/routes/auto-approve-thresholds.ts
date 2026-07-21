@@ -13,6 +13,11 @@ import {
   conversationThresholdOverrides,
 } from "../../db/schema.js";
 import { getLogger } from "../../logger.js";
+import {
+  isPooledGatewayRuntime,
+  POOLED_STRICT_AUTO_APPROVE_THRESHOLDS,
+  pooledSharedStateUnavailableResponse,
+} from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("auto-approve-thresholds");
 
@@ -35,6 +40,9 @@ function isValidThreshold(value: unknown): value is Threshold {
 
 export function createGlobalThresholdGetHandler() {
   return async (_req: Request): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return Response.json(POOLED_STRICT_AUTO_APPROVE_THRESHOLDS);
+    }
     try {
       const db = getGatewayDb();
       const row = db
@@ -70,6 +78,9 @@ export function createGlobalThresholdGetHandler() {
 
 export function createGlobalThresholdPutHandler() {
   return async (req: Request): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Approval threshold changes");
+    }
     let body: unknown;
     try {
       body = await req.json();
@@ -166,6 +177,9 @@ export function createGlobalThresholdPutHandler() {
 
 export function createConversationThresholdGetHandler() {
   return async (_req: Request, params: string[]): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return Response.json({ threshold: "none" });
+    }
     const conversationId = params[0];
     if (!conversationId) {
       return Response.json(
@@ -205,6 +219,11 @@ export function createConversationThresholdGetHandler() {
 
 export function createConversationThresholdPutHandler() {
   return async (req: Request, params: string[]): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse(
+        "Conversation approval threshold changes",
+      );
+    }
     const conversationId = params[0];
     if (!conversationId) {
       return Response.json(
@@ -274,6 +293,11 @@ export function createConversationThresholdPutHandler() {
 
 export function createConversationThresholdDeleteHandler() {
   return async (_req: Request, params: string[]): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse(
+        "Conversation approval threshold changes",
+      );
+    }
     const conversationId = params[0];
     if (!conversationId) {
       return Response.json(

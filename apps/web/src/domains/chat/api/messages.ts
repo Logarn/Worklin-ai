@@ -46,6 +46,37 @@ import { getEffectiveTimezone } from "@/utils/effective-timezone";
 
 const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 120_000;
+/**
+ * Pooled message requests have a six-minute server deadline so a normal
+ * five-minute approval window can complete. Keep the transcript/prompt
+ * observer alive for one bounded thirty-second drain margin beyond it.
+ */
+export const POOLED_REQUEST_POLL_TIMEOUT_MS = 6 * 60_000 + 30_000;
+
+export interface PollForResponseOptions {
+  /** Receives each authoritative snapshot, allowing request-polled runtimes to
+   * render persisted partial progress without relying on an SSE connection. */
+  onSnapshot?: (snapshot: MessagesGetResponse) => void | Promise<void>;
+  /** Test override; production callers use the one-second bounded cadence. */
+  intervalMs?: number;
+  /**
+   * Optional bounded budget. Ordinary polling keeps the two-minute default;
+   * pooled request-bound turns pass the explicit six-and-a-half-minute budget.
+   */
+  timeoutMs?: number;
+  /**
+   * Poll by a stable external key while a first-message POST is still minting
+   * the internal conversation id. Omitted for established conversations.
+   */
+  conversationKey?: string;
+  /**
+   * Client-generated idempotency id used as the causal boundary before the
+   * POST response exposes the server-assigned user-message id.
+   */
+  clientMessageId?: string;
+  /** Stops a superseded/background observer without surfacing an error. */
+  signal?: AbortSignal;
+}
 
 /**
  * Subagent notification as carried by the web. The wire shape
@@ -65,13 +96,17 @@ export async function pollForResponse(
   assistantId: string,
   userMessageId: string,
   conversationId: string,
+  options: PollForResponseOptions = {},
 ): Promise<ConversationMessage | null> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  const deadline = Date.now() + (options.timeoutMs ?? POLL_TIMEOUT_MS);
+  const intervalMs = options.intervalMs ?? POLL_INTERVAL_MS;
 
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !options.signal?.aborted) {
     const { data, error, response } = await messagesGet({
       path: { assistant_id: assistantId },
-      query: { conversationId },
+      query: options.conversationKey
+        ? { conversationKey: options.conversationKey }
+        : { conversationId },
       throwOnError: false,
     });
     assertHasResponse(response, error, "Failed to poll for messages");
@@ -85,21 +120,50 @@ export async function pollForResponse(
       throw new Error(msg);
     }
 
+    if (data) {
+      await options.onSnapshot?.(data);
+    }
     const messages = data?.messages ?? [];
 
     // Only consider assistant messages that appear after our sent user
     // message in the list, establishing a causal boundary so delayed
     // replies from earlier sends cannot be mis-associated.
-    const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
+    const userMsgIndex = messages.findIndex(
+      (m) =>
+        m.id === userMessageId ||
+        (!!options.clientMessageId &&
+          m.clientMessageId === options.clientMessageId),
+    );
     if (userMsgIndex >= 0) {
       const afterSend = messages.slice(userMsgIndex + 1);
       const reply = afterSend.find((m) => m.role === "assistant");
-      if (reply) {
+      // A persisted assistant row may be only a partial checkpoint while the
+      // loop is still running. New daemons expose authoritative processing
+      // state; wait for false before returning so pooled clients never render
+      // a partial row as the completed answer. Undefined preserves the
+      // existing fallback behavior for older dedicated daemons.
+      if (reply && data?.isProcessing !== true) {
         return reply;
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    await new Promise<void>((resolve) => {
+      if (options.signal?.aborted) {
+        resolve();
+        return;
+      }
+      const signal = options.signal;
+      const finish = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const timer = setTimeout(finish, intervalMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        finish();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   return null;
@@ -361,6 +425,15 @@ export type UploadAttachmentResult =
   | { ok: true; id: string }
   | { ok: false; status: number; error: { detail?: string } };
 
+export interface PostChatMessageOptions {
+  /**
+   * Explicit wire-field override for pooled first-message requests. The
+   * request-polled observer needs a stable conversationKey it can read before
+   * the long-running POST returns with the minted internal id.
+   */
+  conversationWireField?: "conversationId" | "conversationKey";
+}
+
 /**
  * Upload a single file as a chat attachment and return the server-assigned id.
  *
@@ -436,6 +509,7 @@ export async function postChatMessage(
   onboarding?: PreChatOnboardingContext,
   clientMessageId?: string,
   inferenceProfile?: string | null,
+  options: PostChatMessageOptions = {},
 ): Promise<PostMessageResult> {
   // Wire-field selection picks exactly one of `conversationId` (0.8.6+
   // strict internal-id lookup) or `conversationKey` (legacy
@@ -466,7 +540,8 @@ export async function postChatMessage(
   // into `resolveTurnTimezoneContext`).
   const clientTimezone = getEffectiveTimezone();
   if (clientTimezone) body.clientTimezone = clientTimezone;
-  const conversationField = pickConversationIdWireField();
+  const conversationField =
+    options.conversationWireField ?? pickConversationIdWireField();
   if (conversationId !== null || conversationField !== "conversationId") {
     body[conversationField] = conversationId;
   }
@@ -601,10 +676,38 @@ export async function postChatMessage(
 
   const sendData = data;
   if (!sendData?.accepted) {
+    const errorBody =
+      sendData && typeof sendData === "object" && !Array.isArray(sendData)
+        ? (sendData as Record<string, unknown>)
+        : {};
+    const nestedError =
+      errorBody.error &&
+      typeof errorBody.error === "object" &&
+      !Array.isArray(errorBody.error)
+        ? (errorBody.error as Record<string, unknown>)
+        : {};
     return {
       ok: false,
-      status: 422,
-      error: { detail: "Message was not accepted by the assistant." },
+      status: typeof errorBody.status === "number" ? errorBody.status : 422,
+      error: {
+        code:
+          typeof nestedError.code === "string"
+            ? nestedError.code
+            : typeof errorBody.error === "string"
+              ? errorBody.error
+              : undefined,
+        detail:
+          (typeof nestedError.detail === "string"
+            ? nestedError.detail
+            : undefined) ??
+          (typeof nestedError.message === "string"
+            ? nestedError.message
+            : undefined) ??
+          (typeof errorBody.message === "string"
+            ? errorBody.message
+            : undefined) ??
+          "Message was not accepted by the assistant.",
+      },
     };
   }
 

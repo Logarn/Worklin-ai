@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import { destroyActiveConversation } from "../../daemon/conversation-store.js";
 import { stripConversationIds } from "../../home/feed-writer.js";
 import {
@@ -56,7 +57,12 @@ async function handleWipeConversation({ body = {} }: RouteHandlerArgs) {
     });
   }
 
-  void stripConversationIds(conversationId);
+  const feedWrite = stripConversationIds(conversationId);
+  if (isPooledWorkerRuntime()) {
+    await feedWrite;
+  } else {
+    void feedWrite;
+  }
 
   return {
     wiped: true,

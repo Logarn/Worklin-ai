@@ -15,7 +15,10 @@
 import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
 import { resolveScopeProfile } from "../../auth/scopes.js";
 import { parseSub } from "../../auth/subject.js";
-import { validateEdgeToken } from "../../auth/token-exchange.js";
+import {
+  mintExchangeToken,
+  validateEdgeToken,
+} from "../../auth/token-exchange.js";
 import {
   applyRuntimeTenantContextRecord,
   validateRuntimeTenantContext,
@@ -111,6 +114,7 @@ export async function tryIpcProxy(
   let platformOwnerBound = false;
   let tenantContext: RuntimeTenantContextClaim | null = null;
   let runtimeAssistantId: string | null = null;
+  let daemonExchangeToken: string | null = null;
 
   if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
     const authHeader = req.headers.get("authorization");
@@ -202,6 +206,7 @@ export async function tryIpcProxy(
       return Response.json({ error: "Forbidden" }, { status: 403 });
     }
     tenantContext = tenantValidation.context;
+    daemonExchangeToken = mintExchangeToken(claims, claims.scope_profile);
   }
 
   // --- Route matching -----------------------------------------------------
@@ -288,6 +293,9 @@ export async function tryIpcProxy(
     headers["x-vellum-platform-owner"] = "true";
   }
   applyRuntimeTenantContextRecord(headers, tenantContext);
+  if (daemonExchangeToken) {
+    headers.authorization = `Bearer ${daemonExchangeToken}`;
+  }
 
   let body: Record<string, unknown> | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {

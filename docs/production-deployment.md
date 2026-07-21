@@ -41,7 +41,9 @@ Already present:
 - `credential-executor/Dockerfile`: managed credential executor container.
 - `control-plane`: account/session endpoints, assistant ownership checks,
   runtime stack metadata, fail-closed runtime proxy routing, and a gated
-  Railway per-assistant provisioner.
+  Railway per-assistant provisioner. It also contains an inert-by-default
+  pooled-worker path with generation-fenced tenant leases, encrypted BYOK
+  storage, durable state transport, health gates, and adversarial reuse tests.
 - Retention domain package and Worklin retention skill surfaces.
 
 Still required for broader multi-tenant production:
@@ -51,12 +53,21 @@ Still required for broader multi-tenant production:
 - Production billing, quota enforcement, and automated retirement of inactive
   per-assistant runtime services.
 - A safe connection model for Klaviyo and Shopify credentials per brand.
+- Provisioned pooled-worker services, persistent control-plane storage, an
+  object-storage bucket and signing identity, and a live two-tenant network
+  canary before the pool is enabled.
 
-Do not expose one shared assistant runtime to multiple brands. That would mix
-conversations, documents, memory, API keys, Klaviyo data, Shopify data, and audit
-artifacts across customers. The production control-plane must return
-`runtime_not_ready` until an assistant has an active stack-specific gateway URL;
-the legacy shared gateway escape hatch is for local smoke tests only.
+Do not expose one concurrently shared assistant workspace to multiple brands.
+That would mix conversations, documents, memory, API keys, Klaviyo data,
+Shopify data, and audit artifacts across customers. The legacy shared gateway
+escape hatch is for local smoke tests only.
+
+The pooled-worker design is a separate deployment boundary: one worker accepts
+only one tenant lease at a time, restores tenant-scoped state, uses
+request-scoped model credentials, and cannot be reassigned until export,
+sanitization, and authority revocation succeed. It remains disabled unless all
+startup and health gates pass. See
+[`pooled-runtime-workers.md`](pooled-runtime-workers.md).
 
 ## Backend Contract Required By The Web App
 
@@ -91,13 +102,16 @@ Minimum runtime-backed surfaces:
 3. Build the public Worklin control plane instead of pointing the web app at a
    shared runtime directly.
 4. Deploy the control plane with Postgres and Google OAuth.
-5. Deploy gateway, assistant runtime, and credential executor as private services
-   behind the control plane.
+5. Deploy gateway, assistant runtime, and credential executor as private
+   services behind the control plane. For pooled capacity, create separate
+   `pooled_worker` services instead of converting customer-bound runtimes.
 6. Configure Vercel with the `VITE_*_API_BASE_URL` values that point at the
    public API origin.
 7. Smoke-test signup, assistant provisioning, Klaviyo connection, audit run,
    artifact viewing, and PDF export with an isolated test tenant.
-8. Only then invite real users.
+8. Run the sequential two-tenant pooled-worker canary when pooled capacity is
+   enabled.
+9. Only then invite real users.
 
 ## Required Production Inputs
 

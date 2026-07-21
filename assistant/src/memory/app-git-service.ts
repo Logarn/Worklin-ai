@@ -40,6 +40,15 @@ export function setAppCommitMessage(
   pendingAppCommitMessages.set(conversationId, message);
 }
 
+/**
+ * Clear unconsumed, user-authored commit summaries before tenant reassignment.
+ * Active turns are already quiescent when this runs, so no turn can race the
+ * clear or later consume a summary from the previous assignment.
+ */
+export function resetAppGitStateForTenantAssignment(): void {
+  pendingAppCommitMessages.clear();
+}
+
 /** Consume and clear the pending commit message for a conversation. */
 function consumeAppCommitMessage(conversationId: string): string | undefined {
   const msg = pendingAppCommitMessages.get(conversationId);

@@ -8,6 +8,7 @@
 import { z } from "zod";
 
 import { SlackStore } from "../db/slack-store.js";
+import { assertPooledSharedStateUnavailable } from "../pooled-runtime-shared-state.js";
 import type { IpcRoute } from "./server.js";
 
 let store: SlackStore | null = null;
@@ -29,6 +30,7 @@ export const slackThreadRoutes: IpcRoute[] = [
     method: "detach_slack_active_thread",
     schema: DetachSlackActiveThreadParamsSchema,
     handler: (params?: Record<string, unknown>) => {
+      assertPooledSharedStateUnavailable("Slack thread state changes");
       const { channelId, threadTs } = DetachSlackActiveThreadParamsSchema.parse(
         params ?? {},
       );

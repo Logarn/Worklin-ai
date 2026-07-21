@@ -4,6 +4,7 @@ import { getAppsDir } from "../../memory/app-store.js";
 import { enqueuePkbIndexJob } from "../../memory/jobs/embed-pkb-file.js";
 import { PKB_WORKSPACE_SCOPE } from "../../memory/pkb/types.js";
 import { RiskLevel } from "../../permissions/types.js";
+import { assertPooledWorkspaceFileMutationWithinQuota } from "../../runtime/pooled-workspace-quota.js";
 import { getLogger } from "../../util/logger.js";
 import { getWorkspaceDir } from "../../util/platform.js";
 import { registerTool } from "../registry.js";
@@ -117,8 +118,9 @@ export const fileWriteTool = {
       }
     }
 
-    const ops = new FileSystemOps((path, opts) =>
-      sandboxPolicy(path, context.workingDir, opts),
+    const ops = new FileSystemOps(
+      (path, opts) => sandboxPolicy(path, context.workingDir, opts),
+      { beforeWrite: assertPooledWorkspaceFileMutationWithinQuota },
     );
 
     const result = ops.writeFileSafe({ path: rawPath, content: fileContent });

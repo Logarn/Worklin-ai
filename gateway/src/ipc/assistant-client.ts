@@ -15,6 +15,7 @@
 import { connect, type Socket } from "node:net";
 
 import type { ScopeOption, DirectoryScopeOption } from "../risk/risk-types.js";
+import { mintServiceToken } from "../auth/token-exchange.js";
 import { resolveIpcSocketPath } from "./socket-path.js";
 
 // ---------------------------------------------------------------------------
@@ -137,7 +138,8 @@ export async function ipcCallAssistant(
 
     socket.on("connect", () => {
       clearTimeout(connectTimer);
-      const req: IpcRequest = { id: reqId, method, params };
+      const scopedParams = addRuntimeServiceAuth(params);
+      const req: IpcRequest = { id: reqId, method, params: scopedParams };
       socket.write(JSON.stringify(req) + "\n");
 
       callTimer = setTimeout(() => {
@@ -199,6 +201,28 @@ export async function ipcCallAssistant(
       }
     });
   });
+}
+
+function addRuntimeServiceAuth(
+  params?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const existingHeaders =
+    params?.headers &&
+    typeof params.headers === "object" &&
+    !Array.isArray(params.headers)
+      ? (params.headers as Record<string, unknown>)
+      : {};
+  const hasAuthorization = Object.keys(existingHeaders).some(
+    (key) => key.toLowerCase() === "authorization",
+  );
+  if (hasAuthorization) return params;
+  return {
+    ...(params ?? {}),
+    headers: {
+      ...existingHeaders,
+      authorization: `Bearer ${mintServiceToken()}`,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

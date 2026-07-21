@@ -5,6 +5,7 @@ import { getConfig } from "../config/loader.js";
 import type { VoiceEngineId } from "../config/schemas/voice.js";
 import { credentialKey } from "../security/credential-key.js";
 import { getSecureKeyAsync } from "../security/secure-keys.js";
+import type { PooledVoiceLeaseIdentity } from "../services/pooled-voice-lease-fence.js";
 import { getLogger } from "../util/logger.js";
 import {
   ElevenLabsSpeechEngineResourceError,
@@ -67,6 +68,7 @@ export async function bootstrapVoiceSession(input: {
   conversationId?: string;
   actorId: string;
   organizationId?: string;
+  pooledWorkerLease?: PooledVoiceLeaseIdentity;
   engine?: VoiceEngineId;
   fetchImpl?: typeof fetch;
 }): Promise<VoiceSessionBootstrapResult> {
@@ -76,6 +78,12 @@ export async function bootstrapVoiceSession(input: {
   }
 
   const engine = input.engine ?? config.services.voice.engine;
+  if (input.pooledWorkerLease) {
+    throw new VoiceBootstrapError(
+      "not_configured",
+      "Live voice requires a dedicated runtime",
+    );
+  }
   const sessionId = randomUUID();
   const conversationId = input.conversationId?.trim() || sessionId;
   if (engine === "native") {
@@ -97,6 +105,9 @@ export async function bootstrapVoiceSession(input: {
       conversationId,
       actorId: input.actorId,
       ...(input.organizationId ? { organizationId: input.organizationId } : {}),
+      ...(input.pooledWorkerLease
+        ? { pooledWorkerLease: input.pooledWorkerLease }
+        : {}),
       engine,
     });
   } catch (error) {
@@ -128,6 +139,11 @@ export async function bootstrapVoiceSession(input: {
     releaseManagedVoiceSession(sessionId, input.actorId);
     throw error;
   }
+}
+
+export function isPooledVoiceEngineSupported(engine: VoiceEngineId): boolean {
+  void engine;
+  return false;
 }
 
 function enforcePilotAllowlist(allowlist: string[], actorId: string): void {

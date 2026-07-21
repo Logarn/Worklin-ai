@@ -26,6 +26,7 @@
 
 import { registerPlugin, resetPluginRegistryForTests } from "../registry.js";
 import { type Plugin, PluginExecutionError } from "../types.js";
+import { resetContextWindowManagersForTenantAssignment } from "./compaction/manager-store.js";
 import compactionPkg from "./compaction/package.json" with { type: "json" };
 import emptyResponsePostModelCall from "./empty-response/hooks/post-model-call.js";
 import emptyResponseStop from "./empty-response/hooks/stop.js";
@@ -300,6 +301,20 @@ export function registerDefaultPlugins(): void {
 }
 
 /**
+ * Clear assignment-bound state held by first-party plugin hooks before a
+ * pooled worker is reused. The plugin definitions and hook registrations are
+ * tenant-neutral; only their bounded retry/repair stores need resetting.
+ */
+export function resetDefaultPluginStateForTenantAssignment(): void {
+  resetContextWindowManagersForTenantAssignment();
+  resetEmptyResponseNudgeStoreForTests();
+  resetMaxTokensContinueStoreForTests();
+  resetRepairStateStoreForTests();
+  resetImageRecoveryStoreForTests();
+  resetExplorationDriftStateForTests();
+}
+
+/**
  * Test-only helper: clear the plugin registry and re-register every default
  * so integration tests that exercise the full agent loop have a
  * production-parity plugin stack. Use this in `beforeEach` of tests that
@@ -312,10 +327,6 @@ export function registerDefaultPlugins(): void {
  */
 export function resetPluginRegistryAndRegisterDefaults(): void {
   resetPluginRegistryForTests();
-  resetEmptyResponseNudgeStoreForTests();
-  resetMaxTokensContinueStoreForTests();
-  resetRepairStateStoreForTests();
-  resetImageRecoveryStoreForTests();
-  resetExplorationDriftStateForTests();
+  resetDefaultPluginStateForTenantAssignment();
   registerDefaultPlugins();
 }

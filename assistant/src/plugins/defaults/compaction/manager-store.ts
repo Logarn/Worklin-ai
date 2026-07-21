@@ -55,3 +55,8 @@ export function getContextWindowManager(
 export function disposeContextWindowManager(conversationId: string): void {
   managersByConversation.delete(conversationId);
 }
+
+/** Clear any manager left behind after pooled conversation teardown. */
+export function resetContextWindowManagersForTenantAssignment(): void {
+  managersByConversation.clear();
+}

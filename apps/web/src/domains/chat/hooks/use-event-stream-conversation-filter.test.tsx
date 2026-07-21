@@ -3,12 +3,11 @@ import { cleanup, renderHook } from "@testing-library/react";
 
 import type { AssistantEventEnvelope } from "@vellumai/assistant-api";
 import type { AssistantEvent } from "@/types/event-types";
-import {
-  __resetForTesting,
-  publish,
-} from "@/lib/event-bus";
+import { __resetForTesting, publish } from "@/lib/event-bus";
 
 import { useEventStream } from "@/domains/chat/hooks/use-event-stream";
+import { useStreamStore } from "@/domains/chat/stream-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 function renderEventStream(
   activeConversationId: string,
@@ -16,7 +15,6 @@ function renderEventStream(
 ) {
   return renderHook(
     ({ key }: { key: string }) => {
-
       useEventStream({
         assistantStateKind: "active",
         assistantId: "asst-1",
@@ -55,6 +53,17 @@ function publishDelta(conversationId: string): void {
 
 beforeEach(() => {
   __resetForTesting();
+  useStreamStore.setState({
+    stream: null,
+    streamEpoch: 0,
+    streamContext: null,
+  });
+  useResolvedAssistantsStore.setState({
+    assistants: [],
+    activeAssistantId: null,
+    selectedAssistantId: null,
+    assistantsHydrated: false,
+  });
 });
 
 afterEach(() => {
@@ -63,6 +72,29 @@ afterEach(() => {
 });
 
 describe("useEventStream — conversation-switch filtering", () => {
+  test("does not advertise stream presence for a pooled worker", () => {
+    useResolvedAssistantsStore.setState({
+      assistants: [
+        {
+          id: "asst-1",
+          isLocal: false,
+          isPlatformHosted: true,
+          runtimeProvider: "pooled_worker",
+        },
+      ],
+      assistantsHydrated: true,
+    });
+    const handler = mock(() => {});
+
+    renderEventStream("conv-A", handler);
+
+    expect(useStreamStore.getState().stream).toBeNull();
+    expect(useStreamStore.getState().streamContext).toEqual({
+      assistantId: "asst-1",
+      conversationId: "conv-A",
+    });
+  });
+
   test("forwards events whose conversationId matches the active key", () => {
     const handler = mock(() => {});
     renderEventStream("conv-A", handler);

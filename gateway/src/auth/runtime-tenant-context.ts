@@ -43,6 +43,7 @@ export function validateRuntimeTenantContext(
     required: boolean;
     expectedAssistantId?: string | null;
     requestedAssistantId?: string | null;
+    requireHeaders?: boolean;
   },
 ): RuntimeTenantContextValidation {
   if (claims.tenant_context === undefined) {
@@ -78,23 +79,25 @@ export function validateRuntimeTenantContext(
     return { ok: false, reason: "tenant_context_path_mismatch" };
   }
 
-  const expectedHeaders = {
-    version: String(context.version),
-    organization_id: context.organization_id,
-    user_id: context.user_id,
-    assistant_id: context.assistant_id,
-    actor_id: context.actor_id,
-    request_id: context.request_id,
-  };
-  for (const [field, headerName] of Object.entries(TENANT_HEADER_NAMES)) {
-    if (
-      headers.get(headerName) !==
-      expectedHeaders[field as keyof typeof expectedHeaders]
-    ) {
-      return {
-        ok: false,
-        reason: `tenant_context_header_mismatch:${field}`,
-      };
+  if (options.requireHeaders !== false) {
+    const expectedHeaders = {
+      version: String(context.version),
+      organization_id: context.organization_id,
+      user_id: context.user_id,
+      assistant_id: context.assistant_id,
+      actor_id: context.actor_id,
+      request_id: context.request_id,
+    };
+    for (const [field, headerName] of Object.entries(TENANT_HEADER_NAMES)) {
+      if (
+        headers.get(headerName) !==
+        expectedHeaders[field as keyof typeof expectedHeaders]
+      ) {
+        return {
+          ok: false,
+          reason: `tenant_context_header_mismatch:${field}`,
+        };
+      }
     }
   }
 

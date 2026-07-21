@@ -22,6 +22,7 @@ import {
   actorRefreshTokenRecords,
   actorTokenRecords,
 } from "../../db/schema.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 import {
   enforceLoopbackOnly,
   errorResponse,
@@ -39,6 +40,10 @@ export async function handleListDevices(
       headers: { Allow: "GET" },
     });
   }
+  const pooledBoundary = rejectPooledSharedStateAccess(
+    "Local device management",
+  );
+  if (pooledBoundary) return pooledBoundary;
 
   const guardError = enforceLoopbackOnly(req, clientIp, "devices");
   if (guardError) return guardError;
@@ -105,6 +110,10 @@ export async function handleRevokeDevice(
       headers: { Allow: "POST" },
     });
   }
+  const pooledBoundary = rejectPooledSharedStateAccess(
+    "Local device management",
+  );
+  if (pooledBoundary) return pooledBoundary;
 
   const guardError = enforceLoopbackOnly(req, clientIp, "devices");
   if (guardError) return guardError;

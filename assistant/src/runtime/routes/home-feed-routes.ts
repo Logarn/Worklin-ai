@@ -28,6 +28,7 @@ import {
   type FeedItemStatus,
   HomeFeedResponseSchema,
 } from "../../api/responses/home.js";
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import { patchFeedItemStatus, readHomeFeed } from "../../home/feed-writer.js";
 import { revalidateHomeContentInBackground } from "../../home/home-content-refresh.js";
 import { getPersonalizedGreeting } from "../../home/home-greeting.js";
@@ -147,7 +148,9 @@ export async function handleGetHomeFeed({
   // This is the accepted exception to GET-handler idempotency documented
   // in `src/runtime/AGENTS.md` — the handler itself stays read-only and
   // returns immediately with cached/fallback copy.
-  revalidateHomeContentInBackground();
+  if (!isPooledWorkerRuntime()) {
+    revalidateHomeContentInBackground();
+  }
 
   const personalizedGreeting = getPersonalizedGreeting();
   const suggestedPrompts = await getSuggestedPrompts();

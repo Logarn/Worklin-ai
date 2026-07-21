@@ -30,16 +30,57 @@ export interface LiveVoiceServerFrameSink {
 export interface LiveVoiceSessionFactoryContext {
   sessionId: string;
   startFrame: LiveVoiceClientStartFrame;
+  tenantContext?: LiveVoiceTenantContext;
+  ownerTrust?: LiveVoiceOwnerTrust;
   sendFrame(frame: LiveVoiceServerFramePayload): Promise<LiveVoiceServerFrame>;
+}
+
+export interface LiveVoiceTenantContext {
+  version: 1;
+  organizationId: string;
+  userId: string;
+  assistantId: string;
+  actorId: string;
+  requestId: string;
+}
+
+export interface LiveVoiceOwnerTrust {
+  actorPrincipalId: string;
+  userId: string;
+}
+
+export interface LiveVoiceSessionLeaseIdentity {
+  tenant: {
+    orgId: string;
+    assistantId: string;
+  };
+  workerStackId: string;
+  generation: number;
+}
+
+export interface LiveVoiceSessionIdentityContext {
+  tenantContext?: LiveVoiceTenantContext;
+  ownerTrust?: LiveVoiceOwnerTrust;
+  pooledWorkerLease?: LiveVoiceSessionLeaseIdentity;
 }
 
 export type LiveVoiceSessionFactory = (
   context: LiveVoiceSessionFactoryContext,
 ) => LiveVoiceSession;
 
+export interface LiveVoiceSessionLifecycle {
+  registerSession(input: {
+    sessionId: string;
+    identity: LiveVoiceSessionIdentityContext;
+  }): MaybePromise<void>;
+  isSessionCurrent(sessionId: string): MaybePromise<boolean>;
+  unregisterSession(sessionId: string): MaybePromise<void>;
+}
+
 export interface LiveVoiceSessionManagerOptions {
   createSession: LiveVoiceSessionFactory;
   createSessionId?: () => string;
+  lifecycle?: LiveVoiceSessionLifecycle;
 }
 
 export class LiveVoiceSessionStartupError extends Error {
@@ -86,16 +127,19 @@ interface ActiveLiveVoiceSession {
   sessionId: string;
   session: LiveVoiceSession;
   closing: boolean;
+  lifecycleRegistered: boolean;
 }
 
 export class LiveVoiceSessionManager {
   private readonly createSession: LiveVoiceSessionFactory;
   private readonly createSessionId: () => string;
+  private readonly lifecycle: LiveVoiceSessionLifecycle | undefined;
   private activeSession: ActiveLiveVoiceSession | null = null;
 
   constructor(options: LiveVoiceSessionManagerOptions) {
     this.createSession = options.createSession;
     this.createSessionId = options.createSessionId ?? randomUUID;
+    this.lifecycle = options.lifecycle;
   }
 
   get activeSessionId(): string | null {
@@ -105,6 +149,7 @@ export class LiveVoiceSessionManager {
   async startSession(
     startFrame: LiveVoiceClientStartFrame,
     sink: LiveVoiceServerFrameSink,
+    identity: LiveVoiceSessionIdentityContext = {},
   ): Promise<LiveVoiceStartSessionResult> {
     const existingSessionId = this.activeSessionId;
     if (existingSessionId !== null) {
@@ -126,16 +171,29 @@ export class LiveVoiceSessionManager {
     const context: LiveVoiceSessionFactoryContext = {
       sessionId,
       startFrame,
+      ...identity,
       sendFrame: async (payload) => {
+        if (!(await this.isSessionCurrent(sessionId))) {
+          this.scheduleStaleSessionRelease(sessionId);
+          throw new Error("Live voice session lease is stale.");
+        }
         const frame = sequencer.next(payload);
         await sink.sendFrame(frame);
         return frame;
       },
     };
     const session = this.createSession(context);
-    this.activeSession = { sessionId, session, closing: false };
+    const active: ActiveLiveVoiceSession = {
+      sessionId,
+      session,
+      closing: false,
+      lifecycleRegistered: false,
+    };
+    this.activeSession = active;
 
     try {
+      await this.lifecycle?.registerSession({ sessionId, identity });
+      active.lifecycleRegistered = this.lifecycle !== undefined;
       await session.start();
     } catch (err) {
       await this.releaseAfterSessionError(sessionId);
@@ -154,6 +212,10 @@ export class LiveVoiceSessionManager {
   ): Promise<LiveVoiceSessionDispatchResult> {
     const active = this.findActiveSession(sessionId);
     if (active === null) {
+      return { status: "not_found" };
+    }
+    if (!(await this.isSessionCurrent(sessionId))) {
+      await this.releaseSession(sessionId, "error");
       return { status: "not_found" };
     }
 
@@ -177,6 +239,10 @@ export class LiveVoiceSessionManager {
   ): Promise<LiveVoiceSessionDispatchResult> {
     const active = this.findActiveSession(sessionId);
     if (active === null) {
+      return { status: "not_found" };
+    }
+    if (!(await this.isSessionCurrent(sessionId))) {
+      await this.releaseSession(sessionId, "error");
       return { status: "not_found" };
     }
 
@@ -203,8 +269,14 @@ export class LiveVoiceSessionManager {
     try {
       await active.session.close(reason);
     } finally {
-      if (this.activeSession === active) {
-        this.activeSession = null;
+      try {
+        if (active.lifecycleRegistered) {
+          await this.lifecycle?.unregisterSession(sessionId);
+        }
+      } finally {
+        if (this.activeSession === active) {
+          this.activeSession = null;
+        }
       }
     }
     return { released: true, sessionId };
@@ -225,5 +297,28 @@ export class LiveVoiceSessionManager {
     } catch {
       // The original session error is more useful to callers than a cleanup error.
     }
+  }
+
+  private async isSessionCurrent(sessionId: string): Promise<boolean> {
+    const active = this.activeSession;
+    if (
+      active === null ||
+      active.sessionId !== sessionId ||
+      active.closing ||
+      !active.lifecycleRegistered
+    ) {
+      return this.lifecycle === undefined && active?.sessionId === sessionId;
+    }
+    try {
+      return (await this.lifecycle?.isSessionCurrent(sessionId)) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private scheduleStaleSessionRelease(sessionId: string): void {
+    queueMicrotask(() => {
+      void this.releaseSession(sessionId, "error").catch(() => {});
+    });
   }
 }

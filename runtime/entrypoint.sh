@@ -7,13 +7,56 @@ set -euo pipefail
 : "${CES_DATA_DIR:=${WORKLIN_RUNTIME_ROOT}/ces-data}"
 : "${CREDENTIAL_SECURITY_DIR:=${CES_DATA_DIR%/}/security}"
 : "${CES_BOOTSTRAP_SOCKET_DIR:=/run/ces-bootstrap}"
-: "${GATEWAY_IPC_SOCKET_DIR:=${VELLUM_WORKSPACE_DIR%/}/runtime-ipc}"
 : "${DEBUG_STDOUT_LOGS:=1}"
 : "${PORT:=8080}"
 : "${WORKLIN_PUBLIC_EDGE_PORT:=${PORT}}"
 : "${WORKLIN_CONTROL_PLANE_INTERNAL_PORT:=8082}"
 : "${WORKLIN_CONTROL_PLANE_PORT:=${WORKLIN_CONTROL_PLANE_INTERNAL_PORT}}"
-: "${WORKLIN_CONTROL_PLANE_INTERNAL_URL:=http://127.0.0.1:${WORKLIN_CONTROL_PLANE_PORT}}"
+: "${WORKLIN_RUNTIME_MODE:=combined}"
+if [[ "${WORKLIN_RUNTIME_MODE}" == "pooled" ||
+      "${WORKLIN_RUNTIME_MODE}" == "pooled_worker" ]]; then
+  pooled_workspace_dir="/data/workspace"
+  pooled_ipc_socket_dir="/run/worklin-runtime-ipc"
+  if [[ "${VELLUM_WORKSPACE_DIR%/}" != "${pooled_workspace_dir}" ]]; then
+    echo "VELLUM_WORKSPACE_DIR must use the isolated pooled tenant workspace path" >&2
+    exit 1
+  fi
+  VELLUM_WORKSPACE_DIR="${pooled_workspace_dir}"
+  : "${GATEWAY_IPC_SOCKET_DIR:=${pooled_ipc_socket_dir}}"
+  if [[ "${GATEWAY_IPC_SOCKET_DIR}" != "${pooled_ipc_socket_dir}" ]]; then
+    echo "GATEWAY_IPC_SOCKET_DIR must use the non-workspace pooled runtime path" >&2
+    exit 1
+  fi
+  workspace_prefix="${VELLUM_WORKSPACE_DIR%/}/"
+  ipc_prefix="${GATEWAY_IPC_SOCKET_DIR%/}/"
+  if [[ "${workspace_prefix}" == "${ipc_prefix}"* ||
+        "${ipc_prefix}" == "${workspace_prefix}"* ]]; then
+    echo "Pooled gateway IPC and tenant workspace paths must not overlap" >&2
+    exit 1
+  fi
+  if [[ -z "${WORKLIN_CONTROL_PLANE_INTERNAL_URL:-}" ]]; then
+    echo "WORKLIN_CONTROL_PLANE_INTERNAL_URL is required for pooled workers" >&2
+    exit 1
+  fi
+  if [[ -z "${WORKLIN_RUNTIME_WORKER_STACK_ID:-}" ]]; then
+    echo "WORKLIN_RUNTIME_WORKER_STACK_ID is required for pooled workers" >&2
+    exit 1
+  fi
+  pooled_authority_dir="${GATEWAY_IPC_SOCKET_DIR%/}/runtime-worker-authority"
+  expected_authority_file="${pooled_authority_dir}/lease.json"
+  : "${WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE:=${expected_authority_file}}"
+  if [[ "${WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE}" != "${expected_authority_file}" ]]; then
+    echo "WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE must use the shared runtime authority path" >&2
+    exit 1
+  fi
+  if [[ ! "${ACTOR_TOKEN_SIGNING_KEY:-}" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+    echo "ACTOR_TOKEN_SIGNING_KEY must be the explicit 64-hex derived key for this pooled worker" >&2
+    exit 1
+  fi
+else
+  : "${GATEWAY_IPC_SOCKET_DIR:=${VELLUM_WORKSPACE_DIR%/}/runtime-ipc}"
+  : "${WORKLIN_CONTROL_PLANE_INTERNAL_URL:=http://127.0.0.1:${WORKLIN_CONTROL_PLANE_PORT}}"
+fi
 : "${WORKLIN_CONTROL_DB:=${WORKLIN_RUNTIME_ROOT}/control-plane.sqlite}"
 : "${CES_HEALTH_PORT:=8090}"
 : "${CES_CREDENTIAL_URL:=http://127.0.0.1:${CES_HEALTH_PORT}}"
@@ -25,14 +68,15 @@ set -euo pipefail
 : "${IS_CONTAINERIZED:=true}"
 : "${CES_MODE:=managed}"
 : "${WORKLIN_REQUIRE_ISOLATED_RUNTIME:=true}"
-: "${WORKLIN_RUNTIME_MODE:=combined}"
 # The combined free-tier runtime cannot safely load the local ONNX embedding
 # worker alongside the gateway, control plane, CES, and assistant. Keep dense
 # embeddings inert unless an operator explicitly opts in after provisioning
 # enough memory or an approved external embedding backend.
 : "${VELLUM_DISABLE_EMBEDDINGS:=true}"
 
-if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ]]; then
+if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ||
+      "${WORKLIN_RUNTIME_MODE}" == "pooled" ||
+      "${WORKLIN_RUNTIME_MODE}" == "pooled_worker" ]]; then
   : "${GATEWAY_PORT:=${PORT}}"
 else
   : "${GATEWAY_PORT:=7830}"
@@ -73,6 +117,7 @@ export CES_MODE
 export WORKLIN_REQUIRE_ISOLATED_RUNTIME
 export WORKLIN_RUNTIME_MODE
 export VELLUM_DISABLE_EMBEDDINGS
+export WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE
 export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
 
 declare -a pids=()
@@ -127,6 +172,9 @@ mkdir -p \
   "${CES_DATA_DIR}" \
   "${CES_BOOTSTRAP_SOCKET_DIR}" \
   "${GATEWAY_IPC_SOCKET_DIR}"
+if [[ -n "${pooled_authority_dir:-}" ]]; then
+  mkdir -p "${pooled_authority_dir}"
+fi
 
 fallback_credential_security_dir="${CES_DATA_DIR%/}/security"
 if ! mkdir -p "${CREDENTIAL_SECURITY_DIR}"; then
@@ -173,6 +221,10 @@ chmod 2775 \
 chmod 700 "${GATEWAY_SECURITY_DIR}" "${CES_DATA_DIR}" "${CREDENTIAL_SECURITY_DIR}"
 chmod 777 "${CES_BOOTSTRAP_SOCKET_DIR}"
 chmod 2770 "${GATEWAY_IPC_SOCKET_DIR}"
+if [[ -n "${pooled_authority_dir:-}" ]]; then
+  chown gateway:vellum "${pooled_authority_dir}"
+  chmod 2750 "${pooled_authority_dir}"
+fi
 
 if ! runuser -u ces -g ces -G vellum -- test -w "${CREDENTIAL_SECURITY_DIR}"; then
   if [[ "${CREDENTIAL_SECURITY_DIR}" != "${fallback_credential_security_dir}" ]]; then
@@ -231,7 +283,7 @@ fi
 chmod 660 "${gateway_socket_path}"
 
 start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
-if [[ "${WORKLIN_RUNTIME_MODE}" != "isolated" ]]; then
+if [[ "${WORKLIN_RUNTIME_MODE}" == "combined" ]]; then
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/public-edge.ts"
 fi

@@ -1,5 +1,6 @@
 import { v4 as uuid } from "uuid";
 
+import { isPooledWorkerRuntime } from "../config/env.js";
 import {
   deleteLastExchange,
   deleteMessageById,
@@ -127,6 +128,20 @@ async function cleanupQdrantVectors(
   }
 }
 
+function cleanupQdrantVectorsBestEffort(
+  conversationId: string,
+  segmentIds: string[],
+  operation: string,
+): void {
+  // Pooled workers do not start Qdrant or its retry worker. Avoid creating
+  // untracked cleanup promises during a tenant lease; the state sanitizer
+  // removes the tenant database before worker reuse.
+  if (isPooledWorkerRuntime()) return;
+  void cleanupQdrantVectors(conversationId, segmentIds).catch((err) => {
+    log.warn({ err, conversationId }, operation);
+  });
+}
+
 // ── Consolidation ────────────────────────────────────────────────────
 
 /**
@@ -191,12 +206,11 @@ export function consolidateAssistantMessages(
 
     // Clean up Qdrant vectors (fire-and-forget)
     if (allSegmentIds.length > 0) {
-      cleanupQdrantVectors(conversationId, allSegmentIds).catch((err) => {
-        log.warn(
-          { err, conversationId },
-          "Qdrant cleanup after consolidation failed (non-fatal)",
-        );
-      });
+      cleanupQdrantVectorsBestEffort(
+        conversationId,
+        allSegmentIds,
+        "Qdrant cleanup after consolidation failed (non-fatal)",
+      );
     }
     return didMutate;
   }
@@ -323,12 +337,11 @@ export function consolidateAssistantMessages(
 
   // Clean up Qdrant vectors (fire-and-forget)
   if (allSegmentIds.length > 0) {
-    cleanupQdrantVectors(conversationId, allSegmentIds).catch((err) => {
-      log.warn(
-        { err, conversationId },
-        "Qdrant cleanup after consolidation failed (non-fatal)",
-      );
-    });
+    cleanupQdrantVectorsBestEffort(
+      conversationId,
+      allSegmentIds,
+      "Qdrant cleanup after consolidation failed (non-fatal)",
+    );
   }
 
   log.info(
@@ -544,13 +557,10 @@ export async function regenerate(
   }
 
   // Clean up Qdrant vectors (fire-and-forget).
-  cleanupQdrantVectors(conversation.conversationId, allSegmentIds).catch(
-    (err) => {
-      log.warn(
-        { err, conversationId: conversation.conversationId },
-        "Qdrant cleanup after regenerate failed (non-fatal)",
-      );
-    },
+  cleanupQdrantVectorsBestEffort(
+    conversation.conversationId,
+    allSegmentIds,
+    "Qdrant cleanup after regenerate failed (non-fatal)",
   );
 
   // Re-extract the user message content for the agent loop.

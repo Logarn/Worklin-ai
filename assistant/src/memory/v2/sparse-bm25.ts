@@ -234,10 +234,13 @@ export function generateBm25QueryEmbedding(text: string): SparseEmbedding {
   return { indices, values };
 }
 
-/** @internal Test-only: reset module-level singletons. */
-export function _resetCorpusStatsForTests(): void {
+/** Clear corpus statistics derived from the current tenant's concept pages. */
+export function resetCorpusStatsForTenantAssignment(): void {
   _conceptPageStats = null;
 }
+
+/** @internal Test-only alias. */
+export const _resetCorpusStatsForTests = resetCorpusStatsForTenantAssignment;
 
 /** @internal Test-only: install a fixture stats table without disk I/O. */
 export function _setCorpusStatsForTests(stats: CorpusStats | null): void {

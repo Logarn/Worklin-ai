@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { initSigningKey, verifyToken } from "../auth/token-service.js";
 import {
   IpcHandlerError,
   IpcTransportError,
@@ -28,15 +29,22 @@ import {
 let server: Server | undefined;
 let origWorkspaceDir: string | undefined;
 let origAssistantIpcDir: string | undefined;
+let origPlatformAssistantId: string | undefined;
+let origPlatformOrganizationId: string | undefined;
 
 // Save and restore VELLUM_WORKSPACE_DIR + ASSISTANT_IPC_SOCKET_DIR around
 // each test. The sandbox sets ASSISTANT_IPC_SOCKET_DIR, which would
 // otherwise win over VELLUM_WORKSPACE_DIR in `resolveIpcSocketPath` and
 // route requests to the real daemon socket instead of our test server.
 beforeEach(() => {
+  initSigningKey(Buffer.from("ipc-assistant-client-test-key-32b"));
   origWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
   origAssistantIpcDir = process.env.ASSISTANT_IPC_SOCKET_DIR;
+  origPlatformAssistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+  origPlatformOrganizationId = process.env.PLATFORM_ORGANIZATION_ID;
   delete process.env.ASSISTANT_IPC_SOCKET_DIR;
+  delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+  delete process.env.PLATFORM_ORGANIZATION_ID;
   server = undefined;
 });
 
@@ -51,6 +59,16 @@ afterEach(async () => {
     process.env.ASSISTANT_IPC_SOCKET_DIR = origAssistantIpcDir;
   } else {
     delete process.env.ASSISTANT_IPC_SOCKET_DIR;
+  }
+  if (origPlatformAssistantId !== undefined) {
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = origPlatformAssistantId;
+  } else {
+    delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+  }
+  if (origPlatformOrganizationId !== undefined) {
+    process.env.PLATFORM_ORGANIZATION_ID = origPlatformOrganizationId;
+  } else {
+    delete process.env.PLATFORM_ORGANIZATION_ID;
   }
 
   if (server) {
@@ -97,9 +115,7 @@ function sendHandlerError(
   statusCode: number,
   errorCode: string,
 ): void {
-  socket.write(
-    JSON.stringify({ id, error, statusCode, errorCode }) + "\n",
-  );
+  socket.write(JSON.stringify({ id, error, statusCode, errorCode }) + "\n");
 }
 
 /**
@@ -216,7 +232,46 @@ describe("ipcCallAssistant", () => {
 
     await ipcCallAssistant("my_method", { x: 1, y: "hello" });
     expect(receivedMethod).toBe("my_method");
-    expect(receivedParams).toEqual({ x: 1, y: "hello" });
+    expect(receivedParams).toMatchObject({ x: 1, y: "hello" });
+    const headers = receivedParams?.headers as Record<string, string>;
+    const bearer = headers.authorization?.replace(/^Bearer /, "");
+    expect(bearer).toBeTruthy();
+    const verified = verifyToken(bearer, "vellum-daemon");
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.claims.sub).toBe("svc:gateway:self");
+      expect(verified.claims.scope_profile).toBe("gateway_service_v1");
+      expect(verified.claims.service_tenant_context).toBeUndefined();
+    }
+  });
+
+  test("isolated service calls carry a signed runtime tenant binding", async () => {
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "assistant-isolated";
+    process.env.PLATFORM_ORGANIZATION_ID = "org-isolated";
+    const sockPath = setupWorkspace();
+    let receivedParams: Record<string, unknown> | undefined;
+
+    await startServer(sockPath, (id, _method, params, socket) => {
+      receivedParams = params;
+      sendResult(socket, id, { ok: true });
+      socket.end();
+    });
+
+    await ipcCallAssistant("db_proxy", { operation: "select" });
+    const headers = receivedParams?.headers as Record<string, string>;
+    const bearer = headers.authorization?.replace(/^Bearer /, "");
+    expect(bearer).toBeTruthy();
+    const verified = verifyToken(bearer, "vellum-daemon");
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.claims.service_tenant_context).toMatchObject({
+        version: 1,
+        assistant_id: "assistant-isolated",
+        organization_id: "org-isolated",
+        service_id: "gateway",
+      });
+      expect(verified.claims.service_tenant_context?.request_id).toBeTruthy();
+    }
   });
 });
 

@@ -32,6 +32,10 @@ import {
 import { emitNotificationSignal } from "../notifications/emit-signal.js";
 import type { AttentionHints } from "../notifications/signal.js";
 import { getLogger } from "../util/logger.js";
+import {
+  assertPooledRuntimeAsyncOperationSupported,
+  pooledRuntimeUnsupportedAsyncMessage,
+} from "./pooled-runtime-policy.js";
 import { hasReceivedUserMessage } from "./pre-first-message-gate.js";
 
 const log = getLogger("background-job-runner");
@@ -183,6 +187,24 @@ function classifyError(err: unknown): BackgroundJobErrorKind {
 export async function runBackgroundJob(
   opts: RunBackgroundJobOptions,
 ): Promise<RunBackgroundJobResult> {
+  try {
+    assertPooledRuntimeAsyncOperationSupported("background jobs");
+  } catch {
+    const error = new Error(
+      pooledRuntimeUnsupportedAsyncMessage("background jobs"),
+    );
+    log.info(
+      { jobName: opts.jobName, source: opts.source },
+      "Background job rejected in pooled interactive-only runtime",
+    );
+    return {
+      ok: false,
+      conversationId: "",
+      error,
+      errorKind: "exception",
+    };
+  }
+
   // Gate: refuse to bootstrap a conversation until the user has interacted
   // at least once. Warm-pool images would otherwise produce "Background job
   // failed" rows visible in the sidebar the moment a real user hatches the

@@ -13,6 +13,11 @@ import {
   autoApproveThresholds,
   conversationThresholdOverrides,
 } from "../db/schema.js";
+import {
+  assertPooledSharedStateUnavailable,
+  isPooledGatewayRuntime,
+  POOLED_STRICT_AUTO_APPROVE_THRESHOLDS,
+} from "../pooled-runtime-shared-state.js";
 import type { IpcRoute } from "./server.js";
 
 const GLOBAL_DEFAULTS = {
@@ -34,6 +39,9 @@ export const thresholdRoutes: IpcRoute[] = [
   {
     method: "get_global_thresholds",
     handler: () => {
+      if (isPooledGatewayRuntime()) {
+        return POOLED_STRICT_AUTO_APPROVE_THRESHOLDS;
+      }
       const db = getGatewayDb();
       const row = db
         .select()
@@ -54,6 +62,7 @@ export const thresholdRoutes: IpcRoute[] = [
     method: "get_conversation_threshold",
     schema: GetConversationThresholdSchema,
     handler: (params?: Record<string, unknown>) => {
+      if (isPooledGatewayRuntime()) return { threshold: "none" };
       const conversationId = params?.conversationId as string;
       const db = getGatewayDb();
       const row = db
@@ -72,6 +81,9 @@ export const thresholdRoutes: IpcRoute[] = [
     method: "set_conversation_threshold",
     schema: SetConversationThresholdSchema,
     handler: (params?: Record<string, unknown>) => {
+      assertPooledSharedStateUnavailable(
+        "Conversation approval threshold changes",
+      );
       const parsed = SetConversationThresholdSchema.parse(params ?? {});
       const db = getGatewayDb();
       db.insert(conversationThresholdOverrides)

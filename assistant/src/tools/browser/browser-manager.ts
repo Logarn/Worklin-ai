@@ -495,6 +495,9 @@ class BrowserManager {
       for (const waiter of pending) waiter.reject(new Error("Browser closed"));
     }
     this.pendingDownloads.clear();
+    for (const resolver of this.handoffResolvers.values()) resolver();
+    this.handoffResolvers.clear();
+    this.interactiveModeSessions.clear();
 
     if (this.context) {
       // Remove the close listener before intentional close to avoid
@@ -527,6 +530,24 @@ class BrowserManager {
       this.browserCdpSession = null;
       this.browserWindowId = null;
     }
+  }
+
+  /**
+   * Returns zero only when no page, CDP session, browser context, handoff, or
+   * context-construction promise can survive a tenant assignment.
+   */
+  get activeResourceCount(): number {
+    return (
+      this.pages.size +
+      this.rawPages.size +
+      this.cdpSessions.size +
+      this.interactiveModeSessions.size +
+      this.handoffResolvers.size +
+      this.pendingDownloads.size +
+      (this.context ? 1 : 0) +
+      (this.contextCreating ? 1 : 0) +
+      (this.browserCdpSession ? 1 : 0)
+    );
   }
 
   async stopScreencast(conversationId: string): Promise<void> {

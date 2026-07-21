@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { getConfig } from "../config/loader.js";
 import { skillFlagKey } from "../config/skill-state.js";
 import type { SkillSummary, SkillToolManifest } from "../config/skills.js";
@@ -299,6 +300,21 @@ export function projectSkillTools(
   history: Message[],
   options?: ProjectSkillToolsOptions,
 ): SkillToolProjection {
+  if (isPooledWorkerRuntime()) {
+    const previouslyActive = options?.previouslyActiveSkillIds;
+    if (previouslyActive) {
+      for (const [id, hash] of previouslyActive) {
+        if (hasRegisteredTools(hash)) unregisterSkillTools(id);
+      }
+      previouslyActive.clear();
+    }
+    // Pooled v1 deliberately has no dynamically projected skill-tool
+    // allowlist. Existing bundled manifests are host/global executors; custom
+    // manifests are tenant code. Both remain unavailable until each execution
+    // path has a reviewed offline sandbox contract.
+    return { toolDefinitions: [], allowedToolNames: new Set() };
+  }
+
   const contextEntries = getCachedActiveSkills(history, options?.cache);
   const preactivated = options?.preactivatedSkillIds ?? [];
   const prevActive =

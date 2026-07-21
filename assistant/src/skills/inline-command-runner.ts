@@ -6,8 +6,9 @@
  *
  * - Sanitized environment variables only (no API keys, tokens, credentials)
  * - No credential proxy, no CES client, no host fallback
- * - Runs in Docker/platform-managed environments (network/filesystem isolation
- *   is provided by the container, not OS-level sandboxing)
+ * - Platform-managed execution is offline and requires a fresh bubblewrap
+ *   filesystem, process, and network namespace. Authenticated external actions
+ *   must use Worklin's scoped HTTP or provider tools.
  * - Uses the conversation working directory as `cwd` so repo-local commands
  *   remain interoperable with externally authored skills that expect project
  *   context.
@@ -23,8 +24,14 @@
 
 import { spawn } from "node:child_process";
 
+import { getIsPlatform } from "../config/env-registry.js";
+import {
+  preparePlatformSandboxLaunch,
+  terminateSandboxProcessTree,
+} from "../tools/shared/platform-sandbox.js";
 import { buildSanitizedEnv } from "../tools/terminal/safe-env.js";
 import { getLogger } from "../util/logger.js";
+import { getWorkspaceDir } from "../util/platform.js";
 
 const log = getLogger("inline-command-runner");
 
@@ -104,15 +111,43 @@ export async function runInlineCommand(
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxChars = options?.maxOutputChars ?? MAX_OUTPUT_CHARS;
 
-  const wrapped = { command: "bash", args: ["-c", "--", command] };
+  let wrapped = { command: "bash", args: ["-c", "--", command] };
+  let spawnCwd = workingDir;
+  let detached = false;
 
-  // Build a minimal, sanitized environment. Explicitly exclude gateway URL,
-  // workspace dir, and data dir since inline commands have no business calling
-  // internal APIs, mutating workspace state, or accessing instance-scoped data.
-  const env = buildSanitizedEnv();
+  // Build a minimal environment without internal control-plane endpoints.
+  // Platform isolation reintroduces only the tenant workspace paths after
+  // stripping service credentials and security-directory references.
+  let env = buildSanitizedEnv();
   delete env.INTERNAL_GATEWAY_BASE_URL;
   delete env.VELLUM_WORKSPACE_DIR;
   delete env.VELLUM_DATA_DIR;
+  if (getIsPlatform()) {
+    // Inline commands are offline-only on the platform. A userspace proxy is
+    // not a substitute for a kernel-enforced egress boundary.
+    const prepared = preparePlatformSandboxLaunch({
+      workspaceDir: getWorkspaceDir(),
+      cwd: workingDir,
+      command: wrapped.command,
+      args: wrapped.args,
+      env,
+      networkMode: "off",
+    });
+    if (!prepared.ok) {
+      return {
+        output: `Inline command was not run: ${prepared.error}`,
+        ok: false,
+        failureReason: "spawn_failure",
+      };
+    }
+    wrapped = {
+      command: prepared.launch.command,
+      args: prepared.launch.args,
+    };
+    spawnCwd = prepared.launch.cwd;
+    env = prepared.launch.env;
+    detached = true;
+  }
 
   return new Promise<InlineCommandResult>((resolve) => {
     let timedOut = false;
@@ -123,9 +158,10 @@ export async function runInlineCommand(
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(wrapped.command, wrapped.args, {
-        cwd: workingDir,
+        cwd: spawnCwd,
         env,
         stdio: ["ignore", "pipe", "ignore"],
+        detached,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -140,7 +176,11 @@ export async function runInlineCommand(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      if (detached) {
+        terminateSandboxProcessTree(child);
+      } else {
+        child.kill("SIGKILL");
+      }
     }, timeoutMs);
 
     child.stdout!.on("data", (data: Buffer) => {

@@ -376,6 +376,27 @@ export function listSkillEntries(): SkillEntry[] {
     .map((entry) => Object.freeze({ ...entry }));
 }
 
+/**
+ * Clear tenant-derived skill capabilities after all pooled requests quiesce.
+ * Refuse the handoff if a seed can still repopulate this module after reset.
+ */
+export function resetSkillStoreForTenantAssignment(): void {
+  if (
+    activeSeedDrain !== null ||
+    seedWaiters.length > 0 ||
+    processedSeedGeneration < requestedSeedGeneration
+  ) {
+    throw new Error(
+      "Cannot reset the skill capability store while seeding is active.",
+    );
+  }
+  entries = null;
+  requestedSeedGeneration = 0;
+  processedSeedGeneration = 0;
+  lastSeedError = null;
+  legacyKindBackfillDone = false;
+}
+
 /** @internal Test-only: clear the module-level cache. */
 export function _resetSkillStoreForTests(): void {
   entries = null;

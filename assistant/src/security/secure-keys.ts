@@ -26,6 +26,7 @@ import type {
   SecureKeyDeleteResult,
 } from "@vellumai/credential-storage";
 
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { getIsContainerized } from "../config/env-registry.js";
 import type { CesClient } from "../credential-execution/client.js";
 import { getAnyProviderEnvVar } from "../providers/provider-env-vars.js";
@@ -40,6 +41,10 @@ import type {
 } from "./credential-backend.js";
 import { createEncryptedStoreBackend } from "./credential-backend.js";
 import { credentialKey } from "./credential-key.js";
+import {
+  resolvePooledModelProviderKey,
+  resolvePooledModelProviderKeyForAccount,
+} from "./pooled-model-key-context.js";
 
 export type {
   CredentialListResult,
@@ -429,6 +434,9 @@ async function withCredentialTimeout<T>(
  * Queries exactly one backend — no cross-store merge.
  */
 export async function listSecureKeysAsync(): Promise<CredentialListResult> {
+  if (isPooledWorkerRuntime()) {
+    return { accounts: [], unreachable: true };
+  }
   return withCredentialTimeout(
     async () => {
       const backend = await resolveBackendAsync();
@@ -456,6 +464,10 @@ export async function listSecureKeysAsync(): Promise<CredentialListResult> {
 export async function getSecureKeyResultAsync(
   account: string,
 ): Promise<SecureKeyResult> {
+  const pooled = await resolvePooledModelProviderKeyForAccount(account);
+  if (pooled.handled) {
+    return { value: pooled.value, unreachable: pooled.unreachable };
+  }
   return withCredentialTimeout(
     async () => {
       const backend = await resolveBackendAsync();
@@ -489,6 +501,7 @@ export async function setSecureKeyAsync(
   account: string,
   value: string,
 ): Promise<boolean> {
+  if (isPooledWorkerRuntime()) return false;
   return withCredentialTimeout(async () => {
     const backend = await resolveBackendAsync();
     const ok = await backend.set(account, value);
@@ -522,6 +535,7 @@ export async function setSecureKeyAsync(
 export async function deleteSecureKeyAsync(
   account: string,
 ): Promise<DeleteResult> {
+  if (isPooledWorkerRuntime()) return "error";
   return withCredentialTimeout(async () => {
     const backend = await resolveBackendAsync();
     const result = await backend.delete(account);
@@ -542,6 +556,9 @@ export async function deleteSecureKeyAsync(
 export async function bulkSetSecureKeysAsync(
   credentials: Array<{ account: string; value: string }>,
 ): Promise<Array<{ account: string; ok: boolean }>> {
+  if (isPooledWorkerRuntime()) {
+    return credentials.map(({ account }) => ({ account, ok: false }));
+  }
   return withCredentialTimeout(
     async () => {
       const backend = await resolveBackendAsync();
@@ -595,6 +612,9 @@ export async function bulkSetSecureKeysAsync(
 export async function getProviderKeyAsync(
   provider: string,
 ): Promise<string | undefined> {
+  const pooled = await resolvePooledModelProviderKey(provider);
+  if (pooled.handled) return pooled.value;
+
   // Check credential namespace first; fall back to bare name for the brief
   // startup window before migration 002 has run.
   const stored =
@@ -635,6 +655,7 @@ export async function getMaskedProviderKey(
  * Useful for diagnostic messages when credential operations fail.
  */
 export function getActiveBackendName(): string {
+  if (isPooledWorkerRuntime()) return "pooled-control-plane";
   return _resolvedBackend?.name ?? "none";
 }
 
@@ -663,6 +684,9 @@ export type BackendInfo =
  * visible.
  */
 export function getActiveBackendInfoAsync(): Promise<BackendInfo> {
+  if (isPooledWorkerRuntime()) {
+    return Promise.resolve({ backend: "none" });
+  }
   return withCredentialTimeout(
     async () => {
       const backend = await resolveBackendAsync();

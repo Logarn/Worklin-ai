@@ -25,6 +25,7 @@ import { wrapWithCallSiteRouting } from "../providers/call-site-routing.js";
 import { resolveDefaultProvider } from "../providers/connection-resolution.js";
 import { RateLimitProvider } from "../providers/ratelimit.js";
 import { listProviders } from "../providers/registry.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { createAbortReason } from "../util/abort-reasons.js";
 import { ProviderNotConfiguredError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
@@ -148,6 +149,8 @@ export class SubagentManager {
   private parentToChildren = new Map<string, Set<string>>();
   /** `${parentConversationId}:${normalizedLabel}` → subagentId */
   private labelIndex = new Map<string, string>();
+  /** Agent-loop promises retained until their asynchronous bodies settle. */
+  private inflightRuns = new Set<Promise<void>>();
 
   /**
    * Shared rate-limit timestamps array from the daemon server.
@@ -165,6 +168,7 @@ export class SubagentManager {
     config: Omit<SubagentConfig, "id">,
     parentSendToClient: (msg: ServerMessage) => void,
   ): Promise<string> {
+    assertPooledRuntimeAsyncOperationSupported("subagents");
     // ── Resolve role ─────────────────────────────────────────────────
     const parentManaged = this.findManagedByConversationId(
       config.parentConversationId,
@@ -489,9 +493,14 @@ export class SubagentManager {
     );
 
     // ── Kick off the agent loop (fire-and-forget) ───────────────────
-    this.runSubagent(subagentId, config.objective).catch((err) => {
-      log.error({ subagentId, err }, "Subagent run failed unexpectedly");
-    });
+    const run = this.runSubagent(subagentId, config.objective)
+      .catch((err) => {
+        log.error({ subagentId, err }, "Subagent run failed unexpectedly");
+      })
+      .finally(() => {
+        this.inflightRuns.delete(run);
+      });
+    this.inflightRuns.add(run);
 
     return subagentId;
   }
@@ -1160,6 +1169,20 @@ export class SubagentManager {
     for (const id of [...this.subagents.keys()]) {
       this.dispose(id);
     }
+  }
+
+  /**
+   * Aborts every child conversation and waits for the fire-and-forget loop
+   * promises to settle. Returning `false` means the caller cannot prove the
+   * runtime is safe to reuse.
+   */
+  async quiesce(timeoutMs = 2_000): Promise<boolean> {
+    this.disposeAll();
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (this.inflightRuns.size > 0 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    return this.activeCount === 0 && this.inflightRuns.size === 0;
   }
 
   // ── TTL sweep for terminal metadata ──────────────────────────────────

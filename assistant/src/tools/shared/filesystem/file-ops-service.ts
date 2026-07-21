@@ -38,6 +38,11 @@ export type PathPolicy = (
   options?: { mustExist?: boolean },
 ) => PathResult;
 
+export interface FileSystemOpsOptions {
+  sizeLimit?: number;
+  beforeWrite?: (input: { filePath: string; content: string }) => void;
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -60,10 +65,12 @@ function pathError(
 export class FileSystemOps {
   private policy: PathPolicy;
   private sizeLimit: number | undefined;
+  private beforeWrite: FileSystemOpsOptions["beforeWrite"];
 
-  constructor(policy: PathPolicy, options?: { sizeLimit?: number }) {
+  constructor(policy: PathPolicy, options?: FileSystemOpsOptions) {
     this.policy = policy;
     this.sizeLimit = options?.sizeLimit;
+    this.beforeWrite = options?.beforeWrite;
   }
 
   // -------------------------------------------------------------------------
@@ -136,8 +143,6 @@ export class FileSystemOps {
     }
 
     try {
-      ensureDir(dirname(filePath));
-
       let oldContent = "";
       const isNewFile = !pathExists(filePath);
       if (!isNewFile) {
@@ -148,6 +153,8 @@ export class FileSystemOps {
         }
       }
 
+      this.beforeWrite?.({ filePath, content: input.content });
+      ensureDir(dirname(filePath));
       writeFileSync(filePath, input.content);
 
       return {
@@ -229,6 +236,7 @@ export class FileSystemOps {
     }
 
     try {
+      this.beforeWrite?.({ filePath, content: result.updatedContent });
       writeFileSync(filePath, result.updatedContent);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

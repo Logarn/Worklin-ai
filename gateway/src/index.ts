@@ -29,10 +29,22 @@ import { loadConfig } from "./config.js";
 import { CredentialCache } from "./credential-cache.js";
 import { credentialKey } from "./credential-key.js";
 import {
+  assertPooledSharedStateUnavailable,
+  isPooledGatewayRuntime,
+  pooledSharedStateUnavailableResponse,
+  rejectPooledSharedStateAccess,
+} from "./pooled-runtime-shared-state.js";
+import {
+  assertPooledGatewayCredentialBoundary,
+  shouldStartSharedGatewayBackgroundServices,
+} from "./pooled-runtime-startup-boundary.js";
+import { initializeRuntimeWorkerLeaseAuthority } from "./runtime-worker-lease-authority.js";
+import {
   CredentialWatcher,
   type CredentialChangeEvent,
 } from "./credential-watcher.js";
 import { createRuntimeProxyHandler } from "./http/routes/runtime-proxy.js";
+import { createRuntimeWorkerLeaseRevokeHandler } from "./http/routes/runtime-worker-lease-revoke.js";
 
 import { createTelegramWebhookHandler } from "./http/routes/telegram-webhook.js";
 import { createAudioProxyHandler } from "./http/routes/audio-proxy.js";
@@ -296,8 +308,36 @@ async function main() {
   initSigningKey(signingKey);
   log.info("JWT signing key initialized");
 
+  if (
+    config.runtimeWorkerStackId !== undefined ||
+    config.runtimeWorkerLeaseAuthorityFile !== undefined
+  ) {
+    if (
+      !config.runtimeWorkerStackId ||
+      !config.runtimeWorkerLeaseAuthorityFile
+    ) {
+      throw new Error(
+        "Pooled worker startup requires both WORKLIN_RUNTIME_WORKER_STACK_ID and WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE.",
+      );
+    }
+    const authorityUpdate = initializeRuntimeWorkerLeaseAuthority(
+      config.runtimeWorkerLeaseAuthorityFile,
+      config.runtimeWorkerStackId,
+    );
+    log.info(
+      {
+        workerStackId: config.runtimeWorkerStackId,
+        authorityUpdate,
+      },
+      "Pooled worker lease authority initialized",
+    );
+  }
+
   await initGatewayDb();
   initTrustRuleCache();
+  const sharedGatewayBackgroundServicesEnabled =
+    shouldStartSharedGatewayBackgroundServices();
+  assertPooledGatewayCredentialBoundary();
 
   // Don't block gateway port binding on assistant IPC readiness.
   // Railway probes the public control-plane, which in turn probes this
@@ -313,6 +353,27 @@ async function main() {
   // caches at call time, with automatic TTL refresh.
   const credentialCache = new CredentialCache();
   const configFileCache = new ConfigFileCache();
+  const resetPooledAssignmentCaches = (): void => {
+    if (!isPooledGatewayRuntime()) return;
+    credentialCache.invalidate();
+    configFileCache.invalidate();
+  };
+  const enforcePooledAssignmentCredentialBoundary = (): Response | null => {
+    resetPooledAssignmentCaches();
+    if (!isPooledGatewayRuntime()) return null;
+    try {
+      assertPooledGatewayCredentialBoundary();
+      return null;
+    } catch (err) {
+      log.error(
+        { err },
+        "Pooled assignment contains forbidden gateway credential metadata",
+      );
+      return pooledSharedStateUnavailableResponse(
+        "Gateway credential-backed integrations",
+      );
+    }
+  };
   const velayTunnelClient = createVelayTunnelClient(config, {
     credentials: credentialCache,
     configFile: configFileCache,
@@ -336,6 +397,7 @@ async function main() {
     reason: string,
     twilioCredentials?: Record<string, string> | null,
   ): boolean {
+    assertPooledSharedStateUnavailable("Velay integration tunnel");
     if (velayStartRequested || !velayTunnelClient) {
       return velayStartRequested;
     }
@@ -375,6 +437,7 @@ async function main() {
    * one tunnel serves both — and `velayTunnelClient.start()` is idempotent.
    */
   function maybeStartVelayTunnelForLiveVoice(reason: string): boolean {
+    assertPooledSharedStateUnavailable("Velay live-voice tunnel");
     if (velayStartRequested || !velayTunnelClient) {
       return velayStartRequested;
     }
@@ -539,6 +602,17 @@ async function main() {
   const handleRuntimeProxy = createRuntimeProxyHandler(config, {
     upsertContact: contactsControlPlaneProxy.handleUpsertContact,
   });
+  const handleRuntimeWorkerLeaseRevoke =
+    createRuntimeWorkerLeaseRevokeHandler(config);
+
+  const integrationStatusResponse = (): Response =>
+    Response.json({
+      email: {
+        address: isPooledGatewayRuntime()
+          ? null
+          : (configFileCache.getString("email", "address") ?? null),
+      },
+    });
 
   // Helper to reject when an integration isn't configured
   const requireConfigured = (
@@ -569,10 +643,23 @@ async function main() {
   // requireEdgeAuth/wrapWithAuthFailureTracking calls needed.
   const routes: RouteDefinition[] = [
     {
+      path: "/v1/internal/pooled-worker/lease/revoke",
+      method: "POST",
+      auth: "custom",
+      handler: (req) => {
+        resetPooledAssignmentCaches();
+        return handleRuntimeWorkerLeaseRevoke(req);
+      },
+    },
+    {
       path: "/v1/live-voice/providers/chat/completions",
       method: "POST",
       auth: "none",
-      handler: (req) => handleLiveVoiceProviderCallback(req),
+      handler: (req) => {
+        const boundary = enforcePooledAssignmentCredentialBoundary();
+        if (boundary) return boundary;
+        return handleLiveVoiceProviderCallback(req);
+      },
     },
     // ── A2A agent card discovery (read-only, unauthenticated per spec) ──
     {
@@ -828,6 +915,7 @@ async function main() {
       method: "DELETE",
       auth: "edge",
       handler: (_req, params) =>
+        rejectPooledSharedStateAccess("Assistant-scoped contact deletion") ??
         contactsControlPlaneProxy.handleDeleteContact(params[0]),
     },
     {
@@ -1087,14 +1175,18 @@ async function main() {
       method: "POST",
       auth: "edge-scoped",
       scope: "settings.write",
-      handler: (req) => migrationExportProxy(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Migration export") ??
+        migrationExportProxy(req),
     },
     {
       path: "/v1/migrations/import",
       method: "POST",
       auth: "edge-scoped",
       scope: "settings.write",
-      handler: (req) => migrationImportProxy(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Migration import") ??
+        migrationImportProxy(req),
     },
     {
       // Async-job status endpoint for URL-based imports. The gateway keeps
@@ -1118,6 +1210,7 @@ async function main() {
       // profile) can still poll import progress.
       scope: "settings.read",
       handler: (req, params) =>
+        rejectPooledSharedStateAccess("Migration import job state") ??
         migrationImportStatusProxy(req, params[0] ?? ""),
     },
 
@@ -1131,21 +1224,27 @@ async function main() {
       method: "POST",
       auth: "edge-scoped",
       scope: "settings.write",
-      handler: (req) => migrationExportToGcsProxy(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Migration export job") ??
+        migrationExportToGcsProxy(req),
     },
     {
       path: "/v1/migrations/import-from-gcs",
       method: "POST",
       auth: "edge-scoped",
       scope: "settings.write",
-      handler: (req) => migrationImportFromGcsProxy(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Migration import job") ??
+        migrationImportFromGcsProxy(req),
     },
     {
       path: /^\/v1\/migrations\/jobs\/([^/]+)\/?$/,
       method: "GET",
       auth: "edge-scoped",
       scope: "settings.read",
-      handler: (req, params) => migrationJobStatusProxy(req, params[0] ?? ""),
+      handler: (req, params) =>
+        rejectPooledSharedStateAccess("Migration job state") ??
+        migrationJobStatusProxy(req, params[0] ?? ""),
     },
 
     // ── Workspace commit ──
@@ -1163,7 +1262,9 @@ async function main() {
       method: "POST",
       auth: "edge-scoped",
       scope: "admin.write",
-      handler: (req) => migrationRollbackProxy(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Migration rollback") ??
+        migrationRollbackProxy(req),
     },
 
     // ── Backups ──
@@ -1172,14 +1273,18 @@ async function main() {
       method: "GET",
       auth: "edge-scoped",
       scope: "settings.read",
-      handler: (req) => handleListBackups(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Gateway backup state") ??
+        handleListBackups(req),
     },
     {
       path: "/v1/backups/create",
       method: "POST",
       auth: "edge-scoped",
       scope: "settings.write",
-      handler: (req) => handleCreateBackup(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Gateway backup state") ??
+        handleCreateBackup(req),
     },
 
     // ── Backups — assistant-scoped variants ──
@@ -1195,14 +1300,18 @@ async function main() {
       method: "GET",
       auth: "edge-scoped",
       scope: "settings.read",
-      handler: (req) => handleListBackups(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Gateway backup state") ??
+        handleListBackups(req),
     },
     {
       path: /^\/v1\/assistants\/[^/]+\/backups\/create\/?$/,
       method: "POST",
       auth: "edge-scoped",
       scope: "settings.write",
-      handler: (req) => handleCreateBackup(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Gateway backup state") ??
+        handleCreateBackup(req),
     },
 
     // ── Channel readiness ──
@@ -1221,10 +1330,12 @@ async function main() {
     },
 
     {
-      path: /^\/v1\/assistants\/([^/]+)\/channels\/readiness\/$/,
+      path: /^\/v1\/assistants\/([^/]+)\/channels\/readiness\/?$/,
       method: "GET",
       auth: "edge",
-      handler: (req) => channelReadinessProxy.handleGetChannelReadiness(req),
+      handler: (req) =>
+        rejectPooledSharedStateAccess("Assistant-scoped channel readiness") ??
+        channelReadinessProxy.handleGetChannelReadiness(req),
     },
 
     // ── Integration status ──
@@ -1232,23 +1343,13 @@ async function main() {
       path: "/integrations/status",
       method: "GET",
       auth: "edge",
-      handler: () =>
-        Response.json({
-          email: {
-            address: configFileCache.getString("email", "address") ?? null,
-          },
-        }),
+      handler: integrationStatusResponse,
     },
     {
-      path: /^\/v1\/assistants\/([^/]+)\/integrations\/status\/$/,
+      path: /^\/v1\/assistants\/([^/]+)\/integrations\/status\/?$/,
       method: "GET",
       auth: "edge",
-      handler: () =>
-        Response.json({
-          email: {
-            address: configFileCache.getString("email", "address") ?? null,
-          },
-        }),
+      handler: integrationStatusResponse,
     },
 
     // ── Feature flags (scope-protected) ──
@@ -1312,7 +1413,7 @@ async function main() {
       handler: (req) => handlePrivacyConfigGet(req),
     },
     {
-      path: /^\/v1\/assistants\/([^/]+)\/config\/privacy\/$/,
+      path: /^\/v1\/assistants\/([^/]+)\/config\/privacy\/?$/,
       method: "GET",
       auth: "edge-scoped",
       scope: "settings.read",
@@ -1326,7 +1427,7 @@ async function main() {
       handler: (req) => handlePrivacyConfigPatch(req),
     },
     {
-      path: /^\/v1\/assistants\/([^/]+)\/config\/privacy\/$/,
+      path: /^\/v1\/assistants\/([^/]+)\/config\/privacy\/?$/,
       method: "PATCH",
       auth: "edge-scoped",
       scope: "settings.write",
@@ -1542,8 +1643,11 @@ async function main() {
   routes.push({
     path: /^\//, // match everything
     auth: "track-failures",
-    handler: (req, _params, getClientIp) =>
-      handleRuntimeProxy(req, getClientIp()),
+    handler: (req, _params, getClientIp) => {
+      const boundary = enforcePooledAssignmentCredentialBoundary();
+      if (boundary) return boundary;
+      return handleRuntimeProxy(req, getClientIp());
+    },
   });
 
   const router = createRouter(routes, {
@@ -1867,18 +1971,20 @@ async function main() {
 
   log.info({ port: server.port }, "Gateway HTTP server listening");
   logAuthBypassState();
-  void runPostAssistantReady()
-    .then(() => {
-      log.info("Post-assistant-ready tasks completed");
-    })
-    .catch((err) => {
-      log.error({ err }, "Post-assistant-ready tasks crashed");
-    });
+  if (sharedGatewayBackgroundServicesEnabled) {
+    void runPostAssistantReady()
+      .then(() => {
+        log.info("Post-assistant-ready tasks completed");
+      })
+      .catch((err) => {
+        log.error({ err }, "Post-assistant-ready tasks crashed");
+      });
 
-  // Start periodic background cleanup for dedup caches
-  telegramDedupCache.startCleanup();
-  whatsappDedupCache.startCleanup();
-  emailDedupCache.startCleanup();
+    // These caches belong to process-global inbound integration listeners.
+    telegramDedupCache.startCleanup();
+    whatsappDedupCache.startCleanup();
+    emailDedupCache.startCleanup();
+  }
 
   const telegramCaches = {
     credentials: credentialCache,
@@ -1953,6 +2059,7 @@ async function main() {
   }
 
   async function startSlackSocket(): Promise<void> {
+    assertPooledSharedStateUnavailable("Slack Socket Mode");
     if (slackSocketClient) {
       slackSocketClient.stop();
       slackSocketClient = null;
@@ -2228,6 +2335,7 @@ async function main() {
   let remoteFeatureFlagSyncRef: RemoteFeatureFlagSync | null = null;
 
   const credentialWatcher = new CredentialWatcher((event) => {
+    assertPooledSharedStateUnavailable("Gateway integration credentials");
     const changed = detectCredentialChanges(event, log);
 
     // Invalidate the credential cache so subsequent reads pick up fresh values
@@ -2328,25 +2436,28 @@ async function main() {
     }
   });
 
-  const twilioStartupCredentials = await readTwilioCredentialsForVelayStartup();
-  if (velayTunnelClient) {
-    await clearManagedPublicBaseUrl(configFileCache).catch((err) => {
-      log.error({ err }, "Failed to clear stale Velay public URL");
-    });
+  if (sharedGatewayBackgroundServicesEnabled) {
+    const twilioStartupCredentials =
+      await readTwilioCredentialsForVelayStartup();
+    if (velayTunnelClient) {
+      await clearManagedPublicBaseUrl(configFileCache).catch((err) => {
+        log.error({ err }, "Failed to clear stale Velay public URL");
+      });
+    }
+    maybeStartVelayTunnelForTwilio("startup", twilioStartupCredentials);
+    // Velay is also the browser's ingress for web live voice, so bring the tunnel
+    // up at startup when `voice-mode` is already enabled (not just for Twilio).
+    maybeStartVelayTunnelForLiveVoice("startup");
+
+    // The credential watcher callback handles credential-backed startup side
+    // effects during the initial poll. Stale Velay-owned ingress is already
+    // cleared before those side effects can register external callbacks.
+    await credentialWatcher.start();
+
+    // Start watching avatar directory for changes after credential watcher
+    // so channel syncers are already registered before the first file event.
+    avatarSyncWatcher.start();
   }
-  maybeStartVelayTunnelForTwilio("startup", twilioStartupCredentials);
-  // Velay is also the browser's ingress for web live voice, so bring the tunnel
-  // up at startup when `voice-mode` is already enabled (not just for Twilio).
-  maybeStartVelayTunnelForLiveVoice("startup");
-
-  // The credential watcher callback handles credential-backed startup side
-  // effects during the initial poll. Stale Velay-owned ingress is already
-  // cleared before those side effects can register external callbacks.
-  await credentialWatcher.start();
-
-  // Start watching avatar directory for changes after credential watcher
-  // so channel syncers are already registered before the first file event.
-  avatarSyncWatcher.start();
 
   const configFileWatcher = new ConfigFileWatcher((event) => {
     // Invalidate the config file cache so subsequent reads pick up fresh values
@@ -2400,7 +2511,9 @@ async function main() {
     }
   });
 
-  configFileWatcher.start();
+  if (sharedGatewayBackgroundServicesEnabled) {
+    configFileWatcher.start();
+  }
 
   // ── IPC server ──
   const ipcServer = new GatewayIpcServer([
@@ -2411,16 +2524,20 @@ async function main() {
     ...riskClassificationRoutes,
     ...createLogTailRoutes(config),
     ...trustRulesRoutes,
-    ...createVelayRoutes(velayTunnelClient),
+    ...(sharedGatewayBackgroundServicesEnabled
+      ? createVelayRoutes(velayTunnelClient)
+      : []),
   ]);
   ipcServer.start();
 
   void refreshRouteSchema();
 
   // ── Backup worker ──
-  const backupWorkerHandle = startBackupWorker({
-    assistantRuntimeBaseUrl: config.assistantRuntimeBaseUrl,
-  });
+  const backupWorkerHandle = sharedGatewayBackgroundServicesEnabled
+    ? startBackupWorker({
+        assistantRuntimeBaseUrl: config.assistantRuntimeBaseUrl,
+      })
+    : null;
 
   const emitFlagChanged = () => {
     ipcServer.emit("feature_flags_changed");
@@ -2433,7 +2550,9 @@ async function main() {
   const featureFlagWatcher = new FeatureFlagWatcher({
     onChanged: emitFlagChanged,
   });
-  featureFlagWatcher.start();
+  if (sharedGatewayBackgroundServicesEnabled) {
+    featureFlagWatcher.start();
+  }
 
   const remoteFeatureFlagSync = new RemoteFeatureFlagSync({
     credentials: credentialCache,
@@ -2445,7 +2564,9 @@ async function main() {
   remoteFeatureFlagSyncRef = remoteFeatureFlagSync;
   // Intentionally fire-and-forget: remote flag fetch is best-effort;
   // the gateway continues with registry defaults if it fails.
-  void remoteFeatureFlagSync.start();
+  if (sharedGatewayBackgroundServicesEnabled) {
+    void remoteFeatureFlagSync.start();
+  }
 
   // Periodically ship legacy-loopback auth-fallback counts to the daemon
   // telemetry route. Best-effort background work; never blocks auth.
@@ -2481,7 +2602,9 @@ async function main() {
       });
     }
   });
-  sleepWakeDetector.start();
+  if (sharedGatewayBackgroundServicesEnabled) {
+    sleepWakeDetector.start();
+  }
 
   const drainMs = config.shutdownDrainMs;
 
@@ -2490,7 +2613,7 @@ async function main() {
     draining = true;
     const shutdownTasks: Promise<void>[] = [];
     sleepWakeDetector.stop();
-    backupWorkerHandle.stop();
+    backupWorkerHandle?.stop();
     stopVoiceApprovalSync();
     stopOutboundVoiceVerificationSync();
     credentialWatcher.stop();

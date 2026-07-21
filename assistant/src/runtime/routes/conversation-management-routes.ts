@@ -21,6 +21,7 @@
 
 import { z } from "zod";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import { destroyActiveConversation } from "../../daemon/conversation-store.js";
 import {
   cancelGeneration,
@@ -30,7 +31,10 @@ import {
   undoLastMessage,
 } from "../../daemon/handlers/conversations.js";
 import { normalizeConversationType } from "../../daemon/message-types/shared.js";
-import { stripConversationIds } from "../../home/feed-writer.js";
+import {
+  clearAllConversationIds,
+  stripConversationIds,
+} from "../../home/feed-writer.js";
 import {
   archiveConversation,
   batchSetDisplayOrders,
@@ -48,6 +52,7 @@ import {
   resolveConversationId,
   setConversationKeyIfAbsent,
 } from "../../memory/conversation-key-store.js";
+import { queueRepairConversationTitle } from "../../memory/conversation-title-service.js";
 import { enqueueMemoryJob } from "../../memory/jobs-store.js";
 import { deleteSchedule } from "../../schedule/schedule-store.js";
 import { UserError } from "../../util/errors.js";
@@ -175,6 +180,7 @@ async function handleSwitchConversation({ body = {} }: RouteHandlerArgs) {
   if (body.conversationKey && typeof body.conversationKey === "string") {
     setConversationKeyIfAbsent(body.conversationKey, conversationId);
   }
+  queueRepairConversationTitle({ conversationId: result.conversationId });
   return {
     conversationId: result.conversationId,
     title: result.title,
@@ -241,6 +247,11 @@ async function handleClearAllConversations({ headers = {} }: RouteHandlerArgs) {
     );
   }
   await clearAllConversations();
+  if (isPooledWorkerRuntime()) {
+    await clearAllConversationIds();
+  } else {
+    void clearAllConversationIds();
+  }
   publishConversationListChanged(
     "deleted",
     headers["x-vellum-client-id"]?.trim() || undefined,
@@ -251,7 +262,19 @@ async function handleClearAllConversations({ headers = {} }: RouteHandlerArgs) {
 function handleWipeConversation({
   pathParams = {},
   headers,
-}: RouteHandlerArgs) {
+}: RouteHandlerArgs):
+  | {
+      wiped: true;
+      unsupersededItems: number;
+      deletedSummaries: number;
+      cancelledJobs: number;
+    }
+  | Promise<{
+      wiped: true;
+      unsupersededItems: number;
+      deletedSummaries: number;
+      cancelledJobs: number;
+    }> {
   const resolvedId = resolveOrThrow(pathParams.id!);
 
   cancelScheduleIfLast(resolvedId);
@@ -284,20 +307,25 @@ function handleWipeConversation({
     headers?.["x-vellum-client-id"]?.trim() || undefined,
   );
 
-  void stripConversationIds(resolvedId);
-
-  return {
+  const response = {
     wiped: true,
     unsupersededItems: 0,
     deletedSummaries: result.deletedSummaryIds.length,
     cancelledJobs: result.cancelledJobCount,
-  };
+  } as const;
+
+  const feedWrite = stripConversationIds(resolvedId);
+  if (isPooledWorkerRuntime()) {
+    return feedWrite.then(() => response);
+  }
+  void feedWrite;
+  return response;
 }
 
 function handleDeleteConversation({
   pathParams = {},
   headers,
-}: RouteHandlerArgs) {
+}: RouteHandlerArgs): undefined | Promise<undefined> {
   const resolvedId = resolveOrThrow(pathParams.id!);
 
   cancelScheduleIfLast(resolvedId);
@@ -324,8 +352,11 @@ function handleDeleteConversation({
     headers?.["x-vellum-client-id"]?.trim() || undefined,
   );
 
-  void stripConversationIds(resolvedId);
-
+  const feedWrite = stripConversationIds(resolvedId);
+  if (isPooledWorkerRuntime()) {
+    return feedWrite.then(() => undefined);
+  }
+  void feedWrite;
   return undefined;
 }
 

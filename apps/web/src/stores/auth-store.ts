@@ -61,6 +61,7 @@ import { restoreConsentForUser, persistConsentForUser, resolveServerConsent, CON
 import { useOnboardingStore } from "@/domains/onboarding/onboarding-store";
 import { clearOrganization, useOrganizationStore } from "@/stores/organization-store";
 import { clearUserScopedStorage } from "@/lib/auth/session-cleanup";
+import { clearPendingProviderSecretUnlessOwnedBy } from "@/lib/auth/pending-provider-secret";
 import { subscribe } from "@/lib/event-bus";
 import { isElectron } from "@/runtime/is-electron";
 import { isNativePlatform, isOAuthFlowInFlight, installSessionCookies, waitForNativeSessionCookie } from "@/runtime/native-auth";
@@ -228,6 +229,10 @@ function broadcastAuthChange(): void {
 }
 
 async function syncUserScopedState(nextUserId: string | null): Promise<void> {
+  // Raw onboarding keys are short-lived but survive ordinary session refreshes.
+  // Enforce their persisted owner even on a cold reload where previousUserId is
+  // not yet populated, and clear legacy unbound values fail-closed.
+  clearPendingProviderSecretUnlessOwnedBy(nextUserId);
   if (nextUserId) {
     try {
       const me = await fetchMe();

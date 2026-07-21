@@ -144,14 +144,16 @@ export function _setFailureWarnIntervalForTesting(intervalMs: number): void {
   failureWarnIntervalMs = intervalMs;
 }
 
-/**
- * Clear the global threshold cache. Exported for testing.
- */
-export function _clearGlobalCacheForTesting(): void {
+/** Clear every assignment-scoped threshold cache before pooled worker reuse. */
+export function resetGatewayThresholdCacheForTenantAssignment(): void {
   cachedGlobalThresholds = null;
   cachedGlobalTimestamp = 0;
   conversationThresholdCache.clear();
 }
+
+/** Test-only compatibility alias. */
+export const _clearGlobalCacheForTesting =
+  resetGatewayThresholdCacheForTenantAssignment;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

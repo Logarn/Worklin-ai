@@ -67,12 +67,33 @@ async function handleBootstrap(args: RouteHandlerArgs) {
       ? "local"
       : undefined);
   if (!actorId) throw new ForbiddenError("Voice session actor is unavailable");
+  const trustedTenant = args.authContext?.tenantContext;
+  if (trustedTenant && trustedTenant.assistantId !== parsed.data.assistantId) {
+    throw new ForbiddenError(
+      "Voice session assistant does not match authenticated tenant",
+    );
+  }
 
   try {
+    const authenticatedLease = args.authContext?.pooledWorkerLease;
     return await bootstrapVoiceSession({
       ...parsed.data,
+      assistantId: trustedTenant?.assistantId ?? parsed.data.assistantId,
       actorId,
-      organizationId: args.headers?.["x-vellum-org-id"],
+      organizationId:
+        trustedTenant?.organizationId ?? args.headers?.["x-vellum-org-id"],
+      ...(authenticatedLease
+        ? {
+            pooledWorkerLease: {
+              tenant: {
+                orgId: authenticatedLease.organizationId,
+                assistantId: authenticatedLease.assistantId,
+              },
+              workerStackId: authenticatedLease.workerStackId,
+              generation: authenticatedLease.leaseGeneration,
+            },
+          }
+        : {}),
     });
   } catch (error) {
     if (!(error instanceof VoiceBootstrapError)) throw error;

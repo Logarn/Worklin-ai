@@ -109,9 +109,11 @@ const validateEdgeTokenMock = mock(
     claims: { sub: "test", scope_profile: "test" },
   }),
 );
+const mintExchangeTokenMock = mock(() => "daemon-exchange-token");
 
 mock.module("../../auth/token-exchange.js", () => ({
   validateEdgeToken: validateEdgeTokenMock,
+  mintExchangeToken: mintExchangeTokenMock,
 }));
 
 // ---------------------------------------------------------------------------
@@ -334,6 +336,13 @@ describe("tryIpcProxy", () => {
     const result = await tryIpcProxy(req, config);
     expect(result!.status).toBe(200);
     expect(validateEdgeTokenMock).toHaveBeenCalledWith("good-token");
+    const [, params] = ipcCallAssistantMock.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect((params.headers as Record<string, string>).authorization).toBe(
+      "Bearer daemon-exchange-token",
+    );
   });
 
   test("isolated runtime propagates platform owner only after trusted actor binding", async () => {
@@ -381,6 +390,7 @@ describe("tryIpcProxy", () => {
     expect(headers["x-worklin-assistant-id"]).toBe("asst_1");
     expect(headers["x-worklin-actor-id"]).toBe("vellum-principal-user_1");
     expect(headers["x-worklin-request-id"]).toBe("request_1");
+    expect(headers.authorization).toBe("Bearer daemon-exchange-token");
   });
 
   test("isolated IPC runtime rejects a platform token without tenant context", async () => {

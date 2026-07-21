@@ -56,9 +56,40 @@ const queueRegenerateConversationTitleMock = mock(
     context?: { origin: string; sourceChannel?: string };
   }): void => undefined,
 );
+const generateConversationTitleRequestBoundMock = mock(
+  async (_params: {
+    conversationId: string;
+    userMessage?: string;
+    assistantResponse?: string;
+  }): Promise<{ title: string; updated: boolean }> => ({
+    title: "First title",
+    updated: true,
+  }),
+);
+const regenerateConversationTitleRequestBoundMock = mock(
+  async (_params: {
+    conversationId: string;
+    recentMessages?: ReadonlyArray<{
+      role: "user" | "assistant";
+      text: string;
+    }>;
+  }): Promise<{ title: string; updated: boolean }> => ({
+    title: "Refined title",
+    updated: true,
+  }),
+);
 mock.module("../memory/conversation-title-service.js", () => ({
+  generateConversationTitleRequestBound:
+    generateConversationTitleRequestBoundMock,
   queueGenerateConversationTitle: queueGenerateConversationTitleMock,
   queueRegenerateConversationTitle: queueRegenerateConversationTitleMock,
+  regenerateConversationTitleRequestBound:
+    regenerateConversationTitleRequestBoundMock,
+}));
+
+let pooledRuntime = false;
+mock.module("../config/env.js", () => ({
+  isPooledWorkerRuntime: () => pooledRuntime,
 }));
 
 // The `stop` hook reads `conversations.skipAutoRetitling`; stub the loader so
@@ -162,6 +193,12 @@ describe("title-generate user-prompt-submit hook", () => {
     );
     queueGenerateConversationTitleMock.mockReset();
     queueGenerateConversationTitleMock.mockImplementation(() => undefined);
+    generateConversationTitleRequestBoundMock.mockReset();
+    generateConversationTitleRequestBoundMock.mockResolvedValue({
+      title: "First title",
+      updated: true,
+    });
+    pooledRuntime = false;
   });
 
   test("queues a title-generation job from the submitted prompt", async () => {
@@ -212,6 +249,21 @@ describe("title-generate user-prompt-submit hook", () => {
     expect(
       queueGenerateConversationTitleMock.mock.calls[0]?.[0]?.userMessage,
     ).toBe("draft a plan");
+  });
+
+  test("does not schedule a detached title timer in a pooled worker", async () => {
+    // GIVEN the legacy queue would synchronously reject pooled background work
+    pooledRuntime = true;
+    queueGenerateConversationTitleMock.mockImplementation(() => {
+      throw new Error("detached pooled title job");
+    });
+
+    // WHEN the prompt hook runs and enough time passes for any timer to escape
+    await expect(userPromptSubmit(makeCtx())).resolves.toBeUndefined();
+    await flushMacrotasks();
+
+    // THEN no detached title job was scheduled; the stop hook owns this work
+    expect(queueGenerateConversationTitleMock).not.toHaveBeenCalled();
   });
 
   test("passes schedule origin for a noninteractive system row stored as standard", async () => {
@@ -334,9 +386,22 @@ describe("title-generate stop hook", () => {
     getConversationMock.mockImplementation(
       (_conversationId: string) => mockTitleConversation,
     );
+    queueGenerateConversationTitleMock.mockReset();
+    queueGenerateConversationTitleMock.mockImplementation(() => undefined);
     queueRegenerateConversationTitleMock.mockReset();
     queueRegenerateConversationTitleMock.mockImplementation(() => undefined);
+    generateConversationTitleRequestBoundMock.mockReset();
+    generateConversationTitleRequestBoundMock.mockResolvedValue({
+      title: "First title",
+      updated: true,
+    });
+    regenerateConversationTitleRequestBoundMock.mockReset();
+    regenerateConversationTitleRequestBoundMock.mockResolvedValue({
+      title: "Refined title",
+      updated: true,
+    });
     skipAutoRetitling = false;
+    pooledRuntime = false;
   });
 
   test("regenerates the title on the third user turn", async () => {
@@ -521,5 +586,79 @@ describe("title-generate stop hook", () => {
     expect(
       queueRegenerateConversationTitleMock.mock.calls[0]?.[0]?.conversationId,
     ).toBe("conv-1");
+  });
+
+  test("awaits first-pass pooled generation with the completed turn context", async () => {
+    // GIVEN a successful first turn on a pooled worker
+    pooledRuntime = true;
+    let releaseTitle!: () => void;
+    const titleBlocked = new Promise<void>((resolve) => {
+      releaseTitle = resolve;
+    });
+    generateConversationTitleRequestBoundMock.mockImplementationOnce(
+      async () => {
+        await titleBlocked;
+        return { title: "Kickoff plan", updated: true };
+      },
+    );
+    let stopSettled = false;
+
+    // WHEN the stop hook starts title generation
+    const stopPromise = stop(
+      makeStopCtx({ messages: historyWithUserTurns(1) }),
+    ).then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+
+    // THEN it remains request-bound until title persistence settles
+    expect(stopSettled).toBe(false);
+    expect(generateConversationTitleRequestBoundMock).toHaveBeenCalledWith({
+      conversationId: "conv-1",
+      userMessage: "message 1",
+      assistantResponse: "reply 1",
+    });
+    expect(queueGenerateConversationTitleMock).not.toHaveBeenCalled();
+    expect(queueRegenerateConversationTitleMock).not.toHaveBeenCalled();
+
+    releaseTitle();
+    await stopPromise;
+    expect(stopSettled).toBe(true);
+  });
+
+  test("regenerates a pooled third-turn title from request-local context", async () => {
+    // GIVEN the third successful turn on a pooled worker
+    pooledRuntime = true;
+    const messages = historyWithUserTurns(3);
+
+    // WHEN the stop hook completes
+    await stop(makeStopCtx({ messages }));
+
+    // THEN regeneration is awaited with the latest in-memory transcript,
+    // rather than deferred until after the tenant lease is released.
+    expect(regenerateConversationTitleRequestBoundMock).toHaveBeenCalledWith({
+      conversationId: "conv-1",
+      recentMessages: [
+        { role: "assistant", text: "reply 2" },
+        { role: "user", text: "message 3" },
+        { role: "assistant", text: "reply 3" },
+      ],
+    });
+    expect(queueRegenerateConversationTitleMock).not.toHaveBeenCalled();
+  });
+
+  test("contains a request-bound title failure without failing the pooled turn", async () => {
+    // GIVEN title generation rejects after the main first-turn reply completed
+    pooledRuntime = true;
+    generateConversationTitleRequestBoundMock.mockRejectedValueOnce(
+      new Error("title provider unavailable"),
+    );
+
+    // WHEN the pooled stop hook awaits the title attempt
+    const result = stop(makeStopCtx({ messages: historyWithUserTurns(1) }));
+
+    // THEN the title failure remains non-fatal to the user-visible turn
+    await expect(result).resolves.toBeUndefined();
+    expect(queueGenerateConversationTitleMock).not.toHaveBeenCalled();
   });
 });

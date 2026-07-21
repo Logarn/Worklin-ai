@@ -51,12 +51,25 @@ let lazyInitPromise: Promise<void> | null = null;
 export class CallSiteConfiguredProvider implements Provider {
   public readonly name: string;
   public readonly tokenEstimationProvider?: string;
+  private readonly routingOptions: ConfiguredProviderOptions;
 
   constructor(
     private readonly inner: Provider,
     private readonly callSite: LLMCallSite,
-    private readonly routingOptions: ConfiguredProviderOptions = {},
+    routingOptionsOrOverrideProfile: ConfiguredProviderOptions | string = {},
+    forceOverrideProfile?: boolean,
+    selectionSeed?: string,
   ) {
+    this.routingOptions =
+      typeof routingOptionsOrOverrideProfile === "string"
+        ? {
+            overrideProfile: routingOptionsOrOverrideProfile,
+            ...(forceOverrideProfile === undefined
+              ? {}
+              : { forceOverrideProfile }),
+            ...(selectionSeed === undefined ? {} : { selectionSeed }),
+          }
+        : routingOptionsOrOverrideProfile;
     this.name = inner.name;
     this.tokenEstimationProvider = inner.tokenEstimationProvider;
   }

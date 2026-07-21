@@ -14,6 +14,7 @@ import { lifecycleService } from "@/assistant/lifecycle-service";
 import { sseService } from "@/assistant/sse-service";
 import { useEventBusInit } from "@/hooks/use-event-bus-init";
 import { __resetForTesting } from "@/lib/event-bus";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 const detachMock = mock(() => {});
 let callOrder: string[] = [];
@@ -36,6 +37,12 @@ beforeEach(() => {
   checkAssistantSpy.mockClear();
   attachSpy.mockClear();
   detachMock.mockClear();
+  useResolvedAssistantsStore.setState({
+    assistants: [],
+    activeAssistantId: null,
+    selectedAssistantId: null,
+    assistantsHydrated: false,
+  });
 });
 
 afterEach(() => {
@@ -78,5 +85,26 @@ describe("useEventBusInit — attach gating", () => {
     expect(checkAssistantSpy.mock.calls[0]![0]).toBe("asst-1");
     expect(attachSpy.mock.calls[0]![0]).toBe("asst-1");
     expect(callOrder).toEqual(["check:asst-1", "attach:asst-1"]);
+  });
+
+  test("refreshes but never attaches an indefinite stream for a pooled worker", async () => {
+    useResolvedAssistantsStore.setState({
+      assistants: [
+        {
+          id: "asst-1",
+          isLocal: false,
+          isPlatformHosted: true,
+          runtimeProvider: "pooled_worker",
+        },
+      ],
+      assistantsHydrated: true,
+    });
+
+    renderHook(() =>
+      useEventBusInit({ assistantId: "asst-1", isAssistantActive: true }),
+    );
+
+    await waitFor(() => expect(checkAssistantSpy).toHaveBeenCalledTimes(1));
+    expect(attachSpy).not.toHaveBeenCalled();
   });
 });

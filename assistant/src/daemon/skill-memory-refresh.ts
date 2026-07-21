@@ -1,3 +1,4 @@
+import { isPooledWorkerRuntime } from "../config/env.js";
 import {
   getDisableEmbeddings,
   getIsContainerized,
@@ -73,6 +74,9 @@ export function refreshSkillCapabilityMemories(
   config: AssistantConfig = getConfig(),
 ): void {
   clearDeferredMemoryV2SeedTimer();
+  if (isPooledWorkerRuntime()) {
+    return;
+  }
   refreshSkillCapabilityGraph();
   runMemoryV2CapabilitySeeds(config);
 }
@@ -80,6 +84,10 @@ export function refreshSkillCapabilityMemories(
 export function refreshSkillCapabilityMemoriesOnStartup(
   config: AssistantConfig = getConfig(),
 ): void {
+  if (isPooledWorkerRuntime()) {
+    clearDeferredMemoryV2SeedTimer();
+    return;
+  }
   refreshSkillCapabilityGraph();
   if (getIsContainerized()) {
     scheduleDeferredMemoryV2CapabilitySeeds(config);

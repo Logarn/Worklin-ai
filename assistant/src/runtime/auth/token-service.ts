@@ -22,6 +22,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import { getIsContainerized } from "../../config/env-registry.js";
 import { getLogger } from "../../util/logger.js";
 import { getDeprecatedDir } from "../../util/platform.js";
@@ -134,7 +135,7 @@ export function loadOrCreateSigningKey(): Buffer {
  * the in-memory key.
  */
 function syncEnvSigningKeyToDiskIfNeeded(key: Buffer): void {
-  if (getIsContainerized()) {
+  if (getIsContainerized() || isPooledWorkerRuntime()) {
     return;
   }
 
@@ -185,6 +186,12 @@ export function resolveSigningKey(): Buffer {
     syncEnvSigningKeyToDiskIfNeeded(key);
     log.info("Signing key loaded from ACTOR_TOKEN_SIGNING_KEY env var");
     return key;
+  }
+
+  if (isPooledWorkerRuntime()) {
+    throw new Error(
+      "Pooled workers require ACTOR_TOKEN_SIGNING_KEY from the deployment environment.",
+    );
   }
 
   // Fallback: env var not set (e.g. daemon spawned by cli/src/lib/local.ts
@@ -280,6 +287,10 @@ export function mintToken(params: {
   ttlSeconds: number;
   artifact_id?: string;
   collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
+  tenant_context?: TokenClaims["tenant_context"];
+  service_tenant_context?: TokenClaims["service_tenant_context"];
+  pooled_worker_lease?: TokenClaims["pooled_worker_lease"];
+  jti?: string;
 }): string {
   const now = Math.floor(Date.now() / 1000);
   const claims: TokenClaims = {
@@ -293,8 +304,15 @@ export function mintToken(params: {
     ...(params.collaboration_role
       ? { collaboration_role: params.collaboration_role }
       : {}),
+    ...(params.tenant_context ? { tenant_context: params.tenant_context } : {}),
+    ...(params.service_tenant_context
+      ? { service_tenant_context: params.service_tenant_context }
+      : {}),
+    ...(params.pooled_worker_lease
+      ? { pooled_worker_lease: params.pooled_worker_lease }
+      : {}),
     iat: now,
-    jti: randomBytes(16).toString("hex"),
+    jti: params.jti ?? randomBytes(16).toString("hex"),
   };
 
   const payload = base64urlEncode(JSON.stringify(claims));

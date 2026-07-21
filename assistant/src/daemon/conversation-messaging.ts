@@ -44,6 +44,7 @@ import {
 import type { SecretPrompter } from "../permissions/secret-prompter.js";
 import type { Message } from "../providers/types.js";
 import type { AuthContext } from "../runtime/auth/types.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { getLogger } from "../util/logger.js";
 import type { MessageQueue } from "./conversation-queue-manager.js";
 import type { SlackInboundMessageMetadata } from "./handlers/shared.js";
@@ -641,6 +642,7 @@ export function redirectToSecurePrompt(
   detectedTypes: string[],
   options?: RedirectToSecurePromptOptions,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("secure prompt callbacks");
   const target = resolveIngressSecretTarget(detectedTypes);
 
   secretPrompter

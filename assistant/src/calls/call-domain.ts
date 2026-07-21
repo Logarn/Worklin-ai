@@ -20,6 +20,7 @@ import { upsertBinding } from "../memory/external-conversation-store.js";
 import { revokeScopedApprovalGrantsForContext } from "../memory/scoped-approval-grants.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../runtime/assistant-scope.js";
 import { isGuardian } from "../runtime/channel-verification-service.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { credentialKey } from "../security/credential-key.js";
 import { getSecureKeyAsync } from "../security/secure-keys.js";
 import { getLogger } from "../util/logger.js";
@@ -270,6 +271,7 @@ type CreateInboundVoiceSessionResult = {
 export function createInboundVoiceSession(
   input: CreateInboundVoiceSessionInput,
 ): CreateInboundVoiceSessionResult {
+  assertPooledRuntimeAsyncOperationSupported("telephony calls");
   const {
     callSid,
     fromNumber,
@@ -360,6 +362,7 @@ export function createInboundVoiceSession(
 export async function startCall(
   input: StartCallInput,
 ): Promise<StartCallResult | CallError> {
+  assertPooledRuntimeAsyncOperationSupported("telephony calls");
   const {
     phoneNumber,
     task,
@@ -919,6 +922,7 @@ type StartVerificationCallResult =
 export async function startVerificationCall(
   input: StartVerificationCallInput,
 ): Promise<StartVerificationCallResult> {
+  assertPooledRuntimeAsyncOperationSupported("telephony calls");
   const { phoneNumber, verificationSessionId, originConversationId } = input;
 
   if (!phoneNumber || !E164_REGEX.test(phoneNumber)) {
@@ -1051,6 +1055,7 @@ type StartInviteCallResult = { ok: true; callSid: string } | CallError;
 export async function startInviteCall(
   input: StartInviteCallInput,
 ): Promise<StartInviteCallResult> {
+  assertPooledRuntimeAsyncOperationSupported("telephony calls");
   const { phoneNumber, friendName, guardianName } = input;
 
   if (!phoneNumber || !E164_REGEX.test(phoneNumber)) {

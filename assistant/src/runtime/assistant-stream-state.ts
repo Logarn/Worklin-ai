@@ -304,6 +304,24 @@ export function getPersistedSeq(conversationId: string): number | null {
 }
 
 /**
+ * Drop all process-local stream state at a pooled tenant-assignment boundary.
+ *
+ * The next event reloads its sequence reservation from the newly restored (or
+ * newly empty) tenant workspace. Clearing the replay ring and persisted-seq
+ * map is mandatory: both contain conversation identifiers and event payloads
+ * that must never be visible to the next tenant assigned to this process.
+ */
+export function resetAssistantStreamStateForTenantAssignment(): void {
+  state.nextSeq = 1;
+  state.reservedSeqCeiling = 0;
+  state.seqReservationLoaded = false;
+  state.firstStampedSeq = 0;
+  state.ring = [];
+  state.totalSizeBytes = 0;
+  state.persistedSeqByConversation.clear();
+}
+
+/**
  * Reset all stream state. Test-only.
  */
 export function _resetStreamStateForTesting(): void {
@@ -324,13 +342,7 @@ export function _resetStreamStateForTesting(): void {
  * next stamp to reload the persisted seq reservation. Test-only.
  */
 export function _simulateRestartForTesting(): void {
-  state.nextSeq = 1;
-  state.reservedSeqCeiling = 0;
-  state.seqReservationLoaded = false;
-  state.firstStampedSeq = 0;
-  state.ring = [];
-  state.totalSizeBytes = 0;
-  state.persistedSeqByConversation.clear();
+  resetAssistantStreamStateForTenantAssignment();
 }
 
 /**

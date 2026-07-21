@@ -1,11 +1,6 @@
 import { getLogger } from "../util/logger.js";
 import { coreAppProxyTools } from "./apps/definitions.js";
 import { registerAppTools } from "./apps/registry.js";
-import { hostFileEditTool } from "./host-filesystem/edit.js";
-import { hostFileReadTool } from "./host-filesystem/read.js";
-import { hostFileTransferTool } from "./host-filesystem/transfer.js";
-import { hostFileWriteTool } from "./host-filesystem/write.js";
-import { hostShellTool } from "./host-terminal/host-shell.js";
 import { toProviderSafeToolName } from "./provider-tool-name.js";
 import { registerSystemTools } from "./system/register.js";
 import { finalizeTool } from "./tool-defaults.js";
@@ -16,6 +11,42 @@ import { registerUiSurfaceTools } from "./ui-surface/registry.js";
 const log = getLogger("tool-registry");
 
 const tools = new Map<string, Tool>();
+
+export type ToolInitializationProfile = "dedicated" | "pooled";
+
+export interface InitializeToolsOptions {
+  profile?: ToolInitializationProfile;
+}
+
+/**
+ * Core tools exposed by pooled workers. Every entry is either confined to the
+ * assignment workspace/sandbox or resolves through the current request
+ * context. Process-global host, CES, workflow, plugin, and external-skill
+ * bootstraps are deliberately excluded.
+ */
+export const POOLED_SAFE_EXPLICIT_TOOL_NAMES = Object.freeze([
+  "file_read",
+  "file_write",
+  "file_edit",
+  "file_list",
+  "web_fetch",
+  "remember",
+  "recall",
+  "ask_question",
+] as const);
+
+const pooledSafeExplicitToolNames = new Set<string>(
+  POOLED_SAFE_EXPLICIT_TOOL_NAMES,
+);
+const pooledSafeCoreToolNames = new Set<string>([
+  ...POOLED_SAFE_EXPLICIT_TOOL_NAMES,
+  ...allUiSurfaceTools
+    .map((tool) => tool.name)
+    .filter((name): name is string => typeof name === "string"),
+]);
+let activeToolInitializationProfile: ToolInitializationProfile | null = null;
+let pooledCoreToolsSnapshot: Map<string, Tool> | null = null;
+let coreToolsInitialized = false;
 
 // Authoritative map of tool ownership, keyed by tool name. Populated by the
 // `register*` functions and read by `getToolOwner()`. Lives on the registry
@@ -67,6 +98,10 @@ export function registerExternalTools(
   owner: OwnerInfo,
   toolsOrProvider: Tool[] | (() => Tool[]),
 ): void {
+  if (activeToolInitializationProfile === "pooled") {
+    log.warn({ owner }, "Ignoring external tool provider in pooled worker");
+    return;
+  }
   const provider =
     typeof toolsOrProvider === "function"
       ? toolsOrProvider
@@ -181,6 +216,14 @@ export function registerTool(definition: ToolDefinition): void {
       "registerTool: tool.name is required — set it on the literal or finalize through `finalizeTool(def, name)` first",
     );
   }
+  if (
+    activeToolInitializationProfile === "pooled" &&
+    !pooledSafeCoreToolNames.has(name)
+  ) {
+    throw new Error(
+      `Tool "${name}" is outside the reviewed pooled-worker allowlist.`,
+    );
+  }
   let tool = finalizedByDefinition.get(definition);
   if (!tool) {
     tool = finalizeTool(definition, name);
@@ -207,7 +250,7 @@ export function getTool(name: string): Tool | undefined {
  * false→true, so a true reading is stable for the process lifetime.
  */
 export function areCoreToolsInitialized(): boolean {
-  return coreToolsSnapshot !== null;
+  return coreToolsInitialized;
 }
 
 export function getAllTools(): Tool[] {
@@ -243,6 +286,14 @@ export function getToolOwner(name: string): OwnerInfo | undefined {
  * ownership by writing fields on the manifest.
  */
 export function registerSkillTools(skillId: string, newTools: Tool[]): Tool[] {
+  if (activeToolInitializationProfile === "pooled") {
+    log.warn(
+      { skillId, toolNames: newTools.map((tool) => tool.name) },
+      "Ignoring dynamic skill tools in pooled worker",
+    );
+    return [];
+  }
+
   // Filter out tools that collide with core tools, and validate the rest.
   const accepted: Tool[] = [];
   for (const tool of newTools) {
@@ -322,6 +373,14 @@ export function registerPluginTools(
   pluginName: string,
   newTools: Tool[],
 ): Tool[] {
+  if (activeToolInitializationProfile === "pooled") {
+    log.warn(
+      { pluginName, toolNames: newTools.map((tool) => tool.name) },
+      "Ignoring plugin tools in pooled worker",
+    );
+    return [];
+  }
+
   const stamped: Tool[] = newTools.map((pluginTool) => {
     const tool: Tool = {
       ...pluginTool,
@@ -462,6 +521,14 @@ export function unregisterSkillTools(skillId: string): void {
  * `Tool` object itself carries no owner metadata.
  */
 export function registerMcpTools(serverId: string, newTools: Tool[]): Tool[] {
+  if (activeToolInitializationProfile === "pooled") {
+    log.warn(
+      { serverId, toolNames: newTools.map((tool) => tool.name) },
+      "Ignoring MCP tools in pooled worker",
+    );
+    return [];
+  }
+
   const accepted: Tool[] = [];
   for (const tool of newTools) {
     // A workspace `.removed` sentinel stripped a core tool of this name —
@@ -591,6 +658,14 @@ export function registerWorkspaceTools(
     workspacePath: string;
   }>,
 ): Tool[] {
+  if (activeToolInitializationProfile === "pooled") {
+    log.warn(
+      { toolNames: newTools.map(({ tool }) => tool.name) },
+      "Ignoring workspace tool overrides in pooled worker",
+    );
+    return [];
+  }
+
   // Build provider-safe Tool objects up front. We do not mutate the
   // registry until the entire batch has cleared the conflict checks
   // below. Ownership (kind + workspace path) is tracked separately
@@ -849,7 +924,54 @@ export function getAllToolDefinitions(): Tool[] {
   );
 }
 
-export async function initializeTools(): Promise<void> {
+async function initializePooledTools(): Promise<void> {
+  const { pooledExplicitTools } = await import("./pooled-tool-manifest.js");
+  const manifestNames = new Set<string>(
+    pooledExplicitTools
+      .map((tool) => tool.name)
+      .filter((name): name is string => typeof name === "string"),
+  );
+  if (
+    manifestNames.size !== pooledSafeExplicitToolNames.size ||
+    Array.from(pooledSafeExplicitToolNames).some(
+      (name) => !manifestNames.has(name),
+    )
+  ) {
+    throw new Error(
+      "Pooled tool manifest does not match its reviewed safe-name allowlist.",
+    );
+  }
+
+  // Legacy safe tool modules still contain eager registerTool() side effects.
+  // Clear them, plus any late registration from a prior assignment, before
+  // rebuilding the exact allowlisted baseline.
+  tools.clear();
+  ownersByName.clear();
+  skillRefCount.clear();
+  pluginRefCount.clear();
+  coreToolOverrides.clear();
+
+  for (const tool of pooledExplicitTools) {
+    registerTool(tool);
+  }
+  registerUiSurfaceTools();
+  registerSystemTools();
+
+  pooledCoreToolsSnapshot = new Map(tools);
+  coreToolsInitialized = true;
+  log.info({ count: tools.size, profile: "pooled" }, "Tools initialized");
+}
+
+export async function initializeTools(
+  options: InitializeToolsOptions = {},
+): Promise<void> {
+  const profile = options.profile ?? "dedicated";
+  activeToolInitializationProfile = profile;
+  if (profile === "pooled") {
+    await initializePooledTools();
+    return;
+  }
+
   const {
     loadEagerModules,
     eagerModuleToolNames,
@@ -869,7 +991,8 @@ export async function initializeTools(): Promise<void> {
   await loadEagerModules();
 
   // Explicit tool instances - no side-effect import required.
-  for (const tool of explicitTools) {
+  const activeExplicitTools = explicitTools;
+  for (const tool of activeExplicitTools) {
     registerTool(tool);
   }
 
@@ -887,7 +1010,20 @@ export async function initializeTools(): Promise<void> {
 
   // Host tools are registered explicitly so host access stays opt-in until
   // this point in startup, rather than as module side effects.
-  const hostTools = [
+  const [
+    { hostFileReadTool },
+    { hostFileWriteTool },
+    { hostFileEditTool },
+    { hostFileTransferTool },
+    { hostShellTool },
+  ] = await Promise.all([
+    import("./host-filesystem/read.js"),
+    import("./host-filesystem/write.js"),
+    import("./host-filesystem/edit.js"),
+    import("./host-filesystem/transfer.js"),
+    import("./host-terminal/host-shell.js"),
+  ]);
+  const hostTools: ToolDefinition[] = [
     hostFileReadTool,
     hostFileWriteTool,
     hostFileEditTool,
@@ -928,7 +1064,7 @@ export async function initializeTools(): Promise<void> {
     // invariant at the iteration sites.
     const manifestToolNames = new Set<string>([
       ...eagerModuleToolNames,
-      ...explicitTools.map((t) => t.name!),
+      ...activeExplicitTools.map((t) => t.name!),
       ...extEntries.map(({ tool }) => tool.name),
       ...hostTools.map((t) => t.name!),
       ...cesTools.map((t) => t.name!),
@@ -946,6 +1082,7 @@ export async function initializeTools(): Promise<void> {
       coreToolsSnapshot.set(name, tool);
     }
   }
+  coreToolsInitialized = true;
 
   log.info({ count: tools.size }, "Tools initialized");
 
@@ -983,6 +1120,10 @@ export async function initializeTools(): Promise<void> {
  * behavior for daemon-gating flags). Never throws.
  */
 export async function syncFlagGatedTools(): Promise<void> {
+  if (activeToolInitializationProfile === "pooled") {
+    return;
+  }
+
   try {
     const { getCesToolsIfEnabled, getWorkflowToolsIfEnabled } =
       await import("./tool-manifest.js");
@@ -1006,6 +1147,31 @@ export async function syncFlagGatedTools(): Promise<void> {
 }
 
 /**
+ * Return a pooled worker to its tenant-neutral registry baseline after drain.
+ *
+ * Dynamic skill/plugin/MCP/workspace ownership and reference counts are
+ * process-global, so reuse is forbidden unless they are removed atomically
+ * before the next lease is activated.
+ */
+export function resetToolRegistryForTenantAssignment(): void {
+  if (!pooledCoreToolsSnapshot) {
+    throw new Error(
+      "Pooled tool registry baseline is unavailable; worker reuse is unsafe.",
+    );
+  }
+
+  tools.clear();
+  ownersByName.clear();
+  skillRefCount.clear();
+  pluginRefCount.clear();
+  coreToolOverrides.clear();
+  for (const [name, tool] of pooledCoreToolsSnapshot) {
+    tools.set(name, tool);
+  }
+  activeToolInitializationProfile = "pooled";
+}
+
+/**
  * Reset registry to its post-initializeTools() baseline. Exposed
  * exclusively for test isolation - prevents cross-file contamination
  * when multiple test suites share a single Bun process.
@@ -1016,6 +1182,7 @@ export async function syncFlagGatedTools(): Promise<void> {
  * initializeTools() calls.
  */
 export function __resetRegistryForTesting(): void {
+  activeToolInitializationProfile = null;
   tools.clear();
   ownersByName.clear();
   skillRefCount.clear();

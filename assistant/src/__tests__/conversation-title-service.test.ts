@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
+import type { ConfiguredProviderOptions } from "../providers/provider-send-message.js";
 import type { Provider } from "../providers/types.js";
 
 const mockRunBtwSidechain = mock(async (_params: Record<string, unknown>) => ({
@@ -41,14 +42,14 @@ const mockGetMessages = mock(() => [
 const mockUpdateConversationTitle = mock(() => {});
 const mockGetConfiguredProvider = mock(
   async (
-    _callSite: string = "conversationTitle",
-    _options: Record<string, unknown> = {},
+    _callSite: string,
+    _options: ConfiguredProviderOptions = {},
   ): Promise<Provider | null> => null,
 );
 
 interface MockConfig {
   llm: {
-    default: Record<string, unknown>;
+    default?: Record<string, unknown>;
     profiles: Record<string, Record<string, unknown>>;
     activeProfile?: string;
   };
@@ -63,7 +64,8 @@ function defaultMockConfig(): MockConfig {
   };
 }
 
-const mockGetConfig = mock(defaultMockConfig);
+let mockConfig: MockConfig = defaultMockConfig();
+const mockGetConfig = mock(() => mockConfig);
 
 function makeProvider(name: string): Provider {
   return {
@@ -85,6 +87,25 @@ mock.module("../runtime/btw-sidechain.js", () => ({
 mock.module("../memory/conversation-crud.js", () => ({
   getConversation: mockGetConversation,
   getMessages: mockGetMessages,
+  resolveOverrideProfile: (conversation: {
+    conversationType?: string;
+    inferenceProfile?: string | null;
+    inferenceProfileExpiresAt?: number | null;
+  }) => {
+    if (
+      conversation?.conversationType === "background" ||
+      conversation?.conversationType === "scheduled"
+    ) {
+      return undefined;
+    }
+    if (
+      conversation?.inferenceProfileExpiresAt != null &&
+      conversation.inferenceProfileExpiresAt <= Date.now()
+    ) {
+      return undefined;
+    }
+    return conversation?.inferenceProfile ?? undefined;
+  },
   updateConversationTitle: mockUpdateConversationTitle,
   reserveMessage: mock(async () => ({ id: "msg-reserve" })),
 }));
@@ -112,6 +133,8 @@ import {
   generateAndPersistConversationTitle,
   queueGenerateConversationTitle,
   regenerateConversationTitle,
+  regenerateConversationTitleRequestBound,
+  repairConversationTitle,
   titleMutex,
   type TitleOrigin,
 } from "../memory/conversation-title-service.js";
@@ -119,14 +142,40 @@ import {
 describe("conversation-title-service", () => {
   beforeEach(() => {
     mockRunBtwSidechain.mockClear();
+    mockRunBtwSidechain.mockImplementation(async () => ({
+      text: "Project kickoff",
+      hadTextDeltas: true,
+      response: {
+        content: [{ type: "text", text: "Project kickoff" }],
+        model: "test-model",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: "end_turn",
+      },
+    }));
     mockGetConversation.mockClear();
+    mockGetConversation.mockImplementation(
+      () =>
+        ({
+          title: "Generating title...",
+          isAutoTitle: 1,
+          inferenceProfile: null,
+          inferenceProfileExpiresAt: null,
+          conversationType: "standard",
+        }) as any,
+    );
     mockGetMessages.mockClear();
+    mockGetMessages.mockImplementation(() => [
+      { role: "user", content: "first message" },
+      { role: "assistant", content: "first reply" },
+      { role: "user", content: "follow-up" },
+    ]);
     mockUpdateConversationTitle.mockClear();
     mockGetConfiguredProvider.mockClear();
     mockGetConfiguredProvider.mockImplementation(async () => null);
     mockGetConfig.mockClear();
-    mockGetConfig.mockImplementation(defaultMockConfig);
+    mockGetConfig.mockImplementation(() => mockConfig);
     mockPublishConversationTitleChanged.mockClear();
+    mockConfig = defaultMockConfig();
   });
 
   test("uses the BTW side-chain helper for initial title generation", async () => {
@@ -609,6 +658,71 @@ describe("conversation-title-service", () => {
     );
   });
 
+  test("request-bound regeneration persists a title from in-memory turn context", async () => {
+    const provider = {
+      name: "test-provider",
+      sendMessage: mock(async () => {
+        throw new Error("provider.sendMessage should not be called directly");
+      }),
+    };
+
+    const result = await regenerateConversationTitleRequestBound({
+      conversationId: "conv-1",
+      provider,
+      recentMessages: [
+        { role: "assistant", text: "We narrowed the launch to Nairobi" },
+        { role: "user", text: "Build the investor demo checklist" },
+        { role: "assistant", text: "Here is the launch checklist" },
+      ],
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockGetMessages).not.toHaveBeenCalled();
+    expect(mockRunBtwSidechain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [
+          "Recent messages:",
+          "Assistant: We narrowed the launch to Nairobi",
+          "User: Build the investor demo checklist",
+          "Assistant: Here is the launch checklist",
+        ].join("\n"),
+      }),
+    );
+    expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
+      "conv-1",
+      "Project kickoff",
+      1,
+    );
+    expect(mockPublishConversationTitleChanged).toHaveBeenCalledWith(
+      "conv-1",
+      "Project kickoff",
+    );
+  });
+
+  test("request-bound regeneration derives a title from in-memory context when no provider resolves", async () => {
+    mockGetConfiguredProvider.mockResolvedValue(null);
+
+    const result = await regenerateConversationTitleRequestBound({
+      conversationId: "conv-1",
+      recentMessages: [
+        { role: "assistant", text: "We narrowed the launch to Nairobi" },
+        { role: "user", text: "Build the investor demo checklist" },
+      ],
+    });
+
+    expect(result).toEqual({
+      title: "Build the investor demo checklist",
+      updated: true,
+    });
+    expect(mockGetMessages).not.toHaveBeenCalled();
+    expect(mockRunBtwSidechain).not.toHaveBeenCalled();
+    expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
+      "conv-1",
+      "Build the investor demo checklist",
+      AUTO_TITLE_DETERMINISTIC,
+    );
+  });
+
   test("rejects meta-failure outputs like 'Missing Context' and uses fallback", async () => {
     mockRunBtwSidechain.mockImplementationOnce(async () => ({
       text: "Missing Context",
@@ -747,6 +861,228 @@ describe("conversation-title-service", () => {
     expect(call.content).not.toContain("Generate a very short title");
     expect(call.content).not.toContain("do NOT respond");
     expect(call.systemPrompt).toContain("Do NOT respond");
+  });
+
+  test("uses the conversation's BYOK profile for title generation", async () => {
+    const provider = {
+      name: "openai",
+      sendMessage: mock(async () => {
+        throw new Error("should not call directly");
+      }),
+    };
+    mockConfig = {
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            model: "gpt-test",
+          },
+        },
+      },
+    };
+    mockGetConversation.mockReturnValue({
+      title: "New Conversation",
+      isAutoTitle: 0,
+      inferenceProfile: "custom-balanced",
+      inferenceProfileExpiresAt: null,
+      conversationType: "standard",
+    });
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      userMessage: "Plan the product launch",
+    });
+
+    expect(result.title).toBe("Project kickoff");
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      {
+        overrideProfile: "custom-balanced",
+        forceOverrideProfile: true,
+        selectionSeed: "conv-1",
+      },
+    );
+    expect(mockRunBtwSidechain).toHaveBeenCalledWith(
+      expect.objectContaining({ provider }),
+    );
+  });
+
+  test("falls back from an inaccessible BYOK speed profile to the active BYOK profile", async () => {
+    const speedProvider = {
+      name: "openai-speed",
+      sendMessage: mock(async () => {
+        throw new Error("should not call directly");
+      }),
+    };
+    const activeProvider = {
+      name: "openai-active",
+      sendMessage: mock(async () => {
+        throw new Error("should not call directly");
+      }),
+    };
+    mockConfig = {
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-cost-optimized": {
+            source: "user",
+            model: "gpt-speed-test",
+          },
+          "custom-balanced": {
+            source: "user",
+            model: "gpt-balanced-test",
+          },
+        },
+      },
+    };
+    mockGetConversation.mockReturnValue({
+      title: "New Conversation",
+      isAutoTitle: 0,
+      inferenceProfile: null,
+      inferenceProfileExpiresAt: null,
+      conversationType: "standard",
+    });
+    mockGetConfiguredProvider.mockImplementation(
+      async (_callSite, options: { overrideProfile?: string } = {}) =>
+        options.overrideProfile === "custom-cost-optimized"
+          ? speedProvider
+          : activeProvider,
+    );
+    mockRunBtwSidechain.mockImplementation(
+      async (params: { provider?: { name: string } }) => {
+        if (params.provider === speedProvider) {
+          throw new Error("model unavailable");
+        }
+        return {
+          text: "Launch Planning",
+          hadTextDeltas: true,
+          response: {
+            content: [{ type: "text", text: "Launch Planning" }],
+            model: "gpt-balanced-test",
+            usage: { inputTokens: 10, outputTokens: 5 },
+            stopReason: "end_turn",
+          },
+        };
+      },
+    );
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      userMessage: "Plan the product launch",
+    });
+
+    expect(result.title).toBe("Launch Planning");
+    expect(mockRunBtwSidechain).toHaveBeenCalledTimes(2);
+    expect(mockGetConfiguredProvider.mock.calls.map((call) => call[1])).toEqual(
+      [
+        {
+          overrideProfile: "custom-cost-optimized",
+          forceOverrideProfile: true,
+          selectionSeed: "conv-1",
+        },
+        {
+          overrideProfile: "custom-balanced",
+          forceOverrideProfile: true,
+          selectionSeed: "conv-1",
+        },
+      ],
+    );
+  });
+
+  test("does not silently fall back to a managed title profile when BYOK resolution fails", async () => {
+    mockConfig = {
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            model: "gpt-test",
+          },
+          "cost-optimized": {
+            source: "managed",
+            model: "managed-test",
+          },
+        },
+      },
+    };
+    mockGetConversation.mockReturnValue({
+      title: "New Conversation",
+      isAutoTitle: 0,
+      inferenceProfile: "cost-optimized",
+      inferenceProfileExpiresAt: null,
+      conversationType: "standard",
+    });
+    mockGetConfiguredProvider.mockResolvedValue(null);
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      userMessage: "Plan the product launch",
+    });
+
+    expect(result.title).toBe("Plan the product launch");
+    expect(mockGetConfiguredProvider).toHaveBeenCalledTimes(1);
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      expect.objectContaining({
+        overrideProfile: "custom-balanced",
+        forceOverrideProfile: true,
+      }),
+    );
+    expect(mockRunBtwSidechain).not.toHaveBeenCalled();
+  });
+
+  test("repairs an abandoned generating placeholder from persisted messages on demand", async () => {
+    const provider = {
+      name: "openai",
+      sendMessage: mock(async () => {
+        throw new Error("should not call directly");
+      }),
+    };
+    mockConfig = {
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            model: "gpt-test",
+          },
+        },
+      },
+    };
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    const result = await repairConversationTitle({
+      conversationId: "conv-1",
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockRunBtwSidechain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("first message"),
+      }),
+    );
+  });
+
+  test("settles an abandoned generating placeholder without messages to a stable fallback", async () => {
+    mockGetMessages.mockReturnValueOnce([]);
+
+    const result = await repairConversationTitle({
+      conversationId: "conv-1",
+    });
+
+    expect(result).toEqual({
+      title: "Untitled Conversation",
+      updated: true,
+    });
+    expect(mockGetConfiguredProvider).not.toHaveBeenCalled();
+    expect(mockRunBtwSidechain).not.toHaveBeenCalled();
+    expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
+      "conv-1",
+      "Untitled Conversation",
+      AUTO_TITLE_DETERMINISTIC,
+    );
   });
 
   test("queueGenerateConversationTitle serializes concurrent calls", async () => {

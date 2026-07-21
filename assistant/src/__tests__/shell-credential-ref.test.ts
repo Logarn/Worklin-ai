@@ -34,7 +34,7 @@ mock.module("../security/secret-scanner.js", () => ({
 
 // Mock safe-env
 mock.module("../tools/terminal/safe-env.js", () => ({
-  buildSanitizedEnv: () => ({ PATH: "/usr/bin" }),
+  buildSanitizedEnv: () => ({ PATH: "/bin:/usr/bin" }),
 }));
 
 // Mock proxy session manager
@@ -91,6 +91,25 @@ afterAll(() => {
 });
 
 describe("shell tool credential ref resolution", () => {
+  test("platform-isolated proxied mode fails before credential or proxy work", async () => {
+    const result = await shellTool.execute(
+      {
+        command: "curl https://api.example.com",
+        activity: "test",
+        network_mode: "proxied",
+        credential_ids: ["would/not-be-resolved"],
+      },
+      { ...ctx, isPlatformHosted: true },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(
+      "proxy environment variables do not provide a kernel-enforced egress boundary",
+    );
+    expect(result.content).toContain("scoped HTTP or provider tools");
+    expect(mockGetOrStartSession).not.toHaveBeenCalled();
+  });
+
   test("service/field ref resolves to UUID and reaches session creation", async () => {
     const meta = upsertCredentialMetadata("fal", "api_key", {
       allowedTools: ["bash"],

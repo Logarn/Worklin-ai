@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { isVoicePilotAllowed } from "../provider-bootstrap.js";
+import {
+  isPooledVoiceEngineSupported,
+  isVoicePilotAllowed,
+} from "../provider-bootstrap.js";
 
 describe("managed voice pilot allowlist", () => {
   test("accepts wildcard and exact canonical principals", () => {
@@ -26,5 +29,13 @@ describe("managed voice pilot allowlist", () => {
     expect(isVoicePilotAllowed(["vellum-principal-user-1"], "user-1")).toBe(
       false,
     );
+  });
+});
+
+describe("pooled managed voice support", () => {
+  test("fails closed for every engine until provider credentials and callbacks are tenant-bound", () => {
+    expect(isPooledVoiceEngineSupported("hume")).toBe(false);
+    expect(isPooledVoiceEngineSupported("elevenlabs")).toBe(false);
+    expect(isPooledVoiceEngineSupported("native")).toBe(false);
   });
 });

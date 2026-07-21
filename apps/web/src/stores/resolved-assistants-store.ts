@@ -50,10 +50,19 @@ export interface ResolvedAssistant {
   hatchedAt?: string;
   isLocal: boolean;
   isPlatformHosted: boolean;
+  /** Control-plane runtime provider. `pooled_worker` uses bounded request
+   * polling and must never open the assistant-scoped indefinite SSE stream. */
+  runtimeProvider?: string | null;
   runtimeActionCapabilities?: RuntimeActionCapabilities;
   /** Owning org for platform entries; only the lockfile carries it, so
    *  API-sourced entries leave this undefined. */
   organizationId?: string;
+}
+
+export function usesPooledRequestPolling(
+  assistant: ResolvedAssistant | null | undefined,
+): boolean {
+  return assistant?.runtimeProvider === "pooled_worker";
 }
 
 /**
@@ -115,6 +124,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
         hatchedAt: a.hatchedAt,
         isLocal: isLocalAssistant(a),
         isPlatformHosted: isPlatformAssistant(a),
+        runtimeProvider: a.runtimeProvider,
         organizationId: a.organizationId,
       }));
       set({ assistants, assistantsHydrated: true });
@@ -131,6 +141,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
         hatchedAt: a.created,
         isLocal: a.is_local,
         isPlatformHosted: isPlatformManagedAssistant(a),
+        runtimeProvider: a.runtime_provider,
         runtimeActionCapabilities: a.runtime_action_capabilities,
       }));
       set({
@@ -148,6 +159,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
           hatchedAt: assistant.created,
           isLocal: assistant.is_local,
           isPlatformHosted: isPlatformManagedAssistant(assistant),
+          runtimeProvider: assistant.runtime_provider,
           runtimeActionCapabilities: assistant.runtime_action_capabilities,
         };
         const idx = state.assistants.findIndex((a) => a.id === assistant.id);
@@ -209,8 +221,12 @@ function reconcileHydratedIds(
   get: () => ResolvedAssistantsStore,
   set: (partial: Partial<ResolvedAssistantsState>) => void,
 ): void {
-  const { assistants, selectedAssistantId, activeAssistantId, assistantsHydrated } =
-    get();
+  const {
+    assistants,
+    selectedAssistantId,
+    activeAssistantId,
+    assistantsHydrated,
+  } = get();
   if (!assistantsHydrated) return;
 
   const knownIds = new Set(assistants.map((a) => a.id));
