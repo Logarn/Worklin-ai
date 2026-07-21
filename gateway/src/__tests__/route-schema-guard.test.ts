@@ -315,6 +315,23 @@ describe("route-schema sync guard", () => {
       regexToOpenApiPath(String.raw`\/v1\/contacts\/(?!invites$)([^/]+)`),
     ).toBe("/v1/contacts/{param1}");
   });
+
+  test("regex-derived routes accept an optional schema trailing slash", () => {
+    const routePath = "/v1/assistants/{param1}/config/privacy";
+    const schemaPath = "/v1/assistants/{assistantId}/config/privacy/";
+    const schemaPaths = new Set([schemaPath]);
+
+    expect(findMatchingSchemaPath(routePath, schemaPaths)).toBe(true);
+    expect(findMatchingRoutePath(schemaPath, [routePath])).toBe(true);
+    expect(resolveSchemaPath(routePath, schemaPaths)).toBe(schemaPath);
+  });
+
+  test("literal routes retain strict trailing-slash matching", () => {
+    expect(findMatchingSchemaPath("/v1/strict", new Set(["/v1/strict/"]))).toBe(
+      false,
+    );
+    expect(findMatchingRoutePath("/v1/strict/", ["/v1/strict"])).toBe(false);
+  });
 });
 
 /**
@@ -327,10 +344,11 @@ function resolveSchemaPath(
 ): string | null {
   if (schemaPaths.has(routePath)) return routePath;
 
-  const routeSegments = routePath.split("/");
+  const regexDerived = isRegexDerivedPath(routePath);
+  const routeSegments = comparablePathSegments(routePath, regexDerived);
 
   for (const schemaPath of schemaPaths) {
-    const schemaSegments = schemaPath.split("/");
+    const schemaSegments = comparablePathSegments(schemaPath, regexDerived);
     if (routeSegments.length !== schemaSegments.length) continue;
 
     const matches = routeSegments.every((seg, i) => {
@@ -359,10 +377,11 @@ function findMatchingSchemaPath(
   // Direct match
   if (schemaPaths.has(routePath)) return true;
 
-  const routeSegments = routePath.split("/");
+  const regexDerived = isRegexDerivedPath(routePath);
+  const routeSegments = comparablePathSegments(routePath, regexDerived);
 
   for (const schemaPath of schemaPaths) {
-    const schemaSegments = schemaPath.split("/");
+    const schemaSegments = comparablePathSegments(schemaPath, regexDerived);
     if (routeSegments.length !== schemaSegments.length) continue;
 
     const matches = routeSegments.every((seg, i) => {
@@ -388,13 +407,16 @@ function findMatchingRoutePath(
 ): boolean {
   if (routePaths.includes(schemaPath)) return true;
 
-  const schemaSegments = schemaPath.split("/");
-
   for (const routePath of routePaths) {
-    const routeSegments = routePath.split("/");
-    if (schemaSegments.length !== routeSegments.length) continue;
+    const regexDerived = isRegexDerivedPath(routePath);
+    const comparableSchemaSegments = comparablePathSegments(
+      schemaPath,
+      regexDerived,
+    );
+    const routeSegments = comparablePathSegments(routePath, regexDerived);
+    if (comparableSchemaSegments.length !== routeSegments.length) continue;
 
-    const matches = schemaSegments.every((seg, i) => {
+    const matches = comparableSchemaSegments.every((seg, i) => {
       if (seg === routeSegments[i]) return true;
       if (seg.startsWith("{") && routeSegments[i].startsWith("{")) return true;
       return false;
@@ -404,4 +426,19 @@ function findMatchingRoutePath(
   }
 
   return false;
+}
+
+function isRegexDerivedPath(path: string): boolean {
+  return /\{param\d+\}/.test(path);
+}
+
+function comparablePathSegments(
+  path: string,
+  allowOptionalTrailingSlash: boolean,
+): string[] {
+  const comparable =
+    allowOptionalTrailingSlash && path.length > 1
+      ? path.replace(/\/$/, "")
+      : path;
+  return comparable.split("/");
 }
