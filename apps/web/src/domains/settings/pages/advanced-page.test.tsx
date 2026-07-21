@@ -1,15 +1,40 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 let daemonConfig: { memory?: { enabled?: boolean } } | undefined;
 let memoryOptOutCapability = true;
 let assistantIsLocal = false;
+let platformGate = "gated";
+let updateWindowCapability: unknown;
 const configPatchMock = mock(async () => daemonConfig);
 
 mock.module("@/domains/settings/components/assistant-status-panel", () => ({
   useAssistantWithHealthz: () => ({
-    assistant: { id: "assistant-1", is_local: assistantIsLocal },
+    assistant: {
+      id: "assistant-1",
+      is_local: assistantIsLocal,
+      runtime_action_capabilities:
+        updateWindowCapability === undefined
+          ? undefined
+          : { update_window: updateWindowCapability },
+    },
     healthz: memoryOptOutCapability
       ? { capabilities: { memoryOptOut: true } }
       : { capabilities: {} },
@@ -17,20 +42,16 @@ mock.module("@/domains/settings/components/assistant-status-panel", () => ({
 }));
 
 mock.module("@/hooks/use-platform-gate", () => ({
-  usePlatformGate: () => "hidden",
+  usePlatformGate: () => platformGate,
   useActiveAssistantLifecycleIsLoading: () => false,
+}));
+
+mock.module("@/domains/settings/components/update-window-policy", () => ({
+  UpdateWindowPolicy: () => <div>update-window-form</div>,
 }));
 
 mock.module("@/assistant/use-active-assistant-id", () => ({
   useActiveAssistantId: () => "assistant-1",
-}));
-
-mock.module("@/stores/resolved-assistants-store", () => ({
-  useResolvedAssistantsStore: {
-    use: {
-      activeAssistantId: () => "assistant-1",
-    },
-  },
 }));
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
@@ -49,7 +70,11 @@ mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
     queryKey: [{ _id: "configGet", baseUrl: undefined, path: options.path }],
     queryFn: async () => daemonConfig,
   }),
-  configGetSetQueryData: (_client: unknown, _opts: unknown, _data: unknown) => {},
+  configGetSetQueryData: (
+    _client: unknown,
+    _opts: unknown,
+    _data: unknown,
+  ) => {},
   useConfigPatchMutation: () => ({
     mutateAsync: async (_opts: { body: unknown }) => {
       await configPatchMock();
@@ -59,7 +84,8 @@ mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
   }),
 }));
 
-const { configGetQueryKey } = await import("@/generated/daemon/@tanstack/react-query.gen");
+const { configGetQueryKey } =
+  await import("@/generated/daemon/@tanstack/react-query.gen");
 const { AdvancedPage } = await import("./advanced-page");
 
 afterAll(() => {
@@ -78,14 +104,18 @@ function renderWithQuery(ui: React.ReactElement) {
 }
 
 beforeEach(() => {
+  useResolvedAssistantsStore.setState({ activeAssistantId: "assistant-1" });
   daemonConfig = { memory: { enabled: true } };
   memoryOptOutCapability = true;
   assistantIsLocal = false;
+  platformGate = "gated";
+  updateWindowCapability = undefined;
   configPatchMock.mockClear();
 });
 
 afterEach(() => {
   cleanup();
+  useResolvedAssistantsStore.setState({ activeAssistantId: null });
 });
 
 describe("AdvancedPage memory settings", () => {
@@ -98,9 +128,7 @@ describe("AdvancedPage memory settings", () => {
 
     fireEvent.click(toggle);
 
-    await waitFor(() =>
-      expect(configPatchMock).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(configPatchMock).toHaveBeenCalled());
   });
 
   test("treats missing memory.enabled as enabled and can patch it off", async () => {
@@ -112,9 +140,7 @@ describe("AdvancedPage memory settings", () => {
 
     fireEvent.click(toggle);
 
-    await waitFor(() =>
-      expect(configPatchMock).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(configPatchMock).toHaveBeenCalled());
   });
 
   test("hides memory settings when the assistant does not report opt-out support", () => {
@@ -123,8 +149,68 @@ describe("AdvancedPage memory settings", () => {
     renderWithQuery(<AdvancedPage />);
 
     expect(screen.queryByText("Memory")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Enable memory" })).toBeNull();
+  });
+});
+
+describe("AdvancedPage update window capability", () => {
+  test("shows launch copy without mounting the unsupported policy form", () => {
+    platformGate = "full";
+    updateWindowCapability = {
+      capability: "update_window",
+      supported: false,
+      code: "runtime_capability_unavailable",
+      detail: "Worklin applies updates automatically during launch.",
+    };
+
+    renderWithQuery(<AdvancedPage />);
+
+    expect(screen.getByText("Update Window")).toBeTruthy();
     expect(
-      screen.queryByRole("switch", { name: "Enable memory" }),
-    ).toBeNull();
+      screen.getByText("Worklin applies updates automatically during launch."),
+    ).toBeTruthy();
+    expect(screen.queryByText("update-window-form")).toBeNull();
+  });
+
+  test("fails closed when a managed assistant sends no capability field", () => {
+    platformGate = "full";
+
+    renderWithQuery(<AdvancedPage />);
+
+    expect(
+      screen.getByText(/Update windows are unavailable while Worklin verifies/),
+    ).toBeTruthy();
+    expect(screen.queryByText("update-window-form")).toBeNull();
+  });
+
+  test("fails closed when the managed capability payload is malformed", () => {
+    platformGate = "full";
+    updateWindowCapability = {
+      capability: "update_window",
+      supported: "yes",
+      code: "supported",
+      detail: "Configure a custom update window.",
+    };
+
+    renderWithQuery(<AdvancedPage />);
+
+    expect(screen.queryByText("update-window-form")).toBeNull();
+    expect(
+      screen.getByText(/Update windows are unavailable while Worklin verifies/),
+    ).toBeTruthy();
+  });
+
+  test("mounts the policy form only after explicit managed support", () => {
+    platformGate = "full";
+    updateWindowCapability = {
+      capability: "update_window",
+      supported: true,
+      code: "supported",
+      detail: "Configure a custom update window.",
+    };
+
+    renderWithQuery(<AdvancedPage />);
+
+    expect(screen.getByText("update-window-form")).toBeTruthy();
   });
 });

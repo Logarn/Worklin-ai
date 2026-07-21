@@ -58,6 +58,11 @@ import {
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
 } from "./railway-runtime-provisioner.js";
+import {
+  runtimeActionCapabilitiesForStack,
+  type RuntimeAction,
+} from "./runtime-action-capabilities.js";
+import { requestRailwayRuntimeRestart } from "./runtime-restart.js";
 import { ensureArtifactSharingSchema } from "./artifact-sharing-store.js";
 import {
   acceptArtifactInvitation,
@@ -68,7 +73,11 @@ import {
   listActiveArtifactGrantsForRecipient,
   normalizeInviteEmail,
 } from "./artifact-sharing-store.js";
-import { pathEquals, pathIsOrStartsWith } from "./http-paths.js";
+import {
+  canonicalizeAssistantRequestPath,
+  pathEquals,
+  pathIsOrStartsWith,
+} from "./http-paths.js";
 import {
   brandResearchRunPayload,
   createOrGetBrandResearchRun,
@@ -705,12 +714,30 @@ function runtimeStackForPayload(row: AssistantRow): RuntimeStackRow {
   return ensureRuntimeStackForAssistant(db, row, runtimeStackConfig, nowIso);
 }
 
+function userCanRestartAssistant(row: AssistantRow, user: UserRow): boolean {
+  if (row.user_id === user.id) return true;
+  const membership = getOrganizationMembership(db, row.org_id, user.id);
+  return membership?.status === "active" && membership.role === "admin";
+}
+
 function assistantPayload(
   row: AssistantRow,
   user: UserRow,
   runtimeStack = runtimeStackForPayload(row),
 ) {
   const tenantContext = createRuntimeTenantContext(row, user.id, runtimeStack);
+  const runtimeActionCapabilities = runtimeActionCapabilitiesForStack(
+    runtimeStack,
+    runtimeProvisioningConfigurationError() === null,
+  );
+  if (!userCanRestartAssistant(row, user)) {
+    runtimeActionCapabilities.restart = {
+      capability: "restart",
+      supported: false,
+      code: "runtime_capability_unavailable",
+      detail: "Only the assistant owner or a workspace admin can restart it.",
+    };
+  }
   return {
     id: row.id,
     name: row.name,
@@ -736,6 +763,7 @@ function assistantPayload(
     ingress_url: publicWebOrigin(),
     platform_actor_token: mintActorToken(runtimeStack, tenantContext),
     access_consented: row.admin_access_consented === 1,
+    runtime_action_capabilities: runtimeActionCapabilities,
   };
 }
 
@@ -1870,6 +1898,113 @@ function accessibleAssistantsForUser(
     .filter((assistant) => accessibleIds.has(assistant.id));
 }
 
+interface RuntimeActionRoute {
+  action: Exclude<RuntimeAction, "restart">;
+  assistantId: string;
+}
+
+function runtimeActionRoute(pathname: string): RuntimeActionRoute | null {
+  const match =
+    /^\/v1\/assistants\/([^/]+)\/(terminal|doctor|upgrade-policy)(?:\/|$)/.exec(
+      pathname,
+    );
+  if (!match) return null;
+  const action =
+    match[2] === "upgrade-policy"
+      ? "update_window"
+      : (match[2] as "terminal" | "doctor");
+  return { action, assistantId: match[1]! };
+}
+
+function handleUnavailableRuntimeAction(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): boolean {
+  const route = runtimeActionRoute(url.pathname);
+  if (!route) return false;
+
+  const assistant = accessibleAssistantsForUser(req, user).find(
+    (candidate) => candidate.id === route.assistantId,
+  );
+  if (!assistant) {
+    sendJson(req, res, { detail: "Assistant not found." }, 404);
+    return true;
+  }
+  if (
+    ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) &&
+    !checkCsrf(req)
+  ) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return true;
+  }
+  if (!hasAcceptedAssistantConsent(user.consent_json)) {
+    sendJson(
+      req,
+      res,
+      { detail: "Assistant consent must be accepted before use." },
+      403,
+    );
+    return true;
+  }
+
+  const runtimeStack = runtimeStackForPayload(assistant);
+  const capability = runtimeActionCapabilitiesForStack(
+    runtimeStack,
+    runtimeProvisioningConfigurationError() === null,
+  )[route.action];
+  if (capability.supported) return false;
+
+  sendJson(req, res, capability, 501);
+  return true;
+}
+
+async function handleRailwayRuntimeRestart(
+  req: Request,
+  res: Response,
+  assistant: AssistantRow,
+  runtimeStack: RuntimeStackRow,
+): Promise<void> {
+  try {
+    const deploymentId = await requestRailwayRuntimeRestart({
+      serviceId: runtimeStack.service_ref!,
+      config: railwayProvisionerConfig,
+    });
+    console.log("runtime_stack_restart_requested", {
+      assistantId: assistant.id,
+      runtimeStackId: runtimeStack.id,
+      deploymentId,
+    });
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Assistant runtime restart requested.",
+        code: "runtime_restart_requested",
+        runtime_status: runtimeStack.status,
+        runtime_stack_id: runtimeStack.id,
+      },
+      202,
+    );
+  } catch (error) {
+    console.error("runtime_stack_restart_failed", {
+      assistantId: assistant.id,
+      runtimeStackId: runtimeStack.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Worklin could not restart your assistant.",
+        code: "runtime_restart_failed",
+      },
+      502,
+    );
+  }
+}
+
 async function handleAssistants(
   req: Request,
   res: Response,
@@ -2073,12 +2208,21 @@ async function handleAssistants(
     return true;
   }
 
-  const restartMatch = /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(
-    url.pathname,
-  );
-  if (restartMatch && req.method === "POST") {
+  const provisioningRetryMatch =
+    /^\/v1\/assistants\/([^/]+)\/provisioning\/retry\/?$/.exec(url.pathname);
+  if (provisioningRetryMatch) {
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "POST");
+      sendJson(
+        req,
+        res,
+        { detail: "Method not allowed.", code: "method_not_allowed" },
+        405,
+      );
+      return true;
+    }
     const assistant = accessibleAssistantsForUser(req, user).find(
-      (candidate) => candidate.id === restartMatch[1],
+      (candidate) => candidate.id === provisioningRetryMatch[1],
     );
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
@@ -2097,21 +2241,13 @@ async function handleAssistants(
       );
       return true;
     }
-
-    const currentRuntimeStack = runtimeStackForPayload(assistant);
-    if (isRuntimeStackRoutable(currentRuntimeStack)) {
-      // Preserve the existing restart behavior for a healthy runtime by
-      // forwarding the request to its gateway.
-      return false;
-    }
-
     if (!assistantOwnerHasAcceptedConsent(assistant)) {
       sendJson(
         req,
         res,
         {
           detail:
-            "The assistant owner must accept the current consent terms before restarting it.",
+            "The assistant owner must accept the current consent terms before preparing it.",
           code: "assistant_owner_consent_required",
         },
         409,
@@ -2119,21 +2255,25 @@ async function handleAssistants(
       return true;
     }
 
-    const runtimeStack = ensureAssistantRuntime(assistant);
-    if (isRuntimeStackRoutable(runtimeStack)) {
-      // A reserved runtime slot can become active during this retry.
-      return false;
+    const currentRuntimeStack = runtimeStackForPayload(assistant);
+    if (isRuntimeStackRoutable(currentRuntimeStack)) {
+      sendJson(req, res, {
+        detail: "Assistant runtime is already active.",
+        code: "runtime_active",
+        runtime_status: currentRuntimeStack.status,
+        runtime_stack_id: currentRuntimeStack.id,
+      });
+      return true;
     }
-
-    if (runtimeStack.provider !== "railway") {
+    if (currentRuntimeStack.provider !== "railway") {
       sendJson(
         req,
         res,
         {
-          detail: "This assistant runtime cannot be restarted automatically.",
+          detail: "This assistant runtime cannot be prepared automatically.",
           code: "runtime_not_retryable",
-          runtime_status: runtimeStack.status,
-          runtime_stack_id: runtimeStack.id,
+          runtime_status: currentRuntimeStack.status,
+          runtime_stack_id: currentRuntimeStack.id,
         },
         503,
       );
@@ -2148,14 +2288,24 @@ async function handleAssistants(
         {
           detail: "Managed assistant provisioning is not available.",
           code: "platform_hosted_disabled",
-          runtime_status: runtimeStack.status,
-          runtime_stack_id: runtimeStack.id,
+          runtime_status: currentRuntimeStack.status,
+          runtime_stack_id: currentRuntimeStack.id,
         },
         503,
       );
       return true;
     }
 
+    const runtimeStack = ensureAssistantRuntime(assistant);
+    if (isRuntimeStackRoutable(runtimeStack)) {
+      sendJson(req, res, {
+        detail: "Assistant runtime is active.",
+        code: "runtime_active",
+        runtime_status: runtimeStack.status,
+        runtime_stack_id: runtimeStack.id,
+      });
+      return true;
+    }
     if (
       runtimeStack.status === "provisioning" ||
       runtimeStack.status === "failed"
@@ -2164,7 +2314,7 @@ async function handleAssistants(
         req,
         res,
         {
-          detail: "Assistant runtime restart requested.",
+          detail: "Assistant runtime preparation requested.",
           code: "runtime_provisioning",
           runtime_status: runtimeStack.status,
           runtime_stack_id: runtimeStack.id,
@@ -2177,6 +2327,75 @@ async function handleAssistants(
     sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
     return true;
   }
+
+  const restartMatch = /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(
+    url.pathname,
+  );
+  if (restartMatch) {
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "POST");
+      sendJson(
+        req,
+        res,
+        { detail: "Method not allowed.", code: "method_not_allowed" },
+        405,
+      );
+      return true;
+    }
+
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === restartMatch[1],
+    );
+    if (!assistant) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    if (!userCanRestartAssistant(assistant, user)) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "Only the assistant owner or a workspace admin can restart it.",
+          code: "runtime_restart_forbidden",
+        },
+        403,
+      );
+      return true;
+    }
+    if (!hasAcceptedAssistantConsent(user.consent_json)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Assistant consent must be accepted before use." },
+        403,
+      );
+      return true;
+    }
+
+    const currentRuntimeStack = runtimeStackForPayload(assistant);
+    const restartCapability = runtimeActionCapabilitiesForStack(
+      currentRuntimeStack,
+      runtimeProvisioningConfigurationError() === null,
+    ).restart;
+    if (!restartCapability.supported) {
+      sendJson(req, res, restartCapability, 501);
+      return true;
+    }
+    await handleRailwayRuntimeRestart(
+      req,
+      res,
+      assistant,
+      currentRuntimeStack,
+    );
+    return true;
+  }
+
+  if (handleUnavailableRuntimeAction(req, res, url, user)) return true;
 
   const operationalStatusMatch =
     /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(url.pathname);
@@ -2982,6 +3201,22 @@ app.use(
       if (await proxySharedArtifact(req, res, url, user)) return;
 
       if (pathIsOrStartsWith(url.pathname, "/v1/assistants/")) {
+        const canonicalPathname = canonicalizeAssistantRequestPath(
+          url.pathname,
+        );
+        if (canonicalPathname === null) {
+          sendJson(
+            req,
+            res,
+            {
+              detail: "The assistant request path is malformed or ambiguous.",
+              code: "invalid_assistant_path",
+            },
+            400,
+          );
+          return;
+        }
+        url.pathname = canonicalPathname;
         const handled = await handleAssistants(req, res, url, user);
         if (handled) return;
         await proxyToGateway(req, res, url, user);

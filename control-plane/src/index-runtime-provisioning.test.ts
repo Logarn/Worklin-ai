@@ -379,10 +379,9 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<
-          { id: string },
-          []
-        >("SELECT id FROM sessions WHERE id = 'session-logout'")
+        .query<{ id: string }, []>(
+          "SELECT id FROM sessions WHERE id = 'session-logout'",
+        )
         .get(),
     ).toBeNull();
     verificationDb.close();
@@ -437,10 +436,9 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<
-          { id: string },
-          []
-        >("SELECT id FROM sessions WHERE id = 'session-logout-failure'")
+        .query<{ id: string }, []>(
+          "SELECT id FROM sessions WHERE id = 'session-logout-failure'",
+        )
         .get(),
     ).not.toBeNull();
     verificationDb.close();
@@ -486,10 +484,9 @@ describe("control-plane runtime provisioning guards", () => {
     });
     expect(
       db
-        .query<
-          { count: number },
-          []
-        >("SELECT COUNT(*) AS count FROM runtime_stacks")
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM runtime_stacks",
+        )
         .get()?.count,
     ).toBe(0);
 
@@ -529,11 +526,13 @@ describe("control-plane runtime provisioning guards", () => {
     db.close();
   });
 
-  test("restart retries a failed isolated runtime instead of only polling it", async () => {
+  test("provisioning retry recovers a failed runtime without overloading restart", async () => {
+    let railwayRequestCount = 0;
     const railway = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       async fetch() {
+        railwayRequestCount += 1;
         await Bun.sleep(1_000);
         return Response.json({ errors: [{ message: "test stop" }] });
       },
@@ -649,8 +648,22 @@ describe("control-plane runtime provisioning guards", () => {
     });
     await waitForHealth(origin);
 
+    const restart = await fetch(`${origin}/v1/assistants/asst-retry/restart/`, {
+      method: "POST",
+      headers: authenticatedHeaders("session-retry"),
+      body: "{}",
+    });
+    expect(restart.status).toBe(501);
+    expect(await restart.json()).toEqual({
+      capability: "restart",
+      supported: false,
+      code: "runtime_capability_unavailable",
+      detail: "Managed restart is not available for this assistant.",
+    });
+    expect(railwayRequestCount).toBe(0);
+
     const response = await fetch(
-      `${origin}/v1/assistants/asst-retry/restart/`,
+      `${origin}/v1/assistants/asst-retry/provisioning/retry/`,
       {
         method: "POST",
         headers: authenticatedHeaders("session-retry"),
@@ -659,14 +672,14 @@ describe("control-plane runtime provisioning guards", () => {
     );
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({
-      detail: "Assistant runtime restart requested.",
+      detail: "Assistant runtime preparation requested.",
       code: "runtime_provisioning",
       runtime_status: "provisioning",
       runtime_stack_id: "rt-retry",
     });
 
     const unsupported = await fetch(
-      `${origin}/v1/assistants/asst-non-retryable/restart/`,
+      `${origin}/v1/assistants/asst-non-retryable/provisioning/retry/`,
       {
         method: "POST",
         headers: authenticatedHeaders("session-retry"),
@@ -675,24 +688,68 @@ describe("control-plane runtime provisioning guards", () => {
     );
     expect(unsupported.status).toBe(503);
     expect(await unsupported.json()).toEqual({
-      detail: "This assistant runtime cannot be restarted automatically.",
+      detail: "This assistant runtime cannot be prepared automatically.",
       code: "runtime_not_retryable",
       runtime_status: "failed",
       runtime_stack_id: "rt-non-retryable",
     });
   });
 
-  test("healthy runtime restart remains available to an assigned collaborator", async () => {
-    const runtimePaths: string[] = [];
-    const runtime = Bun.serve({
+  test("runtime actions are explicit, scoped, and restart the active deployment", async () => {
+    const railwayOperations: Array<{
+      query: string;
+      variables: Record<string, unknown>;
+    }> = [];
+    const runtimeGatewayRequests: string[] = [];
+    const runtimeGateway = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
-        runtimePaths.push(new URL(request.url).pathname);
-        return Response.json({ ok: true });
+        runtimeGatewayRequests.push(
+          `${request.method} ${new URL(request.url).pathname}`,
+        );
+        return Response.json(
+          { detail: "A guarded runtime action reached the runtime gateway." },
+          { status: 599 },
+        );
       },
     });
-    servers.push(runtime);
+    servers.push(runtimeGateway);
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const operation = (await request.json()) as {
+          query: string;
+          variables: Record<string, unknown>;
+        };
+        railwayOperations.push(operation);
+        if (operation.query.includes("query latestActiveDeployment")) {
+          return Response.json({
+            data: {
+              deployments: {
+                edges: [
+                  {
+                    node: {
+                      id: "deployment-restart-1",
+                      status: "SUCCESS",
+                    },
+                  },
+                ],
+              },
+            },
+          });
+        }
+        if (operation.query.includes("mutation deploymentRestart")) {
+          return Response.json({ data: { deploymentRestart: true } });
+        }
+        return Response.json(
+          { errors: [{ message: "Unexpected Railway operation" }] },
+          { status: 400 },
+        );
+      },
+    });
+    servers.push(railway);
 
     const dbPath = createTempDbPath();
     const db = new Database(dbPath);
@@ -703,9 +760,36 @@ describe("control-plane runtime provisioning guards", () => {
         id, email, username, first_name, last_name, consent_json, created_at,
         updated_at
       ) VALUES
-        ('user-restart-owner', 'restart-owner@example.com', 'restart-owner', '', '', NULL, ?, ?),
+        ('user-restart-owner', 'restart-owner@example.com', 'restart-owner', '', '', ?, ?, ?),
+        ('user-restart-admin', 'restart-admin@example.com', 'restart-admin', '', '', ?, ?, ?),
+        ('user-restart-manager', 'restart-manager@example.com', 'restart-manager', '', '', ?, ?, ?),
         ('user-restart-collaborator', 'restart-collaborator@example.com', 'restart-collaborator', '', '', ?, ?, ?)`,
-    ).run(timestamp, timestamp, ACCEPTED_CONSENT, timestamp, timestamp);
+    ).run(
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, '', '', '', ?, ?)`,
+    ).run(
+      "user-restart-unconsented",
+      "restart-unconsented@example.com",
+      "restart-unconsented",
+      timestamp,
+      timestamp,
+    );
     db.query(
       `INSERT INTO organizations (
         id, user_id, name, is_default, created_at, updated_at
@@ -720,10 +804,36 @@ describe("control-plane runtime provisioning guards", () => {
     db.query(
       `INSERT INTO organization_memberships (
         org_id, user_id, role, status, created_at, updated_at
-      ) VALUES (?, ?, 'collaborator', 'active', ?, ?)`,
+      ) VALUES
+        (?, ?, 'admin', 'active', ?, ?),
+        (?, ?, 'admin', 'active', ?, ?),
+        (?, ?, 'manager', 'active', ?, ?),
+        (?, ?, 'collaborator', 'active', ?, ?)`,
     ).run(
       "org-restart-collaboration",
+      "user-restart-owner",
+      timestamp,
+      timestamp,
+      "org-restart-collaboration",
+      "user-restart-admin",
+      timestamp,
+      timestamp,
+      "org-restart-collaboration",
+      "user-restart-manager",
+      timestamp,
+      timestamp,
+      "org-restart-collaboration",
       "user-restart-collaborator",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO organization_memberships (
+        org_id, user_id, role, status, created_at, updated_at
+      ) VALUES (?, ?, 'admin', 'active', ?, ?)`,
+    ).run(
+      "org-restart-collaboration",
+      "user-restart-unconsented",
       timestamp,
       timestamp,
     );
@@ -762,7 +872,7 @@ describe("control-plane runtime provisioning guards", () => {
       "rt-restart-collaboration",
       "org-restart-collaboration",
       "asst-restart-collaboration",
-      `http://127.0.0.1:${runtime.port}`,
+      `http://127.0.0.1:${runtimeGateway.port}`,
       "https://worklin.example.com",
       "volume-restart-collaboration",
       "service-restart-collaboration",
@@ -771,10 +881,35 @@ describe("control-plane runtime provisioning guards", () => {
       timestamp,
     );
     db.query(
-      "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+      `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES
+        (?, ?, ?, ?),
+        (?, ?, ?, ?),
+        (?, ?, ?, ?),
+        (?, ?, ?, ?)`,
     ).run(
+      "session-restart-owner",
+      "user-restart-owner",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+      "session-restart-admin",
+      "user-restart-admin",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+      "session-restart-manager",
+      "user-restart-manager",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
       "session-restart-collaborator",
       "user-restart-collaborator",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO sessions (id, user_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(
+      "session-restart-unconsented",
+      "user-restart-unconsented",
       Math.floor(Date.now() / 1000) + 3_600,
       timestamp,
     );
@@ -782,10 +917,170 @@ describe("control-plane runtime provisioning guards", () => {
 
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
-    spawnControlPlane(port, dbPath);
+    spawnControlPlane(port, dbPath, {
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+      WORKLIN_RAILWAY_API_ENDPOINT: `http://127.0.0.1:${railway.port}`,
+      WORKLIN_RAILWAY_PROJECT_TOKEN: "project-token",
+      WORKLIN_RAILWAY_PROJECT_ID: "project-1",
+      WORKLIN_RAILWAY_ENVIRONMENT_ID: "environment-1",
+      WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: "5",
+    });
     await waitForHealth(origin);
 
-    const response = await fetch(
+    const assistantResponse = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/`,
+      { headers: authenticatedHeaders("session-restart-collaborator") },
+    );
+    expect(assistantResponse.status).toBe(200);
+    expect(await assistantResponse.json()).toMatchObject({
+      runtime_action_capabilities: {
+        restart: {
+          capability: "restart",
+          supported: false,
+          code: "runtime_capability_unavailable",
+          detail:
+            "Only the assistant owner or a workspace admin can restart it.",
+        },
+        terminal: {
+          capability: "terminal",
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+        doctor: {
+          capability: "doctor",
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+        update_window: {
+          capability: "update_window",
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+      },
+    });
+
+    const adminAssistantResponse = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/`,
+      { headers: authenticatedHeaders("session-restart-admin") },
+    );
+    expect(adminAssistantResponse.status).toBe(200);
+    expect(await adminAssistantResponse.json()).toMatchObject({
+      runtime_action_capabilities: {
+        restart: {
+          capability: "restart",
+          supported: true,
+          code: "supported",
+        },
+      },
+    });
+
+    const managerAssistantResponse = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/`,
+      { headers: authenticatedHeaders("session-restart-manager") },
+    );
+    expect(managerAssistantResponse.status).toBe(200);
+    expect(await managerAssistantResponse.json()).toMatchObject({
+      runtime_action_capabilities: {
+        restart: {
+          capability: "restart",
+          supported: false,
+          code: "runtime_capability_unavailable",
+          detail:
+            "Only the assistant owner or a workspace admin can restart it.",
+        },
+      },
+    });
+
+    const wrongMethod = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/restart/`,
+      { headers: authenticatedHeaders("session-restart-owner") },
+    );
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("Allow")).toBe("POST");
+    expect(await wrongMethod.json()).toEqual({
+      detail: "Method not allowed.",
+      code: "method_not_allowed",
+    });
+    expect(railwayOperations).toHaveLength(0);
+
+    const encodedRestartMissingCsrf = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/re%73tart/`,
+      {
+        method: "POST",
+        headers: {
+          Cookie: "worklin_session=session-restart-owner; csrftoken=csrf-token",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    expect(encodedRestartMissingCsrf.status).toBe(403);
+    expect(await encodedRestartMissingCsrf.json()).toEqual({
+      detail: "CSRF validation failed.",
+    });
+
+    const encodedRestartForbidden = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/re%73tart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-manager"),
+        body: "{}",
+      },
+    );
+    expect(encodedRestartForbidden.status).toBe(403);
+    expect(await encodedRestartForbidden.json()).toEqual({
+      detail: "Only the assistant owner or a workspace admin can restart it.",
+      code: "runtime_restart_forbidden",
+    });
+
+    const encodedRestartWithoutConsent = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/re%73tart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-unconsented"),
+        body: "{}",
+      },
+    );
+    expect(encodedRestartWithoutConsent.status).toBe(403);
+    expect(await encodedRestartWithoutConsent.json()).toEqual({
+      detail: "Assistant consent must be accepted before use.",
+    });
+    expect(railwayOperations).toHaveLength(0);
+    expect(runtimeGatewayRequests).toEqual([]);
+
+    const forbiddenManagerRestart = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/restart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-manager"),
+        body: "{}",
+      },
+    );
+    expect(forbiddenManagerRestart.status).toBe(403);
+    expect(await forbiddenManagerRestart.json()).toEqual({
+      detail: "Only the assistant owner or a workspace admin can restart it.",
+      code: "runtime_restart_forbidden",
+    });
+    expect(railwayOperations).toHaveLength(0);
+
+    const restartMissingCsrf = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/restart/`,
+      {
+        method: "POST",
+        headers: {
+          Cookie: "worklin_session=session-restart-owner; csrftoken=csrf-token",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    expect(restartMissingCsrf.status).toBe(403);
+    expect(await restartMissingCsrf.json()).toEqual({
+      detail: "CSRF validation failed.",
+    });
+    expect(railwayOperations).toHaveLength(0);
+
+    const forbiddenRestart = await fetch(
       `${origin}/v1/assistants/asst-restart-collaboration/restart/`,
       {
         method: "POST",
@@ -793,11 +1088,193 @@ describe("control-plane runtime provisioning guards", () => {
         body: "{}",
       },
     );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true });
-    expect(runtimePaths).toEqual([
-      "/v1/assistants/asst-restart-collaboration/restart/",
-    ]);
+    expect(forbiddenRestart.status).toBe(403);
+    expect(await forbiddenRestart.json()).toEqual({
+      detail: "Only the assistant owner or a workspace admin can restart it.",
+      code: "runtime_restart_forbidden",
+    });
+    expect(railwayOperations).toHaveLength(0);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/restart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-admin"),
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      detail: "Assistant runtime restart requested.",
+      code: "runtime_restart_requested",
+      runtime_status: "active",
+      runtime_stack_id: "rt-restart-collaboration",
+    });
+    expect(railwayOperations).toHaveLength(2);
+    expect(railwayOperations[0]?.variables).toEqual({
+      input: {
+        projectId: "project-1",
+        environmentId: "environment-1",
+        serviceId: "service-restart-collaboration",
+        status: { successfulOnly: true },
+      },
+    });
+    expect(railwayOperations[1]?.variables).toEqual({
+      id: "deployment-restart-1",
+    });
+    expect(
+      railwayOperations.some((operation) =>
+        operation.query.includes("serviceInstanceDeploy"),
+      ),
+    ).toBe(false);
+    expect(
+      railwayOperations.some((operation) =>
+        operation.query.includes("deploymentRedeploy"),
+      ),
+    ).toBe(false);
+
+    const missingCsrf = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/terminal/sessions/`,
+      {
+        method: "POST",
+        headers: {
+          Cookie:
+            "worklin_session=session-restart-collaborator; csrftoken=csrf-token",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    expect(missingCsrf.status).toBe(403);
+    expect(await missingCsrf.json()).toEqual({
+      detail: "CSRF validation failed.",
+    });
+
+    const terminal = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/terminal/sessions/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-collaborator"),
+        body: "{}",
+      },
+    );
+    expect(terminal.status).toBe(501);
+    expect(await terminal.json()).toMatchObject({
+      capability: "terminal",
+      supported: false,
+      code: "runtime_capability_unavailable",
+    });
+
+    const encodedTerminalMissingCsrf = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/term%69nal/sessions/`,
+      {
+        method: "POST",
+        headers: {
+          Cookie:
+            "worklin_session=session-restart-collaborator; csrftoken=csrf-token",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    expect(encodedTerminalMissingCsrf.status).toBe(403);
+    expect(await encodedTerminalMissingCsrf.json()).toEqual({
+      detail: "CSRF validation failed.",
+    });
+
+    const encodedTerminal = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/term%69nal/sessions/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-collaborator"),
+        body: "{}",
+      },
+    );
+    expect(encodedTerminal.status).toBe(501);
+    expect(await encodedTerminal.json()).toMatchObject({
+      capability: "terminal",
+      supported: false,
+      code: "runtime_capability_unavailable",
+    });
+
+    const doctor = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/doctor/sessions/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-collaborator"),
+        body: "{}",
+      },
+    );
+    expect(doctor.status).toBe(501);
+    expect(await doctor.json()).toMatchObject({
+      capability: "doctor",
+      supported: false,
+      code: "runtime_capability_unavailable",
+    });
+
+    const encodedDoctor = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/doct%6Fr/sessions/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-collaborator"),
+        body: "{}",
+      },
+    );
+    expect(encodedDoctor.status).toBe(501);
+    expect(await encodedDoctor.json()).toMatchObject({
+      capability: "doctor",
+      supported: false,
+      code: "runtime_capability_unavailable",
+    });
+
+    const encodedDoctorWithoutConsent = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/doct%6Fr/history/`,
+      { headers: authenticatedHeaders("session-restart-unconsented") },
+    );
+    expect(encodedDoctorWithoutConsent.status).toBe(403);
+    expect(await encodedDoctorWithoutConsent.json()).toEqual({
+      detail: "Assistant consent must be accepted before use.",
+    });
+
+    const malformedActionPaths = [
+      "terminal//sessions/",
+      "terminal%2Fsessions/",
+      "terminal%5Csessions/",
+      "re%2573tart/",
+      "%ZZ/",
+    ];
+    for (const actionPath of malformedActionPaths) {
+      const malformed = await fetch(
+        `${origin}/v1/assistants/asst-restart-collaboration/${actionPath}`,
+        { headers: authenticatedHeaders("session-restart-collaborator") },
+      );
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toEqual({
+        detail: "The assistant request path is malformed or ambiguous.",
+        code: "invalid_assistant_path",
+      });
+    }
+    expect(runtimeGatewayRequests).toEqual([]);
+
+    const updateWindow = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/upgrade-policy/`,
+      { headers: authenticatedHeaders("session-restart-collaborator") },
+    );
+    expect(updateWindow.status).toBe(501);
+    expect(await updateWindow.json()).toMatchObject({
+      capability: "update_window",
+      supported: false,
+      code: "runtime_capability_unavailable",
+    });
+
+    const inaccessible = await fetch(
+      `${origin}/v1/assistants/asst-not-assigned/upgrade-policy/`,
+      { headers: authenticatedHeaders("session-restart-collaborator") },
+    );
+    expect(inaccessible.status).toBe(404);
+    expect(await inaccessible.json()).toEqual({
+      detail: "Assistant not found.",
+    });
   });
 
   test("an existing allowlisted legacy customer remains active", async () => {
@@ -1324,10 +1801,9 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<
-          { count: number },
-          []
-        >("SELECT COUNT(*) AS count FROM runtime_stacks")
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM runtime_stacks",
+        )
         .get()?.count,
     ).toBe(0);
     verificationDb.close();

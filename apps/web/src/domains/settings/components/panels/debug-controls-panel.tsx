@@ -6,6 +6,7 @@ import { type Assistant, getAssistant } from "@/assistant/api";
 import { AssistantBackups } from "@/domains/settings/components/assistant-backups";
 import { RecoveryModeControls } from "@/domains/settings/components/recovery-mode-controls";
 import { RestartAssistant } from "@/domains/settings/components/restart-assistant";
+import type { RuntimeActionCapability } from "@/generated/api/types.gen";
 import {
   useActiveAssistantLifecycleIsLoading,
   usePlatformGate,
@@ -24,7 +25,11 @@ function isInternalUser(email: string | null, isAdmin: boolean): boolean {
   return !!email && email.toLowerCase().endsWith("@vellum.ai");
 }
 
-export function DebugControlsPanel() {
+export function DebugControlsPanel({
+  restartCapability,
+}: {
+  restartCapability?: RuntimeActionCapability;
+}) {
   const navigate = useNavigate();
   const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const user = useAuthStore.use.user();
@@ -125,12 +130,16 @@ export function DebugControlsPanel() {
                 Restart Assistant
               </p>
               <p className="text-body-small-default text-[var(--content-tertiary)]">
-                Restart the assistant machine. It will be briefly unavailable
-                during the restart.
+                {restartCapability?.supported === false
+                  ? restartCapability.detail
+                  : "Restart the assistant machine. It will be briefly unavailable during the restart."}
               </p>
             </div>
             <div className="ml-4 shrink-0">
-              <RestartAssistant assistantId={assistant.id} />
+              <RestartAssistant
+                assistantId={assistant.id}
+                disabled={restartCapability?.supported === false}
+              />
             </div>
           </div>
 
