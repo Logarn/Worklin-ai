@@ -7,7 +7,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 ## Start Here
 
 - Repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Active implementation branch: `assistant/pooled-runtime-beta` at `734cb92`, containing pooled-runtime commit `567feff` merged with current `origin/main` (`a90a832`)
+- Active implementation branch: `assistant/pooled-runtime-beta`; pooled-runtime commit `567feff` is merged with current `origin/main` (`637afb1`) in merge commit `4d9f50e`
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
@@ -37,6 +37,7 @@ Verification completed on the merged branch:
 - Gateway focused suites passed `52/52`; the assistant identity/trust subset passed `29/29`, and the focused pooled authorization, drain, state, BYOK, voice-fencing, route, and persistence suites passed.
 - Control-plane worker pool/startup passed `12/12`; runtime stack/startup gate passed `43/43`; vault passed `14/14`; request router passed `28/28`; production coordinator passed `11/11`; production transport passed `22/22`; workspace management passed `7/7`; runtime tenant tests passed `3/3`; and brand research passed `3/3`.
 - The two-tenant canary, singleton coordinator, stale-token rejection, cancellation, state checkpoint, secret-leakage, workspace-quota, and five-customer isolated-launch paths passed their focused suites. A large mixed Bun invocation is not a canonical gate because global module mocks contaminate unrelated suites; run the documented focused files in separate processes.
+- After merging `637afb1`, all four package type checks passed again. The changed control-plane provisioning suite passed `14/14`, the pooled index bridge passed `1/1`, and runtime stack/startup passed `43/43`. Run separately, the changed web billing, sound, voice, and Work deletion suites passed `6/6`, `5/5`, `4/4`, and `5/5`; combining those files in one Bun process reproduced the known global-module-mock contamination and is not a product failure.
 
 Release sequence:
 
@@ -128,7 +129,7 @@ Production status on 2026-07-15:
 
 ### Pooled release gate that must remain on every future handoff
 
-The tenant-safe pooled execution plane is implemented and locally verified in `567feff`, with current production source merged in `734cb92`. The task remains P0 until the infrastructure and product acceptance gates pass. Do not close it until all of the following are true:
+The tenant-safe pooled execution plane is implemented and locally verified in `567feff`, with current production source merged in `4d9f50e`. The task remains P0 until the infrastructure and product acceptance gates pass. Do not close it until all of the following are true:
 
 1. Arbitrary new users can complete signup, consent, BYOK provider setup, assistant creation, and a real agent turn without an operator editing infrastructure.
 2. Every request carries authenticated organization, user, and assistant context through conversation, memory, credential, file, artifact, tool, background-job, and voice-session operations.
@@ -565,7 +566,7 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ### P0. Release the pooled-runtime code without enabling customer traffic
 
-1. Push `assistant/pooled-runtime-beta`, open a draft PR, and require all mandatory CI checks on `734cb92` plus the handoff-only follow-up commit.
+1. Push `assistant/pooled-runtime-beta`, open a draft PR, and require all mandatory CI checks on the current branch head.
 2. Deploy the reviewed code with every `WORKLIN_TENANT_*`, worker-catalog, worker-pool, production-transport, state-transport, and pooled-key-vault gate disabled. Confirm existing dedicated, pre-provisioned, and private-pilot routing is unchanged.
 3. In the authenticated Logarn Chrome profile, verify signup/sign-in boundary behavior, consent, default-assistant creation, BYOK setup, typed multi-turn chat, refresh persistence, conversation naming, static skill load, read-only tool behavior, approval pause, task handling, and the existing voice error/success path. Record failures as separate product blockers; do not enable the pool to hide them.
 4. Stop before creating infrastructure. With explicit approval, create a fresh private pooled worker and tenant-state bucket, configure stable server-only vault/recovery/signing secrets, and enable one worker with global concurrency `1`.
@@ -663,7 +664,7 @@ Continue Worklin production work from:
 
 Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKLIN_PRODUCTION_HANDOFF.md is the only authoritative handoff; do not create another dated handoff.
 
-P0 is multi-user agent-runtime capacity. The six-milestone tenant-safe pooled execution plane is implemented on `assistant/pooled-runtime-beta`: `567feff` contains the implementation and `734cb92` merges current `origin/main` (`a90a832`). It has passed the focused tenant, lease, state, BYOK-vault, quota, coordinator, transport, stale-capability, and two-tenant security suites, but it is disabled by default and is not deployed or customer-ready. Push it, open a draft PR, pass CI, then deploy with every pool gate disabled and regression-test the existing production paths. Do not create a worker, bucket, paid capacity, or production secrets without explicit approval. After approval, start with one new private worker and concurrency `1`; pass the sequential two-tenant isolation, stale-token replay, restart-quarantine, exact operator-recovery, export/sanitize, and no-secret-leakage canary before expansion. Pooled v1 does not admit live voice, terminal/ACP, background work, integrations, or executable task/work-item runs, so full parity remains a separate release gate.
+P0 is multi-user agent-runtime capacity. The six-milestone tenant-safe pooled execution plane is implemented on `assistant/pooled-runtime-beta`: `567feff` contains the implementation and `4d9f50e` merges current `origin/main` (`637afb1`). It has passed the focused tenant, lease, state, BYOK-vault, quota, coordinator, transport, stale-capability, and two-tenant security suites, but it is disabled by default and is not deployed or customer-ready. Push it, open a draft PR, pass CI, then deploy with every pool gate disabled and regression-test the existing production paths. Do not create a worker, bucket, paid capacity, or production secrets without explicit approval. After approval, start with one new private worker and concurrency `1`; pass the sequential two-tenant isolation, stale-token replay, restart-quarantine, exact operator-recovery, export/sanitize, and no-secret-leakage canary before expansion. Pooled v1 does not admit live voice, terminal/ACP, background work, integrations, or executable task/work-item runs, so full parity remains a separate release gate.
 
 Production still has exactly one unclaimed pre-provisioned isolated customer runtime from commit `65ff168` and Railway deployments `d779d8d9-2c62-4652-8cd2-f30e67fda61d` plus `657367ac-fcd5-4790-b2df-cb8247cf7103`. The first consented new assistant may atomically claim that slot; its gateway then permanently locks to the first valid signed assistant identity and rejects all others. Do not consume the slot with a test identity, do not add customer assistants to the legacy shared-runtime allowlist, and do not describe this as general multi-user capacity.
 
