@@ -229,7 +229,7 @@ describe("background wake intent publisher hooks", () => {
     );
   });
 
-  test("daemon lifecycle publishes once after heartbeat and scheduler startup", () => {
+  test("daemon lifecycle publishes once after non-pooled heartbeat and scheduler startup", () => {
     const lifecycleSource = readFileSync(
       new URL("../daemon/lifecycle.ts", import.meta.url),
       "utf-8",
@@ -237,9 +237,11 @@ describe("background wake intent publisher hooks", () => {
 
     expect(lifecycleSource).toContain(
       [
-        "heartbeat.start();",
-        "registerBackgroundWakeRuntime({ scheduler, heartbeat });",
-        'refreshBackgroundWakeIntent("daemon-startup");',
+        "if (!pooledInteractiveOnly) {",
+        "  heartbeat.start();",
+        "  registerBackgroundWakeRuntime({ scheduler, heartbeat });",
+        '  refreshBackgroundWakeIntent("daemon-startup");',
+        "}",
       ].join("\n    "),
     );
   });
