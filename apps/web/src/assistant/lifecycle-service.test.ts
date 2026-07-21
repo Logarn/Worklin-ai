@@ -32,7 +32,7 @@ const TEST_ERROR_RETRY_DELAY_MS = 200;
 
 const getAssistantMock = mock(async () => ({ ok: false, status: 404 }));
 const getAssistantHealthzMock = mock(async () => ({ ok: true }));
-const restartAssistantMock = mock(
+const retryAssistantProvisioningMock = mock(
   async (
     _assistantId: string,
   ): Promise<
@@ -51,7 +51,10 @@ const restartAssistantMock = mock(
 mock.module("@/assistant/api", () => ({
   getAssistant: getAssistantMock,
   getAssistantHealthz: getAssistantHealthzMock,
-  restartAssistant: restartAssistantMock,
+}));
+
+mock.module("@/assistant/retry-provisioning", () => ({
+  retryAssistantProvisioning: retryAssistantProvisioningMock,
 }));
 
 const setSelfHostedConnectionMock = mock((_args: unknown) => {});
@@ -147,7 +150,7 @@ const baseInputs = {
 beforeEach(() => {
   getAssistantMock.mockClear();
   getAssistantHealthzMock.mockClear();
-  restartAssistantMock.mockClear();
+  retryAssistantProvisioningMock.mockClear();
   setSelfHostedConnectionMock.mockClear();
   // Re-baseline implementations every test so a `mockImplementationOnce`
   // or `mockImplementation` from a prior test doesn't leak.
@@ -162,7 +165,7 @@ beforeEach(() => {
   primeLocalGatewayConnectionWithRepairMock.mockClear();
   getAssistantMock.mockImplementation(async () => ({ ok: false, status: 404 }));
   getAssistantHealthzMock.mockImplementation(async () => ({ ok: true }));
-  restartAssistantMock.mockImplementation(async () => ({
+  retryAssistantProvisioningMock.mockImplementation(async () => ({
     ok: true,
     data: {},
   }));
@@ -188,7 +191,7 @@ afterEach(() => {
 });
 
 describe("lifecycleService — server state projection", () => {
-  test("retry requests a failed managed runtime restart before polling again", async () => {
+  test("retry requests managed runtime preparation before polling again", async () => {
     getAssistantMock
       .mockImplementationOnce(async () => ({
         ok: true,
@@ -222,13 +225,13 @@ describe("lifecycleService — server state projection", () => {
 
     await lifecycleService.retryAssistant();
 
-    expect(restartAssistantMock).toHaveBeenCalledWith("asst-retry");
+    expect(retryAssistantProvisioningMock).toHaveBeenCalledWith("asst-retry");
     expect(useAssistantLifecycleStore.getState().assistantState).toEqual({
       kind: "initializing",
     });
   });
 
-  test("retry does not restart after an unrelated server error", async () => {
+  test("retry does not prepare after an unrelated server error", async () => {
     getAssistantMock.mockImplementation(async () => ({
       ok: false,
       status: 500,
@@ -243,11 +246,11 @@ describe("lifecycleService — server state projection", () => {
     await lifecycleService.checkAssistant();
     await lifecycleService.retryAssistant();
 
-    expect(restartAssistantMock).not.toHaveBeenCalled();
+    expect(retryAssistantProvisioningMock).not.toHaveBeenCalled();
     expect(getAssistantMock).toHaveBeenCalledTimes(2);
   });
 
-  test("retry surfaces an explicit restart failure without pretending to poll", async () => {
+  test("retry surfaces an explicit preparation failure without pretending to poll", async () => {
     getAssistantMock.mockImplementationOnce(async () => ({
       ok: true,
       status: 200,
@@ -258,7 +261,7 @@ describe("lifecycleService — server state projection", () => {
         is_local: false,
       },
     }));
-    restartAssistantMock.mockImplementationOnce(async () => ({
+    retryAssistantProvisioningMock.mockImplementationOnce(async () => ({
       ok: false,
       status: 503,
       error: { detail: "Managed assistant provisioning is not available." },
@@ -271,7 +274,9 @@ describe("lifecycleService — server state projection", () => {
     await lifecycleService.checkAssistant();
     await lifecycleService.retryAssistant();
 
-    expect(restartAssistantMock).toHaveBeenCalledWith("asst-retry-failed");
+    expect(retryAssistantProvisioningMock).toHaveBeenCalledWith(
+      "asst-retry-failed",
+    );
     expect(getAssistantMock).toHaveBeenCalledTimes(1);
     expect(useAssistantLifecycleStore.getState().assistantState).toEqual({
       kind: "error",

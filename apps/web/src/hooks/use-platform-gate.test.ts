@@ -28,7 +28,9 @@ import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import type { AssistantState } from "@/assistant/types";
 import {
+  useActiveAssistantHasSelfHostedRecord,
   useActiveAssistantIsPlatformHosted,
+  useActiveAssistantIsSelfHosted,
   useActiveAssistantLifecycleIsLoading,
   usePlatformGate,
 } from "@/hooks/use-platform-gate";
@@ -275,6 +277,87 @@ describe("useActiveAssistantIsPlatformHosted", () => {
       expect(result.current).toBe(false);
       unmount();
     }
+  });
+});
+
+describe("useActiveAssistantIsSelfHosted", () => {
+  test("returns false for managed assistants when lifecycle resolution fails", () => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "asst-managed",
+      assistants: [
+        {
+          id: "asst-managed",
+          isLocal: false,
+          isPlatformHosted: true,
+        },
+      ],
+    });
+    setLifecycle({ kind: "error", message: "boom" });
+
+    const { result } = renderHook(() => useActiveAssistantIsSelfHosted());
+
+    expect(result.current).toBe(false);
+  });
+
+  test("returns false while assistant hosting is unknown", () => {
+    setLifecycle({ kind: "loading" });
+
+    const { result } = renderHook(() => useActiveAssistantIsSelfHosted());
+
+    expect(result.current).toBe(false);
+  });
+
+  test("returns true for a positively resolved self-hosted assistant", () => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "asst-self-hosted",
+      assistants: [
+        {
+          id: "asst-self-hosted",
+          isLocal: true,
+          isPlatformHosted: false,
+        },
+      ],
+    });
+    setLifecycle({ kind: "error", message: "runtime unavailable" });
+
+    const { result } = renderHook(() => useActiveAssistantIsSelfHosted());
+
+    expect(result.current).toBe(true);
+  });
+
+  test("does not treat a managed proxy projection as self-hosted", () => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "asst-managed-proxy",
+      assistants: [
+        {
+          id: "asst-managed-proxy",
+          isLocal: true,
+          isPlatformHosted: true,
+        },
+      ],
+    });
+    setLifecycle({ kind: "self_hosted" });
+
+    const { result } = renderHook(() => useActiveAssistantIsSelfHosted());
+
+    expect(result.current).toBe(false);
+  });
+
+});
+
+describe("useActiveAssistantHasSelfHostedRecord", () => {
+  test("does not trust stale local lifecycle state without a matching assistant record", () => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "asst-reconciling",
+      assistants: [],
+    });
+    setLifecycle({ kind: "active", isLocal: true });
+
+    const { result } = renderHook(() =>
+      useActiveAssistantHasSelfHostedRecord(),
+    );
+
+    expect(result.current).toBe(false);
   });
 });
 

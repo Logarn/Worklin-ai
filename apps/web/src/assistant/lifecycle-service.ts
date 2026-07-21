@@ -28,9 +28,9 @@ import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import {
   getAssistant,
   getAssistantHealthz,
-  restartAssistant,
   type GetAssistantResult,
 } from "@/assistant/api";
+import { retryAssistantProvisioning } from "@/assistant/retry-provisioning";
 import { subscribeAssistantUnreachable } from "@/assistant/unreachable-bus";
 import {
   buildInitializingTimeoutError,
@@ -357,21 +357,21 @@ class AssistantLifecycleService {
       this.state.retryAction === "restart_runtime"
     ) {
       try {
-        const result = await restartAssistant(assistantId);
+        const result = await retryAssistantProvisioning(assistantId);
         if (!result.ok) {
           this.transition({
             kind: "error",
             message: extractErrorMessage(
               result.error,
               undefined,
-              "Worklin could not restart your managed assistant.",
+              "Worklin could not prepare your managed assistant.",
             ),
             retryAction: "restart_runtime",
           });
           return;
         }
       } catch (error) {
-        captureError(error, { context: "retry_assistant" });
+        captureError(error, { context: "retry_assistant_provisioning" });
       }
     }
     await this.checkAssistant(assistantId ?? undefined);

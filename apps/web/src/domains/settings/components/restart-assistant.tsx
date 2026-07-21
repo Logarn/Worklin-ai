@@ -6,7 +6,13 @@ import { Button } from "@vellumai/design-library/components/button";
 import { ConfirmDialog } from "@vellumai/design-library/components/confirm-dialog";
 import { toast } from "@vellumai/design-library/components/toast";
 
-export function RestartAssistant({ assistantId }: { assistantId: string }) {
+export function RestartAssistant({
+  assistantId,
+  disabled = false,
+}: {
+  assistantId: string;
+  disabled?: boolean;
+}) {
   const [restarting, setRestarting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -39,7 +45,7 @@ export function RestartAssistant({ assistantId }: { assistantId: string }) {
           restarting ? <Loader2 className="animate-spin" /> : <RotateCcw />
         }
         onClick={() => setConfirmOpen(true)}
-        disabled={restarting}
+        disabled={disabled || restarting}
         className="shrink-0"
       >
         Restart
