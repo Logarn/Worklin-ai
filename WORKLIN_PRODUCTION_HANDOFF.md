@@ -1,20 +1,39 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-07-21
+Last refreshed: 2026-07-22
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
 ## Start Here
 
 - Repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Active implementation branch: `assistant/pooled-runtime-beta`; pooled-runtime commit `567feff` is merged with current `origin/main` (`8740a97`) in merge commit `5384da9`; draft PR `#139` is open
+- Active implementation branch: `assistant/pooled-runtime-beta`; current `origin/main` (`e4cdc3a`) is merged in `fdf700b`; draft PR `#139` is open and awaits a fresh CI cycle
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `74bf3e1` (`Make stuck provisioning restartable`), merged through PR `#128` on 2026-07-20. The web deployment was published from the equivalent verified source commit `e9243ba`; Railway remains on control-plane release `d248440`.
+- Current production application commit: `e4cdc3a` (`Protect assistant database at startup`), deployed on 2026-07-22. Railway `/healthz` reports this exact release SHA and `/readyz` reports `ok: true`, `runtimeMode: control-plane`, and `provisionerReady: true`.
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-07-22 Conversation Storage Recovery Verified
+
+The production chat failure reported on 2026-07-21 was reproduced in the authenticated Chrome profile. The assistant page initially showed `Failed to load conversation history`, and sending a normal message produced `disk I/O error`. Browser logs also captured `database disk image is malformed` and HTTP 500/502 conversation-history failures. The runtime health check had been able to report ready because it checked the assistant daemon but not the SQLite database that served conversation history.
+
+Commit `d2fcb55` adds two recovery boundaries:
+
+- Assistant `/readyz` now probes SQLite with `SELECT 1` and `PRAGMA quick_check(1)`. A runtime with unreadable storage reports HTTP 503 with `storage_unavailable` instead of advertising readiness.
+- The control plane now probes the runtime `/readyz` after a Railway-backed upstream application error. When the runtime is unhealthy, it marks the stack failed, schedules the existing Railway recovery path, and returns a user-safe 503 provisioning response rather than forwarding the raw 500.
+
+Focused verification passed: assistant storage-readiness and identity routes `29/29`, assistant TypeScript and lint checks, control-plane runtime-provisioning `14/14`, Railway provisioner `16/16`, and control-plane TypeScript. GitHub reported both Vercel and Railway deployments successful for `d2fcb55`.
+
+Authenticated live production acceptance also passed after deployment:
+
+1. Sent `Live production smoke test: reply with exactly READY, then one short sentence describing your role.`
+2. The assistant replied `READY` followed by its role sentence in approximately two seconds.
+3. Reloaded the same conversation route and confirmed the user message and assistant response were loaded from persisted history.
+
+Residual operational boundary: the recovery path redeploys and revalidates the existing Railway runtime. If a persistent volume is irreparably corrupt, the user will receive a clean provisioning/recovery state, but an operator may still need to replace or restore that volume. Do not describe a successful readiness probe as proof that old corrupted data has been repaired; the live authenticated turn and reload persistence check remain the product acceptance gates.
 
 ## 2026-07-21 Tenant-Safe Pooled Runtime Beta
 
@@ -40,6 +59,9 @@ Verification completed on the merged branch:
 - After merging `637afb1`, all four package type checks passed again. The changed control-plane provisioning suite passed `14/14`, the pooled index bridge passed `1/1`, and runtime stack/startup passed `43/43`. Run separately, the changed web billing, sound, voice, and Work deletion suites passed `6/6`, `5/5`, `4/4`, and `5/5`; combining those files in one Bun process reproduced the known global-module-mock contamination and is not a product failure.
 - PR `#139` initially exposed two sync guards: the CLI environment mirror omitted Kimi's documented `MOONSHOT_API_KEY`, and the gateway schema guard treated optional trailing slashes on regex-derived assistant routes as path drift. Commit `38d9c74` restores the provider map and normalizes only regex-derived route comparisons; literal routes retain strict slash matching. Focused CLI parity passed `1/1`, gateway schema guard passed `7/7`, and both package type/lint/format checks passed.
 - After merging assistant-scoped privacy persistence from `8740a97`, control-plane consent/store/tenant tests passed `15/15`, pooled index routing passed `1/1`, provisioning passed `14/14`, the isolated web consent API passed `2/2`, and all four package type checks passed. The merge preserves both per-assistant `admin_access_consented` state and the pooled rule that renderer payloads receive no platform actor token.
+- The next PR cycle exposed five assistant-suite sync regressions: a hard-coded pooled assistant ID, missing web-search title extraction, an incomplete shell-observability mock, a stale wake-intent structural assertion, and a stale reviewed workspace-migration tail. Commits `b0e11f3` and `4ae3552` fix those exact failures. Focused reruns passed pooled auth `15/15`, title service `29/29`, title hooks `22/22`, provider routing `9/9`, shell/wake/surface-action regressions `43/43`, pooled state `24/24`, and migration 104 `7/7`.
+- Merge `fc3f388` reconciles conversation-title and runtime-action work from `1035737`. Merge `fdf700b` then brings in production storage recovery and database protection through `e4cdc3a`. The combined branch preserves request-bound pooled title generation, BYOK-only title fallback, null pooled ingress/token payloads, unsupported pooled runtime actions, idle-worker readiness without opening a tenant database, restored-state integrity checks, and dedicated-Railway recovery after a failed readiness probe.
+- Final focused verification after both merges passed all four package type checks; pooled control-plane routing and provisioning `15/15`; storage, identity, and database protection `35/35`; pooled state lifecycle `24/24`; onboarding lifecycle `26/26`; web store `16/16`; and the isolated runtime-action web suites. Commit hooks passed secret scanning, generic-example checks, formatting, lint, OpenAPI generation, and assistant/web type checks. A fresh GitHub CI run on the pushed head is still mandatory.
 
 Release sequence:
 
@@ -131,7 +153,7 @@ Production status on 2026-07-15:
 
 ### Pooled release gate that must remain on every future handoff
 
-The tenant-safe pooled execution plane is implemented and locally verified in `567feff`, with current production source merged in `5384da9`. The task remains P0 until the infrastructure and product acceptance gates pass. Do not close it until all of the following are true:
+The tenant-safe pooled execution plane is implemented and locally verified on `assistant/pooled-runtime-beta`, with current production source `e4cdc3a` merged in `fdf700b`. The task remains P0 until the infrastructure and product acceptance gates pass. Do not close it until all of the following are true:
 
 1. Arbitrary new users can complete signup, consent, BYOK provider setup, assistant creation, and a real agent turn without an operator editing infrastructure.
 2. Every request carries authenticated organization, user, and assistant context through conversation, memory, credential, file, artifact, tool, background-job, and voice-session operations.
@@ -439,7 +461,7 @@ A conventional ElevenAgents resource named `Worklin Voice Pilot` was created dur
 
 ## Current Objective And Blockers
 
-The scalable-runtime code is complete on `assistant/pooled-runtime-beta`, but production is still on the existing dedicated/pre-provisioned routing path. Draft PR `#139` is open; initial CI sync failures are fixed in `38d9c74`, and current `origin/main` is merged in `5384da9`. The next blocker is to pass the fresh CI cycle, deploy with every pool gate disabled, and complete the normal authenticated production regression. Enabling the pool then requires explicit authorization for a new private worker and object-storage bucket plus the documented one-worker, two-tenant isolation canary. Live voice and full executable task handling are not admitted to pooled v1.
+The scalable-runtime code is complete on `assistant/pooled-runtime-beta`, but production is still on the existing dedicated/pre-provisioned routing path. Draft PR `#139` is open; the known CI sync regressions are fixed in `b0e11f3` and `4ae3552`, and current `origin/main` (`e4cdc3a`) is merged in `fdf700b`. The next blocker is to push the reconciled head, pass the fresh CI cycle, deploy with every pool gate disabled, and complete the normal authenticated production regression. Enabling the pool then requires explicit authorization for a new private worker and object-storage bucket plus the documented one-worker, two-tenant isolation canary. Live voice and full executable task handling are not admitted to pooled v1.
 
 Worklin remains the canonical agent brain for memory, tools, permissions, and transcript persistence. The ElevenLabs Speech Engine opens its production upstream and reaches the normal Worklin agent turn. The immediate blocker is active BYOK model-profile resolution: the earlier attempt routed `claude-sonnet-4-6` through Kimi, while the 2026-07-16 Logarn Chrome attempt routed `accounts/fireworks/models/minimax-m3` through Fireworks. Both were rejected with HTTP 404/access errors even though a typed BYOK turn in the same production conversation succeeded. Fix the typed-versus-voice profile divergence and validate the selected BYOK model before connecting the provider; do not switch the user to a Worklin-managed profile.
 
@@ -568,7 +590,7 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ### P0. Release the pooled-runtime code without enabling customer traffic
 
-1. Push the `5384da9` merge and this handoff refresh to draft PR `#139`, then require all mandatory CI checks on the current branch head.
+1. Push merge `fdf700b` and this handoff refresh to draft PR `#139`, then require all mandatory CI checks on the current branch head.
 2. Deploy the reviewed code with every `WORKLIN_TENANT_*`, worker-catalog, worker-pool, production-transport, state-transport, and pooled-key-vault gate disabled. Confirm existing dedicated, pre-provisioned, and private-pilot routing is unchanged.
 3. In the authenticated Logarn Chrome profile, verify signup/sign-in boundary behavior, consent, default-assistant creation, BYOK setup, typed multi-turn chat, refresh persistence, conversation naming, static skill load, read-only tool behavior, approval pause, task handling, and the existing voice error/success path. Record failures as separate product blockers; do not enable the pool to hide them.
 4. Stop before creating infrastructure. With explicit approval, create a fresh private pooled worker and tenant-state bucket, configure stable server-only vault/recovery/signing secrets, and enable one worker with global concurrency `1`.
@@ -666,7 +688,7 @@ Continue Worklin production work from:
 
 Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKLIN_PRODUCTION_HANDOFF.md is the only authoritative handoff; do not create another dated handoff.
 
-P0 is multi-user agent-runtime capacity. The six-milestone tenant-safe pooled execution plane is implemented on `assistant/pooled-runtime-beta`: `567feff` contains the implementation and `5384da9` merges current `origin/main` (`8740a97`). Draft PR `#139` is open. The initial CLI/gateway CI sync failures are fixed in `38d9c74`; require the current CI cycle to pass before release. The branch has passed the focused tenant, lease, state, BYOK-vault, quota, coordinator, transport, stale-capability, and two-tenant security suites, but it is disabled by default and is not deployed or customer-ready. Deploy only with every pool gate disabled and regression-test the existing production paths. Do not create a worker, bucket, paid capacity, or production secrets without explicit approval. After approval, start with one new private worker and concurrency `1`; pass the sequential two-tenant isolation, stale-token replay, restart-quarantine, exact operator-recovery, export/sanitize, and no-secret-leakage canary before expansion. Pooled v1 does not admit live voice, terminal/ACP, background work, integrations, or executable task/work-item runs, so full parity remains a separate release gate.
+P0 is multi-user agent-runtime capacity. The six-milestone tenant-safe pooled execution plane is implemented on `assistant/pooled-runtime-beta`, with current production source `e4cdc3a` merged in `fdf700b`. Draft PR `#139` is open. The known CI sync failures are fixed in `38d9c74`, `b0e11f3`, and `4ae3552`; require a fresh CI cycle on the pushed head before release. The branch has passed the focused tenant, lease, state, BYOK-vault, quota, coordinator, transport, stale-capability, storage-readiness, title-generation, and two-tenant security suites, but it is disabled by default and is not deployed or customer-ready. Deploy only with every pool gate disabled and regression-test the existing production paths. Do not create a worker, bucket, paid capacity, or production secrets without explicit approval. After approval, start with one new private worker and concurrency `1`; pass the sequential two-tenant isolation, stale-token replay, restart-quarantine, exact operator-recovery, export/sanitize, and no-secret-leakage canary before expansion. Pooled v1 does not admit live voice, terminal/ACP, background work, integrations, or executable task/work-item runs, so full parity remains a separate release gate.
 
 Production still has exactly one unclaimed pre-provisioned isolated customer runtime from commit `65ff168` and Railway deployments `d779d8d9-2c62-4652-8cd2-f30e67fda61d` plus `657367ac-fcd5-4790-b2df-cb8247cf7103`. The first consented new assistant may atomically claim that slot; its gateway then permanently locks to the first valid signed assistant identity and rejects all others. Do not consume the slot with a test identity, do not add customer assistants to the legacy shared-runtime allowlist, and do not describe this as general multi-user capacity.
 
