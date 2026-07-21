@@ -22,6 +22,10 @@ import type { PluginHookFn, StopContext } from "@vellumai/plugin-api";
 
 import { getConfig } from "../../../../config/loader.js";
 import { getConversation } from "../../../../memory/conversation-crud.js";
+import {
+  resolvePersistedTitleContext,
+  type TitleContext,
+} from "../../../../memory/conversation-title-context.js";
 import { queueRegenerateConversationTitle } from "../../../../memory/conversation-title-service.js";
 import type { Message } from "../../../../providers/types.js";
 
@@ -60,16 +64,21 @@ const stop: PluginHookFn<StopContext> = async (ctx) => {
 
   if (countUserTurns(ctx.messages) !== SECOND_PASS_USER_TURN) return;
 
-  // System conversations (background/scheduled) keep their deterministic
-  // bootstrap title — multi-prompt background jobs can reach three user-role
-  // turns with no human present, and a refined LLM title isn't worth the
-  // tokens there. The lookup fails open: on a read error the hook behaves as
-  // before (queues regeneration; the service re-checks isAutoTitle).
+  // Explicit background/scheduled rows keep their deterministic bootstrap
+  // title. Standard compatibility rows still queue the second pass, but carry
+  // their persisted origin so schedules/background jobs stay on configured
+  // title routing and remote human channels retain their chat profile.
+  let titleContext: TitleContext | undefined;
   try {
     const conversation = getConversation(ctx.conversationId);
     if (conversation && conversation.conversationType !== "standard") return;
+    titleContext =
+      resolvePersistedTitleContext(conversation) ??
+      ({ origin: "misc" } as const);
   } catch {
-    // Fall through to queueing.
+    // The service re-reads persisted provenance. Leaving the context unset
+    // avoids forcing an interactive conversation onto background routing when
+    // this opportunistic read races a transient database error.
   }
 
   const { conversationId } = ctx;
@@ -79,7 +88,10 @@ const stop: PluginHookFn<StopContext> = async (ctx) => {
   // service is itself fire-and-forget and re-checks replaceability, owning
   // provider resolution, persistence, and the resulting broadcast.
   setTimeout(() => {
-    queueRegenerateConversationTitle({ conversationId });
+    queueRegenerateConversationTitle({
+      conversationId,
+      ...(titleContext ? { context: titleContext } : {}),
+    });
   }, 0);
 };
 
