@@ -10,6 +10,12 @@ import { dirname, join } from "node:path";
 import { minimatch } from "minimatch";
 
 import { ensureDir, pathExists } from "../../../util/fs.js";
+import {
+  IdentityFileConflictError,
+  isWorkspaceIdentityPath,
+  readIdentityContent,
+  writeIdentityFileAtomicallyIfUnchanged,
+} from "../../../workspace/identity-file-write.js";
 import { applyEdit } from "./edit-engine.js";
 import * as Err from "./errors.js";
 import type { PathFailureReason, PathResult } from "./path-policy.js";
@@ -172,6 +178,54 @@ export class FileSystemOps {
     }
   }
 
+  async writeFileSafeCoordinated(input: WriteInput): Promise<WriteResult> {
+    const pathCheck = this.policy(input.path, { mustExist: false });
+    if (!pathCheck.ok) {
+      return {
+        ok: false,
+        error: pathError(input.path, pathCheck.reason, pathCheck.error),
+      };
+    }
+    const filePath = pathCheck.resolved;
+
+    if (!isWorkspaceIdentityPath(filePath)) {
+      return this.writeFileSafe(input);
+    }
+
+    const sizeErr = checkContentSize(input.content, filePath, this.sizeLimit);
+    if (sizeErr) {
+      return { ok: false, error: Err.sizeLimitExceeded(filePath, sizeErr) };
+    }
+
+    try {
+      ensureDir(dirname(filePath));
+      const expectedContent = readIdentityContent(filePath);
+      const oldContent = expectedContent?.toString("utf-8") ?? "";
+
+      await writeIdentityFileAtomicallyIfUnchanged(
+        filePath,
+        expectedContent,
+        input.content,
+      );
+
+      return {
+        ok: true,
+        value: {
+          filePath,
+          isNewFile: expectedContent === null,
+          oldContent,
+          newContent: input.content,
+        },
+      };
+    } catch (err) {
+      if (err instanceof IdentityFileConflictError) {
+        return { ok: false, error: Err.conflict(filePath, err.message) };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Edit
   // -------------------------------------------------------------------------
@@ -239,6 +293,101 @@ export class FileSystemOps {
       this.beforeWrite?.({ filePath, content: result.updatedContent });
       writeFileSync(filePath, result.updatedContent);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+
+    return {
+      ok: true,
+      value: {
+        filePath,
+        matchCount: result.matchCount,
+        oldContent: content,
+        newContent: result.updatedContent,
+        matchMethod: result.matchMethod,
+        similarity: result.similarity,
+        actualOld: result.actualOld,
+        actualNew: result.actualNew,
+      },
+    };
+  }
+
+  async editFileSafeCoordinated(input: EditInput): Promise<EditResult> {
+    const pathCheck = this.policy(input.path, { mustExist: true });
+    if (!pathCheck.ok) {
+      return {
+        ok: false,
+        error: pathError(input.path, pathCheck.reason, pathCheck.error),
+      };
+    }
+    const filePath = pathCheck.resolved;
+
+    if (!isWorkspaceIdentityPath(filePath)) {
+      return this.editFileSafe(input);
+    }
+
+    try {
+      const sizeErr = checkFileSizeOnDisk(filePath, this.sizeLimit);
+      if (sizeErr) {
+        return { ok: false, error: Err.sizeLimitExceeded(filePath, sizeErr) };
+      }
+    } catch {
+      // The read below returns the more specific missing-file error.
+    }
+
+    let content: string;
+    try {
+      const expectedContent = readIdentityContent(filePath);
+      if (expectedContent === null) {
+        return { ok: false, error: Err.notFound(filePath) };
+      }
+      content = expectedContent.toString("utf-8");
+    } catch (err) {
+      const code =
+        err instanceof Error && "code" in err
+          ? (err as NodeJS.ErrnoException).code
+          : undefined;
+      if (code === "EISDIR") {
+        return { ok: false, error: Err.notAFile(filePath) };
+      }
+      if (code === "ENOENT") {
+        return { ok: false, error: Err.notFound(filePath) };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+
+    if (input.oldString.length === 0) {
+      return { ok: false, error: Err.matchNotFound(filePath) };
+    }
+
+    const result = applyEdit(
+      content,
+      input.oldString,
+      input.newString,
+      input.replaceAll,
+    );
+
+    if (!result.ok) {
+      if (result.reason === "not_found") {
+        return { ok: false, error: Err.matchNotFound(filePath) };
+      }
+      return {
+        ok: false,
+        error: Err.matchAmbiguous(filePath, result.matchCount),
+      };
+    }
+
+    try {
+      await writeIdentityFileAtomicallyIfUnchanged(
+        filePath,
+        content,
+        result.updatedContent,
+      );
+    } catch (err) {
+      if (err instanceof IdentityFileConflictError) {
+        return { ok: false, error: Err.conflict(filePath, err.message) };
+      }
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: Err.ioError(filePath, msg) };
     }

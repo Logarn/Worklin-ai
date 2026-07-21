@@ -1,7 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-import { getWorkspaceDir } from "../util/platform.js";
+import { getWorkspacePromptPath } from "../util/platform.js";
+import { updateIdentityFileAtomically } from "../workspace/identity-file-write.js";
 
 /**
  * Update the `## Avatar` section in IDENTITY.md with a plain-text description.
@@ -9,27 +7,11 @@ import { getWorkspaceDir } from "../util/platform.js";
  * If `description` is null, clears the section content (leaves the heading so
  * the assistant knows to fill it in). If the section doesn't exist, appends it.
  */
-export function updateIdentityAvatarSection(
+export async function updateIdentityAvatarSection(
   description: string | null,
   log?: { warn: (obj: Record<string, unknown>, msg: string) => void },
-): void {
-  const identityPath = join(getWorkspaceDir(), "IDENTITY.md");
-
-  if (!existsSync(identityPath)) {
-    log?.warn(
-      { identityPath },
-      "IDENTITY.md not found, skipping avatar section update",
-    );
-    return;
-  }
-
-  let content: string;
-  try {
-    content = readFileSync(identityPath, "utf-8");
-  } catch (err) {
-    log?.warn({ err }, "Failed to read IDENTITY.md");
-    return;
-  }
+): Promise<void> {
+  const identityPath = getWorkspacePromptPath("IDENTITY.md");
 
   const sectionBody = description
     ? `## Avatar\n${description}\n`
@@ -39,16 +21,21 @@ export function updateIdentityAvatarSection(
   // at any level, or end of file. Uses multiline ^ to match headings at line start.
   const avatarSectionRegex = /## Avatar\n[\s\S]*?(?=^#{1,6} |\s*$)/m;
 
-  let updated: string;
-  if (avatarSectionRegex.test(content)) {
-    updated = content.replace(avatarSectionRegex, sectionBody);
-  } else {
-    // Append the section
-    updated = content.trimEnd() + "\n\n" + sectionBody + "\n";
-  }
-
   try {
-    writeFileSync(identityPath, updated, "utf-8");
+    await updateIdentityFileAtomically(identityPath, (content) => {
+      if (content === null) {
+        log?.warn(
+          { identityPath },
+          "IDENTITY.md not found, skipping avatar section update",
+        );
+        return undefined;
+      }
+
+      if (avatarSectionRegex.test(content)) {
+        return content.replace(avatarSectionRegex, sectionBody);
+      }
+      return content.trimEnd() + "\n\n" + sectionBody + "\n";
+    });
   } catch (err) {
     log?.warn({ err }, "Failed to update IDENTITY.md avatar section");
   }

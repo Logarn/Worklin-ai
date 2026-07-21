@@ -21,6 +21,13 @@ import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 
 import { getWorkspaceDir } from "../../util/platform.js";
+import {
+  IdentityFileConflictError,
+  isWorkspaceIdentityPath,
+  readIdentityContent,
+  withIdentityFileWriteLock,
+  writeIdentityFileAtomicallyIfUnchanged,
+} from "../../workspace/identity-file-write.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { publishSoundsConfigUpdated } from "../sync/resource-sync-events.js";
 import {
@@ -407,13 +414,32 @@ function handleWorkspaceWrite({ body, headers }: RouteHandlerArgs) {
   }
 
   mkdirSync(dirname(resolved), { recursive: true });
-  writeFileSync(resolved, buffer);
-  publishSoundsConfigUpdatedForPaths(
-    [path],
-    headers?.["x-vellum-client-id"]?.trim() || undefined,
-  );
+  const finishWrite = () => {
+    publishSoundsConfigUpdatedForPaths(
+      [path],
+      headers?.["x-vellum-client-id"]?.trim() || undefined,
+    );
+    return { path, size: buffer.byteLength };
+  };
 
-  return { path, size: buffer.byteLength };
+  if (isWorkspaceIdentityPath(resolved)) {
+    const expectedContent = readIdentityContent(resolved);
+    return writeIdentityFileAtomicallyIfUnchanged(
+      resolved,
+      expectedContent,
+      buffer,
+    )
+      .then(finishWrite)
+      .catch((error: unknown) => {
+        if (error instanceof IdentityFileConflictError) {
+          throw new ConflictError(error.message);
+        }
+        throw error;
+      });
+  } else {
+    writeFileSync(resolved, buffer);
+  }
+  return finishWrite();
 }
 
 // ---------------------------------------------------------------------------
@@ -495,21 +521,38 @@ function handleWorkspaceRename({ body, headers }: RouteHandlerArgs) {
     throw new BadRequestError("Cannot rename workspace root");
   }
 
-  if (!existsSync(resolvedOld)) {
-    throw new NotFoundError("Source path not found");
-  }
+  const renameWorkspacePath = () => {
+    if (!existsSync(resolvedOld)) {
+      throw new NotFoundError("Source path not found");
+    }
 
-  if (existsSync(resolvedNew) && !isSamePathAlias(resolvedOld, resolvedNew)) {
-    throw new ConflictError("Destination already exists");
-  }
+    if (existsSync(resolvedNew) && !isSamePathAlias(resolvedOld, resolvedNew)) {
+      throw new ConflictError("Destination already exists");
+    }
 
-  mkdirSync(dirname(resolvedNew), { recursive: true });
-  renameSync(resolvedOld, resolvedNew);
-  publishSoundsConfigUpdatedForPaths(
-    [oldPath, newPath],
-    headers?.["x-vellum-client-id"]?.trim() || undefined,
-  );
-  return { oldPath, newPath };
+    mkdirSync(dirname(resolvedNew), { recursive: true });
+    renameSync(resolvedOld, resolvedNew);
+  };
+
+  const identityPath = isWorkspaceIdentityPath(resolvedOld)
+    ? resolvedOld
+    : isWorkspaceIdentityPath(resolvedNew)
+      ? resolvedNew
+      : null;
+  const finishRename = () => {
+    publishSoundsConfigUpdatedForPaths(
+      [oldPath, newPath],
+      headers?.["x-vellum-client-id"]?.trim() || undefined,
+    );
+    return { oldPath, newPath };
+  };
+  if (identityPath) {
+    return withIdentityFileWriteLock(identityPath, renameWorkspacePath).then(
+      finishRename,
+    );
+  }
+  renameWorkspacePath();
+  return finishRename();
 }
 
 // ---------------------------------------------------------------------------
@@ -531,16 +574,27 @@ function handleWorkspaceDelete({ body, headers }: RouteHandlerArgs) {
     throw new BadRequestError("Cannot delete workspace root");
   }
 
-  if (!existsSync(resolved)) {
-    throw new NotFoundError("Path not found");
-  }
+  const deleteWorkspacePath = () => {
+    if (!existsSync(resolved)) {
+      throw new NotFoundError("Path not found");
+    }
+    rmSync(resolved, { recursive: true, force: true });
+  };
+  const finishDelete = () => {
+    publishSoundsConfigUpdatedForPaths(
+      [path],
+      headers?.["x-vellum-client-id"]?.trim() || undefined,
+    );
+    return { success: true };
+  };
 
-  rmSync(resolved, { recursive: true, force: true });
-  publishSoundsConfigUpdatedForPaths(
-    [path],
-    headers?.["x-vellum-client-id"]?.trim() || undefined,
-  );
-  return { success: true };
+  if (isWorkspaceIdentityPath(resolved)) {
+    return withIdentityFileWriteLock(resolved, deleteWorkspacePath).then(
+      finishDelete,
+    );
+  }
+  deleteWorkspacePath();
+  return finishDelete();
 }
 
 // ---------------------------------------------------------------------------

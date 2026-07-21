@@ -11,10 +11,15 @@ import { isPooledWorkerRuntime } from "../../config/env.js";
 import { getCpuLimit, getIsPlatform } from "../../config/env-registry.js";
 import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
-import { parseIdentityFields } from "../../daemon/handlers/identity.js";
+import {
+  type IdentityFields,
+  parseIdentityFields,
+  updateIdentityFields,
+} from "../../daemon/handlers/identity.js";
 import { getProfilerRuntimeStatus } from "../../daemon/profiler-run-store.js";
 import { getSqlite } from "../../memory/db-connection.js";
 import { getMaxMigrationVersion } from "../../memory/migrations/registry.js";
+import { syncIdentityNameToPlatform } from "../../platform/sync-identity.js";
 import { buildSystemPrompt } from "../../prompts/system-prompt.js";
 import { getConfiguredProvider } from "../../providers/provider-send-message.js";
 import { getCesClient } from "../../security/secure-keys.js";
@@ -25,15 +30,29 @@ import {
 import { getLogger } from "../../util/logger.js";
 import { getWorkspacePromptPath } from "../../util/platform.js";
 import { APP_VERSION } from "../../version.js";
-import { resolveHatchedAtReadOnly } from "../../workspace/hatched-date.js";
+import {
+  resolveAndPersistHatchedAt,
+  resolveHatchedAtReadOnly,
+} from "../../workspace/hatched-date.js";
+import {
+  IdentityFileConflictError,
+  writeIdentityFileAtomicallyIfUnchanged as commitIdentityFile,
+} from "../../workspace/identity-file-write.js";
 import { WORKSPACE_MIGRATIONS } from "../../workspace/migrations/registry.js";
 import { getLastWorkspaceMigrationId } from "../../workspace/migrations/runner.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { runBtwSidechain } from "../btw-sidechain.js";
 import { getDaemonReadiness } from "../daemon-readiness.js";
 import { checkStorageReadiness } from "../storage-readiness.js";
-import { NotFoundError } from "./errors.js";
+import { publishIdentityChanged } from "../sync/resource-sync-events.js";
 import {
+  BadRequestError,
+  ConflictError,
+  InternalError,
+  NotFoundError,
+} from "./errors.js";
+import {
+  clearCachedIntro,
   getCachedIntro,
   readWorkspaceGreetings,
   readWorkspaceIdentityIntro,
@@ -45,6 +64,56 @@ interface MemoryInfo {
   currentMb: number;
   maxMb: number;
 }
+
+const identityResponseSchema = z.object({
+  name: z.string(),
+  role: z.string(),
+  personality: z.string(),
+  emoji: z.string(),
+  home: z.string(),
+  version: z.string(),
+  createdAt: z.string().optional(),
+});
+
+function identityFieldSchema(label: string, maxLength: number) {
+  return z
+    .string()
+    .trim()
+    .min(1, `${label} cannot be empty`)
+    .max(maxLength, `${label} is too long`)
+    .regex(
+      /^(?=[^\r\n]*\S)[^\r\n]+$/,
+      `${label} must be a non-empty single line`,
+    );
+}
+
+const identityNameSchema = identityFieldSchema("Name", 100);
+const identityRoleSchema = identityFieldSchema("Role", 500);
+const identityPersonalitySchema = identityFieldSchema("Personality", 1_000);
+
+const identityUpdateSchema = z.union([
+  z
+    .object({
+      name: identityNameSchema,
+      role: identityRoleSchema.optional(),
+      personality: identityPersonalitySchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      name: identityNameSchema.optional(),
+      role: identityRoleSchema,
+      personality: identityPersonalitySchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      name: identityNameSchema.optional(),
+      role: identityRoleSchema.optional(),
+      personality: identityPersonalitySchema,
+    })
+    .strict(),
+]);
 
 /**
  * Read the memory limit from the VELLUM_MEMORY_LIMIT env var (K8s resource format),
@@ -467,8 +536,11 @@ function getIdentity() {
   const content = readFileSync(identityPath, "utf-8");
   const fields = parseIdentityFields(content);
 
-  const version = APP_VERSION;
+  return buildIdentityResponse(fields, identityPath);
+}
 
+function buildIdentityResponse(fields: IdentityFields, identityPath: string) {
+  const version = APP_VERSION;
   const createdAt = resolveIdentityCreatedAt(identityPath);
 
   return {
@@ -480,6 +552,99 @@ function getIdentity() {
     version,
     createdAt,
   };
+}
+
+export async function writeIdentityAtomicallyIfUnchanged(
+  identityPath: string,
+  expectedContent: string,
+  content: string,
+): Promise<void> {
+  try {
+    await commitIdentityFile(identityPath, expectedContent, content);
+  } catch (error) {
+    if (error instanceof IdentityFileConflictError) {
+      throw new ConflictError(error.message);
+    }
+    getLogger("identity").error(
+      { error },
+      "Failed to persist assistant identity",
+    );
+    throw new InternalError("Could not save the assistant identity.");
+  }
+}
+
+async function updateIdentity({ body, headers }: RouteHandlerArgs) {
+  const parsed = identityUpdateSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    throw new BadRequestError(
+      parsed.error.issues[0]?.message ?? "Invalid identity update",
+    );
+  }
+
+  const identityPath = getWorkspacePromptPath("IDENTITY.md");
+  if (!existsSync(identityPath)) {
+    throw new NotFoundError("IDENTITY.md not found");
+  }
+
+  let currentContent: string;
+  try {
+    currentContent = readFileSync(identityPath, "utf-8");
+  } catch (error) {
+    getLogger("identity").error(
+      { error },
+      "Failed to read assistant identity before update",
+    );
+    throw new InternalError("Could not read the assistant identity.");
+  }
+
+  const currentFields = parseIdentityFields(currentContent);
+  const updatedContent = updateIdentityFields(currentContent, parsed.data);
+  const updatedFields = parseIdentityFields(updatedContent);
+
+  for (const [field, value] of Object.entries(parsed.data)) {
+    if (updatedFields[field as keyof typeof parsed.data] !== value) {
+      throw new InternalError(
+        "Could not verify the assistant identity update.",
+      );
+    }
+  }
+
+  if (updatedContent !== currentContent) {
+    resolveAndPersistHatchedAt(identityPath);
+    await writeIdentityAtomicallyIfUnchanged(
+      identityPath,
+      currentContent,
+      updatedContent,
+    );
+    invalidateIdentityIntroGeneration();
+
+    try {
+      publishIdentityChanged(
+        updatedFields,
+        headers?.["x-vellum-client-id"]?.trim() || undefined,
+      );
+    } catch (error) {
+      getLogger("identity").warn(
+        { error },
+        "Identity was saved but clients could not be notified",
+      );
+    }
+    if (
+      parsed.data.name !== undefined &&
+      parsed.data.name !== currentFields.name
+    ) {
+      try {
+        syncIdentityNameToPlatform(parsed.data.name);
+      } catch (error) {
+        getLogger("identity").warn(
+          { error },
+          "Identity was saved but the platform name sync could not start",
+        );
+      }
+    }
+  }
+
+  return buildIdentityResponse(updatedFields, identityPath);
 }
 
 function resolveIdentityCreatedAt(identityPath: string): string | undefined {
@@ -501,6 +666,7 @@ const EXPLICIT_TIME_OF_DAY_PATTERN =
   /\b(?:morning|afternoon|evening|tonight|midnight|noon|sunrise|sunset)\b/i;
 
 type IdentityIntroSource = "workspace" | "cache" | "fallback";
+type GreetingGenerationOutcome = "cached" | "failed" | "stale";
 
 interface IdentityIntroResponse {
   greetings: string[];
@@ -511,6 +677,13 @@ interface IdentityIntroResponse {
 
 let greetingGenerationInFlight: Promise<void> | null = null;
 let lastGreetingGenerationFailureAt = 0;
+let identityIntroGenerationVersion = 0;
+
+function invalidateIdentityIntroGeneration(): void {
+  identityIntroGenerationVersion += 1;
+  lastGreetingGenerationFailureAt = 0;
+  clearCachedIntro();
+}
 
 function identityIntroResponse(
   greetings: string[],
@@ -617,11 +790,16 @@ function triggerEmptyStateGreetingGeneration(
     return false;
   }
 
+  const generationVersion = identityIntroGenerationVersion;
   greetingGenerationInFlight = new Promise<void>((resolve) => {
     queueMicrotask(() => {
-      void generateEmptyStateGreetings(localTimeContext)
-        .then((greetings) => {
-          lastGreetingGenerationFailureAt = greetings === null ? Date.now() : 0;
+      void generateEmptyStateGreetings(localTimeContext, generationVersion)
+        .then((outcome) => {
+          if (outcome === "failed") {
+            lastGreetingGenerationFailureAt = Date.now();
+          } else if (outcome === "cached") {
+            lastGreetingGenerationFailureAt = 0;
+          }
         })
         .finally(() => {
           greetingGenerationInFlight = null;
@@ -635,11 +813,14 @@ function triggerEmptyStateGreetingGeneration(
 
 async function generateEmptyStateGreetings(
   localTimeContext: string | null,
-): Promise<string[] | null> {
+  generationVersion: number,
+): Promise<GreetingGenerationOutcome> {
   try {
     const provider = await getConfiguredProvider(EMPTY_STATE_GREETING_CALLSITE);
     if (!provider) {
-      return null;
+      return generationVersion === identityIntroGenerationVersion
+        ? "failed"
+        : "stale";
     }
 
     const resolved = resolveCallSiteConfig(
@@ -673,17 +854,25 @@ async function generateEmptyStateGreetings(
 
     const greetings = parseGeneratedGreetings(result.text);
     if (greetings.length === 0) {
-      return null;
+      return generationVersion === identityIntroGenerationVersion
+        ? "failed"
+        : "stale";
+    }
+
+    if (generationVersion !== identityIntroGenerationVersion) {
+      return "stale";
     }
 
     setCachedIntro(greetings);
-    return greetings;
+    return "cached";
   } catch (err) {
     getLogger("identity").warn(
       { err },
       "Failed to generate empty-state greetings",
     );
-    return null;
+    return generationVersion === identityIntroGenerationVersion
+      ? "failed"
+      : "stale";
   }
 }
 
@@ -862,15 +1051,29 @@ export const ROUTES: RouteDefinition[] = [
     description:
       "Returns the assistant's identity fields parsed from IDENTITY.md.",
     tags: ["identity"],
-    responseBody: z.object({
-      name: z.string(),
-      role: z.string(),
-      personality: z.string(),
-      emoji: z.string(),
-      home: z.string(),
-      version: z.string(),
-      createdAt: z.string().optional(),
-    }),
+    responseBody: identityResponseSchema,
+  },
+  {
+    operationId: "identity_update",
+    endpoint: "identity",
+    method: "PATCH",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    handler: updateIdentity,
+    summary: "Update assistant identity",
+    description:
+      "Persist name, role, or personality in IDENTITY.md and return the saved identity.",
+    tags: ["identity"],
+    requestBody: identityUpdateSchema,
+    responseBody: identityResponseSchema,
+    additionalResponses: {
+      "400": { description: "Invalid identity update" },
+      "409": { description: "Assistant identity changed during the update" },
+      "404": { description: "Assistant identity not found" },
+      "500": { description: "Assistant identity could not be saved" },
+    },
   },
   {
     operationId: "identity_intro",

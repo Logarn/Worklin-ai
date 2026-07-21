@@ -23,6 +23,9 @@ mock.module("../util/logger.js", () => ({
 const checkpointStore = new Map<string, string>();
 
 mock.module("../memory/checkpoints.js", () => ({
+  deleteMemoryCheckpoint: (key: string) => {
+    checkpointStore.delete(key);
+  },
   getMemoryCheckpoint: (key: string) => checkpointStore.get(key) ?? null,
   setMemoryCheckpoint: (key: string, value: string) => {
     checkpointStore.set(key, value);
@@ -49,6 +52,7 @@ mock.module("node:fs", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  clearCachedIntro,
   getCachedIntro,
   parseGreetingsSection,
   readWorkspaceGreetings,
@@ -112,6 +116,15 @@ describe("identity intro cache", () => {
     const cached = getCachedIntro();
     expect(cached).not.toBeNull();
     expect(cached!.greetings).toEqual(["Hey, I'm Atlas.", "What's up?"]);
+  });
+
+  test("clears both generated greeting checkpoints", () => {
+    setCachedIntro(["Hello!"]);
+
+    clearCachedIntro();
+
+    expect(getCachedIntro()).toBeNull();
+    expect(checkpointStore.size).toBe(0);
   });
 
   test("returns null when cache is expired (TTL exceeded)", () => {

@@ -10,7 +10,13 @@
  * - Artifact detection: when run manifests and Bun summary files exist,
  *   the response correctly reports artifact counts and lastCompletedRun.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
@@ -25,6 +31,9 @@ mock.module("../util/logger.js", () => ({
 const checkpointStore = new Map<string, string>();
 
 mock.module("../memory/checkpoints.js", () => ({
+  deleteMemoryCheckpoint: (key: string) => {
+    checkpointStore.delete(key);
+  },
   getMemoryCheckpoint: (key: string) => checkpointStore.get(key) ?? null,
   setMemoryCheckpoint: (key: string, value: string) => {
     checkpointStore.set(key, value);
@@ -59,6 +68,19 @@ const sidechainCalls: SidechainCall[] = [];
 let sidechainText = "";
 let sidechainResultPromise: Promise<SidechainResult> | null = null;
 
+const identityChangedEvents: Array<{
+  fields: {
+    name: string;
+    role: string;
+    personality: string;
+    emoji: string;
+    home: string;
+  };
+  originClientId?: string;
+}> = [];
+let identityPublishError: Error | null = null;
+const platformIdentityNames: string[] = [];
+
 mock.module("../runtime/btw-sidechain.js", () => ({
   runBtwSidechain: mock(async (params: SidechainCall) => {
     sidechainCalls.push(params);
@@ -73,15 +95,34 @@ mock.module("../runtime/btw-sidechain.js", () => ({
   }),
 }));
 
+mock.module("../runtime/sync/resource-sync-events.js", () => ({
+  publishIdentityChanged: (
+    fields: (typeof identityChangedEvents)[number]["fields"],
+    originClientId?: string,
+  ) => {
+    if (identityPublishError) throw identityPublishError;
+    identityChangedEvents.push({ fields, originClientId });
+  },
+}));
+
+mock.module("../platform/sync-identity.js", () => ({
+  syncIdentityNameToPlatform: (name: string) => {
+    platformIdentityNames.push(name);
+  },
+}));
+
 import {
   markDaemonNotReady,
   markDaemonReady,
 } from "../runtime/daemon-readiness.js";
+import { ConflictError } from "../runtime/routes/errors.js";
 import {
   handleDetailedHealth,
   handleReadyz,
   ROUTES,
+  writeIdentityAtomicallyIfUnchanged,
 } from "../runtime/routes/identity-routes.js";
+import { ROUTES as WORKSPACE_ROUTES } from "../runtime/routes/workspace-routes.js";
 import { setCesClient } from "../security/secure-keys.js";
 import { getWorkspaceDir } from "../util/platform.js";
 import {
@@ -89,16 +130,20 @@ import {
   resolveHatchedAtReadOnly,
   selectHatchedAtFromStats,
 } from "../workspace/hatched-date.js";
+import { _setIdentityFileBeforeCommitHookForTests } from "../workspace/identity-file-write.js";
 
 function createDeferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
 } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 // ── Env helpers ─────────────────────────────────────────────────────────
@@ -204,9 +249,14 @@ beforeEach(() => {
   sidechainCalls.length = 0;
   sidechainText = "";
   sidechainResultPromise = null;
+  identityChangedEvents.length = 0;
+  identityPublishError = null;
+  platformIdentityNames.length = 0;
+  _setIdentityFileBeforeCommitHookForTests(null);
 });
 
 afterEach(() => {
+  _setIdentityFileBeforeCommitHookForTests(null);
   markDaemonNotReady("daemon_starting");
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) {
@@ -665,7 +715,380 @@ describe("identity routes — createdAt selection", () => {
   });
 });
 
+describe("identity routes — persisted metadata", () => {
+  test("/identity reads role and personality from IDENTITY.md, not SOUL.md", () => {
+    const workspaceDir = getWorkspaceDir();
+    writeFileSync(
+      join(workspaceDir, "IDENTITY.md"),
+      [
+        "# Identity",
+        "",
+        "- **Name:** Example Assistant",
+        "- **Role:** _(not yet established)_",
+        "- **Personality:** _(not yet established)_",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(
+      join(workspaceDir, "SOUL.md"),
+      [
+        "# Soul",
+        "",
+        "- **Role:** This line is behavioral context, not identity metadata.",
+        "- **Personality:** This line is also not identity metadata.",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const route = ROUTES.find(
+      (candidate) => candidate.operationId === "identity",
+    );
+    expect(route).toBeDefined();
+
+    const body = route!.handler({}) as {
+      role: string;
+      personality: string;
+    };
+    expect(body.role).toBe("");
+    expect(body.personality).toBe("");
+  });
+
+  test("PATCH /identity persists canonical name, role, and personality", async () => {
+    const identityPath = join(getWorkspaceDir(), "IDENTITY.md");
+    const soulPath = join(getWorkspaceDir(), "SOUL.md");
+    const soul = "# Soul\n\nKeep the assistant warm and direct.\n";
+    writeFileSync(
+      identityPath,
+      [
+        "# Identity",
+        "",
+        "- **Name:** Example Assistant",
+        "- **Emoji:** :sparkles:",
+        "- **Personality:** _(not yet established)_",
+        "- **Role:** _(not yet established)_",
+        "",
+        "## Avatar",
+        "Keep this section.",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(soulPath, soul, "utf-8");
+    checkpointStore.set("identity:intro:greetings", '["Old greeting"]');
+    checkpointStore.set("identity:intro:cached_at", String(Date.now()));
+
+    const route = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    expect(route).toBeDefined();
+
+    const response = await route!.handler({
+      body: {
+        name: "North Star",
+        role: "Lifecycle marketing partner",
+        personality: "Clear, curious, and candid",
+      },
+      headers: { "x-vellum-client-id": "client-123" },
+    });
+
+    expect(response).toMatchObject({
+      name: "North Star",
+      role: "Lifecycle marketing partner",
+      personality: "Clear, curious, and candid",
+      emoji: ":sparkles:",
+    });
+    expect(readFileSync(soulPath, "utf-8")).toBe(soul);
+    expect(readFileSync(identityPath, "utf-8")).toContain(
+      "## Avatar\nKeep this section.",
+    );
+
+    const readRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity",
+    );
+    expect(readRoute!.handler({})).toMatchObject({
+      name: "North Star",
+      role: "Lifecycle marketing partner",
+      personality: "Clear, curious, and candid",
+    });
+    expect(identityChangedEvents).toEqual([
+      {
+        fields: {
+          name: "North Star",
+          role: "Lifecycle marketing partner",
+          personality: "Clear, curious, and candid",
+          emoji: ":sparkles:",
+          home: "",
+        },
+        originClientId: "client-123",
+      },
+    ]);
+    expect(platformIdentityNames).toEqual(["North Star"]);
+    expect(checkpointStore.get("identity:intro:greetings")).toBeUndefined();
+    expect(checkpointStore.get("identity:intro:cached_at")).toBeUndefined();
+  });
+
+  test("PATCH /identity preserves fields omitted from a partial update", async () => {
+    writeFileSync(
+      join(getWorkspaceDir(), "IDENTITY.md"),
+      [
+        "# Identity",
+        "",
+        "- **Name:** Example Assistant",
+        "- **Personality:** Thoughtful and concise",
+        "- **Role:** Research partner",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const route = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    expect(route).toBeDefined();
+
+    const response = await route!.handler({
+      body: { role: "Product strategy partner" },
+    });
+
+    expect(response).toMatchObject({
+      name: "Example Assistant",
+      role: "Product strategy partner",
+      personality: "Thoughtful and concise",
+    });
+    expect(platformIdentityNames).toEqual([]);
+  });
+
+  test("PATCH /identity rejects empty and whitespace-only updates", async () => {
+    writeFileSync(
+      join(getWorkspaceDir(), "IDENTITY.md"),
+      "# Identity\n\n- **Name:** Example Assistant\n",
+      "utf-8",
+    );
+
+    const route = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    expect(route).toBeDefined();
+
+    await expect(route!.handler({ body: {} })).rejects.toThrow();
+    await expect(route!.handler({ body: { role: "   " } })).rejects.toThrow();
+    expect(identityChangedEvents).toEqual([]);
+    expect(platformIdentityNames).toEqual([]);
+  });
+
+  test("atomic identity write rejects a competing file update", async () => {
+    const identityPath = join(getWorkspaceDir(), "IDENTITY.md");
+    const original = "# Identity\n\n- **Name:** Original\n";
+    const competing = "# Identity\n\n- **Name:** External edit\n";
+    const requested = "# Identity\n\n- **Name:** Requested edit\n";
+    writeFileSync(identityPath, competing, "utf-8");
+
+    await expect(
+      writeIdentityAtomicallyIfUnchanged(identityPath, original, requested),
+    ).rejects.toThrow(ConflictError);
+    expect(readFileSync(identityPath, "utf-8")).toBe(competing);
+  });
+
+  test("serializes a competing workspace writer across compare and commit", async () => {
+    const identityPath = join(getWorkspaceDir(), "IDENTITY.md");
+    const original = [
+      "# Identity",
+      "",
+      "- **Name:** Example Assistant",
+      "- **Role:** Original role",
+    ].join("\n");
+    const competing = [
+      "# Identity",
+      "",
+      "- **Name:** Competing writer",
+      "- **Role:** Competing role",
+    ].join("\n");
+    writeFileSync(identityPath, original, "utf-8");
+
+    const compared = createDeferred<void>();
+    const resumeCommit = createDeferred<void>();
+    let paused = false;
+    _setIdentityFileBeforeCommitHookForTests(async () => {
+      if (paused) return;
+      paused = true;
+      compared.resolve();
+      await resumeCommit.promise;
+    });
+
+    const updateRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    const workspaceWriteRoute = WORKSPACE_ROUTES.find(
+      (candidate) => candidate.operationId === "workspace_write",
+    );
+    expect(updateRoute).toBeDefined();
+    expect(workspaceWriteRoute).toBeDefined();
+
+    const updatePromise = Promise.resolve(
+      updateRoute!.handler({ body: { role: "Saved role" } }),
+    );
+    await compared.promise;
+
+    const competingWritePromise = Promise.resolve(
+      workspaceWriteRoute!.handler({
+        body: { path: "IDENTITY.md", content: competing },
+      }),
+    );
+    const competingWriteResult = competingWritePromise.catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+    resumeCommit.resolve();
+
+    await expect(updatePromise).resolves.toMatchObject({ role: "Saved role" });
+    expect(await competingWriteResult).toBeInstanceOf(ConflictError);
+    expect(readFileSync(identityPath, "utf-8")).toContain(
+      "- **Role:** Saved role",
+    );
+    expect(readFileSync(identityPath, "utf-8")).not.toContain(
+      "Competing writer",
+    );
+  });
+
+  test("PATCH /identity reports success after commit when notification fails", async () => {
+    const identityPath = join(getWorkspaceDir(), "IDENTITY.md");
+    writeFileSync(
+      identityPath,
+      [
+        "# Identity",
+        "",
+        "- **Name:** Example Assistant",
+        "- **Role:** Research partner",
+      ].join("\n"),
+      "utf-8",
+    );
+    identityPublishError = new Error("subscriber unavailable");
+
+    const route = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    expect(route).toBeDefined();
+
+    await expect(
+      route!.handler({ body: { role: "Product strategy partner" } }),
+    ).resolves.toMatchObject({
+      name: "Example Assistant",
+      role: "Product strategy partner",
+    });
+    expect(readFileSync(identityPath, "utf-8")).toContain(
+      "- **Role:** Product strategy partner",
+    );
+  });
+});
+
 describe("identity routes — intro greetings", () => {
+  test("discards an old generation result after identity is updated", async () => {
+    const workspaceDir = getWorkspaceDir();
+    writeFileSync(
+      join(workspaceDir, "IDENTITY.md"),
+      [
+        "# Identity",
+        "",
+        "- **Name:** Original Assistant",
+        "- **Personality:** Crisp and practical",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(
+      join(workspaceDir, "SOUL.md"),
+      "# Soul\n\nKeep greetings useful.\n",
+      "utf-8",
+    );
+    const deferredSidechain = createDeferred<SidechainResult>();
+    sidechainResultPromise = deferredSidechain.promise;
+
+    const introRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_intro",
+    );
+    const updateRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    expect(introRoute).toBeDefined();
+    expect(updateRoute).toBeDefined();
+
+    expect(introRoute!.handler({})).toMatchObject({
+      source: "fallback",
+      refreshing: true,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sidechainCalls).toHaveLength(1);
+
+    await expect(
+      updateRoute!.handler({ body: { name: "Updated Assistant" } }),
+    ).resolves.toMatchObject({ name: "Updated Assistant" });
+
+    deferredSidechain.resolve({
+      text: JSON.stringify([
+        "Old identity greeting one.",
+        "Old identity greeting two.",
+        "Old identity greeting three.",
+        "Old identity greeting four.",
+        "Old identity greeting five.",
+      ]),
+      hadTextDeltas: false,
+      response: { content: [] },
+    });
+    await deferredSidechain.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(checkpointStore.get("identity:intro:greetings")).toBeUndefined();
+    expect(checkpointStore.get("identity:intro:cached_at")).toBeUndefined();
+  });
+
+  test("does not let an old generation failure delay greetings after identity is updated", async () => {
+    const workspaceDir = getWorkspaceDir();
+    writeFileSync(
+      join(workspaceDir, "IDENTITY.md"),
+      [
+        "# Identity",
+        "",
+        "- **Name:** Original Assistant",
+        "- **Personality:** Crisp and practical",
+      ].join("\n"),
+      "utf-8",
+    );
+    const deferredSidechain = createDeferred<SidechainResult>();
+    sidechainResultPromise = deferredSidechain.promise;
+
+    const introRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_intro",
+    );
+    const updateRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_update",
+    );
+    expect(introRoute).toBeDefined();
+    expect(updateRoute).toBeDefined();
+
+    expect(introRoute!.handler({})).toMatchObject({ refreshing: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sidechainCalls).toHaveLength(1);
+
+    await updateRoute!.handler({ body: { name: "Updated Assistant" } });
+    deferredSidechain.reject(new Error("obsolete provider failure"));
+    await deferredSidechain.promise.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    sidechainResultPromise = null;
+    sidechainText = JSON.stringify([
+      "Fresh greeting one.",
+      "Fresh greeting two.",
+      "Fresh greeting three.",
+      "Fresh greeting four.",
+      "Fresh greeting five.",
+    ]);
+
+    expect(introRoute!.handler({})).toMatchObject({ refreshing: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sidechainCalls).toHaveLength(2);
+  });
+
   test("returns fallback immediately, generates personalized greetings in the background, then reuses the cache", async () => {
     const workspaceDir = getWorkspaceDir();
     writeFileSync(

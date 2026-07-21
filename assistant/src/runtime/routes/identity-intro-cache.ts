@@ -6,9 +6,9 @@
  * 2. A cached greetings array (populated by the empty-state greeting callsite)
  * 3. A generic fallback when generation is unavailable
  *
- * Cache invalidation is intentionally TTL-only. User-authored SOUL.md
- * greetings are read before cache, so manual overrides still take priority
- * without coupling cache validity to prompt-file edits.
+ * User-authored SOUL.md greetings are read before cache, so manual overrides
+ * take priority. Identity edits clear generated greetings immediately; other
+ * prompt-file changes continue to rely on the bounded TTL.
  *
  * Storage uses the existing `memory_checkpoints` table (simple key-value store).
  */
@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 import {
+  deleteMemoryCheckpoint,
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../../memory/checkpoints.js";
@@ -168,5 +169,15 @@ export function setCachedIntro(greetings: string[]): void {
     setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, now);
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.
+  }
+}
+
+/** Remove generated greetings after a committed identity edit. */
+export function clearCachedIntro(): void {
+  try {
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_GREETINGS);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+  } catch {
+    // Cache invalidation is best-effort; the TTL still bounds stale content.
   }
 }

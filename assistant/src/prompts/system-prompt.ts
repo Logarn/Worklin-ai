@@ -22,6 +22,7 @@ import {
   getWorkspacePromptPath,
 } from "../util/platform.js";
 import { stripCommentLines } from "../util/strip-comment-lines.js";
+import { updateIdentityFileAtomically } from "../workspace/identity-file-write.js";
 import { cleanupBootstrapFiles } from "./bootstrap-cleanup.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "./cache-boundary.js";
 import { resolveGuardianPersona, resolveUserSlug } from "./persona-resolver.js";
@@ -63,7 +64,7 @@ function hasExistingConversations(): boolean {
  * daemon from recreating the file on every restart after the user deletes it to
  * signal that onboarding is complete.
  */
-export function ensurePromptFiles(): void {
+export async function ensurePromptFiles(): Promise<void> {
   const templatesDir = resolveBundledDir(
     import.meta.dirname ?? __dirname,
     "templates",
@@ -91,8 +92,18 @@ export function ensurePromptFiles(): void {
         log.warn({ src }, "Prompt template not found, skipping");
         continue;
       }
-      copyFileSync(src, dest);
-      log.info({ file, dest }, "Created prompt file from template");
+      if (file === "IDENTITY.md") {
+        const templateContent = readFileSync(src, "utf-8");
+        const result = await updateIdentityFileAtomically(dest, (content) =>
+          content === null ? templateContent : undefined,
+        );
+        if (result.changed) {
+          log.info({ file, dest }, "Created prompt file from template");
+        }
+      } else {
+        copyFileSync(src, dest);
+        log.info({ file, dest }, "Created prompt file from template");
+      }
     } catch (err) {
       log.warn({ err, file }, "Failed to create prompt file from template");
     }

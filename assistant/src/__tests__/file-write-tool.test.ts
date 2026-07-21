@@ -52,6 +52,7 @@ function setWorkspaceDir(dir: string): void {
 import { PKB_WORKSPACE_SCOPE } from "../memory/pkb/types.js";
 import { getTool } from "../tools/registry.js";
 import type { Tool, ToolContext } from "../tools/types.js";
+import { _setIdentityFileBeforeCommitHookForTests } from "../workspace/identity-file-write.js";
 
 let fileWriteTool: Tool;
 const testDirs: string[] = [];
@@ -69,7 +70,16 @@ function makeContext(workingDir: string): ToolContext {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 afterEach(() => {
+  _setIdentityFileBeforeCommitHookForTests(null);
   for (const dir of testDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -133,6 +143,44 @@ describe("file_write tool (sandbox)", () => {
       newContent: "new content",
       isNewFile: false,
     });
+  });
+
+  test("surfaces a conflict when another identity write commits first", async () => {
+    const dir = makeTempDir();
+    setWorkspaceDir(dir);
+    const identityPath = join(dir, "IDENTITY.md");
+    writeFileSync(identityPath, "# Identity\n\n- **Name:** Original\n");
+
+    const compared = createDeferred<void>();
+    const resumeCommit = createDeferred<void>();
+    let paused = false;
+    _setIdentityFileBeforeCommitHookForTests(async () => {
+      if (paused) return;
+      paused = true;
+      compared.resolve();
+      await resumeCommit.promise;
+    });
+
+    const firstWrite = fileWriteTool.execute(
+      { path: "IDENTITY.md", content: "# Identity\n\n- **Name:** First\n" },
+      makeContext(dir),
+    );
+    await compared.promise;
+
+    const competingWrite = fileWriteTool.execute(
+      {
+        path: "IDENTITY.md",
+        content: "# Identity\n\n- **Name:** Competing\n",
+      },
+      makeContext(dir),
+    );
+    resumeCommit.resolve();
+
+    expect((await firstWrite).isError).toBe(false);
+    const competingResult = await competingWrite;
+    expect(competingResult.isError).toBe(true);
+    expect(competingResult.content).toContain("identity changed");
+    expect(readFileSync(identityPath, "utf-8")).toContain("Name:** First");
   });
 
   test("creates nested directories", async () => {
@@ -267,7 +315,7 @@ describe("file_write artifact-HTML guard", () => {
     const html =
       "<!doctype html><html><head><title>Food Market</title></head>" +
       "<body><canvas id='c'></canvas><script>" +
-      ("const data=[{x:1,y:2}];").padEnd(4000, "/") +
+      "const data=[{x:1,y:2}];".padEnd(4000, "/") +
       "new Chart(document.getElementById('c'), {data});</script></body></html>";
 
     const result = await fileWriteTool.execute(
