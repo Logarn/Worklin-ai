@@ -2496,23 +2496,66 @@ function handleFeatureFlags(req: Request, res: Response): void {
   });
 }
 
-function handleBilling(req: Request, res: Response): void {
-  sendJson(req, res, {
-    settled_balance: "0",
-    minimum_top_up: "0",
-    maximum_top_up: "0",
-    maximum_balance: "0",
-    allowed_top_up_amounts: [],
-    settled_balance_usd: "0",
-    minimum_top_up_usd: "0",
-    maximum_top_up_usd: "0",
-    maximum_balance_usd: "0",
-    pending_compute: "0",
-    pending_compute_usd: "0",
-    effective_balance: "0",
-    effective_balance_usd: "0",
-    is_degraded: false,
-  });
+function handleBilling(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): boolean {
+  const isCapabilityRequest = pathEquals(
+    url.pathname,
+    "/v1/organizations/billing/capability/",
+  );
+  const isBillingRequest = pathIsOrStartsWith(
+    url.pathname,
+    "/v1/organizations/billing/",
+  );
+  const isReferralRequest = pathEquals(
+    url.pathname,
+    "/v1/referral-codes/me/",
+  );
+
+  if (!isCapabilityRequest && !isBillingRequest && !isReferralRequest) {
+    return false;
+  }
+
+  workspaceContext(req, user);
+
+  if (isCapabilityRequest) {
+    if (req.method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(req, res, { detail: "Method not allowed." }, 405);
+      return true;
+    }
+    sendJson(req, res, {
+      available: false,
+      mode: "external_provider",
+      reason: "managed_billing_not_configured",
+    });
+    return true;
+  }
+
+  if (
+    req.method !== "GET" &&
+    req.method !== "HEAD" &&
+    !checkCsrf(req)
+  ) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return true;
+  }
+
+  sendJson(
+    req,
+    res,
+    {
+      error: {
+        code: "billing_unavailable",
+        message: "Worklin credit billing is not available in this deployment.",
+      },
+    },
+    501,
+  );
+  return true;
 }
 
 async function handleArtifactInvitations(
@@ -3887,10 +3930,7 @@ app.use(
         return;
       }
       if (await handleBrandResearchRuns(req, res, url, user)) return;
-      if (pathEquals(url.pathname, "/v1/organizations/billing/summary/")) {
-        handleBilling(req, res);
-        return;
-      }
+      if (handleBilling(req, res, url, user)) return;
 
       if (await handleArtifactInvitations(req, res, url, user)) return;
       if (await proxySharedArtifact(req, res, url, user)) return;
