@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 
 import { supportsHostProxy } from "../../channels/types.js";
@@ -8,8 +7,7 @@ import { RiskLevel } from "../../permissions/types.js";
 import { assistantEventHub } from "../../runtime/assistant-event-hub.js";
 import {
   IdentityFileExistsError,
-  resolveWorkspaceIdentityWriteTarget,
-  writeIdentityFileAtomically,
+  writeFileWithIdentityCoordination,
 } from "../../workspace/identity-file-write.js";
 import { sandboxPolicy } from "../shared/filesystem/path-policy.js";
 import type {
@@ -291,20 +289,12 @@ async function executeLocal(
     };
   }
 
-  // COPYFILE_EXCL makes the call fail atomically if dest exists,
-  // avoiding a TOCTOU race vs. a separate lstat check.
   try {
-    const identityPath = resolveWorkspaceIdentityWriteTarget(destPath);
-    if (identityPath) {
-      await writeIdentityFileAtomically(
-        identityPath,
-        await readFile(resolvedSource),
-        { overwrite },
-      );
-    } else {
-      const flags = overwrite ? 0 : constants.COPYFILE_EXCL;
-      await copyFile(resolvedSource, destPath, flags);
-    }
+    await writeFileWithIdentityCoordination(
+      destPath,
+      await readFile(resolvedSource),
+      { overwrite },
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (

@@ -58,7 +58,7 @@ export async function updateAssistantIdentity(
   });
 
   assertHasResponse(response, error, "Failed to save assistant identity");
-  if (!response.ok || !data) {
+  if (!response.ok) {
     throw new ApiError(
       response.status,
       extractErrorMessage(
@@ -66,6 +66,12 @@ export async function updateAssistantIdentity(
         response,
         "Could not save the assistant identity.",
       ),
+    );
+  }
+
+  if (!data || typeof data !== "object") {
+    throw new IdentityResponseValidationError(
+      "The assistant identity could not be verified after saving.",
     );
   }
 

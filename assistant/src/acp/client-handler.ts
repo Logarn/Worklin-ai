@@ -32,7 +32,7 @@ import type {
 
 import type { ServerMessage } from "../daemon/message-protocol.js";
 import { getLogger } from "../util/logger.js";
-import { writeIdentityFileIfTarget } from "../workspace/identity-file-write.js";
+import { writeFileWithIdentityCoordination } from "../workspace/identity-file-write.js";
 
 const log = getLogger("acp:client-handler");
 
@@ -235,13 +235,7 @@ export class VellumAcpClientHandler implements Client {
       { acpSessionId: this.acpSessionId, path: params.path },
       "ACP writeTextFile",
     );
-    const identityWrite = await writeIdentityFileIfTarget(
-      params.path,
-      params.content,
-    );
-    if (!identityWrite) {
-      await Bun.write(params.path, params.content);
-    }
+    await writeFileWithIdentityCoordination(params.path, params.content);
     return {};
   }
 

@@ -21,6 +21,7 @@ mock.module("../util/logger.js", () => ({
 
 // In-memory checkpoint store
 const checkpointStore = new Map<string, string>();
+let onCheckpointSet: (() => void) | null = null;
 
 mock.module("../memory/checkpoints.js", () => ({
   deleteMemoryCheckpoint: (key: string) => {
@@ -29,6 +30,9 @@ mock.module("../memory/checkpoints.js", () => ({
   getMemoryCheckpoint: (key: string) => checkpointStore.get(key) ?? null,
   setMemoryCheckpoint: (key: string, value: string) => {
     checkpointStore.set(key, value);
+    const callback = onCheckpointSet;
+    onCheckpointSet = null;
+    callback?.();
   },
 }));
 
@@ -43,7 +47,7 @@ mock.module("node:fs", () => ({
   readFileSync: (path: string, _encoding: string) => {
     const name = path.split("/").pop() ?? "";
     if (name in workspaceFiles) return workspaceFiles[name];
-    throw new Error(`ENOENT: ${path}`);
+    throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
   },
 }));
 
@@ -60,6 +64,7 @@ import {
   setCachedIntro,
 } from "../runtime/routes/identity-intro-cache.js";
 import {
+  _resetIdentityFreshnessForTests,
   advanceIdentityChangeEpoch,
   getIdentityChangeEpoch,
 } from "../workspace/identity-change-invalidation.js";
@@ -69,6 +74,8 @@ import {
 // ---------------------------------------------------------------------------
 
 afterEach(() => {
+  _resetIdentityFreshnessForTests();
+  onCheckpointSet = null;
   checkpointStore.clear();
   for (const key of Object.keys(workspaceFiles)) {
     delete workspaceFiles[key];
@@ -174,22 +181,40 @@ describe("identity intro cache", () => {
     expect(cached!.greetings).toEqual(["Hello!"]);
   });
 
-  test("keeps cached greetings when IDENTITY.md changes", () => {
+  test("invalidates cached and in-flight greetings when IDENTITY.md changes", () => {
     workspaceFiles["IDENTITY.md"] = "- **Name:** Atlas";
-    setCachedIntro(["I'm Atlas!"]);
+    workspaceFiles["SOUL.md"] = "Be warm.";
+    const generationEpoch = getIdentityChangeEpoch();
+    setCachedIntro(["I'm Atlas!"], generationEpoch);
 
     workspaceFiles["IDENTITY.md"] = "- **Name:** Nova";
 
-    expect(getCachedIntro()?.greetings).toEqual(["I'm Atlas!"]);
+    expect(getCachedIntro()).toBeNull();
+    expect(setCachedIntro(["Stale"], generationEpoch)).toBe(false);
   });
 
-  test("keeps cached greetings when SOUL.md changes", () => {
+  test("invalidates cached and in-flight greetings when SOUL.md changes", () => {
+    workspaceFiles["IDENTITY.md"] = "- **Name:** Atlas";
     workspaceFiles["SOUL.md"] = "Be playful.";
-    setCachedIntro(["Hey there!"]);
+    const generationEpoch = getIdentityChangeEpoch();
+    setCachedIntro(["Hey there!"], generationEpoch);
 
     workspaceFiles["SOUL.md"] = "Be serious and formal.";
 
-    expect(getCachedIntro()?.greetings).toEqual(["Hey there!"]);
+    expect(getCachedIntro()).toBeNull();
+    expect(setCachedIntro(["Stale"], generationEpoch)).toBe(false);
+  });
+
+  test("removes greetings when identity changes during checkpoint writes", () => {
+    workspaceFiles["IDENTITY.md"] = "- **Name:** Atlas";
+    workspaceFiles["SOUL.md"] = "Be playful.";
+    const generationEpoch = getIdentityChangeEpoch();
+    onCheckpointSet = () => {
+      workspaceFiles["IDENTITY.md"] = "- **Name:** Nova";
+    };
+
+    expect(setCachedIntro(["Stale"], generationEpoch)).toBe(false);
+    expect(checkpointStore.size).toBe(0);
   });
 
   test("handles missing workspace files gracefully", () => {
@@ -202,12 +227,10 @@ describe("identity intro cache", () => {
 
   test("handles legacy single-string cache value", () => {
     // Simulate a cache entry written by an older daemon version
+    const identityEpoch = getIdentityChangeEpoch();
     checkpointStore.set("identity:intro:greetings", "Legacy greeting");
     checkpointStore.set("identity:intro:cached_at", String(Date.now()));
-    checkpointStore.set(
-      "identity:intro:identity_epoch",
-      String(getIdentityChangeEpoch()),
-    );
+    checkpointStore.set("identity:intro:identity_epoch", String(identityEpoch));
 
     const cached = getCachedIntro();
     expect(cached).not.toBeNull();

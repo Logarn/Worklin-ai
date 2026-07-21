@@ -4,6 +4,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import type { SessionNotification } from "@agentclientprotocol/sdk";
 
 import type { ServerMessage } from "../../daemon/message-protocol.js";
 import { getIdentityChangeEpoch } from "../../workspace/identity-change-invalidation.js";
+import { _setOrdinaryFileBeforeWriteHookForTests } from "../../workspace/identity-file-write.js";
 import { VellumAcpClientHandler } from "../client-handler.js";
 
 const ACP_SESSION_ID = "acp-session-abc";
@@ -22,6 +24,7 @@ const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
 const testDirs: string[] = [];
 
 afterEach(() => {
+  _setOrdinaryFileBeforeWriteHookForTests(null);
   for (const dir of testDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -152,5 +155,29 @@ describe("VellumAcpClientHandler.writeTextFile", () => {
 
     expect(readFileSync(identityPath, "utf-8")).toBe("ACP identity");
     expect(getIdentityChangeEpoch()).toBe(beforeEpoch + 1);
+  });
+
+  test("fails closed when the ACP destination becomes an identity alias", async () => {
+    const workspaceDir = makeTempDir();
+    process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
+    const identityPath = join(workspaceDir, "IDENTITY.md");
+    const notesPath = join(workspaceDir, "notes.md");
+    writeFileSync(identityPath, "identity");
+    writeFileSync(notesPath, "notes");
+    const { handler } = makeHandler();
+
+    _setOrdinaryFileBeforeWriteHookForTests(() => {
+      unlinkSync(notesPath);
+      symlinkSync(identityPath, notesPath);
+    });
+
+    await expect(
+      handler.writeTextFile({
+        sessionId: ACP_SESSION_ID,
+        path: notesPath,
+        content: "replacement",
+      }),
+    ).rejects.toThrow("Destination changed during write");
+    expect(readFileSync(identityPath, "utf-8")).toBe("identity");
   });
 });

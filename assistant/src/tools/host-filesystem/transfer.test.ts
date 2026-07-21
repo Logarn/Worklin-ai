@@ -1,5 +1,6 @@
 import {
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -175,6 +176,34 @@ describe("host_file_transfer local mode", () => {
     expect(result.isError).toBe(false);
     expect(readFileSync(identityPath, "utf-8")).toBe("transferred identity");
     expect(getIdentityChangeEpoch()).toBe(beforeEpoch + 1);
+  });
+
+  test("rejects a hard-link identity destination without splitting it", async () => {
+    const workingDir = makeTempDir();
+    process.env.VELLUM_WORKSPACE_DIR = workingDir;
+    const identityPath = join(workingDir, "IDENTITY.md");
+    const aliasPath = join(workingDir, "identity-hard-link.md");
+    writeFileSync(identityPath, "original identity");
+    linkSync(identityPath, aliasPath);
+
+    const srcDir = makeTempDir();
+    const srcFile = join(srcDir, "source.txt");
+    writeFileSync(srcFile, "transferred identity");
+
+    const result = await hostFileTransferTool.execute(
+      {
+        source_path: srcFile,
+        dest_path: aliasPath,
+        direction: "to_sandbox",
+        overwrite: true,
+      },
+      makeContext(workingDir),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("safely resolve identity write target");
+    expect(readFileSync(identityPath, "utf-8")).toBe("original identity");
+    expect(readFileSync(aliasPath, "utf-8")).toBe("original identity");
   });
 
   test("out-of-bounds path is rejected", async () => {

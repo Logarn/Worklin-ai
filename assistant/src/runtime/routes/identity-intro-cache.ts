@@ -184,6 +184,10 @@ export function setCachedIntro(
       CHECKPOINT_KEY_IDENTITY_EPOCH,
       String(expectedIdentityEpoch),
     );
+    if (expectedIdentityEpoch !== getIdentityChangeEpoch()) {
+      clearCachedIntro();
+      return false;
+    }
     return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.

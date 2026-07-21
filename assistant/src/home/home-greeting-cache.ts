@@ -109,6 +109,10 @@ export function setCachedHomeGreeting(
       CHECKPOINT_KEY_IDENTITY_EPOCH,
       String(expectedIdentityEpoch),
     );
+    if (expectedIdentityEpoch !== getIdentityChangeEpoch()) {
+      clearCachedHomeGreeting();
+      return false;
+    }
     return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.

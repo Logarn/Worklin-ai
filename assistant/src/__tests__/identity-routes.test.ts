@@ -887,7 +887,7 @@ describe("identity routes — persisted metadata", () => {
     expect(readFileSync(identityPath, "utf-8")).toBe(competing);
   });
 
-  test("serializes a competing workspace writer across compare and commit", async () => {
+  test("serializes a workspace writer behind PATCH identity commit", async () => {
     const identityPath = join(getWorkspaceDir(), "IDENTITY.md");
     const original = [
       "# Identity",
@@ -932,20 +932,17 @@ describe("identity routes — persisted metadata", () => {
         body: { path: "IDENTITY.md", content: competing },
       }),
     );
-    const competingWriteResult = competingWritePromise.catch(
-      (error: unknown) => error,
-    );
     await Promise.resolve();
     resumeCommit.resolve();
 
     await expect(updatePromise).resolves.toMatchObject({ role: "Saved role" });
-    expect(await competingWriteResult).toBeInstanceOf(ConflictError);
+    await expect(competingWritePromise).resolves.toMatchObject({
+      path: "IDENTITY.md",
+    });
     expect(readFileSync(identityPath, "utf-8")).toContain(
-      "- **Role:** Saved role",
+      "- **Role:** Competing role",
     );
-    expect(readFileSync(identityPath, "utf-8")).not.toContain(
-      "Competing writer",
-    );
+    expect(readFileSync(identityPath, "utf-8")).toContain("Competing writer");
   });
 
   test("PATCH /identity reports success after commit when notification fails", async () => {

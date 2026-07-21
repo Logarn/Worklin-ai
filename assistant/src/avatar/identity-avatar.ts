@@ -38,5 +38,6 @@ export async function updateIdentityAvatarSection(
     });
   } catch (err) {
     log?.warn({ err }, "Failed to update IDENTITY.md avatar section");
+    throw err;
   }
 }

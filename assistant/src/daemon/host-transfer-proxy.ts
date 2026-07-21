@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { v4 as uuid } from "uuid";
@@ -18,7 +18,7 @@ import * as pendingInteractions from "../runtime/pending-interactions.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 import { AssistantError, ErrorCode } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
-import { writeIdentityFileIfTarget } from "../workspace/identity-file-write.js";
+import { writeFileWithIdentityCoordination } from "../workspace/identity-file-write.js";
 
 const log = getLogger("host-transfer-proxy");
 
@@ -636,14 +636,9 @@ export class HostTransferProxy {
 
     try {
       await mkdir(dirname(entry.filePath), { recursive: true });
-      const identityWrite = await writeIdentityFileIfTarget(
-        entry.filePath,
-        data,
-        { overwrite: entry.overwrite === true },
-      );
-      if (!identityWrite) {
-        await writeFile(entry.filePath, data);
-      }
+      await writeFileWithIdentityCoordination(entry.filePath, data, {
+        overwrite: entry.overwrite === true,
+      });
       const interaction = pendingInteractions.get(requestId);
       cleanup();
       interaction?.rpcResolve?.({

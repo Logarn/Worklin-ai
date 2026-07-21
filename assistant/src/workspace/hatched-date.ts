@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { getDataDir } from "../util/platform.js";
@@ -34,15 +42,53 @@ export function writeHatchedAtSidecar(hatchedAt: string): void {
   if (!normalized) return;
 
   try {
-    mkdirSync(getDataDir(), { recursive: true });
-    writeFileSync(
-      getHatchedSidecarPath(),
-      JSON.stringify({ hatchedAt: normalized }, null, 2),
-      "utf-8",
-    );
+    writeHatchedAtSidecarOrThrow(normalized);
   } catch {
     // Best-effort stability; callers still return a valid timestamp.
   }
+}
+
+export function writeHatchedAtSidecarOrThrow(hatchedAt: string): void {
+  const normalized = normalizeHatchedAt(hatchedAt);
+  if (!normalized) {
+    throw new Error("Invalid assistant hatched date");
+  }
+
+  mkdirSync(getDataDir(), { recursive: true });
+  const sidecarPath = getHatchedSidecarPath();
+  const tempPath = `${sidecarPath}.${randomUUID()}.tmp`;
+
+  try {
+    writeFileSync(
+      tempPath,
+      JSON.stringify({ hatchedAt: normalized }, null, 2),
+      "utf-8",
+    );
+    renameSync(tempPath, sidecarPath);
+  } finally {
+    rmSync(tempPath, { force: true });
+  }
+
+  if (readHatchedAtSidecar() !== normalized) {
+    throw new Error("Could not verify assistant hatched date persistence");
+  }
+}
+
+/**
+ * Persist the semantic creation date before an inode-replacing identity write.
+ * Failing the write is safer than silently changing the assistant's birthday.
+ */
+export function ensureHatchedAtPersisted(
+  identityPath: string,
+  now: Date = new Date(),
+): string {
+  const existing = readHatchedAtSidecar();
+  if (existing) return existing;
+
+  const hatchedAt =
+    readIdentityFileHatchedAt(identityPath) ?? now.toISOString();
+  writeHatchedAtSidecarOrThrow(hatchedAt);
+  return hatchedAt;
 }
 
 export function selectHatchedAtFromStats(stats: {

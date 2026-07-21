@@ -5,6 +5,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,5 +56,21 @@ describe("updateIdentityAvatarSection", () => {
     expect(content).not.toContain("Old avatar description.");
     expect(content).not.toMatch(/(^|[^\r])\n/);
     expect(statSync(identityPath).mode & 0o777).toBe(0o640);
+  });
+
+  test("propagates identity persistence failures", async () => {
+    const identityPath = join(workspaceDir, "IDENTITY.md");
+    const targetPath = join(workspaceDir, "identity-target.md");
+    const warnings: unknown[] = [];
+    writeFileSync(targetPath, "target identity");
+    symlinkSync(targetPath, identityPath);
+
+    await expect(
+      updateIdentityAvatarSection("New portrait", {
+        warn: (details) => warnings.push(details),
+      }),
+    ).rejects.toThrow("Could not safely resolve identity write target");
+    expect(warnings).toHaveLength(1);
+    expect(readFileSync(targetPath, "utf-8")).toBe("target identity");
   });
 });

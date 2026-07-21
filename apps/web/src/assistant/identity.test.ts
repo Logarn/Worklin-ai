@@ -85,6 +85,22 @@ describe("updateAssistantIdentity", () => {
     expect((error as Error).message).toContain("could not be verified");
   });
 
+  test("treats an empty HTTP 200 body as response validation failure", async () => {
+    stubPatch({
+      data: undefined,
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    });
+
+    const error = await updateAssistantIdentity("assistant-123", {
+      role: "Lifecycle marketing partner",
+    }).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(IdentityResponseValidationError);
+    expect(error).not.toBeInstanceOf(ApiError);
+    expect((error as { status?: number }).status).toBeUndefined();
+  });
+
   test("surfaces persistence errors instead of returning success", async () => {
     stubPatch({
       data: undefined,

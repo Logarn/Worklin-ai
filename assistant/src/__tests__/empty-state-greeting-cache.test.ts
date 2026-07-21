@@ -6,6 +6,9 @@
  * behavior that disables caching entirely.
  */
 
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 // ---------------------------------------------------------------------------
@@ -13,12 +16,16 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 // ---------------------------------------------------------------------------
 
 const checkpointStore = new Map<string, string>();
+let onCheckpointSet: (() => void) | null = null;
 
 mock.module("../memory/checkpoints.js", () => ({
   deleteMemoryCheckpoint: (key: string) => checkpointStore.delete(key),
   getMemoryCheckpoint: (key: string) => checkpointStore.get(key) ?? null,
   setMemoryCheckpoint: (key: string, value: string) => {
     checkpointStore.set(key, value);
+    const callback = onCheckpointSet;
+    onCheckpointSet = null;
+    callback?.();
   },
 }));
 
@@ -37,6 +44,7 @@ import {
   setCachedEmptyStateGreeting,
 } from "../runtime/routes/empty-state-greeting-cache.js";
 import {
+  _resetIdentityFreshnessForTests,
   advanceIdentityChangeEpoch,
   getIdentityChangeEpoch,
 } from "../workspace/identity-change-invalidation.js";
@@ -45,10 +53,12 @@ const TIMESTAMP_KEY = "empty_state:greeting:cached_at";
 
 beforeEach(() => {
   cacheTtlMs = 4 * 60 * 60 * 1000;
+  onCheckpointSet = null;
 });
 
 afterEach(() => {
   checkpointStore.clear();
+  onCheckpointSet = null;
 });
 
 describe("empty-state greeting cache", () => {
@@ -105,6 +115,70 @@ describe("empty-state greeting cache", () => {
       false,
     );
     expect(checkpointStore.size).toBe(0);
+  });
+
+  test("rejects an in-flight generation after an external identity change", () => {
+    const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
+    const workspaceDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "empty-greeting-freshness-test-")),
+    );
+    process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
+    writeFileSync(join(workspaceDir, "IDENTITY.md"), "identity-a");
+    writeFileSync(join(workspaceDir, "SOUL.md"), "soul-a");
+    _resetIdentityFreshnessForTests();
+
+    try {
+      const generationEpoch = getIdentityChangeEpoch();
+      expect(setCachedEmptyStateGreeting("old identity", generationEpoch)).toBe(
+        true,
+      );
+
+      writeFileSync(join(workspaceDir, "IDENTITY.md"), "identity-b");
+
+      expect(setCachedEmptyStateGreeting("stale result", generationEpoch)).toBe(
+        false,
+      );
+      expect(getCachedEmptyStateGreeting()).toBeNull();
+    } finally {
+      _resetIdentityFreshnessForTests();
+      rmSync(workspaceDir, { recursive: true, force: true });
+      if (originalWorkspaceDir === undefined) {
+        delete process.env.VELLUM_WORKSPACE_DIR;
+      } else {
+        process.env.VELLUM_WORKSPACE_DIR = originalWorkspaceDir;
+      }
+    }
+  });
+
+  test("removes a greeting when identity changes during checkpoint writes", () => {
+    const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
+    const workspaceDir = realpathSync(
+      mkdtempSync(join(tmpdir(), "empty-greeting-install-race-test-")),
+    );
+    process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
+    writeFileSync(join(workspaceDir, "IDENTITY.md"), "identity-a");
+    writeFileSync(join(workspaceDir, "SOUL.md"), "soul-a");
+    _resetIdentityFreshnessForTests();
+
+    try {
+      const generationEpoch = getIdentityChangeEpoch();
+      onCheckpointSet = () => {
+        writeFileSync(join(workspaceDir, "SOUL.md"), "soul-b");
+      };
+
+      expect(setCachedEmptyStateGreeting("stale result", generationEpoch)).toBe(
+        false,
+      );
+      expect(checkpointStore.size).toBe(0);
+    } finally {
+      _resetIdentityFreshnessForTests();
+      rmSync(workspaceDir, { recursive: true, force: true });
+      if (originalWorkspaceDir === undefined) {
+        delete process.env.VELLUM_WORKSPACE_DIR;
+      } else {
+        process.env.VELLUM_WORKSPACE_DIR = originalWorkspaceDir;
+      }
+    }
   });
 
   test("returns null when the timestamp checkpoint is missing", () => {

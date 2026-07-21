@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -90,6 +91,8 @@ describe("persistOnboardingArtifacts", () => {
   afterEach(() => {
     const p = workspacePath("IDENTITY.md");
     if (existsSync(p)) rmSync(p, { force: true });
+    const target = workspacePath("identity-target.md");
+    if (existsSync(target)) rmSync(target, { force: true });
   });
 
   test("seeds IDENTITY.md with assistant name when file does not exist", async () => {
@@ -116,6 +119,23 @@ describe("persistOnboardingArtifacts", () => {
     expect(readFileSync(workspacePath("IDENTITY.md"), "utf-8")).toBe(
       "# Identity\n\n- **Name:** Pax\n",
     );
+  });
+
+  test("propagates an identity persistence failure to onboarding", async () => {
+    const targetPath = workspacePath("identity-target.md");
+    writeFileSync(targetPath, "target identity");
+    symlinkSync(targetPath, workspacePath("IDENTITY.md"));
+
+    await expect(
+      persistOnboardingArtifacts({
+        tools: [],
+        tasks: [],
+        tone: "professional",
+        assistantName: "Pax",
+      }),
+    ).rejects.toThrow("Could not safely resolve identity write target");
+    expect(readFileSync(targetPath, "utf-8")).toBe("target identity");
+    expect(writeOnboardingSectionPayload).toBeNull();
   });
 
   test("updates Name field in existing IDENTITY.md template", async () => {

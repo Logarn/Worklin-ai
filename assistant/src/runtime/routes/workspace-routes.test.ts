@@ -474,10 +474,10 @@ describe("GET /v1/workspace/file/content", () => {
 describe("POST /v1/workspace/write", () => {
   const { handler } = getRoute("workspace_write");
 
-  test("creates a new text file with UTF-8 content", () => {
-    const result = handler({
+  test("creates a new text file with UTF-8 content", async () => {
+    const result = (await handler({
       body: { path: "new-file.txt", content: "hello world" },
-    }) as { path: string; size: number };
+    })) as { path: string; size: number };
     expect(result.path).toBe("new-file.txt");
     expect(result.size).toBe(11);
     const written = readFileSync(
@@ -487,11 +487,11 @@ describe("POST /v1/workspace/write", () => {
     expect(written).toBe("hello world");
   });
 
-  test("overwrites an existing file", () => {
+  test("overwrites an existing file", async () => {
     writeFileSync(join(testWorkspaceDir, "overwrite-me.txt"), "old content");
-    const result = handler({
+    const result = (await handler({
       body: { path: "overwrite-me.txt", content: "new content" },
-    }) as { path: string; size: number };
+    })) as { path: string; size: number };
     expect(result.path).toBe("overwrite-me.txt");
     const written = readFileSync(
       join(testWorkspaceDir, "overwrite-me.txt"),
@@ -500,8 +500,8 @@ describe("POST /v1/workspace/write", () => {
     expect(written).toBe("new content");
   });
 
-  test("auto-creates parent directories for nested paths", () => {
-    handler({
+  test("auto-creates parent directories for nested paths", async () => {
+    await handler({
       body: { path: "write-dir/sub/file.txt", content: "deep content" },
     });
     const fullPath = join(testWorkspaceDir, "write-dir", "sub", "file.txt");
@@ -510,10 +510,10 @@ describe("POST /v1/workspace/write", () => {
     expect(written).toBe("deep content");
   });
 
-  test("handles base64 encoding", () => {
+  test("handles base64 encoding", async () => {
     const original = "binary\x00data";
     const encoded = Buffer.from(original).toString("base64");
-    handler({
+    await handler({
       body: { path: "img.bin", content: encoded, encoding: "base64" },
     });
     const written = readFileSync(join(testWorkspaceDir, "img.bin"));
@@ -542,10 +542,10 @@ describe("POST /v1/workspace/write", () => {
     ).toThrow(BadRequestError);
   });
 
-  test("returns path and size in response", () => {
-    const result = handler({
+  test("returns path and size in response", async () => {
+    const result = (await handler({
       body: { path: "response-check.txt", content: "abc" },
-    }) as { path: string; size: number };
+    })) as { path: string; size: number };
     expect(result.path).toBe("response-check.txt");
     expect(result.size).toBe(3);
   });
@@ -566,7 +566,7 @@ describe("POST /v1/workspace/write", () => {
     });
 
     try {
-      handler({
+      await handler({
         body: {
           path: "data/sounds/config.json",
           content: "{}",
@@ -641,25 +641,25 @@ describe("POST /v1/workspace/mkdir", () => {
 describe("POST /v1/workspace/rename", () => {
   const { handler } = getRoute("workspace_rename");
 
-  test("renames file", () => {
+  test("renames file", async () => {
     const srcPath = join(testWorkspaceDir, "rename-me.txt");
     writeFileSync(srcPath, "rename test");
 
-    const result = handler({
+    const result = (await handler({
       body: { oldPath: "rename-me.txt", newPath: "renamed.txt" },
-    }) as { oldPath: string; newPath: string };
+    })) as { oldPath: string; newPath: string };
     expect(result.oldPath).toBe("rename-me.txt");
     expect(result.newPath).toBe("renamed.txt");
     expect(existsSync(srcPath)).toBe(false);
     expect(existsSync(join(testWorkspaceDir, "renamed.txt"))).toBe(true);
   });
 
-  test("renames directory", () => {
+  test("renames directory", async () => {
     const srcDir = join(testWorkspaceDir, "dir-to-rename");
     mkdirSync(srcDir, { recursive: true });
     writeFileSync(join(srcDir, "child.txt"), "child");
 
-    handler({
+    await handler({
       body: { oldPath: "dir-to-rename", newPath: "dir-renamed" },
     });
     expect(existsSync(srcDir)).toBe(false);
@@ -668,42 +668,42 @@ describe("POST /v1/workspace/rename", () => {
     );
   });
 
-  test("throws NotFoundError for missing source", () => {
-    expect(() =>
+  test("throws NotFoundError for missing source", async () => {
+    await expect(
       handler({
         body: { oldPath: "nonexistent.txt", newPath: "dest.txt" },
       }),
-    ).toThrow(NotFoundError);
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  test("throws ConflictError for existing destination", () => {
-    expect(() =>
+  test("throws ConflictError for existing destination", async () => {
+    await expect(
       handler({
         body: { oldPath: "hello.txt", newPath: "data.json" },
       }),
-    ).toThrow(ConflictError);
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 
   // Hard links share an inode while being distinct entries, and POSIX
   // rename() between two hard links is a silent no-op — must 409 instead
   // of reporting a successful rename that never happened.
-  test("throws ConflictError when renaming a hard link over its sibling link", () => {
+  test("throws ConflictError when renaming a hard link over its sibling link", async () => {
     writeFileSync(join(testWorkspaceDir, "hard-a.txt"), "hard");
     linkSync(
       join(testWorkspaceDir, "hard-a.txt"),
       join(testWorkspaceDir, "hard-b.txt"),
     );
 
-    expect(() =>
+    await expect(
       handler({
         body: { oldPath: "hard-a.txt", newPath: "hard-b.txt" },
       }),
-    ).toThrow(ConflictError);
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 
   // statSync would follow both links to the shared target and treat them as
   // the same entry, letting the rename clobber a real, separate symlink.
-  test("throws ConflictError when renaming a symlink over a sibling symlink to the same target", () => {
+  test("throws ConflictError when renaming a symlink over a sibling symlink to the same target", async () => {
     writeFileSync(join(testWorkspaceDir, "link-target.txt"), "target");
     symlinkSync(
       join(testWorkspaceDir, "link-target.txt"),
@@ -714,22 +714,22 @@ describe("POST /v1/workspace/rename", () => {
       join(testWorkspaceDir, "link-b.txt"),
     );
 
-    expect(() =>
+    await expect(
       handler({
         body: { oldPath: "link-a.txt", newPath: "link-b.txt" },
       }),
-    ).toThrow(ConflictError);
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 
   // On case-insensitive filesystems (macOS default) the destination "exists"
   // because it resolves to the source itself — must rename, not conflict.
-  test("allows case-only rename of the same file", () => {
+  test("allows case-only rename of the same file", async () => {
     const srcPath = join(testWorkspaceDir, "CaseFile.txt");
     writeFileSync(srcPath, "case test");
 
-    const result = handler({
+    const result = (await handler({
       body: { oldPath: "CaseFile.txt", newPath: "casefile.txt" },
-    }) as { oldPath: string; newPath: string };
+    })) as { oldPath: string; newPath: string };
     expect(result.newPath).toBe("casefile.txt");
     const names = readdirSync(testWorkspaceDir);
     expect(names).toContain("casefile.txt");
@@ -770,23 +770,23 @@ describe("POST /v1/workspace/rename", () => {
 describe("POST /v1/workspace/delete", () => {
   const { handler } = getRoute("workspace_delete");
 
-  test("deletes file", () => {
+  test("deletes file", async () => {
     const filePath = join(testWorkspaceDir, "delete-me.txt");
     writeFileSync(filePath, "delete me");
 
-    const result = handler({ body: { path: "delete-me.txt" } }) as {
+    const result = (await handler({ body: { path: "delete-me.txt" } })) as {
       success: boolean;
     };
     expect(result.success).toBe(true);
     expect(existsSync(filePath)).toBe(false);
   });
 
-  test("deletes directory recursively", () => {
+  test("deletes directory recursively", async () => {
     const dirPath = join(testWorkspaceDir, "delete-dir");
     mkdirSync(dirPath, { recursive: true });
     writeFileSync(join(dirPath, "child.txt"), "child");
 
-    const result = handler({ body: { path: "delete-dir" } }) as {
+    const result = (await handler({ body: { path: "delete-dir" } })) as {
       success: boolean;
     };
     expect(result.success).toBe(true);
@@ -803,10 +803,10 @@ describe("POST /v1/workspace/delete", () => {
     );
   });
 
-  test("throws NotFoundError for missing path", () => {
-    expect(() => handler({ body: { path: "nonexistent.txt" } })).toThrow(
-      NotFoundError,
-    );
+  test("throws NotFoundError for missing path", async () => {
+    await expect(
+      handler({ body: { path: "nonexistent.txt" } }),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 
   test("rejects missing path field", () => {

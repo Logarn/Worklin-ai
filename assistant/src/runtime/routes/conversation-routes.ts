@@ -1070,6 +1070,7 @@ export async function persistOnboardingArtifacts(onboarding: {
         { err, identityPath },
         "Failed to seed IDENTITY.md from onboarding",
       );
+      throw err;
     }
   }
 

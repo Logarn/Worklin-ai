@@ -75,6 +75,10 @@ export function setCachedEmptyStateGreeting(
       CHECKPOINT_KEY_IDENTITY_EPOCH,
       String(expectedIdentityEpoch),
     );
+    if (expectedIdentityEpoch !== getIdentityChangeEpoch()) {
+      clearCachedEmptyStateGreeting();
+      return false;
+    }
     return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.

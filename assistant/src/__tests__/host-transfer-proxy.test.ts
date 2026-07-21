@@ -236,7 +236,7 @@ describe("HostTransferProxy", () => {
       expect(written).toBe("received content");
     });
 
-    test("coordinates a received write through a hard link to workspace IDENTITY.md", async () => {
+    test("rejects a received hard-link identity write without splitting it", async () => {
       setup();
       tempDir = await mkdtemp(join(tmpdir(), "htp-test-"));
       process.env.VELLUM_WORKSPACE_DIR = tempDir;
@@ -262,10 +262,11 @@ describe("HostTransferProxy", () => {
         sha256,
       );
 
-      expect(receiveResult.accepted).toBe(true);
-      await expect(resultPromise).resolves.toMatchObject({ isError: false });
-      expect(await readFile(identityPath, "utf-8")).toBe("received identity");
-      expect(getIdentityChangeEpoch()).toBe(beforeEpoch + 1);
+      expect(receiveResult.accepted).toBe(false);
+      await expect(resultPromise).resolves.toMatchObject({ isError: true });
+      expect(await readFile(identityPath, "utf-8")).toBe("original identity");
+      expect(await readFile(hardLinkPath, "utf-8")).toBe("original identity");
+      expect(getIdentityChangeEpoch()).toBe(beforeEpoch);
     });
 
     test("rejects with SHA-256 mismatch", async () => {
