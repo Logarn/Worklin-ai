@@ -29,6 +29,7 @@ describe("resolveAssistantLifecycleState — transport-shaped failures (LUM-2402
       kind: "error",
       message:
         "Worklin could not start your managed assistant. Please try again or contact support.",
+      retryAction: "restart_runtime",
     });
   });
 

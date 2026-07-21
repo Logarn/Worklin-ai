@@ -17,7 +17,11 @@ import {
 } from "@/generated/daemon/sdk.gen";
 
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
-import { deriveProviderDefaults } from "@/domains/settings/ai/profile-prefill";
+import type { ProviderConnectionPreset } from "@/assistant/provider-connection-presets";
+import {
+  dedupeProviderConnectionName,
+  deriveProviderDefaults,
+} from "@/domains/settings/ai/profile-prefill";
 import type { Auth, ConnectionProvider, InferenceProviderconnectionsPostData, ProviderConnection } from "@/generated/daemon/types.gen";
 import { ProviderEditorApiKeySection } from "@/domains/settings/ai/provider-editor-api-key-section";
 import {
@@ -59,6 +63,8 @@ export interface ProviderCreateFormProps {
    * credential" path rather than another managed-proxy connection.
    */
   defaultAuthType?: AuthType;
+  /** Branded defaults for a first-class OpenAI-compatible service. */
+  preset?: ProviderConnectionPreset;
   onCreated: (connection: ProviderConnection) => void;
   onCancel: () => void;
   /** "modal" wraps the form in Modal chrome; "inline" drops it for embedding. */
@@ -70,6 +76,7 @@ export function ProviderCreateForm({
   existingNames,
   defaultProviderType,
   defaultAuthType,
+  preset,
   onCreated,
   onCancel,
   variant = "modal",
@@ -81,7 +88,19 @@ export function ProviderCreateForm({
   // deduped against existing connection names. The user can override both, and
   // a provider-type change re-seeds only while they haven't edited the fields
   // (see the dirty guard in the Provider dropdown's onChange below).
-  const initialDefaults = deriveProviderDefaults(initialProvider, existingNames);
+  const providerDefaults = deriveProviderDefaults(
+    initialProvider,
+    existingNames,
+  );
+  const initialDefaults = preset
+    ? {
+        name: preset.displayName,
+        key: dedupeProviderConnectionName(
+          preset.connectionName,
+          existingNames,
+        ),
+      }
+    : providerDefaults;
 
   const [label, setLabel] = useState(initialDefaults.name);
   const [name, setName] = useState(initialDefaults.key);
@@ -96,10 +115,14 @@ export function ProviderCreateForm({
           : "api_key"),
   );
   const [credential, setCredential] = useState(() =>
-    initialProvider === "ollama" ? "" : `credential/${initialProvider}/api_key`,
+    initialProvider === "ollama"
+      ? ""
+      : `credential/${preset?.credentialName ?? initialProvider}/api_key`,
   );
-  const [baseUrl, setBaseUrl] = useState("");
-  const [connectionModels, setConnectionModels] = useState("");
+  const [baseUrl, setBaseUrl] = useState(preset?.baseUrl ?? "");
+  const [connectionModels, setConnectionModels] = useState(
+    preset?.models?.map((model) => model.id).join(", ") ?? "",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,8 +170,13 @@ export function ProviderCreateForm({
     }
     return null;
   })();
+  const modelsError =
+    isOpenAICompatible && !connectionModels.trim()
+      ? "Add at least one model before connecting this service."
+      : null;
 
-  const canSave = name.trim().length > 0 && !nameError;
+  const canSave =
+    name.trim().length > 0 && !nameError && modelsError === null;
 
   async function handleSave() {
     if (!canSave) return;
@@ -285,7 +313,7 @@ export function ProviderCreateForm({
 
   // Credentials for the current provider (used in the Advanced dropdown)
   const providerCredentials = availableCredentials.filter(
-    (c) => c.service === provider,
+    (c) => c.service === (preset?.credentialName ?? provider),
   );
 
   // Show the Advanced credential-reference disclosure only when there's at
@@ -346,6 +374,7 @@ export function ProviderCreateForm({
         <Dropdown
           aria-label="Provider"
           value={provider}
+          disabled={Boolean(preset)}
           onChange={(newProvider) => {
             setProvider(newProvider);
             // Re-seed Name + Key from the newly selected provider type, but
@@ -389,13 +418,16 @@ export function ProviderCreateForm({
           }}
           options={connectionProviderOptions.map((p) => ({
             value: p,
-            label: PROVIDER_DISPLAY_NAMES[p],
+            label:
+              p === preset?.provider
+                ? preset.displayName
+                : PROVIDER_DISPLAY_NAMES[p],
           }))}
         />
       </div>
 
       {/* Base URL + Models — openai-compatible only */}
-      {isOpenAICompatible && (
+      {isOpenAICompatible && !preset && (
         <>
           <div className="space-y-1">
             <label className="block text-body-small-default text-[var(--content-tertiary)]">
@@ -425,6 +457,15 @@ export function ProviderCreateForm({
             >
               Comma-separated model identifiers exposed by your endpoint.
             </Typography>
+            {modelsError && (
+              <Typography
+                variant="body-small-default"
+                as="p"
+                className="text-(--system-negative-strong)"
+              >
+                {modelsError}
+              </Typography>
+            )}
           </div>
         </>
       )}
@@ -475,7 +516,7 @@ export function ProviderCreateForm({
           isAuthLocked={false}
           isLoadingCredential={isLoadingCredential}
           apiKeyPlaceholder={apiKeyPlaceholder}
-          provider={provider}
+          credentialService={preset?.credentialName ?? provider}
           providerCredentials={providerCredentials}
           showAdvancedSection={shouldShowAdvancedSection}
           onError={setError}

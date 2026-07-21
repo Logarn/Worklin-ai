@@ -188,7 +188,7 @@ mock.module("../providers/registry.js", () => {
         openai: "gpt-5.4",
         gemini: "gemini-2.5-flash",
         ollama: "llama3.2",
-        fireworks: "accounts/fireworks/models/kimi-k2p5",
+        fireworks: "accounts/fireworks/models/kimi-k2p6",
         openrouter: "x-ai/grok-4.20-beta",
       };
       return defaults[providerName] ?? defaults.anthropic;

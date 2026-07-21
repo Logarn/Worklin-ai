@@ -6,11 +6,21 @@ export interface OrganizationMembershipRow {
   org_id: string;
   user_id: string;
   role: OrganizationRole;
+  status: "active" | "deactivated";
   created_at: string;
   updated_at: string;
 }
 
 const initializedDatabases = new WeakSet<Database>();
+
+function tableColumns(db: Database, table: string): Set<string> {
+  return new Set(
+    db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name),
+  );
+}
 
 export function ensureOrganizationMembershipSchema(db: Database): void {
   if (initializedDatabases.has(db)) return;
@@ -21,6 +31,7 @@ export function ensureOrganizationMembershipSchema(db: Database): void {
       org_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('admin', 'manager', 'collaborator')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'deactivated')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (org_id, user_id)
@@ -28,6 +39,11 @@ export function ensureOrganizationMembershipSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_organization_memberships_user
       ON organization_memberships(user_id, org_id);
   `);
+  if (!tableColumns(db, "organization_memberships").has("status")) {
+    db.exec(
+      "ALTER TABLE organization_memberships ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'deactivated'))",
+    );
+  }
   initializedDatabases.add(db);
 }
 
@@ -60,9 +76,10 @@ export function getOrCreateOrganizationMembership(
       org_id,
       user_id,
       role,
+      status,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, 'active', ?, ?)
     ON CONFLICT(org_id, user_id) DO NOTHING
   `,
   ).run(orgId, userId, role, timestamp, timestamp);

@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 interface StubConversation {
   id: string;
+  trustContexts: Array<unknown>;
   handleSurfaceActionResult?:
     | { accepted: true; conversationId?: string }
     | { accepted: false; error: string };
@@ -97,6 +98,7 @@ function findHandler(operationId: string): RouteDefinition["handler"] {
 function makeStub(id: string): StubConversation {
   const stub: StubConversation = {
     id,
+    trustContexts: [],
     handleSurfaceActionResult: { accepted: true },
     surfaceActionCalls: [],
   };
@@ -114,6 +116,9 @@ function makeStub(id: string): StubConversation {
     handleSurfaceUndo: (_surfaceId: string) => {
       stub.handleSurfaceUndoCalled = true;
       if (stub.handleSurfaceUndoThrows) throw stub.handleSurfaceUndoThrows;
+    },
+    setTrustContext: (context: unknown) => {
+      stub.trustContexts.push(context);
     },
   });
   return stub;
@@ -139,6 +144,27 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("triggerSurfaceAction handler", () => {
+  test("uses the gateway-bound owner without a shared guardian row", async () => {
+    const ownerA = makeStub("conv-owner-a");
+    memoryBySurface = ownerA;
+
+    const handler = findHandler("triggerSurfaceAction");
+    await handler({
+      body: { surfaceId: "surf-owner", actionId: "act-owner" },
+      headers: {
+        "x-vellum-actor-principal-id": "vellum-principal-user-a",
+        "x-vellum-platform-owner": "true",
+      },
+    });
+
+    expect(ownerA.trustContexts).toEqual([
+      expect.objectContaining({
+        trustClass: "guardian",
+        guardianPrincipalId: "vellum-principal-user-a",
+      }),
+    ]);
+  });
+
   test("dispatches against live in-memory conversation when found by surfaceId", async () => {
     const live = makeStub("conv-live");
     memoryBySurface = live;

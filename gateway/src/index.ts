@@ -599,7 +599,9 @@ async function main() {
   const handleListBackups = createListBackupsHandler(backupDeps);
   const handleCreateBackup = createBackupSnapshotHandler(backupDeps);
 
-  const handleRuntimeProxy = createRuntimeProxyHandler(config);
+  const handleRuntimeProxy = createRuntimeProxyHandler(config, {
+    upsertContact: contactsControlPlaneProxy.handleUpsertContact,
+  });
   const handleRuntimeWorkerLeaseRevoke =
     createRuntimeWorkerLeaseRevokeHandler(config);
 
@@ -1767,7 +1769,14 @@ async function main() {
       const includeMigrations =
         url.searchParams.get("include") === "migrations";
       if (!includeMigrations) {
-        return Response.json({ status: "ok" });
+        return Response.json({
+          status: "ok",
+          release_sha:
+            process.env.WORKLIN_RELEASE_SHA ??
+            process.env.RAILWAY_GIT_COMMIT_SHA ??
+            process.env.GITHUB_SHA ??
+            "unknown",
+        });
       }
       // Fetch the daemon's /v1/health to surface migration state
       // (dbVersion, lastWorkspaceMigrationId) so the CLI can capture
@@ -1789,6 +1798,11 @@ async function main() {
           };
           return Response.json({
             status: "ok",
+            release_sha:
+              process.env.WORKLIN_RELEASE_SHA ??
+              process.env.RAILWAY_GIT_COMMIT_SHA ??
+              process.env.GITHUB_SHA ??
+              "unknown",
             ...(body.migrations ? { migrations: body.migrations } : {}),
           });
         }

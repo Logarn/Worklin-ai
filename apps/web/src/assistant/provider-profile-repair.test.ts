@@ -285,6 +285,42 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
     });
   });
 
+  test("uses the connection model for an OpenAI-compatible xAI connection", async () => {
+    secrets = [{ type: "credential", name: "xai:api_key" }];
+    connections = [
+      {
+        ...makeConnection({
+          name: "xai-personal",
+          provider: "openai-compatible",
+          auth: {
+            type: "api_key",
+            credential: "credential/xai/api_key",
+          },
+        }),
+        label: "xAI",
+        baseUrl: "https://api.x.ai/v1",
+        models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+      },
+    ];
+
+    const result = await ensureRunnableProfileFromStoredConnection(ASSISTANT_ID);
+
+    expect(result.repaired).toBe(true);
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            provider: "openai-compatible",
+            provider_connection: "xai-personal",
+            model: "grok-4.3",
+          },
+        },
+      },
+    });
+  });
+
   test("stays ambiguous when multiple non-managed API-key providers are equally eligible", async () => {
     secrets = [
       { type: "api_key", name: "anthropic" },

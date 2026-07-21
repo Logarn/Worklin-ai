@@ -45,7 +45,7 @@ export function ChatPage() {
   } = useConversationListQuery(assistantId, shouldRenderChat);
 
   const retryAssistant = useCallback(
-    () => lifecycleService.retryAssistant(),
+    () => void lifecycleService.retryAssistant(),
     [],
   );
 

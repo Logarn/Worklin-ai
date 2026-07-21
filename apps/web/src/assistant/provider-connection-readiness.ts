@@ -25,7 +25,11 @@ function credentialMetadataMatches(
   const service = rest.slice(0, slashIndex);
   const field = rest.slice(slashIndex + 1);
   if (field === "api_key") {
-    return secret.type === "api_key" && secret.name === service;
+    return (
+      (secret.type === "api_key" && secret.name === service) ||
+      (secret.type === "credential" &&
+        secret.name === `${service}:api_key`)
+    );
   }
 
   return secret.type === "credential" && secret.name === `${service}:${field}`;

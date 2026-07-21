@@ -382,7 +382,7 @@ describe("pending provider key", () => {
       key: "fw_test",
       connectionName: "fireworks-personal",
       credential: "credential/fireworks/api_key",
-      model: "accounts/fireworks/models/kimi-k2p5",
+      model: "accounts/fireworks/models/kimi-k2p6",
     },
     {
       provider: "openrouter",

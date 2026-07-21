@@ -28,6 +28,8 @@ export interface RailwayProvisionerConfig {
   mountPath: string;
   runtimePort: number;
   maxRuntimeServices: number;
+  /** Safety quota for one workspace; defaults to one when omitted. */
+  maxRuntimeServicesPerWorkspace?: number;
   maxConcurrentProvisioning: number;
   requestTimeoutMs: number;
   serviceReconcileTimeoutMs: number;
@@ -102,6 +104,10 @@ export function railwayProvisionerConfigFromEnv(
       rawEnv.WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES,
       0,
     ),
+    maxRuntimeServicesPerWorkspace: positiveIntegerEnv(
+      rawEnv.WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES_PER_WORKSPACE,
+      1,
+    ),
     maxConcurrentProvisioning: positiveIntegerEnv(
       rawEnv.WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY,
       2,
@@ -161,6 +167,16 @@ export function railwayRuntimeCapacityError(
   if (existingServiceRef) return null;
   if (allocatedRuntimeServices < maxRuntimeServices) return null;
   return `Railway runtime service limit (${maxRuntimeServices}) has been reached.`;
+}
+
+export function railwayRuntimeWorkspaceCapacityError(
+  existingServiceRef: string | null,
+  allocatedRuntimeServices: number,
+  maxRuntimeServices: number,
+): string | null {
+  if (existingServiceRef) return null;
+  if (allocatedRuntimeServices < maxRuntimeServices) return null;
+  return `Railway runtime workspace quota (${maxRuntimeServices}) has been reached.`;
 }
 
 export function railwayRuntimeServiceName(assistantId: string): string {
@@ -399,9 +415,9 @@ class RailwayGraphqlClient {
   }
 
   async deploy(serviceId: string): Promise<string> {
-    const data = await this.request<{ serviceInstanceDeploy: string }>(
-      `mutation serviceInstanceDeploy($environmentId: String!, $serviceId: String!) {
-        serviceInstanceDeploy(
+    const data = await this.request<{ serviceInstanceDeployV2: string }>(
+      `mutation serviceInstanceDeployV2($environmentId: String!, $serviceId: String!) {
+        serviceInstanceDeployV2(
           environmentId: $environmentId
           serviceId: $serviceId
         )
@@ -411,7 +427,7 @@ class RailwayGraphqlClient {
         serviceId,
       },
     );
-    return data.serviceInstanceDeploy;
+    return data.serviceInstanceDeployV2;
   }
 
   async deploymentStatus(deploymentId: string): Promise<string> {
@@ -624,7 +640,6 @@ export async function provisionRailwayRuntime(
     WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
     WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
     WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
-    PLATFORM_ORGANIZATION_ID: options.assistant.org_id,
     RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
     DEFAULT_ASSISTANT_ID: "self",
     UNMAPPED_POLICY: "default",

@@ -20,6 +20,7 @@ import { ensureRunnableProfileForConnection } from "@/assistant/provider-profile
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import type { Auth, ConnectionProvider, InferenceProviderconnectionsByNamePatchData, ProviderConnection } from "@/generated/daemon/types.gen";
 import { ProviderCreateForm } from "@/domains/settings/ai/provider-create-form";
+import type { ProviderConnectionPreset } from "@/assistant/provider-connection-presets";
 import { ProviderEditorApiKeySection } from "@/domains/settings/ai/provider-editor-api-key-section";
 import {
     AUTH_TYPE_DISPLAY_NAMES,
@@ -54,6 +55,7 @@ import { useProviderCredentialsList } from "@/domains/settings/ai/use-provider-c
 export interface ProviderEditorCreateSeed {
   provider: ConnectionProvider;
   authType?: AuthType;
+  preset?: ProviderConnectionPreset;
 }
 
 export interface ProviderEditorContentProps {
@@ -360,9 +362,11 @@ export function ProviderEditorContent({
     }
   }
 
+  const credentialService = parsedCredRef?.service ?? provider;
+
   // Credentials for the current provider (used in the Advanced dropdown)
   const providerCredentials = availableCredentials.filter(
-    (c) => c.service === provider,
+    (c) => c.service === credentialService,
   );
 
   // Show the Advanced credential-reference disclosure only when there's
@@ -399,6 +403,7 @@ export function ProviderEditorContent({
         existingNames={existingNames}
         defaultProviderType={provider}
         defaultAuthType={createAuthTypeSeed ?? createSeed?.authType}
+        preset={createSeed?.preset}
         onCreated={onSave}
         onCancel={onCancel}
       />
@@ -542,7 +547,7 @@ export function ProviderEditorContent({
             isAuthLocked={isAuthLocked}
             isLoadingCredential={isLoadingCredential}
             apiKeyPlaceholder={apiKeyPlaceholder}
-            provider={provider}
+            credentialService={credentialService}
             providerCredentials={providerCredentials}
             showAdvancedSection={shouldShowAdvancedSection}
             onError={setError}

@@ -234,6 +234,7 @@ async function waitForHealth(origin: string): Promise<void> {
 async function waitForProvisioningToSettle(
   dbPath: string,
 ): Promise<RuntimeStackRow[]> {
+  let lastStacks: RuntimeStackRow[] = [];
   for (let attempt = 0; attempt < 500; attempt += 1) {
     const db = new Database(dbPath, { readonly: true });
     const stacks = db
@@ -242,6 +243,7 @@ async function waitForProvisioningToSettle(
       )
       .all();
     db.close();
+    lastStacks = stacks;
     if (
       stacks.length === CUSTOMER_COUNT &&
       stacks.every(
@@ -255,7 +257,17 @@ async function waitForProvisioningToSettle(
     }
     await Bun.sleep(10);
   }
-  throw new Error("Ten runtime provisioning jobs did not settle.");
+  throw new Error(
+    `Ten runtime provisioning jobs did not settle: ${JSON.stringify(
+      lastStacks.map((stack) => ({
+        assistantId: stack.assistant_id,
+        status: stack.status,
+        serviceRef: stack.service_ref,
+        volumeRef: stack.workspace_volume_ref,
+        error: stack.last_error,
+      })),
+    )}`,
+  );
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
@@ -419,6 +431,20 @@ describe("ten-customer isolated runtime launch", () => {
     expect(
       new Set(customers.map((customer) => customer.assistantId)).size,
     ).toBe(CUSTOMER_COUNT);
+
+    // Hatch is intentionally capacity-read-only. The first real assistant
+    // request starts lazy runtime provisioning for each customer.
+    const activationResponses = await Promise.all(
+      customers.map((customer) =>
+        fetch(
+          `${origin}/v1/assistants/${customer.assistantId}/conversations/`,
+          { headers: authenticatedHeaders(customer.sessionId) },
+        ),
+      ),
+    );
+    for (const response of activationResponses) {
+      expect(response.status).toBe(503);
+    }
 
     const settledStacks = await waitForProvisioningToSettle(dbPath);
     expect(maxActiveServiceCreates).toBe(PROVISIONING_CONCURRENCY);

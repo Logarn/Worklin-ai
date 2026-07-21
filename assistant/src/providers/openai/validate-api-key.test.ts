@@ -29,6 +29,21 @@ describe("validateOpenAICompatibleApiKey", () => {
 
     expect(result).toEqual({
       valid: false,
+      outcome: "invalid_credentials",
+      reason: "Example Provider rejected this API key.",
+    });
+  });
+
+  test("preserves 403 responses as invalid credentials", async () => {
+    const result = await validateOpenAICompatibleApiKey("bad-key", {
+      baseUrl: "https://provider.example.com/v1",
+      providerLabel: "Example Provider",
+      fetchImpl: async () => new Response("forbidden", { status: 403 }),
+    });
+
+    expect(result).toEqual({
+      valid: false,
+      outcome: "invalid_credentials",
       reason: "Example Provider rejected this API key.",
     });
   });
@@ -47,6 +62,7 @@ describe("validateOpenAICompatibleApiKey", () => {
 
     expect(result).toEqual({
       valid: false,
+      outcome: "invalid_credentials",
       reason: "Example Provider rejected this API key.",
     });
   });
@@ -80,17 +96,36 @@ describe("validateOpenAICompatibleApiKey", () => {
     expect(result).toEqual({ valid: true });
   });
 
-  test("fails closed when the provider cannot verify the key", async () => {
+  test("classifies 429 and 5xx responses as temporarily unverifiable", async () => {
+    for (const status of [429, 500, 503]) {
+      const result = await validateOpenAICompatibleApiKey("test-key", {
+        baseUrl: "https://provider.example.com/v1",
+        providerLabel: "Example Provider",
+        fetchImpl: async () => new Response("busy", { status }),
+      });
+
+      expect(result).toEqual({
+        valid: false,
+        outcome: "verification_unavailable",
+        reason: `Example Provider could not verify this connection (${status}). Try again shortly.`,
+      });
+    }
+  });
+
+  test("classifies network failures as temporarily unverifiable", async () => {
     const result = await validateOpenAICompatibleApiKey("test-key", {
       baseUrl: "https://provider.example.com/v1",
       providerLabel: "Example Provider",
-      fetchImpl: async () => new Response("busy", { status: 503 }),
+      fetchImpl: async () => {
+        throw new TypeError("network unavailable");
+      },
     });
 
     expect(result).toEqual({
       valid: false,
+      outcome: "verification_unavailable",
       reason:
-        "Example Provider could not verify this connection (503). Try again shortly.",
+        "Example Provider could not verify this connection. Check your network and try again.",
     });
   });
 });

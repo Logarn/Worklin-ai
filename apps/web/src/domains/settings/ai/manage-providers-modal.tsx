@@ -97,6 +97,7 @@ export function ManageProvidersModal({
     setActiveCreateSeed({
       provider: createSeed.provider,
       authType: createSeed.authType,
+      preset: createSeed.preset,
     });
     setEditorOpen(true);
   }, [createSeed, isOpen]);

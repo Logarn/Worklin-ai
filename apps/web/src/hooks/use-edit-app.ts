@@ -25,7 +25,7 @@ import { routes } from "@/utils/routes";
  * `useOpenAppFromChat`.
  *
  * Shared by the in-chat app viewer (`ChatMainPanel`) and the standalone
- * Library app view (`LibraryDetailPage`).
+ * Work app view (`WorkAppPage`).
  */
 export function useEditApp(): (app: OpenedAppState) => void {
   const assistantId = useResolvedAssistantsStore.use.activeAssistantId();

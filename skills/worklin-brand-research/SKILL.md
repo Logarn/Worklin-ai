@@ -35,9 +35,11 @@ brand identity, research scope, legal posture, or requested deliverable.
    profiles, product or service lines, category, and likely geographic scope.
    Treat a supplied URL as a starting point, not proof of ownership or truth.
 3. Run a bounded research program. The main assistant is the coordinator. It
-   may spawn one level of focused `researcher` subagents in parallel, but
-   workers cannot spawn children. If subagents are unavailable, run the same
-   work sequentially with the available public web tools.
+   may spawn a supervisor and focused specialist researchers beneath that
+   supervisor, up to two child levels total. Never allow a child to raise its
+   own depth, budget, permissions, or concurrency. If subagents are
+   unavailable, run the same work sequentially with the available public web
+   tools and preserve the same track coverage.
 4. Give every researcher a narrow question, a source budget, and an explicit
    instruction to return evidence URLs, observed dates, confidence, unknowns,
    and contradictions. Do not ask workers for polished copy.
@@ -117,9 +119,12 @@ empty:
 
 When the report is complete, call `brand_research_save` with the structured
 report. This persists research context on the matching Brand Brain while
-keeping it explicitly unapproved. If the save tool is unavailable, return the
-report in the conversation and say that persistence is pending; do not claim
-that it was saved.
+keeping it explicitly unapproved. The onboarding control plane also records a
+durable research run with queued, running, partial, complete, failed, and
+cancelled states. Never claim completion until the report and its evidence
+have actually been saved. If the save tool or a research provider is
+unavailable, preserve the partial report and name the exact gap; do not claim
+that it was saved or that the missing track was researched.
 
 ## Handoff To Copy
 

@@ -94,12 +94,14 @@ function defaultModelForConnection(connection: ProviderConnection): string {
   ) {
     return CHATGPT_SUBSCRIPTION_MODEL;
   }
-  return (
-    getDefaultModelForProvider(connection.provider) ??
-    FALLBACK_DEFAULT_MODEL_BY_PROVIDER[connection.provider] ??
-    connection.models?.[0]?.id ??
-    ""
-  );
+  const catalogDefault = getDefaultModelForProvider(connection.provider);
+  if (catalogDefault) return catalogDefault;
+
+  const fallbackDefault =
+    FALLBACK_DEFAULT_MODEL_BY_PROVIDER[connection.provider];
+  if (fallbackDefault) return fallbackDefault;
+
+  return connection.models?.[0]?.id ?? "";
 }
 
 function providerLabel(provider: string): string {

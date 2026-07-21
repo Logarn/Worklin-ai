@@ -16,6 +16,25 @@ function isUnderAccountLayout(path: string): boolean {
   );
 }
 
+interface RawRoute {
+  path?: string;
+  children?: RawRoute[];
+  Component?: { name?: string };
+  lazy?: unknown;
+}
+
+function findRouteByPath(
+  routes: RawRoute[],
+  path: string,
+): RawRoute | undefined {
+  for (const route of routes) {
+    if (route.path === path) return route;
+    const child = findRouteByPath(route.children ?? [], path);
+    if (child) return child;
+  }
+  return undefined;
+}
+
 describe("account route compact-window grouping", () => {
   // The auth screens that render in the main window opt into the compact
   // (440×630) window via AccountLayout's sizing hook.
@@ -43,4 +62,32 @@ describe("account route compact-window grouping", () => {
   ])("%s is NOT sized by AccountLayout", (path) => {
     expect(isUnderAccountLayout(path)).toBe(false);
   });
+});
+
+describe("Work routes", () => {
+  test("keeps the app detail route available with the main application shell", () => {
+    const route = findRouteByPath(
+      routeTree as RawRoute[],
+      "work/brands/:brandId/artifacts/apps/:appId",
+    );
+
+    expect(route?.Component?.name).toBe("WorkAppPage");
+    expect(route?.lazy).toBeUndefined();
+  });
+});
+
+test("workspace invitation links match the authenticated acceptance route", () => {
+  const matches =
+    matchRoutes(
+      routeTree as never,
+      "/assistant/workspace/invitations/invite-token",
+    ) ?? [];
+
+  expect(
+    matches.some(
+      (match) =>
+        (match.route as { path?: string }).path ===
+        "workspace/invitations/:token",
+    ),
+  ).toBe(true);
 });

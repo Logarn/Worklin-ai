@@ -656,7 +656,7 @@ describe("runtime worker production export", () => {
       "content-type;host",
     );
     expect(upload.searchParams.get("X-Goog-Credential")).toBe(
-      "runtime-state@example.iam.gserviceaccount.com/20260720/auto/storage/goog4_request",
+      "runtime-state@example.com/20260720/auto/storage/goog4_request",
     );
     expect(upload.searchParams.get("X-Goog-Signature")).toMatch(/^[a-f0-9]+$/u);
   });

@@ -24,8 +24,26 @@ import {
   scheduleRetentionAudit,
   scoreRetentionCustomers,
 } from "./index.js";
+import {
+  createMeldProvider,
+  createSocialProvider,
+} from "./research-providers.js";
 
 describe("retention-domain safety posture", () => {
+  test("research providers stay explicit when credentials are absent", async () => {
+    const meld = createMeldProvider({ baseUrl: "https://meld.invalid" });
+    const social = createSocialProvider("youtube", {
+      baseUrl: "https://youtube.invalid",
+    });
+    expect(await meld.getConnectionStatus()).toBe("not_configured");
+    expect(
+      (await meld.researchCompetitors({ brandName: "Acme" })).coverageGaps,
+    ).toContain("competitors coverage is not_configured.");
+    expect(
+      (await social.lookupSocialSignals({ brandName: "Acme" })).status,
+    ).toBe("not_configured");
+  });
+
   test("source status never reports live external action", () => {
     const result = getRetentionSourceStatus();
 
@@ -40,7 +58,9 @@ describe("retention-domain safety posture", () => {
   test("blocked capabilities include every live Shopify/Klaviyo mutation", () => {
     expect(RETENTION_BLOCKED_CAPABILITIES).toContain("shopify_write");
     expect(RETENTION_BLOCKED_CAPABILITIES).toContain("klaviyo_send_campaign");
-    expect(RETENTION_BLOCKED_CAPABILITIES).toContain("klaviyo_schedule_campaign");
+    expect(RETENTION_BLOCKED_CAPABILITIES).toContain(
+      "klaviyo_schedule_campaign",
+    );
     expect(RETENTION_BLOCKED_CAPABILITIES).toContain("klaviyo_activate_flow");
     expect(RETENTION_BLOCKED_CAPABILITIES).toContain("klaviyo_mutate_segment");
     expect(RETENTION_BLOCKED_CAPABILITIES).toContain("klaviyo_mutate_profile");
@@ -64,8 +84,9 @@ describe("Worklin Retention Brain", () => {
     expect(result.positioning.story).toContain("Practical tools");
     expect(result.products).toEqual([]);
     expect(result.offers).toEqual([]);
-    expect(result.sourceProvenance.some((source) => source.status === "fixture"))
-      .toBe(false);
+    expect(
+      result.sourceProvenance.some((source) => source.status === "fixture"),
+    ).toBe(false);
     expect(result.caveats.join(" ")).not.toContain("Fixture brand brain");
   });
 
@@ -87,9 +108,7 @@ describe("Worklin Retention Brain", () => {
       rule: "Do not use manufactured urgency.",
     });
     expect(
-      corrected.sourceProvenance.some(
-        (source) => source.status === "approved",
-      ),
+      corrected.sourceProvenance.some((source) => source.status === "approved"),
     ).toBe(true);
     expect(learned.campaignMemory).toContainEqual({
       campaignType: "welcome_email",
@@ -172,7 +191,9 @@ describe("Worklin Retention Brain", () => {
     expect(scores.summary.suppressionRisk).toBeGreaterThan(0);
     expect(segments.summary.activationStatus).toBe("definition_only");
     expect(
-      segments.definitions.every((definition) => !definition.klaviyoNativePossible),
+      segments.definitions.every(
+        (definition) => !definition.klaviyoNativePossible,
+      ),
     ).toBe(true);
   });
 
@@ -208,9 +229,9 @@ describe("Worklin Retention Brain", () => {
     expect(campaignPackage.safety.externalActionTaken).toBe(false);
     expect(qa.approvalStatus).toBe("required");
     expect(qa.safety.canGoLiveNow).toBe(false);
-    expect(qa.checks.some((check) => check.id === "send_schedule_blocked")).toBe(
-      true,
-    );
+    expect(
+      qa.checks.some((check) => check.id === "send_schedule_blocked"),
+    ).toBe(true);
   });
 
   test("context pack and unified audit are compact safe assistant inputs", () => {
@@ -221,7 +242,9 @@ describe("Worklin Retention Brain", () => {
     expect(context.topOpportunities.length).toBeGreaterThan(0);
     expect(context.brandSummary.readiness.status).toBe("partial");
     expect(context.brandSummary.avoidPhrases.length).toBeGreaterThan(0);
-    expect(context.brandSummary.compliance.forbiddenClaims.length).toBeGreaterThan(0);
+    expect(
+      context.brandSummary.compliance.forbiddenClaims.length,
+    ).toBeGreaterThan(0);
     expect(context.safety.externalActionTaken).toBe(false);
     expect(audit.title).toBe("Retention Audit");
     expect(audit.document.title).toBe("Retention Audit");
@@ -279,9 +302,7 @@ describe("Worklin Retention Brain", () => {
     expect(audit.auditTrace).toHaveLength(audit.modules.length);
     expect(audit.auditTrace[0]?.dataRead.length).toBeGreaterThan(0);
     expect(audit.auditTrace[0]?.ruleApplied.length).toBeGreaterThan(0);
-    expect(audit.artifact.contentMarkdown).toContain(
-      "Audit Reasoning Trace",
-    );
+    expect(audit.artifact.contentMarkdown).toContain("Audit Reasoning Trace");
     expect(audit.artifact.contentMarkdown).toContain(
       "not private model scratchpad",
     );
@@ -312,15 +333,11 @@ describe("Worklin Retention Brain", () => {
     expect(
       audit.opportunityBacklog.every(
         (item) =>
-          item.artifactOnly &&
-          !item.externalActionTaken &&
-          !item.canGoLiveNow,
+          item.artifactOnly && !item.externalActionTaken && !item.canGoLiveNow,
       ),
     ).toBe(true);
     expect(audit.safety.blockedCapabilities).toContain("shopify_write");
-    expect(audit.safety.blockedCapabilities).toContain(
-      "klaviyo_send_campaign",
-    );
+    expect(audit.safety.blockedCapabilities).toContain("klaviyo_send_campaign");
   });
 
   test("audit status, schedule, and artifact helpers expose production interfaces", () => {
@@ -339,7 +356,8 @@ describe("Worklin Retention Brain", () => {
     expect(artifact.charts.length).toBeGreaterThanOrEqual(9);
     expect(
       artifact.charts.every(
-        (chart) => chart.diagnosis.length > 0 && chart.recommendation.length > 0,
+        (chart) =>
+          chart.diagnosis.length > 0 && chart.recommendation.length > 0,
       ),
     ).toBe(true);
   });

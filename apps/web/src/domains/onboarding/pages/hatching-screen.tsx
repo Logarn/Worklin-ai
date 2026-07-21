@@ -669,36 +669,36 @@ export function HatchingScreen() {
             <div className="mt-8">
               <ChatgptOAuthSection
                 assistantId={providerSetup.assistantId}
-                onConnected={() => {
-                  void (async () => {
-                    try {
-                      await applyChatgptSubscriptionProvider(
-                        providerSetup.assistantId,
-                        {
-                          userId: useAuthStore.getState().user?.id ?? null,
-                        },
-                      );
-                    } catch (err) {
-                      captureError(err, {
-                        context: "onboarding_apply_chatgpt_subscription",
-                      });
-                    }
-                    setProviderSetup({ kind: "idle" });
-                    finishReadyVisualState();
+                onConnected={async () => {
+                  try {
+                    await applyChatgptSubscriptionProvider(
+                      providerSetup.assistantId,
+                      {
+                        userId: useAuthStore.getState().user?.id ?? null,
+                      },
+                    );
                     await lifecycleService.checkAssistant(
                       providerSetup.assistantId,
                     );
-                    if (isNativePlatform()) {
-                      lifecycleService.markExpectingFirstMessage();
-                      void navigate(`${routes.assistant}?onboarding=1`, {
-                        replace: true,
-                      });
-                      return;
-                    }
-                    void navigate(routes.onboarding.prechat, {
+                  } catch (err) {
+                    captureError(err, {
+                      context: "onboarding_apply_chatgpt_subscription",
+                    });
+                    throw err;
+                  }
+
+                  setProviderSetup({ kind: "idle" });
+                  finishReadyVisualState();
+                  if (isNativePlatform()) {
+                    lifecycleService.markExpectingFirstMessage();
+                    void navigate(`${routes.assistant}?onboarding=1`, {
                       replace: true,
                     });
-                  })();
+                    return;
+                  }
+                  void navigate(routes.onboarding.prechat, {
+                    replace: true,
+                  });
                 }}
               />
             </div>

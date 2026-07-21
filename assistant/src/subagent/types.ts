@@ -90,6 +90,8 @@ export interface SubagentState {
   depth?: number;
   /** Root user-facing conversation that owns the full delegation tree. */
   rootConversationId?: string;
+  /** Shared wall-clock deadline for the root delegation tree. */
+  deadlineAt?: number;
   /** Parent subagent ID when this is a nested worker. */
   parentSubagentId?: string;
   /** Error message if status is 'failed'. */
@@ -110,7 +112,11 @@ export const SUBAGENT_LIMITS = {
   /** Max simultaneously active children owned by one conversation. */
   maxActiveChildrenPerParent: 8,
   /** Max simultaneously active subagents in one root delegation tree. */
-  maxActiveDescendantsPerRoot: 24,
+  maxActiveDescendantsPerRoot: 8,
+  /** Max total subagents retained in one root delegation tree. */
+  maxTotalDescendantsPerRoot: 16,
+  /** Shared deadline for one research/delegation tree. */
+  maxRunDurationMs: 15 * 60 * 1000,
 } as const;
 
 // ── Roles ───────────────────────────────────────────────────────────────

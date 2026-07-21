@@ -10,6 +10,7 @@ import { AccountLayout } from "@/domains/account/account-layout";
 import { ChatLayout } from "@/domains/chat/chat-layout";
 import { ChatPage } from "@/domains/chat/chat-page";
 import { ConversationRedirect } from "@/domains/chat/conversation-redirect";
+import { WorkAppPage } from "@/domains/work/work-app-page";
 import { NotFound } from "@/components/not-found";
 import { RouteErrorBoundary } from "@/components/route-error-boundary";
 import { RootHydrateFallback } from "@/components/root-hydrate-fallback";
@@ -365,6 +366,15 @@ export const routeTree = [
             },
           },
           {
+            path: "workspace/invitations/:token",
+            lazy: {
+              Component: () =>
+                import("@/domains/settings/pages/accept-workspace-invitation-page").then(
+                  (m) => m.AcceptWorkspaceInvitationPage,
+                ),
+            },
+          },
+          {
             path: "shared/:artifactId",
             lazy: {
               Component: () =>
@@ -492,6 +502,15 @@ export const routeTree = [
                       Component: () =>
                         import("@/domains/settings/pages/integrations-page").then(
                           (m) => m.IntegrationsPage,
+                        ),
+                    },
+                  },
+                  {
+                    path: "workspace",
+                    lazy: {
+                      Component: () =>
+                        import("@/domains/settings/pages/workspace-page").then(
+                          (m) => m.WorkspacePage,
                         ),
                     },
                   },
@@ -863,12 +882,7 @@ export const routeTree = [
                       },
                       {
                         path: "work/brands/:brandId/artifacts/apps/:appId",
-                        lazy: {
-                          Component: () =>
-                            import("@/domains/library/library-detail-page").then(
-                              (m) => m.LibraryDetailPage,
-                            ),
-                        },
+                        Component: WorkAppPage,
                       },
                       {
                         path: "work/brands/:brandId/artifacts/copybooks/:copybookId/:year/:month",

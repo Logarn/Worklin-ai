@@ -5,9 +5,18 @@ const VALIDATION_TIMEOUT_MS = 10_000;
 
 export type ApiKeyValidationResult =
   | { valid: true }
-  | { valid: false; reason: string };
+  | {
+      valid: false;
+      outcome: "invalid_credentials";
+      reason: string;
+    }
+  | {
+      valid: false;
+      outcome: "verification_unavailable";
+      reason: string;
+    };
 
-type ValidationFetch = (
+export type ValidationFetch = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
@@ -21,6 +30,7 @@ export async function validateOpenAICompatibleApiKey(
     method?: "GET" | "POST";
     path?: string;
     body?: Record<string, unknown>;
+    acceptedStatuses?: readonly number[];
     rejectionStatuses?: readonly number[];
   },
 ): Promise<ApiKeyValidationResult> {
@@ -41,6 +51,14 @@ export async function validateOpenAICompatibleApiKey(
     });
     if (response.ok) return { valid: true };
 
+    if (options.acceptedStatuses?.includes(response.status)) {
+      log.warn(
+        { provider: options.providerLabel, status: response.status },
+        "Provider API key accepted without complete verification",
+      );
+      return { valid: true };
+    }
+
     log.warn(
       { provider: options.providerLabel, status: response.status },
       "Provider API key validation failed",
@@ -48,11 +66,13 @@ export async function validateOpenAICompatibleApiKey(
     if (rejectionStatuses.includes(response.status)) {
       return {
         valid: false,
+        outcome: "invalid_credentials",
         reason: `${options.providerLabel} rejected this API key.`,
       };
     }
     return {
       valid: false,
+      outcome: "verification_unavailable",
       reason: `${options.providerLabel} could not verify this connection (${response.status}). Try again shortly.`,
     };
   } catch (error) {
@@ -65,6 +85,7 @@ export async function validateOpenAICompatibleApiKey(
     );
     return {
       valid: false,
+      outcome: "verification_unavailable",
       reason: `${options.providerLabel} could not verify this connection. Check your network and try again.`,
     };
   }

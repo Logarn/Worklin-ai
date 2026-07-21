@@ -1,4 +1,5 @@
 export const RETENTION_DOMAIN_VERSION = "worklin_retention_v1";
+export * from "./research-providers.js";
 export const BRAND_BRAIN_VERSION = "brand_brain_v1";
 export const BRAND_RESEARCH_VERSION = "brand_research_v1";
 export const CUSTOMER_FEATURE_STORE_VERSION = "customer_feature_store_v1";
@@ -790,7 +791,11 @@ export interface RetentionContextPack {
   safety: RetentionSafetyMetadata;
 }
 
-export type RetentionAuditCadence = "first_run" | "weekly" | "monthly" | "quarterly";
+export type RetentionAuditCadence =
+  | "first_run"
+  | "weekly"
+  | "monthly"
+  | "quarterly";
 
 export interface AuditWindowComparison {
   currentWindowDays: number;
@@ -821,7 +826,16 @@ export interface AuditChartSpec {
     | "klaviyo_audience_inventory"
     | "klaviyo_metric_readiness"
     | "klaviyo_form_inventory";
-  type: "bar" | "funnel" | "scatter" | "comparison" | "word_bank" | "heatmap" | "waterfall" | "line" | "matrix";
+  type:
+    | "bar"
+    | "funnel"
+    | "scatter"
+    | "comparison"
+    | "word_bank"
+    | "heatmap"
+    | "waterfall"
+    | "line"
+    | "matrix";
   data: Array<Record<string, string | number | boolean | null>>;
   encodings: Record<string, string>;
   diagnosis: string;
@@ -1097,7 +1111,8 @@ export function createFixtureRetentionDataset(): RetentionDataset {
         {
           id: "replenishment_free_shipping",
           label: "Free shipping on replenishment orders",
-          constraint: "Use for recent buyers only; avoid discounting VIPs first.",
+          constraint:
+            "Use for recent buyers only; avoid discounting VIPs first.",
         },
         {
           id: "winback_soft_offer",
@@ -1343,22 +1358,24 @@ function applyBrandOptionsToDataset(
 
   const observedAt = nowIso();
   const completed = [...dataset.brandBrain.readiness.completed];
-  if (brandChanged && !completed.includes("Brand name provided in onboarding conversation")) {
+  if (
+    brandChanged &&
+    !completed.includes("Brand name provided in onboarding conversation")
+  ) {
     completed.push("Brand name provided in onboarding conversation");
   }
   if (
     websiteChanged &&
-    !completed.includes("Brand website/domain provided in onboarding conversation")
+    !completed.includes(
+      "Brand website/domain provided in onboarding conversation",
+    )
   ) {
     completed.push("Brand website/domain provided in onboarding conversation");
   }
 
   const missing = dataset.brandBrain.readiness.missing.filter(
     (item) =>
-      !(
-        brandChanged &&
-        /brand identity|positioning/i.test(item)
-      ) &&
+      !(brandChanged && /brand identity|positioning/i.test(item)) &&
       !(
         websiteChanged &&
         /founder|customer language|brand documents/i.test(item)
@@ -1441,9 +1458,9 @@ export function getRetentionSourceStatus(
           ? "No live external action was taken. Worklin used a live read-only Klaviyo L365 account snapshot; Shopify commerce data was not required for this Klaviyo-only audit."
           : dataset.sourceMode === "klaviyo_inventory"
             ? "No live external action was taken. Worklin used a live read-only Klaviyo inventory snapshot; Shopify commerce data was not required for this Klaviyo-only posture check."
-        : dataset.sourceMode === "mixed"
-          ? "No live external action was taken. Worklin used mixed sources: live read-only Klaviyo where available and fixture/sample data where connectors are not yet connected."
-        : "No live external action was taken. Current retention milestone uses fixture-backed source reads.",
+            : dataset.sourceMode === "mixed"
+              ? "No live external action was taken. Worklin used mixed sources: live read-only Klaviyo where available and fixture/sample data where connectors are not yet connected."
+              : "No live external action was taken. Current retention milestone uses fixture-backed source reads.",
     ]),
     summary: {
       connected: connected.length,
@@ -1470,13 +1487,15 @@ export function getRetentionBrandBrain(
 
 function normalizedUnique(values: string[]): string[] {
   const seen = new Set<string>();
-  return values.filter((raw) => {
-    const value = raw.trim();
-    const key = value.toLocaleLowerCase();
-    if (!value || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).map((value) => value.trim());
+  return values
+    .filter((raw) => {
+      const value = raw.trim();
+      const key = value.toLocaleLowerCase();
+      if (!value || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((value) => value.trim());
 }
 
 function updateStringCollection(
@@ -1485,12 +1504,16 @@ function updateStringCollection(
 ): string[] {
   const value = correction.value.trim();
   const previousValue = correction.previousValue?.trim();
-  if (!value) throw new Error("Brand Brain correction value must not be empty.");
-  if (correction.operation === "add") return normalizedUnique([...values, value]);
+  if (!value)
+    throw new Error("Brand Brain correction value must not be empty.");
+  if (correction.operation === "add")
+    return normalizedUnique([...values, value]);
 
   const target = correction.operation === "replace" ? previousValue : value;
   if (!target) {
-    throw new Error("Brand Brain replacements require the previous value being replaced.");
+    throw new Error(
+      "Brand Brain replacements require the previous value being replaced.",
+    );
   }
   const targetKey = target.toLocaleLowerCase();
   const remaining = values.filter(
@@ -1639,7 +1662,8 @@ export function applyBrandBrainCorrection(
   correction: BrandBrainCorrection,
 ): BrandBrainContext {
   const value = correction.value.trim();
-  if (!value) throw new Error("Brand Brain correction value must not be empty.");
+  if (!value)
+    throw new Error("Brand Brain correction value must not be empty.");
   if (
     [
       "voice_summary",
@@ -1701,7 +1725,10 @@ export function applyBrandBrainCorrection(
       next.ctas = updateStringCollection(next.ctas, correction);
       break;
     case "audience_note":
-      next.audienceNotes = updateStringCollection(next.audienceNotes, correction);
+      next.audienceNotes = updateStringCollection(
+        next.audienceNotes,
+        correction,
+      );
       break;
     case "required_disclaimer":
       next.compliance.requiredDisclaimers = updateStringCollection(
@@ -1725,18 +1752,21 @@ export function applyBrandBrainCorrection(
     case "rule_dont": {
       const type = correction.field === "rule_do" ? "do" : "dont";
       const updated = updateStringCollection(
-        next.rules.filter((rule) => rule.type === type).map((rule) => rule.rule),
+        next.rules
+          .filter((rule) => rule.type === type)
+          .map((rule) => rule.rule),
         correction,
       );
       next.rules = [
         ...next.rules.filter((rule) => rule.type !== type),
-        ...updated.map((rule) => ({ type, rule } as const)),
+        ...updated.map((rule) => ({ type, rule }) as const),
       ];
       break;
     }
     case "approved_phrase":
     case "avoid_phrase": {
-      const type = correction.field === "approved_phrase" ? "approved" : "avoid";
+      const type =
+        correction.field === "approved_phrase" ? "approved" : "avoid";
       const updated = updateStringCollection(
         next.phrases
           .filter((phrase) => phrase.type === type)
@@ -1745,7 +1775,7 @@ export function applyBrandBrainCorrection(
       );
       next.phrases = [
         ...next.phrases.filter((phrase) => phrase.type !== type),
-        ...updated.map((phrase) => ({ type, phrase } as const)),
+        ...updated.map((phrase) => ({ type, phrase }) as const),
       ];
       break;
     }
@@ -1808,8 +1838,14 @@ export function getRetentionShopifySnapshot(
   const customersWithOrders = customers.filter(
     (customer) => customer.totalOrders > 0,
   );
-  const revenue = customers.reduce((sum, customer) => sum + customer.totalSpent, 0);
-  const orders = customers.reduce((sum, customer) => sum + customer.totalOrders, 0);
+  const revenue = customers.reduce(
+    (sum, customer) => sum + customer.totalSpent,
+    0,
+  );
+  const orders = customers.reduce(
+    (sum, customer) => sum + customer.totalOrders,
+    0,
+  );
   const repeatCustomers = customers.filter(
     (customer) => customer.totalOrders >= 2,
   ).length;
@@ -1828,17 +1864,15 @@ export function getRetentionShopifySnapshot(
   for (const customer of customers) {
     const productName = customer.lastProductName ?? "Unknown product";
     const category = customer.dominantCategory ?? "unknown";
-    const existing =
-      productRevenue.get(productName) ??
-      {
-        productId: productName.toLowerCase().replaceAll(/\W+/g, "_"),
-        name: productName,
-        category,
-        revenue: 0,
-        unitsSold: 0,
-        avgReplenishmentDays:
-          category === "supplements" ? 45 : category === "skin care" ? 60 : null,
-      };
+    const existing = productRevenue.get(productName) ?? {
+      productId: productName.toLowerCase().replaceAll(/\W+/g, "_"),
+      name: productName,
+      category,
+      revenue: 0,
+      unitsSold: 0,
+      avgReplenishmentDays:
+        category === "supplements" ? 45 : category === "skin care" ? 60 : null,
+    };
     existing.revenue += customer.totalSpent;
     existing.unitsSold += customer.totalOrders;
     productRevenue.set(productName, existing);
@@ -2091,10 +2125,12 @@ export function buildUnifiedCustomerView(
     safety: createRetentionSafetyMetadata(),
     summary: {
       totalIdentities: identities.length,
-      highConfidence: identities.filter((identity) => identity.confidence === "high")
-        .length,
-      lowConfidence: identities.filter((identity) => identity.confidence === "low")
-        .length,
+      highConfidence: identities.filter(
+        (identity) => identity.confidence === "high",
+      ).length,
+      lowConfidence: identities.filter(
+        (identity) => identity.confidence === "low",
+      ).length,
       shopifyOnly: identities.filter(
         (identity) =>
           identity.sourceCoverage.shopify && !identity.sourceCoverage.klaviyo,
@@ -2131,10 +2167,7 @@ function labelsForCustomer(customer: RetentionCustomer): string[] {
     customer.daysSinceLastOrder <= 75
   )
     labels.push("replenishment_ready");
-  if (
-    customer.daysSinceLastOrder != null &&
-    customer.daysSinceLastOrder >= 120
-  )
+  if (customer.daysSinceLastOrder != null && customer.daysSinceLastOrder >= 120)
     labels.push("winback_candidate");
   if (customer.totalOrders === 1) labels.push("second_purchase_opportunity");
   if (!customer.acceptsMarketing) labels.push("suppression_required");
@@ -2186,13 +2219,12 @@ export function computeRetentionCustomerFeatures(
       computedAt,
       status: "partial" as const,
       identityConfidence: identity?.confidence ?? "low",
-      sourceCoverage:
-        identity?.sourceCoverage ?? {
-          shopify: false,
-          klaviyo: false,
-          commerce: false,
-          engagement: false,
-        },
+      sourceCoverage: identity?.sourceCoverage ?? {
+        shopify: false,
+        klaviyo: false,
+        commerce: false,
+        engagement: false,
+      },
       commerceFeatures: {
         totalOrders: customer.totalOrders,
         totalSpent: customer.totalSpent,
@@ -2273,7 +2305,9 @@ export function scoreRetentionCustomers(
         ? 720
         : 120;
     const scoreRecord = {
-      ready_to_buy_again: clampScore(replenishment + (recentlyEngaged ? 60 : 0)),
+      ready_to_buy_again: clampScore(
+        replenishment + (recentlyEngaged ? 60 : 0),
+      ),
       replenishment_readiness: clampScore(replenishment),
       churn_risk: clampScore(churnRisk),
       winback_readiness: clampScore(
@@ -2353,27 +2387,31 @@ export function buildRetentionMicroSegments(
 
   return {
     generatedAt: nowIso(),
-    definitions: Array.from(labels.entries()).map(([label, customers], index) => ({
-      definitionKey: label,
-      definitionVersion: MICRO_SEGMENT_DEFINITION_VERSION,
-      name: label.replaceAll("_", " "),
-      description: `Definition-only Worklin segment for ${label.replaceAll("_", " ")} customers.`,
-      audienceEstimate: {
-        customers,
-        basis: "Fixture customer feature labels.",
-      },
-      priority: 100 - index * 10,
-      recommendedUseCases: {
-        campaigns: label.includes("suppression") ? [] : ["campaign_package"],
-        flows: label.includes("replenishment") ? ["post_purchase"] : [],
-        suppressions: label.includes("suppression") ? ["exclude_from_send"] : [],
-      },
-      klaviyoNativePossible: false,
-      requiresWorklinProperties: true,
-      caveats: [
-        "Definition is not written to Klaviyo. It is for Worklin analysis and package generation only.",
-      ],
-    })),
+    definitions: Array.from(labels.entries()).map(
+      ([label, customers], index) => ({
+        definitionKey: label,
+        definitionVersion: MICRO_SEGMENT_DEFINITION_VERSION,
+        name: label.replaceAll("_", " "),
+        description: `Definition-only Worklin segment for ${label.replaceAll("_", " ")} customers.`,
+        audienceEstimate: {
+          customers,
+          basis: "Fixture customer feature labels.",
+        },
+        priority: 100 - index * 10,
+        recommendedUseCases: {
+          campaigns: label.includes("suppression") ? [] : ["campaign_package"],
+          flows: label.includes("replenishment") ? ["post_purchase"] : [],
+          suppressions: label.includes("suppression")
+            ? ["exclude_from_send"]
+            : [],
+        },
+        klaviyoNativePossible: false,
+        requiresWorklinProperties: true,
+        caveats: [
+          "Definition is not written to Klaviyo. It is for Worklin analysis and package generation only.",
+        ],
+      }),
+    ),
     safety: createRetentionSafetyMetadata(),
     summary: {
       totalDefinitions: labels.size,
@@ -2590,7 +2628,9 @@ export function generateRetentionCampaignPackage(
   const selected =
     opportunities.opportunities.find(
       (opportunity) => opportunity.opportunityKey === options.opportunityKey,
-    ) ?? opportunities.opportunities[0] ?? null;
+    ) ??
+    opportunities.opportunities[0] ??
+    null;
   const safety = createRetentionSafetyMetadata(
     ["No draft was created. This package is an artifact-only Worklin result."],
     "required",
@@ -2639,8 +2679,7 @@ export function generateRetentionCampaignPackage(
             },
             {
               heading: "Safety posture",
-              body:
-                "Package-only. Requires approval and QA before any Klaviyo draft can be created.",
+              body: "Package-only. Requires approval and QA before any Klaviyo draft can be created.",
             },
           ],
           cta: brandBrain.ctas[0] ?? "See your recommended refill",
@@ -2685,7 +2724,8 @@ export function runRetentionQa(
       )
         ? "passed"
         : "failed",
-      message: "Send, schedule, flow activation, and mutation capabilities are blocked.",
+      message:
+        "Send, schedule, flow activation, and mutation capabilities are blocked.",
     },
     {
       id: "source_freshness",
@@ -2695,7 +2735,9 @@ export function runRetentionQa(
     },
     {
       id: "suppression_notes",
-      status: campaignPackage.brief?.suppressionNotes.length ? "passed" : "warning",
+      status: campaignPackage.brief?.suppressionNotes.length
+        ? "passed"
+        : "warning",
       message: "Suppression policy is represented in the package.",
     },
   ];
@@ -2768,7 +2810,9 @@ export function buildRetentionContextPack(
   };
 }
 
-function auditWindowFor(options: ComputeRetentionOptions): AuditWindowComparison {
+function auditWindowFor(
+  options: ComputeRetentionOptions,
+): AuditWindowComparison {
   const currentWindowDays = normalizePositiveInteger(
     options.timeframeDays,
     365,
@@ -2825,7 +2869,11 @@ function createDeepAuditCharts(): Record<string, AuditChartSpec> {
       family: "period_trend",
       type: "line",
       data: [
-        { period: "previous_365", shopifyRevenue: 31704, klaviyoRevenue: 47880 },
+        {
+          period: "previous_365",
+          shopifyRevenue: 31704,
+          klaviyoRevenue: 47880,
+        },
         { period: "current_365", shopifyRevenue: 42190, klaviyoRevenue: 51884 },
       ],
       encodings: {
@@ -2844,7 +2892,12 @@ function createDeepAuditCharts(): Record<string, AuditChartSpec> {
       family: "product_funnel",
       type: "funnel",
       data: [
-        { product: "Barrier Repair Serum", views: 4200, checkouts: 510, orders: 312 },
+        {
+          product: "Barrier Repair Serum",
+          views: 4200,
+          checkouts: 510,
+          orders: 312,
+        },
         { product: "Daily Greens", views: 1800, checkouts: 260, orders: 176 },
         { product: "Everyday Hoodie", views: 3600, checkouts: 140, orders: 68 },
         { product: "Travel Pouch", views: 620, checkouts: 92, orders: 61 },
@@ -2866,10 +2919,30 @@ function createDeepAuditCharts(): Record<string, AuditChartSpec> {
       family: "product_quadrant",
       type: "scatter",
       data: [
-        { product: "Barrier Repair Serum", exposure: 4200, conversionRate: 7.43, tier: "top_performer" },
-        { product: "Daily Greens", exposure: 1800, conversionRate: 9.78, tier: "hidden_gem" },
-        { product: "Everyday Hoodie", exposure: 3600, conversionRate: 1.89, tier: "underperformer" },
-        { product: "Travel Pouch", exposure: 620, conversionRate: 9.84, tier: "hidden_gem" },
+        {
+          product: "Barrier Repair Serum",
+          exposure: 4200,
+          conversionRate: 7.43,
+          tier: "top_performer",
+        },
+        {
+          product: "Daily Greens",
+          exposure: 1800,
+          conversionRate: 9.78,
+          tier: "hidden_gem",
+        },
+        {
+          product: "Everyday Hoodie",
+          exposure: 3600,
+          conversionRate: 1.89,
+          tier: "underperformer",
+        },
+        {
+          product: "Travel Pouch",
+          exposure: 620,
+          conversionRate: 9.84,
+          tier: "hidden_gem",
+        },
       ],
       encodings: {
         x: "exposure",
@@ -2913,10 +2986,34 @@ function createDeepAuditCharts(): Record<string, AuditChartSpec> {
       family: "sale_non_sale_comparison",
       type: "comparison",
       data: [
-        { type: "sale", openRate: 41.2, clickRate: 2.4, placedOrderRate: 0.18, revenuePerEmail: 0.62 },
-        { type: "education", openRate: 38.7, clickRate: 4.8, placedOrderRate: 0.21, revenuePerEmail: 0.58 },
-        { type: "new_arrival", openRate: 36.4, clickRate: 3.9, placedOrderRate: 0.17, revenuePerEmail: 0.47 },
-        { type: "brand_story", openRate: 33.1, clickRate: 1.2, placedOrderRate: 0.05, revenuePerEmail: 0.14 },
+        {
+          type: "sale",
+          openRate: 41.2,
+          clickRate: 2.4,
+          placedOrderRate: 0.18,
+          revenuePerEmail: 0.62,
+        },
+        {
+          type: "education",
+          openRate: 38.7,
+          clickRate: 4.8,
+          placedOrderRate: 0.21,
+          revenuePerEmail: 0.58,
+        },
+        {
+          type: "new_arrival",
+          openRate: 36.4,
+          clickRate: 3.9,
+          placedOrderRate: 0.17,
+          revenuePerEmail: 0.47,
+        },
+        {
+          type: "brand_story",
+          openRate: 33.1,
+          clickRate: 1.2,
+          placedOrderRate: 0.05,
+          revenuePerEmail: 0.14,
+        },
       ],
       encodings: {
         x: "type",
@@ -2957,12 +3054,42 @@ function createDeepAuditCharts(): Record<string, AuditChartSpec> {
       family: "segment_theme_heatmap",
       type: "heatmap",
       data: [
-        { segment: "Engaged 0-30D", theme: "product_feature", revenuePerEmail: 0.74, ordersPerThousand: 7.8 },
-        { segment: "Engaged 0-30D", theme: "sale", revenuePerEmail: 0.69, ordersPerThousand: 7.1 },
-        { segment: "Engaged 31-150D", theme: "education", revenuePerEmail: 0.58, ordersPerThousand: 6.2 },
-        { segment: "Engaged 151-250D", theme: "winback", revenuePerEmail: 0.31, ordersPerThousand: 3.4 },
-        { segment: "SMS Engaged", theme: "product_feature", revenuePerEmail: 0.92, ordersPerThousand: 9.6 },
-        { segment: "Lapsed 250D+", theme: "brand_story", revenuePerEmail: 0.08, ordersPerThousand: 0.9 },
+        {
+          segment: "Engaged 0-30D",
+          theme: "product_feature",
+          revenuePerEmail: 0.74,
+          ordersPerThousand: 7.8,
+        },
+        {
+          segment: "Engaged 0-30D",
+          theme: "sale",
+          revenuePerEmail: 0.69,
+          ordersPerThousand: 7.1,
+        },
+        {
+          segment: "Engaged 31-150D",
+          theme: "education",
+          revenuePerEmail: 0.58,
+          ordersPerThousand: 6.2,
+        },
+        {
+          segment: "Engaged 151-250D",
+          theme: "winback",
+          revenuePerEmail: 0.31,
+          ordersPerThousand: 3.4,
+        },
+        {
+          segment: "SMS Engaged",
+          theme: "product_feature",
+          revenuePerEmail: 0.92,
+          ordersPerThousand: 9.6,
+        },
+        {
+          segment: "Lapsed 250D+",
+          theme: "brand_story",
+          revenuePerEmail: 0.08,
+          ordersPerThousand: 0.9,
+        },
       ],
       encodings: {
         x: "theme",
@@ -3002,11 +3129,36 @@ function createDeepAuditCharts(): Record<string, AuditChartSpec> {
       family: "opportunity_priority_matrix",
       type: "matrix",
       data: [
-        { opportunity: "Stabilize campaign cadence", impact: 86, confidence: 92, effort: "medium" },
-        { opportunity: "Promote hidden gems", impact: 81, confidence: 88, effort: "low" },
-        { opportunity: "Fix lifecycle gaps", impact: 91, confidence: 82, effort: "high" },
-        { opportunity: "Rewrite quiz routing", impact: 74, confidence: 76, effort: "medium" },
-        { opportunity: "Clean attribution", impact: 68, confidence: 90, effort: "medium" },
+        {
+          opportunity: "Stabilize campaign cadence",
+          impact: 86,
+          confidence: 92,
+          effort: "medium",
+        },
+        {
+          opportunity: "Promote hidden gems",
+          impact: 81,
+          confidence: 88,
+          effort: "low",
+        },
+        {
+          opportunity: "Fix lifecycle gaps",
+          impact: 91,
+          confidence: 82,
+          effort: "high",
+        },
+        {
+          opportunity: "Rewrite quiz routing",
+          impact: 74,
+          confidence: 76,
+          effort: "medium",
+        },
+        {
+          opportunity: "Clean attribution",
+          impact: 68,
+          confidence: 90,
+          effort: "medium",
+        },
       ],
       encodings: {
         x: "confidence",
@@ -3161,16 +3313,13 @@ function buildDeepAuditModules(
       status: "complete",
       summary:
         "Audits cadence, sale versus non-sale performance, plain-text versus designed campaign posture, subject-line language, theme mix, and weekly consistency.",
-      charts: [
-        charts.campaignCadence,
-        charts.saleNonSale,
-        charts.wordBank,
-      ],
+      charts: [charts.campaignCadence, charts.saleNonSale, charts.wordBank],
       insights: [
         {
           insightId: "cadence_inconsistent",
           severity: "warning",
-          title: "Cadence is directionally right but operationally inconsistent",
+          title:
+            "Cadence is directionally right but operationally inconsistent",
           summary:
             "Campaign volume swings from quiet weeks to spike weeks, which makes performance harder to read and increases fatigue risk.",
           evidence: [
@@ -3269,7 +3418,9 @@ function buildDeepAuditModules(
           "More automated revenue and fewer one-off campaign dependencies.",
         ),
       ],
-      caveats: missingPieces.missingPieces.flatMap((piece) => piece.caveats).slice(0, 4),
+      caveats: missingPieces.missingPieces
+        .flatMap((piece) => piece.caveats)
+        .slice(0, 4),
     },
     {
       moduleId: "acquisition_tofu",
@@ -3282,7 +3433,8 @@ function buildDeepAuditModules(
         {
           insightId: "acquisition_context_partial",
           severity: "warning",
-          title: "Acquisition analysis is partial without ad and analytics sources",
+          title:
+            "Acquisition analysis is partial without ad and analytics sources",
           summary:
             "Shopify and Klaviyo can show repeat-buyer pressure, but GA4, Search Console, and ad accounts are needed for full TOFU diagnosis.",
           evidence: [
@@ -3527,9 +3679,7 @@ function moduleDataRead(
   }
 }
 
-function moduleRuleApplied(
-  moduleId: RetentionAuditModule["moduleId"],
-): string {
+function moduleRuleApplied(moduleId: RetentionAuditModule["moduleId"]): string {
   switch (moduleId) {
     case "data_trust":
       return "Reconcile source freshness, attribution posture, missing connectors, caveats, and blocked external capabilities before trusting recommendations.";
@@ -3620,14 +3770,14 @@ function chartTableMarkdown(chartSpec: AuditChartSpec): string {
     return "_No chart data available._";
   }
 
-  const rows = chartSpec.data
-    .slice(0, 12)
-    .map((row, index) => {
-      const values = columns
-        .map((column) => `${column}: ${chartValueToMarkdown(row[column] ?? null)}`)
-        .join("; ");
-      return `${index + 1}. ${values}`;
-    });
+  const rows = chartSpec.data.slice(0, 12).map((row, index) => {
+    const values = columns
+      .map(
+        (column) => `${column}: ${chartValueToMarkdown(row[column] ?? null)}`,
+      )
+      .join("; ");
+    return `${index + 1}. ${values}`;
+  });
 
   return ["Data points:", ...rows].join("\n");
 }
@@ -3727,16 +3877,15 @@ function markdownForDeepAudit(input: {
     ).values(),
   );
   const moduleScorecard = input.modules
-    .map(
-      (module) =>
-        [
-          `- ${module.title}`,
-          `  - Status: ${module.status}`,
-          `  - Artifact charts: ${module.charts.length}`,
-          `  - Insights: ${module.insights.length}`,
-          `  - Recommendations: ${module.recommendations.length}`,
-          `  - Summary: ${module.summary}`,
-        ].join("\n"),
+    .map((module) =>
+      [
+        `- ${module.title}`,
+        `  - Status: ${module.status}`,
+        `  - Artifact charts: ${module.charts.length}`,
+        `  - Insights: ${module.insights.length}`,
+        `  - Recommendations: ${module.recommendations.length}`,
+        `  - Summary: ${module.summary}`,
+      ].join("\n"),
     )
     .join("\n\n");
   const moduleSections = input.modules
@@ -3894,9 +4043,9 @@ export function buildDeepRetentionAudit(
         ? "Audit used live read-only Klaviyo L365 account data through Worklin-managed credentials. Shopify commerce data was not required for this Klaviyo-only audit."
         : sourceMode === "klaviyo_inventory"
           ? "Audit used live read-only Klaviyo inventory data through Worklin-managed credentials."
-      : sourceMode === "mixed"
-        ? "Deep audit used mixed source data: live read-only signals plus fixture/sample sources. This is demo-only and must not be presented as a real client audit."
-        : "Deep audit is read-only and fixture-backed in this milestone.";
+          : sourceMode === "mixed"
+            ? "Deep audit used mixed source data: live read-only signals plus fixture/sample sources. This is demo-only and must not be presented as a real client audit."
+            : "Deep audit is read-only and fixture-backed in this milestone.";
   const safety = createRetentionSafetyMetadata(
     [
       sourceModeCaveat,
@@ -3988,9 +4137,7 @@ export function getRetentionAuditStatus(
         ? [
             "Fixture connectors are available. Production readiness requires Worklin-managed live source snapshots.",
           ]
-        : [
-            "Connect Shopify and Klaviyo before a production deep audit run.",
-          ],
+        : ["Connect Shopify and Klaviyo before a production deep audit run."],
   };
 }
 

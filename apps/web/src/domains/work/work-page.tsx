@@ -1,10 +1,21 @@
-import { Archive, ArrowRight, Boxes, FolderOpen, Loader2 } from "lucide-react";
+import {
+  Archive,
+  ArrowRight,
+  Boxes,
+  FolderOpen,
+  Loader2,
+  MessageSquarePlus,
+} from "lucide-react";
 import { useEffect } from "react";
-import { Link, Navigate } from "react-router";
+import { Link, Navigate, useNavigate } from "react-router";
 
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
+import { BrandResearchStatus } from "@/components/brand-research-status";
+import { useConversationStore } from "@/stores/conversation-store";
+import { useViewerStore } from "@/stores/viewer-store";
+import { createDraftConversationId } from "@/utils/conversation-selection";
 import { routes } from "@/utils/routes";
 
 import { useWorkData } from "./use-work-data";
@@ -13,8 +24,22 @@ const LAST_BRAND_KEY = "worklin:last-artifact-brand";
 
 export function WorkPage() {
   const assistantId = useActiveAssistantId();
+  const navigate = useNavigate();
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
   const { brands, isLoading, hasPartialError } = useWorkData(assistantId);
+
+  const startWithWorklin = () => {
+    const draftConversationId = createDraftConversationId();
+    useConversationStore
+      .getState()
+      .setActiveConversationId(draftConversationId);
+    useViewerStore.getState().setMainView("chat");
+    const prompt =
+      "Create a new artifact. Ask what I want to make, then help me organize it under the right brand.";
+    void navigate(
+      `${routes.conversation(draftConversationId)}?prompt=${encodeURIComponent(prompt)}`,
+    );
+  };
 
   useEffect(() => {
     setTopBarCenter(
@@ -51,6 +76,7 @@ export function WorkPage() {
             Every copybook, document, app, design, image, and campaign asset
             lives with its brand.
           </p>
+          <BrandResearchStatus assistantId={assistantId} />
         </div>
 
         {hasPartialError ? (
@@ -70,6 +96,14 @@ export function WorkPage() {
               Ask Worklin to create a campaign copybook or another artifact for
               a brand.
             </p>
+            <button
+              type="button"
+              onClick={startWithWorklin}
+              className="mt-5 inline-flex items-center gap-2 rounded-md bg-[var(--primary-base)] px-3 py-2 text-body-small-default text-[var(--content-inset)] hover:bg-[var(--primary-hover)]"
+            >
+              <MessageSquarePlus className="size-4" />
+              Create with Worklin
+            </button>
           </div>
         ) : (
           <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

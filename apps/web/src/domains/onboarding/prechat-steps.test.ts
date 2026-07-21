@@ -91,7 +91,7 @@ describe("resolveWebSteps", () => {
     expect(ids({ ...CONTROL, showIOSAppStep: false })).not.toContain("iosApp");
   });
 
-  test("pared-down funnel: name then google only", () => {
+  test("pared-down funnel includes the optional brand step", () => {
     const steps = resolveWebSteps({
       paredDown: true,
       canOfferPriorAssistants: true,
@@ -99,9 +99,8 @@ describe("resolveWebSteps", () => {
       hasGoogleTool: false,
       showIOSAppStep: true,
     });
-    expect(steps.map((s) => s.id)).toEqual(["name", "google"]);
-    // Back from google skips every gated control step and lands on name.
-    expect(prevStep(steps, "google")).toBe("name");
+    expect(steps.map((s) => s.id)).toEqual(["name", "brand", "google"]);
+    expect(prevStep(steps, "google")).toBe("brand");
   });
 
   test("pared-down funnel offers google without a tool selection", () => {
@@ -114,10 +113,10 @@ describe("resolveWebSteps", () => {
         hasGoogleTool: false,
         showIOSAppStep: false,
       }),
-    ).toEqual(["name", "google"]);
+    ).toEqual(["name", "brand", "google"]);
   });
 
-  test("pared-down funnel collapses to name when google is unavailable", () => {
+  test("pared-down funnel keeps brand when google is unavailable", () => {
     expect(
       ids({
         paredDown: true,
@@ -126,7 +125,7 @@ describe("resolveWebSteps", () => {
         hasGoogleTool: true,
         showIOSAppStep: true,
       }),
-    ).toEqual(["name"]);
+    ).toEqual(["name", "brand"]);
   });
 
   test("emits the variant-specific google funnel event", () => {
