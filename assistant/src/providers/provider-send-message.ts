@@ -4,7 +4,10 @@
  * and response extraction helpers.
  */
 
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
+import {
+  resolveCallSiteConfig,
+  type ResolveCallSiteOpts,
+} from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
 import { getDb } from "../memory/db-connection.js";
@@ -32,11 +35,10 @@ export interface ConfiguredProviderResult {
   configuredProviderName: string;
 }
 
-export interface ConfiguredProviderOptions {
-  overrideProfile?: string;
-  forceOverrideProfile?: boolean;
-  selectionSeed?: string;
-}
+export type ConfiguredProviderOptions = Pick<
+  ResolveCallSiteOpts,
+  "forceOverrideProfile" | "overrideProfile" | "selectionSeed"
+>;
 
 /**
  * Cached promise for the lazy initialization path inside
@@ -49,14 +51,25 @@ let lazyInitPromise: Promise<void> | null = null;
 export class CallSiteConfiguredProvider implements Provider {
   public readonly name: string;
   public readonly tokenEstimationProvider?: string;
+  private readonly routingOptions: ConfiguredProviderOptions;
 
   constructor(
     private readonly inner: Provider,
     private readonly callSite: LLMCallSite,
-    private readonly overrideProfile?: string,
-    private readonly forceOverrideProfile?: boolean,
-    private readonly selectionSeed?: string,
+    routingOptionsOrOverrideProfile: ConfiguredProviderOptions | string = {},
+    forceOverrideProfile?: boolean,
+    selectionSeed?: string,
   ) {
+    this.routingOptions =
+      typeof routingOptionsOrOverrideProfile === "string"
+        ? {
+            overrideProfile: routingOptionsOrOverrideProfile,
+            ...(forceOverrideProfile === undefined
+              ? {}
+              : { forceOverrideProfile }),
+            ...(selectionSeed === undefined ? {} : { selectionSeed }),
+          }
+        : routingOptionsOrOverrideProfile;
     this.name = inner.name;
     this.tokenEstimationProvider = inner.tokenEstimationProvider;
   }
@@ -71,17 +84,17 @@ export class CallSiteConfiguredProvider implements Provider {
       config: {
         ...config,
         callSite: config?.callSite ?? this.callSite,
-        ...(config?.overrideProfile === undefined &&
-        this.overrideProfile !== undefined
-          ? { overrideProfile: this.overrideProfile }
-          : {}),
         ...(config?.forceOverrideProfile === undefined &&
-        this.forceOverrideProfile !== undefined
-          ? { forceOverrideProfile: this.forceOverrideProfile }
+        this.routingOptions.forceOverrideProfile !== undefined
+          ? { forceOverrideProfile: this.routingOptions.forceOverrideProfile }
+          : {}),
+        ...(config?.overrideProfile === undefined &&
+        this.routingOptions.overrideProfile !== undefined
+          ? { overrideProfile: this.routingOptions.overrideProfile }
           : {}),
         ...(config?.selectionSeed === undefined &&
-        this.selectionSeed !== undefined
-          ? { selectionSeed: this.selectionSeed }
+        this.routingOptions.selectionSeed !== undefined
+          ? { selectionSeed: this.routingOptions.selectionSeed }
           : {}),
       },
     });
@@ -185,9 +198,7 @@ export async function resolveConfiguredProvider(
     provider: new CallSiteConfiguredProvider(
       connectionProvider,
       callSite,
-      opts.overrideProfile,
-      opts.forceOverrideProfile,
-      opts.selectionSeed,
+      opts,
     ),
     configuredProviderName: inferenceProvider,
   };

@@ -1,11 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { DetailCard } from "@/components/detail-card";
-import {
-  useAssistantWithHealthz,
-} from "@/domains/settings/components/assistant-status-panel";
+import { useAssistantWithHealthz } from "@/domains/settings/components/assistant-status-panel";
 import { UpdateWindowPolicy } from "@/domains/settings/components/update-window-policy";
-import { configGetOptions, configGetSetQueryData, useConfigPatchMutation } from "@/generated/daemon/@tanstack/react-query.gen";
+import { resolveRuntimeActionCapability } from "@/domains/settings/runtime-action-capabilities";
+import {
+  configGetOptions,
+  configGetSetQueryData,
+  useConfigPatchMutation,
+} from "@/generated/daemon/@tanstack/react-query.gen";
 import {
   useActiveAssistantLifecycleIsLoading,
   usePlatformGate,
@@ -22,6 +25,11 @@ export function AdvancedPage() {
   const { assistant, healthz } = useAssistantWithHealthz(assistantId);
   const infraGate = usePlatformGate({ platformHostedOnly: true });
   const platformAssistant = assistant?.is_local ? null : assistant;
+  const updateWindowCapability = resolveRuntimeActionCapability(
+    platformAssistant?.runtime_action_capabilities,
+    "update_window",
+    platformAssistant != null,
+  );
   const queryClient = useQueryClient();
   const showMemoryOptOut =
     assistantId != null && healthz?.capabilities?.memoryOptOut === true;
@@ -37,7 +45,11 @@ export function AdvancedPage() {
       if (assistantId == null) {
         return;
       }
-      configGetSetQueryData(queryClient, { path: { assistant_id: assistantId } }, data);
+      configGetSetQueryData(
+        queryClient,
+        { path: { assistant_id: assistantId } },
+        data,
+      );
     },
   });
   const memoryEnabled = config?.memory?.enabled !== false;
@@ -65,7 +77,11 @@ export function AdvancedPage() {
           title="Update Window"
           subtitle="Configure when automatic updates are applied."
         >
-          <UpdateWindowPolicy assistantId={platformAssistant.id} />
+          {updateWindowCapability?.supported === false ? (
+            <Notice tone="info">{updateWindowCapability.detail}</Notice>
+          ) : (
+            <UpdateWindowPolicy assistantId={platformAssistant.id} />
+          )}
         </DetailCard>
       )}
       {infraGate === "disabled" && (

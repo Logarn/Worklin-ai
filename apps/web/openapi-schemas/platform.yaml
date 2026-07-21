@@ -621,6 +621,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support Assistant Doctor.
       x-vellum-api-clients:
       - platform
   /v1/assistants/{assistant_id}/doctor/history/{doctor_session_id}/:
@@ -671,6 +677,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support Assistant Doctor.
       x-vellum-api-clients:
       - platform
   /v1/assistants/{assistant_id}/doctor/sessions/:
@@ -719,6 +731,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support Assistant Doctor.
         '503':
           content:
             application/json:
@@ -771,6 +789,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support Assistant Doctor.
         '503':
           content:
             application/json:
@@ -837,6 +861,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support Assistant Doctor.
         '503':
           content:
             application/json:
@@ -918,6 +948,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support Assistant Doctor.
         '503':
           content:
             application/json:
@@ -2082,6 +2118,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support terminal sessions.
         '502':
           content:
             application/json:
@@ -2137,6 +2179,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support terminal sessions.
         '502':
           content:
             application/json:
@@ -2213,6 +2261,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support terminal sessions.
         '502':
           content:
             application/json:
@@ -2289,6 +2343,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support terminal sessions.
         '502':
           content:
             application/json:
@@ -2675,6 +2735,77 @@ paths:
           description: ''
       x-vellum-api-clients:
       - platform
+  /v1/assistants/{id}/provisioning/retry/:
+    post:
+      operationId: assistants_provisioning_retry_detail_create
+      parameters:
+      - in: header
+        name: Vellum-Organization-Id
+        schema:
+          type: string
+          format: uuid
+        description: Required if using Cookie-based or X-Session-Token authentication
+          methods.
+      - in: path
+        name: id
+        schema:
+          type: string
+          pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+        required: true
+      tags:
+      - assistants
+      security:
+      - VellumAPIKey: []
+      - cookieAuth: []
+      - XSessionTokenAuth: []
+      - AssistantAPIKey: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: The runtime is already active.
+        '202':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: Runtime preparation was accepted.
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '405':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+      x-vellum-api-clients:
+      - platform
   /v1/assistants/{id}/restart/:
     post:
       operationId: assistants_restart_detail_create
@@ -2718,7 +2849,25 @@ paths:
                 type: object
                 additionalProperties: {}
           description: ''
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeRestartAccepted'
+          description: The managed runtime accepted the restart request.
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
         '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '405':
           content:
             application/json:
               schema:
@@ -2730,6 +2879,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime cannot be restarted automatically.
         '502':
           content:
             application/json:
@@ -3042,6 +3197,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support custom update windows.
       x-vellum-api-clients:
       - platform
     patch:
@@ -3098,6 +3259,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailResponse'
           description: ''
+        '501':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeActionCapability'
+          description: The managed runtime does not support custom update windows.
       x-vellum-api-clients:
       - platform
   /v1/assistants/{id}/upgrade-status/:
@@ -5276,6 +5443,10 @@ components:
         access_consented:
           type: boolean
           readOnly: true
+        runtime_action_capabilities:
+          allOf:
+          - $ref: '#/components/schemas/RuntimeActionCapabilities'
+          readOnly: true
       required:
       - access_consented
       - created
@@ -5372,6 +5543,64 @@ components:
           type: string
           nullable: true
           maxLength: 255
+    RuntimeActionCapabilities:
+      type: object
+      properties:
+        restart:
+          $ref: '#/components/schemas/RuntimeActionCapability'
+        terminal:
+          $ref: '#/components/schemas/RuntimeActionCapability'
+        doctor:
+          $ref: '#/components/schemas/RuntimeActionCapability'
+        update_window:
+          $ref: '#/components/schemas/RuntimeActionCapability'
+      required:
+      - doctor
+      - restart
+      - terminal
+      - update_window
+    RuntimeActionCapability:
+      type: object
+      properties:
+        capability:
+          type: string
+          enum:
+          - restart
+          - terminal
+          - doctor
+          - update_window
+        supported:
+          type: boolean
+        code:
+          type: string
+          enum:
+          - supported
+          - runtime_capability_unavailable
+        detail:
+          type: string
+      required:
+      - capability
+      - code
+      - detail
+      - supported
+    RuntimeRestartAccepted:
+      type: object
+      properties:
+        detail:
+          type: string
+        code:
+          type: string
+          enum:
+          - runtime_restart_requested
+        runtime_status:
+          type: string
+        runtime_stack_id:
+          type: string
+      required:
+      - code
+      - detail
+      - runtime_stack_id
+      - runtime_status
     AssistantResize403:
       oneOf:
       - $ref: '#/components/schemas/AssistantResizeTierError'

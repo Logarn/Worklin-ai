@@ -355,13 +355,9 @@ async function runSchemaLeaf(
     config: {
       callSite: LEAF_CALL_SITE,
       tool_choice: { type: "tool" as const, name: SCHEMA_TOOL_NAME },
-      // `provider` is a CallSiteConfiguredProvider holding our overrideProfile,
-      // but it only injects that stored override when the per-call config omits
-      // `callSite` — and we set `callSite` here to drive resolveCallSiteConfig.
-      // So pass overrideProfile through explicitly (mirroring how AgentLoop
-      // builds its provider config on the tool path), or an explicit/persona
-      // profile selection is silently dropped and the leaf runs under the
-      // default workflowLeaf profile.
+      // Keep the selected profile explicit at the send boundary. The configured
+      // provider also carries it as a fallback, while an explicit per-send value
+      // remains authoritative.
       ...(overrideProfile !== undefined ? { overrideProfile } : {}),
     },
     ...(opts.signal ? { signal: opts.signal } : {}),

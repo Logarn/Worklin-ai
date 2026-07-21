@@ -4,8 +4,15 @@ import { useSearchParams } from "react-router";
 import { AssistantTerminalPanel } from "@/domains/settings/components/panels/assistant-terminal-panel";
 import { DebugControlsPanel } from "@/domains/settings/components/panels/debug-controls-panel";
 import { DoctorPanel } from "@/domains/settings/components/panels/doctor-panel";
-import { usePlatformGate } from "@/hooks/use-platform-gate";
+import { resolveRuntimeActionCapability } from "@/domains/settings/runtime-action-capabilities";
+import type { RuntimeActionCapability } from "@/generated/api/types.gen";
+import {
+  useActiveAssistantHasSelfHostedRecord,
+  usePlatformGate,
+} from "@/hooks/use-platform-gate";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { cn } from "@/utils/misc";
+import { Notice } from "@vellumai/design-library/components/notice";
 
 const ALL_TABS = [
   { id: "general", label: "General" },
@@ -17,12 +24,41 @@ type DebugTabId = (typeof ALL_TABS)[number]["id"];
 
 export function DebugPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const assistants = useResolvedAssistantsStore.use.assistants();
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   // Terminal tab is platform-routed and should be hidden when the active
   // assistant is self-hosted — `platformHostedOnly: true` is the correct
   // variant. The standard gate would still resolve to "full" on a
   // platform-mode app pointed at a self-hosted assistant, leaving the
   // tab visible and letting the user land on a doomed terminal connection.
   const platformGate = usePlatformGate({ platformHostedOnly: true });
+  const isSelfHosted = useActiveAssistantHasSelfHostedRecord();
+  const activeAssistant = assistants.find(
+    (assistant) => assistant.id === activeAssistantId,
+  );
+  const requireExplicitCapabilities = !isSelfHosted;
+  const restartCapability = resolveRuntimeActionCapability(
+    activeAssistant?.runtimeActionCapabilities,
+    "restart",
+    requireExplicitCapabilities,
+  );
+  const terminalCapability = resolveRuntimeActionCapability(
+    activeAssistant?.runtimeActionCapabilities,
+    "terminal",
+    requireExplicitCapabilities,
+  );
+  const doctorCapability = resolveRuntimeActionCapability(
+    activeAssistant?.runtimeActionCapabilities,
+    "doctor",
+    requireExplicitCapabilities,
+  );
+  const unavailableDebugCapabilities = [
+    terminalCapability,
+    doctorCapability,
+  ].filter(
+    (capability): capability is RuntimeActionCapability =>
+      capability?.supported === false,
+  );
 
   const tabs = useMemo(
     () =>
@@ -30,9 +66,15 @@ export function DebugPage() {
         // Terminal is platform-routed — hide the tab entirely on self-hosted
         // assistants so users don't land on an empty panel.
         if (tab.id === "terminal" && platformGate === "gated") return false;
+        if (tab.id === "terminal" && terminalCapability?.supported === false) {
+          return false;
+        }
+        if (tab.id === "doctor" && doctorCapability?.supported === false) {
+          return false;
+        }
         return true;
       }),
-    [platformGate],
+    [doctorCapability, platformGate, terminalCapability],
   );
 
   const activeTab: DebugTabId = useMemo(() => {
@@ -88,7 +130,18 @@ export function DebugPage() {
         aria-labelledby={`debug-tab-${activeTab}`}
         className="flex min-h-0 flex-1 flex-col pt-6"
       >
-        {activeTab === "general" && <DebugControlsPanel />}
+        {activeTab === "general" && (
+          <div className="space-y-4">
+            {unavailableDebugCapabilities.length > 0 && (
+              <Notice tone="info">
+                {unavailableDebugCapabilities
+                  .map((capability) => capability.detail)
+                  .join(" ")}
+              </Notice>
+            )}
+            <DebugControlsPanel restartCapability={restartCapability} />
+          </div>
+        )}
         {activeTab === "terminal" && <AssistantTerminalPanel />}
         {activeTab === "doctor" && <DoctorPanel />}
       </div>

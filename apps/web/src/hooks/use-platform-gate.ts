@@ -52,35 +52,44 @@ export interface PlatformGateOptions {
   platformHostedOnly?: boolean;
 }
 
-/**
- * Is the currently-active assistant self-hosted? Reads from
- * `useAssistantLifecycleStore` so the answer reactively flips as the
- * lifecycle service projects new server resolutions or gateway-auth
- * short-circuits.
- *
- * Returns `true` when:
- *   - the server resolved `is_local: true` → `kind: "self_hosted"`, or
- *   - the gateway-auth short-circuit fired in local mode →
- *     `kind: "active", isLocal: true`.
- *
- * Returns `false` for every other lifecycle state (`loading`,
- * `initializing`, `cleaning_up`, `error`, and `active` with
- * `isLocal: false`).
- */
-function useActiveAssistantIsSelfHosted(): boolean {
+export function useActiveAssistantIsSelfHosted(): boolean {
   const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
-  const activeAssistantIsPlatformHosted = useResolvedAssistantsStore(
+  const activeAssistant = useResolvedAssistantsStore(
     (state) =>
       activeAssistantId != null
         ? state.assistants.find((assistant) => assistant.id === activeAssistantId)
-            ?.isPlatformHosted === true
-        : false,
+        : undefined,
   );
   const assistantState = useAssistantLifecycleStore.use.assistantState();
-  if (!isLocalMode() && activeAssistantIsPlatformHosted) return false;
+  if (activeAssistant?.isPlatformHosted === true) return false;
+  if (
+    activeAssistant?.isLocal === true &&
+    activeAssistant.isPlatformHosted === false
+  ) {
+    return true;
+  }
   if (assistantState.kind === "self_hosted") return true;
   if (assistantState.kind === "active" && assistantState.isLocal) return true;
   return false;
+}
+
+/**
+ * Require a matching assistant record that explicitly reports self-hosting.
+ * This stricter signal is for controls that must stay closed while selection
+ * reconciliation can leave lifecycle state describing the previous assistant.
+ */
+export function useActiveAssistantHasSelfHostedRecord(): boolean {
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  return useResolvedAssistantsStore(
+    (state) =>
+      activeAssistantId != null &&
+      state.assistants.some(
+        (assistant) =>
+          assistant.id === activeAssistantId &&
+          assistant.isLocal === true &&
+          assistant.isPlatformHosted === false,
+      ),
+  );
 }
 
 /**

@@ -574,13 +574,63 @@ describe("control-plane pooled runtime production bridge", () => {
       headers: authHeaders(),
     });
     expect(assistantResponse.status).toBe(200);
-    expect(await assistantResponse.json()).toMatchObject({
+    const assistantPayload = await assistantResponse.json();
+    expect(assistantPayload).toMatchObject({
       id: "asst-pool",
       status: "active",
       runtime_status: "active",
       runtime_provider: "pooled_worker",
       ingress_url: null,
       platform_actor_token: null,
+      runtime_action_capabilities: {
+        restart: {
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+        terminal: {
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+        doctor: {
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+        update_window: {
+          supported: false,
+          code: "runtime_capability_unavailable",
+        },
+      },
+    });
+
+    const retryResponse = await fetch(
+      `${origin}/v1/assistants/asst-pool/provisioning/retry/`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: "{}",
+      },
+    );
+    expect(retryResponse.status).toBe(200);
+    expect(await retryResponse.json()).toEqual({
+      detail: "Assistant is ready.",
+      code: "runtime_active",
+      runtime_status: "active",
+      runtime_stack_id: "rt-asst-pool",
+    });
+
+    const restartResponse = await fetch(
+      `${origin}/v1/assistants/asst-pool/restart/`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: "{}",
+      },
+    );
+    expect(restartResponse.status).toBe(501);
+    expect(await restartResponse.json()).toMatchObject({
+      capability: "restart",
+      supported: false,
+      code: "runtime_capability_unavailable",
     });
 
     const hatchResponse = await fetch(`${origin}/v1/assistants/hatch/`, {

@@ -624,7 +624,7 @@ describe("onboarding lifecycle sync", () => {
       assistantResult("active", {
         id: "asst-returning",
         is_local: false,
-        runtime_provider: "pooled_worker",
+        runtime_provider: "railway",
         ingress_url: "https://worklin-ai.vercel.app",
         platform_actor_token: "actor-token-returning",
       });
@@ -634,7 +634,7 @@ describe("onboarding lifecycle sync", () => {
     await waitFor(() =>
       expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
         "asst-returning",
-        "pooled_worker",
+        "railway",
         { userId: "user-1" },
       ),
     );
@@ -645,6 +645,46 @@ describe("onboarding lifecycle sync", () => {
         token: "actor-token-returning",
       }),
     );
+    await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
+      timeout: 2_000,
+    });
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(routes.onboarding.prechat, {
+        replace: true,
+      }),
+    );
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
+  });
+
+  test("an already-active pooled assistant never installs a direct runtime connection", async () => {
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
+    getAssistantImpl = async () =>
+      assistantResult("active", {
+        id: "asst-pooled-returning",
+        is_local: false,
+        runtime_provider: "pooled_worker",
+        ingress_url: null,
+        platform_actor_token: null,
+      });
+
+    render(<HatchingScreen />);
+
+    await waitFor(() =>
+      expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
+        "asst-pooled-returning",
+        "pooled_worker",
+        { userId: "user-1" },
+      ),
+    );
+    expect(setSelectedAssistantMock).toHaveBeenCalledWith(
+      "asst-pooled-returning",
+    );
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith(null);
+    const runtimeConnectionCalls = setSelfHostedConnectionMock.mock
+      .calls as unknown as Array<[unknown]>;
+    expect(
+      runtimeConnectionCalls.some(([connection]) => connection !== null),
+    ).toBe(false);
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
       timeout: 2_000,
     });
