@@ -40,7 +40,10 @@ const mockGetMessages = mock(() => [
 ]);
 const mockUpdateConversationTitle = mock(() => {});
 const mockGetConfiguredProvider = mock(
-  async (): Promise<Provider | null> => null,
+  async (
+    _callSite: string = "conversationTitle",
+    _options: Record<string, unknown> = {},
+  ): Promise<Provider | null> => null,
 );
 
 interface MockConfig {
@@ -202,6 +205,68 @@ describe("conversation-title-service", () => {
         overrideProfile: "custom-balanced",
         selectionSeed: "conv-1",
       },
+    );
+  });
+
+  test("retries another configured BYOK profile when the first title provider fails", async () => {
+    const speedProvider = makeProvider("openai-speed");
+    const activeProvider = makeProvider("openai-active");
+    mockGetConfig.mockImplementation(() => ({
+      llm: {
+        default: {},
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-cost-optimized": {
+            source: "user",
+            model: "gpt-speed-test",
+          },
+          "custom-balanced": {
+            source: "user",
+            model: "gpt-balanced-test",
+          },
+        },
+      },
+    }));
+    mockGetConfiguredProvider.mockImplementation(
+      async (_callSite, options: { overrideProfile?: string } = {}) =>
+        options.overrideProfile === "custom-cost-optimized"
+          ? speedProvider
+          : activeProvider,
+    );
+    mockRunBtwSidechain.mockImplementationOnce(async () => {
+      throw new Error("model unavailable");
+    });
+    mockRunBtwSidechain.mockImplementationOnce(async () => ({
+      text: "Launch Planning",
+      hadTextDeltas: true,
+      response: {
+        content: [{ type: "text", text: "Launch Planning" }],
+        model: "gpt-balanced-test",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: "end_turn",
+      },
+    }));
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      userMessage: "Plan the product launch",
+    });
+
+    expect(result).toEqual({ title: "Launch Planning", updated: true });
+    expect(mockRunBtwSidechain).toHaveBeenCalledTimes(2);
+    expect(mockGetConfiguredProvider.mock.calls.map((call) => call[1])).toEqual(
+      [
+        {
+          overrideProfile: "custom-cost-optimized",
+          forceOverrideProfile: true,
+          selectionSeed: "conv-1",
+        },
+        {
+          overrideProfile: "custom-balanced",
+          forceOverrideProfile: true,
+          selectionSeed: "conv-1",
+        },
+      ],
     );
   });
 
@@ -569,10 +634,10 @@ describe("conversation-title-service", () => {
       userMessage: "so about that t-shirt...",
     });
 
-    expect(result.title).toBe("Untitled Conversation");
+    expect(result.title).toBe("so about that t-shirt");
     expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
       "conv-1",
-      "Untitled Conversation",
+      "so about that t-shirt",
       AUTO_TITLE_DETERMINISTIC,
     );
   });
@@ -609,7 +674,7 @@ describe("conversation-title-service", () => {
       userMessage: "something",
     });
 
-    expect(result.title).toBe("Untitled Conversation");
+    expect(result.title).toBe("something");
   });
 
   test("regeneration skips LLM call when recent messages have no extractable text", async () => {
