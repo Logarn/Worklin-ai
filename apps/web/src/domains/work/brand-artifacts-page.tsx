@@ -25,6 +25,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
+import { BrandResearchStatus } from "@/components/brand-research-status";
 import {
   artifactsGetQueryKey,
   brandsGetQueryKey,
@@ -190,7 +191,8 @@ export function BrandArtifactsPage() {
     () =>
       artifacts.filter((artifact) => {
         const artifactBrandId = artifact.brandId ?? UNASSIGNED_BRAND_ID;
-        if (artifactBrandId !== brandId || artifact.parentArtifactId) return false;
+        if (artifactBrandId !== brandId || artifact.parentArtifactId)
+          return false;
         if (
           artifact.resourceType === "copybook" &&
           copybookResourceIds.has(artifact.resourceId)
@@ -222,7 +224,9 @@ export function BrandArtifactsPage() {
     ],
   );
   const resultCount =
-    visibleCopybooks.length + visibleApps.length + visibleRegistryArtifacts.length;
+    visibleCopybooks.length +
+    visibleApps.length +
+    visibleRegistryArtifacts.length;
 
   const startWithWorklin = () => {
     const draftConversationId = createDraftConversationId();
@@ -272,6 +276,9 @@ export function BrandArtifactsPage() {
               <MessageSquarePlus className="size-4" />
               Create with Worklin
             </button>
+          </div>
+          <div className="mx-auto w-full max-w-6xl">
+            <BrandResearchStatus assistantId={assistantId} />
           </div>
           <div className="mx-auto mt-5 flex w-full max-w-6xl flex-col gap-3">
             <Input
@@ -389,7 +396,9 @@ export function BrandArtifactsPage() {
                   <ArtifactCard
                     key={artifact.id}
                     icon={<ArtifactTypeIcon artifact={artifact} />}
-                    eyebrow={artifact.artifactType.replaceAll("_", " ").toUpperCase()}
+                    eyebrow={artifact.artifactType
+                      .replaceAll("_", " ")
+                      .toUpperCase()}
                     title={artifact.title}
                     detail={getArtifactDetail(artifact)}
                     updatedAt={artifact.updatedAt}
@@ -600,7 +609,9 @@ function ArtifactActionsMenu({
             void onUpdate(
               artifact,
               { favorite: !artifact.favorite },
-              artifact.favorite ? "Removed from favorites" : "Added to favorites",
+              artifact.favorite
+                ? "Removed from favorites"
+                : "Added to favorites",
             )
           }
         >

@@ -623,7 +623,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<LlmProviderId, string> = {
   anthropic: "claude-opus-4-8",
   openai: "gpt-5.5",
   gemini: "gemini-2.5-flash",
-  fireworks: "accounts/fireworks/models/kimi-k2p5",
+  fireworks: "accounts/fireworks/models/kimi-k2p6",
   kimi: "kimi-k2.6",
   openrouter: "x-ai/grok-4.20-beta",
   minimax: "MiniMax-M2.7",

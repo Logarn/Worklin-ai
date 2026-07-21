@@ -51,6 +51,10 @@ type AssistantScopedPath = {
   upstreamPath: string;
 };
 
+interface RuntimeProxyGatewayHandlers {
+  upsertContact?: (req: Request) => Promise<Response>;
+}
+
 function decodePathSegment(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
@@ -132,7 +136,10 @@ function bindPlatformOwnerClaims(
   };
 }
 
-export function createRuntimeProxyHandler(config: GatewayConfig) {
+export function createRuntimeProxyHandler(
+  config: GatewayConfig,
+  gatewayHandlers: RuntimeProxyGatewayHandlers = {},
+) {
   return async (req: Request, clientIp?: string): Promise<Response> => {
     const start = performance.now();
     const url = new URL(req.url);
@@ -387,6 +394,17 @@ export function createRuntimeProxyHandler(config: GatewayConfig) {
         }
       }
       upstreamPath = assistantScopedPath.upstreamPath;
+    }
+
+    // Gateway-owned contact writes stay behind the same assistant identity and
+    // tenant-context checks as daemon-bound assistant-scoped requests.
+    if (
+      assistantScopedPath &&
+      req.method === "POST" &&
+      (upstreamPath === "/v1/contacts" || upstreamPath === "/v1/contacts/") &&
+      gatewayHandlers.upsertContact
+    ) {
+      return gatewayHandlers.upsertContact(req);
     }
 
     const upstream = buildUpstreamUrl(

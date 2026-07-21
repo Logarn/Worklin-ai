@@ -30,8 +30,8 @@ export function LibraryPage() {
     [navigate],
   );
 
-  // Clicking an app navigates to /assistant/library/:appId, where
-  // LibraryDetailPage handles the dedicated load/render/error UI.
+  // Legacy library links redirect into Work, where WorkAppPage handles the
+  // dedicated load/render/error UI.
   const handleOpenApp = useCallback(
     (appIdToOpen: string) => {
       void navigate(routes.library.app(appIdToOpen));

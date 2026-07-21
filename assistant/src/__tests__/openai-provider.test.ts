@@ -56,6 +56,8 @@ let lastCreateParams: Record<string, unknown> | null = null;
 let lastCreateOptions: Record<string, unknown> | null = null;
 let lastConstructorOptions: Record<string, unknown> | null = null;
 let shouldThrow: Error | null = null;
+let modelListBaseURLs: string[] = [];
+let modelListErrors: Array<Error | null> = [];
 const DEFAULT_SDK_TIMEOUT_MS = 1_860_000;
 
 function userMsg(text: string): Message {
@@ -78,6 +80,14 @@ mock.module("openai", () => ({
     constructor(opts: Record<string, unknown>) {
       lastConstructorOptions = opts;
     }
+    models = {
+      list: async () => {
+        modelListBaseURLs.push(String(lastConstructorOptions?.baseURL));
+        const error = modelListErrors.shift();
+        if (error) throw error;
+        return { data: [] };
+      },
+    };
     chat = {
       completions: {
         create: async (
@@ -103,7 +113,10 @@ mock.module("openai", () => ({
 
 // Import after mocking
 import { FireworksProvider } from "../providers/fireworks/client.js";
-import { MinimaxProvider } from "../providers/minimax/client.js";
+import {
+  MinimaxProvider,
+  validateMinimaxApiKey,
+} from "../providers/minimax/client.js";
 import { OllamaProvider } from "../providers/ollama/client.js";
 import {
   EMPTY_ASSISTANT_TURN_PLACEHOLDER,
@@ -1397,6 +1410,37 @@ describe("custom baseURL initialization", () => {
       content: "prior answer",
       reasoning_content: "prior reasoning",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MiniMax API key validation
+// ---------------------------------------------------------------------------
+
+describe("validateMinimaxApiKey", () => {
+  beforeEach(() => {
+    lastConstructorOptions = null;
+    modelListBaseURLs = [];
+    modelListErrors = [];
+  });
+
+  test("validates against the same .io endpoint used by the runtime", async () => {
+    const result = await validateMinimaxApiKey("mm-user-key");
+
+    expect(result).toEqual({ valid: true });
+    expect(modelListBaseURLs).toEqual(["https://api.minimax.io/v1"]);
+  });
+
+  test("does not accept a key by falling back to the unsupported .com region", async () => {
+    modelListErrors = [new FakeAPIError(401, "invalid key"), null];
+
+    const result = await validateMinimaxApiKey("mm-region-key");
+
+    expect(result).toEqual({
+      valid: false,
+      reason: "API key is invalid or expired.",
+    });
+    expect(modelListBaseURLs).toEqual(["https://api.minimax.io/v1"]);
   });
 });
 

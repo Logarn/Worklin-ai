@@ -39,8 +39,7 @@ let applyPendingProviderKeyImpl: (
   assistantId: string,
   runtimeProvider?: string | null,
   scope?: { userId: string | null },
-) => Promise<void> =
-  async () => {};
+) => Promise<void> = async () => {};
 const applyPendingProviderKeyMock = mock(
   (
     assistantId: string,
@@ -48,9 +47,16 @@ const applyPendingProviderKeyMock = mock(
     scope?: { userId: string | null },
   ) => applyPendingProviderKeyImpl(assistantId, runtimeProvider, scope),
 );
+let applyChatgptSubscriptionProviderImpl: (
+  assistantId: string,
+  scope?: { userId: string | null },
+) => Promise<void> = async () => {};
 const applyChatgptSubscriptionProviderMock = mock(
-  async (_assistantId: string) => {},
+  (assistantId: string, scope?: { userId: string | null }) =>
+    applyChatgptSubscriptionProviderImpl(assistantId, scope),
 );
+let chatgptOnConnected: ((connection: unknown) => void | Promise<void>) | null =
+  null;
 
 const hatchAssistantMock = mock(async () => ({
   ok: true,
@@ -91,7 +97,8 @@ const getAssistantHealthzMock = mock(() => getAssistantHealthzImpl());
 const setSelfHostedConnectionMock = mock(() => {});
 
 let fetchTraitsImpl: () => Promise<unknown> = async () => null;
-let fetchAssistantCharacterProfileImpl: () => Promise<unknown> = async () => null;
+let fetchAssistantCharacterProfileImpl: () => Promise<unknown> = async () =>
+  null;
 const fetchCharacterTraitsMock = mock(() => fetchTraitsImpl());
 const fetchAssistantCharacterProfileMock = mock(() =>
   fetchAssistantCharacterProfileImpl(),
@@ -128,13 +135,15 @@ let platformSessionValue: PlatformSessionStatus = "absent";
 let fetchOnboardingRecipeImpl: () => Promise<TestOnboardingRecipe | null> =
   async () => null;
 const fetchOnboardingRecipeMock = mock(() => fetchOnboardingRecipeImpl());
-let activeAssistantQueryResult:
-  | ReturnType<typeof assistantResult>
-  | undefined = assistantResult("active");
+let activeAssistantQueryResult: ReturnType<typeof assistantResult> | undefined =
+  assistantResult("active");
 let resolvedActiveAssistantId: string | null = null;
 let resolvedSelectedAssistantId: string | null = null;
 const useAssistantQueryMock = mock(
-  (options?: { enabled?: boolean; selectedPlatformAssistantId?: string | null }) => ({
+  (options?: {
+    enabled?: boolean;
+    selectedPlatformAssistantId?: string | null;
+  }) => ({
     data: options?.enabled === false ? undefined : activeAssistantQueryResult,
   }),
 );
@@ -158,7 +167,14 @@ mock.module("@/assistant/api", () => ({
 }));
 
 mock.module("@/components/ai/chatgpt-oauth-section", () => ({
-  ChatgptOAuthSection: () => null,
+  ChatgptOAuthSection: ({
+    onConnected,
+  }: {
+    onConnected: (connection: unknown) => void | Promise<void>;
+  }) => {
+    chatgptOnConnected = onConnected;
+    return <div>ChatGPT setup controls</div>;
+  },
 }));
 
 mock.module("@/stores/organization-store", () => ({
@@ -264,7 +280,8 @@ mock.module("@/domains/onboarding/recipe-client.js", () => ({
 mock.module("@/domains/onboarding/provider-key", () => ({
   applyChatgptSubscriptionProvider: applyChatgptSubscriptionProviderMock,
   applyPendingProviderKey: applyPendingProviderKeyMock,
-  pendingProviderRequiresOAuth: () => false,
+  pendingProviderRequiresOAuth: (pending: { authType?: string } | null) =>
+    pending?.authType === "oauth_subscription",
   peekPendingProviderKey: () => pendingProviderKey,
 }));
 
@@ -521,6 +538,8 @@ beforeEach(() => {
   localStorage.clear();
   pendingProviderKey = null;
   applyPendingProviderKeyImpl = async () => {};
+  applyChatgptSubscriptionProviderImpl = async () => {};
+  chatgptOnConnected = null;
 
   navigateMock.mockClear();
   checkAssistantMock.mockClear();
@@ -553,21 +572,20 @@ describe("onboarding lifecycle sync", () => {
     let assistantCalls = 0;
     let sawConnectionBeforeHealthz = false;
     getAssistantImpl = async () =>
-      assistantResult(
-        ++assistantCalls === 1 ? "initializing" : "active",
-        {
-          is_local: false,
-          ingress_url: "https://worklin-ai.vercel.app",
-          platform_actor_token: "actor-token-1",
-        },
-      );
+      assistantResult(++assistantCalls === 1 ? "initializing" : "active", {
+        is_local: false,
+        ingress_url: "https://worklin-ai.vercel.app",
+        platform_actor_token: "actor-token-1",
+      });
     getAssistantHealthzImpl = async () => {
-      const connectionCalls = setSelfHostedConnectionMock.mock.calls as unknown as Array<
+      const connectionCalls = setSelfHostedConnectionMock.mock
+        .calls as unknown as Array<
         [{ url?: string | null; token?: string | null }]
       >;
-      sawConnectionBeforeHealthz = connectionCalls.some(([connection]) =>
-        connection?.url === "https://worklin-ai.vercel.app" &&
-        connection?.token === "actor-token-1"
+      sawConnectionBeforeHealthz = connectionCalls.some(
+        ([connection]) =>
+          connection?.url === "https://worklin-ai.vercel.app" &&
+          connection?.token === "actor-token-1",
       );
       return { ok: true, status: 200, data: { status: "ok" } };
     };
@@ -658,10 +676,44 @@ describe("onboarding lifecycle sync", () => {
       { userId: "user-1" },
     );
     expect(checkAssistantMock).not.toHaveBeenCalled();
-    expect(navigateMock).not.toHaveBeenCalledWith(
-      routes.onboarding.prechat,
-      { replace: true },
+    expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
+      replace: true,
+    });
+  });
+
+  test("ChatGPT configuration failure keeps onboarding on the connection screen", async () => {
+    pendingProviderKey = {
+      provider: "openai",
+      key: "",
+      authType: "oauth_subscription",
+    };
+    applyChatgptSubscriptionProviderImpl = async () => {
+      throw new Error("profile configuration failed");
+    };
+
+    render(<HatchingScreen />);
+
+    expect(await screen.findByText("Connect ChatGPT")).toBeTruthy();
+    expect(screen.getByText("ChatGPT setup controls")).toBeTruthy();
+    expect(chatgptOnConnected).not.toBeNull();
+
+    let completionError: unknown;
+    try {
+      await chatgptOnConnected?.({});
+    } catch (err) {
+      completionError = err;
+    }
+
+    expect(completionError).toBeInstanceOf(Error);
+    expect(applyChatgptSubscriptionProviderMock).toHaveBeenCalledWith(
+      "asst-1",
+      { userId: "user-1" },
     );
+    expect(screen.getByText("Connect ChatGPT")).toBeTruthy();
+    expect(checkAssistantMock).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
+      replace: true,
+    });
   });
 
   test("pooled provider rejection shows its actionable message and does not continue", async () => {
@@ -749,6 +801,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     expect(await screen.findByText("Gmail")).toBeTruthy();
     expect(screen.getByText("Google Calendar")).toBeTruthy();
     expect(screen.getByText("Google Drive")).toBeTruthy();
@@ -757,10 +810,8 @@ describe("onboarding lifecycle sync", () => {
     await waitFor(() =>
       expect(saveAssistantCharacterProfileMock).toHaveBeenCalled(),
     );
-    const saveProfileCall =
-      saveAssistantCharacterProfileMock.mock.calls[0] as unknown as
-        | [string, Record<string, unknown>]
-        | undefined;
+    const saveProfileCall = saveAssistantCharacterProfileMock.mock
+      .calls[0] as unknown as [string, Record<string, unknown>] | undefined;
     expect(saveProfileCall?.[0]).toBe("asst-1");
     expect(saveProfileCall?.[1]).toMatchObject({
       assistantName: "Spiky Spark",
@@ -797,6 +848,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByText("Skip for now"));
 
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
@@ -817,6 +869,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
 
     await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
     await waitFor(() =>
@@ -849,6 +902,7 @@ describe("onboarding lifecycle sync", () => {
     );
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByText("Skip for now"));
 
     await waitFor(() =>
@@ -869,6 +923,7 @@ describe("onboarding lifecycle sync", () => {
     render(<PreChatFlow />);
 
     fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
     fireEvent.click(await screen.findByText("Skip for now"));
 
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
@@ -956,6 +1011,7 @@ describe("onboarding lifecycle sync", () => {
     expect(checkAssistantMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("name-continue"));
+    await skipBrandResearchStep();
     expect(await screen.findByText("Gmail")).toBeTruthy();
     expect(screen.getByText("Google Calendar")).toBeTruthy();
     expect(screen.getByText("Google Drive")).toBeTruthy();

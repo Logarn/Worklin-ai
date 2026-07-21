@@ -25,4 +25,9 @@ export type AssistantState =
    * on network-online signals; the chat page renders them with
    * reconnecting copy instead of a terminal error.
    */
-  | { kind: "error"; message: string; transient?: boolean };
+  | {
+      kind: "error";
+      message: string;
+      transient?: boolean;
+      retryAction?: "restart_runtime";
+    };

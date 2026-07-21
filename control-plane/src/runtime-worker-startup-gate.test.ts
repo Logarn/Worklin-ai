@@ -149,10 +149,9 @@ describe("pooled runtime worker startup gate", () => {
     expect(probeCalls).toBe(0);
     expect(
       db
-        .query<
-          { count: number },
-          []
-        >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'")
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'",
+        )
         .get()?.count,
     ).toBe(0);
   });
@@ -204,10 +203,9 @@ describe("pooled runtime worker startup gate", () => {
     expect(probeCalls).toBe(0);
     expect(
       db
-        .query<
-          { count: number },
-          []
-        >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'runtime_stacks'")
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'runtime_stacks'",
+        )
         .get()?.count,
     ).toBe(0);
 
@@ -370,10 +368,7 @@ describe("pooled runtime worker startup gate", () => {
       expect(probeCalls).toBe(0);
       expect(
         db
-          .query<
-            { count: number },
-            []
-          >(
+          .query<{ count: number }, []>(
             `SELECT COUNT(*) AS count
              FROM sqlite_master
              WHERE type = 'table' AND name = 'runtime_stacks'`,
@@ -442,10 +437,9 @@ describe("pooled runtime worker startup gate", () => {
       expect(catalog.enabled).toBe(true);
       expect(
         probeDb
-          .query<
-            { count: number },
-            []
-          >("SELECT COUNT(*) AS count FROM runtime_stacks WHERE provider = 'pooled_worker'")
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM runtime_stacks WHERE provider = 'pooled_worker'",
+          )
           .get()?.count,
       ).toBe(2);
       return greenHealth(2);
@@ -470,6 +464,13 @@ describe("pooled runtime worker startup gate", () => {
       driftedWorkerCount: 0,
       maxConcurrentLeases: 2,
     });
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM runtime_worker_leases",
+        )
+        .get()?.count,
+    ).toBe(0);
     expect(probeCalls).toBe(1);
     const serialized = JSON.stringify(activation);
     expect(serialized).not.toContain("worker-1");

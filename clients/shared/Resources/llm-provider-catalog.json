@@ -566,7 +566,7 @@
         "linkLabel": "Open Fireworks Dashboard"
       },
       "supportsPlatformAuth": true,
-      "defaultModel": "accounts/fireworks/models/kimi-k2p5",
+      "defaultModel": "accounts/fireworks/models/kimi-k2p6",
       "models": [
         {
           "id": "accounts/fireworks/models/kimi-k2p6",

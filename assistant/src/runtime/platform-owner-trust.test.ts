@@ -1,74 +1,48 @@
 import { describe, expect, test } from "bun:test";
 
-import type { AuthContext } from "./auth/types.js";
 import { resolveAuthenticatedOwnerTrustContext } from "./platform-owner-trust.js";
 
-const baseContext: AuthContext = {
-  subject: "actor:self:vellum-principal-user-1",
-  principalType: "actor",
-  assistantId: "self",
-  actorPrincipalId: "vellum-principal-user-1",
-  scopeProfile: "actor_client_v1",
-  scopes: new Set(),
-  policyEpoch: 1,
-  tenantContext: {
-    version: 1,
-    organizationId: "org-1",
-    userId: "user-1",
-    assistantId: "assistant-1",
-    actorId: "vellum-principal-user-1",
-    requestId: "request-1",
-  },
-};
-
 describe("resolveAuthenticatedOwnerTrustContext", () => {
-  test("trusts the signed tenant owner independently of shared contacts", () => {
-    expect(
-      resolveAuthenticatedOwnerTrustContext(baseContext, "vellum"),
-    ).toEqual({
+  test("trusts each gateway-bound account owner independently", () => {
+    const ownerA = resolveAuthenticatedOwnerTrustContext({
+      actorPrincipalId: "vellum-principal-user-a",
+      platformOwnerBound: true,
       sourceChannel: "vellum",
-      trustClass: "guardian",
-      guardianChatId: "local",
-      guardianExternalUserId: "vellum-principal-user-1",
-      guardianPrincipalId: "vellum-principal-user-1",
-      requesterExternalUserId: "vellum-principal-user-1",
-      requesterIdentifier: "user-1",
     });
+    const ownerB = resolveAuthenticatedOwnerTrustContext({
+      actorPrincipalId: "vellum-principal-user-b",
+      platformOwnerBound: true,
+      sourceChannel: "vellum",
+    });
+
+    expect(ownerA?.trustClass).toBe("guardian");
+    expect(ownerA?.guardianPrincipalId).toBe("vellum-principal-user-a");
+    expect(ownerB?.trustClass).toBe("guardian");
+    expect(ownerB?.guardianPrincipalId).toBe("vellum-principal-user-b");
+    expect(ownerA?.guardianPrincipalId).not.toBe(ownerB?.guardianPrincipalId);
   });
 
-  test("rejects an actor without a signed tenant context", () => {
-    const { tenantContext: _tenantContext, ...withoutTenant } = baseContext;
+  test("rejects an unbound or non-platform principal", () => {
     expect(
-      resolveAuthenticatedOwnerTrustContext(withoutTenant, "vellum"),
+      resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId: "vellum-principal-user-a",
+        platformOwnerBound: false,
+        sourceChannel: "vellum",
+      }),
     ).toBeNull();
-  });
-
-  test("rejects a tenant context whose actor is not the deterministic owner", () => {
     expect(
-      resolveAuthenticatedOwnerTrustContext(
-        {
-          ...baseContext,
-          actorPrincipalId: "vellum-principal-other-user",
-          tenantContext: {
-            ...baseContext.tenantContext!,
-            actorId: "vellum-principal-other-user",
-          },
-        },
-        "vellum",
-      ),
+      resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId: "user-a",
+        platformOwnerBound: true,
+        sourceChannel: "vellum",
+      }),
     ).toBeNull();
-  });
-
-  test("does not elevate service principals", () => {
     expect(
-      resolveAuthenticatedOwnerTrustContext(
-        {
-          ...baseContext,
-          principalType: "svc_gateway",
-          actorPrincipalId: undefined,
-        },
-        "vellum",
-      ),
+      resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId: undefined,
+        platformOwnerBound: true,
+        sourceChannel: "vellum",
+      }),
     ).toBeNull();
   });
 });

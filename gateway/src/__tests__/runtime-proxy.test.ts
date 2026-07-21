@@ -140,6 +140,70 @@ describe("runtime proxy handler", () => {
     expect(captured).toHaveLength(0);
   });
 
+  test("routes assistant-scoped contact upserts to the gateway after scope validation", async () => {
+    const upsertContact = mock(async (req: Request) => {
+      return Response.json({
+        ok: true,
+        contact: { displayName: (await req.json()).displayName },
+      });
+    });
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+      { upsertContact },
+    );
+
+    for (const suffix of ["contacts", "contacts/"]) {
+      const res = await handler(
+        new Request(
+          `http://localhost:7830/v1/assistants/test-assistant/${suffix}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ displayName: "Alice" }),
+          },
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        contact: { displayName: "Alice" },
+      });
+    }
+
+    expect(upsertContact).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("rejects a mismatched assistant before a contact upsert", async () => {
+    const upsertContact = mock(async () => Response.json({ ok: true }));
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "expected-assistant",
+      }),
+      { upsertContact },
+    );
+
+    const res = await handler(
+      new Request(
+        "http://localhost:7830/v1/assistants/other-assistant/contacts",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ displayName: "Alice" }),
+        },
+      ),
+    );
+
+    expect(res.status).toBe(403);
+    expect(upsertContact).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   test("enforced assistant scope fails closed when stack identity is missing", async () => {
     const captured: string[] = [];
     fetchMock = mock(async (input: string | URL | Request) => {

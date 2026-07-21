@@ -6,7 +6,6 @@ import { Input } from "@vellumai/design-library/components/input";
 import { Typography } from "@vellumai/design-library/components/typography";
 import { ChevronRight, Loader2 } from "lucide-react";
 
-import type { ConnectionProvider } from "@/generated/daemon/types.gen";
 import type { CredentialEntry } from "@/domains/settings/ai/use-provider-credentials-list";
 
 // ---------------------------------------------------------------------------
@@ -21,7 +20,7 @@ interface ProviderEditorApiKeySectionProps {
   isAuthLocked: boolean;
   isLoadingCredential: boolean;
   apiKeyPlaceholder: string;
-  provider: ConnectionProvider;
+  credentialService: string;
   providerCredentials: CredentialEntry[];
   /** Whether the Advanced disclosure should be visible at all. */
   showAdvancedSection: boolean;
@@ -47,7 +46,7 @@ export function ProviderEditorApiKeySection({
   isAuthLocked,
   isLoadingCredential,
   apiKeyPlaceholder,
-  provider,
+  credentialService,
   providerCredentials,
   showAdvancedSection,
   onError,
@@ -162,7 +161,7 @@ export function ProviderEditorApiKeySection({
                       onClick={() => {
                         const trimmed = newCredentialName.trim();
                         if (!trimmed) return;
-                        const ref = `credential/${provider}/${trimmed}`;
+                        const ref = `credential/${credentialService}/${trimmed}`;
                         onCredentialChange(ref);
                         setIsCreatingNewCredential(false);
                         setNewCredentialName("");

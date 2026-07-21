@@ -28,28 +28,22 @@ const children: Bun.Subprocess[] = [];
 const servers: ReturnType<typeof createHttpsServer>[] = [];
 const tempDirs: string[] = [];
 
-afterEach(
-  async () => {
-    for (const child of children.splice(0)) {
-      child.kill("SIGKILL");
-      await Promise.race([
-        child.exited.then(() => undefined),
-        Bun.sleep(1_000),
-      ]);
-    }
-    for (const server of servers.splice(0)) {
-      server.closeAllConnections();
-      await Promise.race([
-        new Promise<void>((resolve) => server.close(() => resolve())),
-        Bun.sleep(1_000),
-      ]);
-    }
-    for (const directory of tempDirs.splice(0)) {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  },
-  20_000,
-);
+afterEach(async () => {
+  for (const child of children.splice(0)) {
+    child.kill("SIGKILL");
+    await Promise.race([child.exited.then(() => undefined), Bun.sleep(1_000)]);
+  }
+  for (const server of servers.splice(0)) {
+    server.closeAllConnections();
+    await Promise.race([
+      new Promise<void>((resolve) => server.close(() => resolve())),
+      Bun.sleep(1_000),
+    ]);
+  }
+  for (const directory of tempDirs.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 20_000);
 
 async function freePort(): Promise<number> {
   const server = createTcpServer();
@@ -159,14 +153,7 @@ function seedPooledAssistant(dbPath: string): void {
        id, email, username, first_name, last_name, consent_json, created_at,
        updated_at
      ) VALUES (?, ?, ?, '', '', ?, ?, ?)`,
-  ).run(
-    "user-pool",
-    "pool@example.com",
-    "pool",
-    ACCEPTED_CONSENT,
-    now,
-    now,
-  );
+  ).run("user-pool", "pool@example.com", "pool", ACCEPTED_CONSENT, now, now);
   db.query(
     `INSERT INTO organizations (
        id, user_id, name, is_default, created_at, updated_at
@@ -221,10 +208,9 @@ function jwtClaims(authorization: string): Record<string, unknown> {
   const token = authorization.replace(/^Bearer\s+/u, "");
   const payload = token.split(".")[1];
   if (!payload) throw new Error("Missing JWT payload.");
-  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
-    string,
-    unknown
-  >;
+  return JSON.parse(
+    Buffer.from(payload, "base64url").toString("utf8"),
+  ) as Record<string, unknown>;
 }
 
 async function readJsonBody(
@@ -283,10 +269,8 @@ async function waitForHealth(
 }
 
 describe("control-plane pooled runtime production bridge", () => {
-  test(
-    "presents a safe hosted assistant and routes its request with a generation-bound token",
-    async () => {
-      const directory = tempDirectory();
+  test("presents a safe hosted assistant and routes its request with a generation-bound token", async () => {
+    const directory = tempDirectory();
     const certificate = generateTestRsaCertificate(directory);
     let actorAuthorization = "";
     let voiceDispatcherAuthorization = "";
@@ -324,8 +308,7 @@ describe("control-plane pooled runtime production bridge", () => {
             return;
           }
           if (
-            request.url ===
-              "/v1/internal/pooled-worker/state/prepare-empty" &&
+            request.url === "/v1/internal/pooled-worker/state/prepare-empty" &&
             request.method === "POST"
           ) {
             const claims = jwtClaims(request.headers.authorization ?? "");
@@ -348,8 +331,7 @@ describe("control-plane pooled runtime production bridge", () => {
             return;
           }
           if (
-            request.url ===
-              "/v1/assistants/asst-pool/conversations/?hold=1" &&
+            request.url === "/v1/assistants/asst-pool/conversations/?hold=1" &&
             request.method === "GET"
           ) {
             signalHeldRequestStarted();
@@ -363,10 +345,9 @@ describe("control-plane pooled runtime production bridge", () => {
             request.method === "GET"
           ) {
             actorAuthorization = request.headers.authorization ?? "";
-            workerModelKeyCapability =
-              String(
-                request.headers["x-worklin-pooled-model-key-capability"] ?? "",
-              );
+            workerModelKeyCapability = String(
+              request.headers["x-worklin-pooled-model-key-capability"] ?? "",
+            );
             const keyResponse = await fetch(
               `${controlPlaneOrigin}/internal/v1/runtime-workers/model-provider-key`,
               {
@@ -395,8 +376,7 @@ describe("control-plane pooled runtime production bridge", () => {
             return;
           }
           if (
-            request.url ===
-              "/v1/assistants/asst-pool/live-voice/sessions" &&
+            request.url === "/v1/assistants/asst-pool/live-voice/sessions" &&
             request.method === "POST"
           ) {
             response.writeHead(200, { "Content-Type": "application/json" });
@@ -421,14 +401,12 @@ describe("control-plane pooled runtime production bridge", () => {
             ) &&
             request.method === "POST"
           ) {
-            voiceDispatcherAuthorization =
-              String(
-                request.headers["x-worklin-runtime-authorization"] ?? "",
-              );
-            voiceModelKeyCapability =
-              String(
-                request.headers["x-worklin-pooled-model-key-capability"] ?? "",
-              );
+            voiceDispatcherAuthorization = String(
+              request.headers["x-worklin-runtime-authorization"] ?? "",
+            );
+            voiceModelKeyCapability = String(
+              request.headers["x-worklin-pooled-model-key-capability"] ?? "",
+            );
             const keyResponse = await fetch(
               `${controlPlaneOrigin}/internal/v1/runtime-workers/model-provider-key`,
               {
@@ -477,7 +455,7 @@ describe("control-plane pooled runtime production bridge", () => {
     const origin = `http://127.0.0.1:${port}`;
     controlPlaneOrigin = origin;
     const serviceAccount = JSON.stringify({
-    client_email: "pool-test@example.com",
+      client_email: "pool-test@example.com",
       private_key: certificate.key,
     });
     const child = Bun.spawn({
@@ -524,8 +502,7 @@ describe("control-plane pooled runtime production bridge", () => {
         WORKLIN_RUNTIME_WORKER_POOL_STACK_IDS: "pool-worker-1",
         WORKLIN_RUNTIME_WORKER_POOL_MAX_CONCURRENCY: "1",
         WORKLIN_RUNTIME_WORKER_POOL_LEASE_TTL_MS: "60000",
-        WORKLIN_RUNTIME_WORKER_OPERATOR_RECOVERY_TOKEN:
-          OPERATOR_RECOVERY_TOKEN,
+        WORKLIN_RUNTIME_WORKER_OPERATOR_RECOVERY_TOKEN: OPERATOR_RECOVERY_TOKEN,
         WORKLIN_POOLED_MODEL_KEY_VAULT_ENABLED: "true",
         WORKLIN_POOLED_MODEL_KEY_VAULT_MASTER_KEY: "c".repeat(64),
         WORKLIN_TEST_PROVIDER_VALIDATION_AUDIT_PATH:
@@ -578,13 +555,24 @@ describe("control-plane pooled runtime production bridge", () => {
         },
       },
     );
+    if (recoveryCandidates.status !== 200) {
+      const responseBody = await recoveryCandidates.text();
+      child.kill();
+      await child.exited;
+      const stderr =
+        child.stderr instanceof ReadableStream
+          ? await new Response(child.stderr).text()
+          : "";
+      throw new Error(
+        `Operator recovery returned ${recoveryCandidates.status}: ${responseBody}${stderr ? `\n${stderr.trim()}` : ""}`,
+      );
+    }
     expect(recoveryCandidates.status).toBe(200);
     expect(await recoveryCandidates.json()).toEqual({ candidates: [] });
 
-    const assistantResponse = await fetch(
-      `${origin}/v1/assistants/active/`,
-      { headers: authHeaders() },
-    );
+    const assistantResponse = await fetch(`${origin}/v1/assistants/active/`, {
+      headers: authHeaders(),
+    });
     expect(assistantResponse.status).toBe(200);
     expect(await assistantResponse.json()).toMatchObject({
       id: "asst-pool",
@@ -717,9 +705,7 @@ describe("control-plane pooled runtime production bridge", () => {
     });
     expect(JSON.stringify(busyRotationBody)).not.toContain(busyRotation);
     expect(
-      readFileSync(providerValidationAuditPath, "utf8")
-        .trim()
-        .split("\n"),
+      readFileSync(providerValidationAuditPath, "utf8").trim().split("\n"),
     ).toHaveLength(2);
     releaseHeldRequest();
     const heldResponse = await heldResponsePromise;
@@ -815,8 +801,6 @@ describe("control-plane pooled runtime production bridge", () => {
     expect(await overQuotaResponse.json()).toMatchObject({
       code: "tenant_runtime_storage_quota_exceeded",
     });
-      expect(mutationRequests).toBe(3);
-    },
-    20_000,
-  );
+    expect(mutationRequests).toBe(3);
+  }, 20_000);
 });

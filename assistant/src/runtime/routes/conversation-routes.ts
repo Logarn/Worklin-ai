@@ -1101,7 +1101,7 @@ export function persistOnboardingArtifacts(onboarding: {
 }
 
 export async function handleSendMessage(
-  { body: rawBody, headers, authContext, abortSignal }: RouteHandlerArgs,
+  { body: rawBody, headers, abortSignal }: RouteHandlerArgs,
   deps: {
     sendMessageDeps?: SendMessageDeps;
     approvalConversationGenerator?: ApprovalConversationGenerator;
@@ -1417,13 +1417,14 @@ export async function handleSendMessage(
       conversation.setTrustContext(resolveLocalTrustContext(sourceChannel));
     } else {
       const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
-      // Platform web requests already carry a signed tenant owner identity.
-      // Resolve that identity directly so a pooled runtime never uses one
-      // user's shared guardian row as another user's owner.
-      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext(
-        authContext,
+      // A gateway-verified platform owner is scoped to this request. Resolve
+      // that identity directly so another user's guardian row cannot become
+      // the owner for a pooled runtime.
+      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId,
+        platformOwnerBound: headers?.["x-vellum-platform-owner"] === "true",
         sourceChannel,
-      );
+      });
       let trustCtx =
         authenticatedOwnerTrust ??
         resolveTrustContext({

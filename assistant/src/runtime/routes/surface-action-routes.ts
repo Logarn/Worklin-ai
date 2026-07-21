@@ -53,7 +53,7 @@ function applyTrustContext(
     }): void;
   },
   actorPrincipalId: string | undefined,
-  authContext: RouteHandlerArgs["authContext"],
+  platformOwnerBound: boolean,
 ): void {
   if (!conversation.setTrustContext) return;
 
@@ -64,12 +64,11 @@ function applyTrustContext(
       conversation.setTrustContext(resolveLocalTrustContext(sourceChannel));
     } else {
       const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
-      // Keep platform owner actions tenant-scoped even when the runtime uses
-      // a shared contacts database for external channel identities.
-      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext(
-        authContext,
+      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext({
+        actorPrincipalId,
+        platformOwnerBound,
         sourceChannel,
-      );
+      });
       let trustCtx =
         authenticatedOwnerTrust ??
         resolveTrustContext({
@@ -110,7 +109,6 @@ function applyTrustContext(
 async function handleSurfaceAction({
   body,
   headers,
-  authContext,
 }: RouteHandlerArgs): Promise<{
   ok: boolean;
   conversationId?: string;
@@ -196,7 +194,11 @@ async function handleSurfaceAction({
   }
 
   const actorPrincipalId = headers?.["x-vellum-actor-principal-id"];
-  applyTrustContext(conversation, actorPrincipalId, authContext);
+  applyTrustContext(
+    conversation,
+    actorPrincipalId,
+    headers?.["x-vellum-platform-owner"] === "true",
+  );
 
   try {
     const raw = await conversation.handleSurfaceAction(

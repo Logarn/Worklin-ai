@@ -6,6 +6,7 @@ import {
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
   railwayRuntimeCapacityError,
+  railwayRuntimeWorkspaceCapacityError,
   railwayRuntimeServiceName,
   type RailwayProvisioningPersistence,
   type RailwayProvisionerConfig,
@@ -202,6 +203,15 @@ describe("railwayRuntimeCapacityError", () => {
   });
 });
 
+describe("railwayRuntimeWorkspaceCapacityError", () => {
+  test("limits a workspace independently of the global cap", () => {
+    expect(railwayRuntimeWorkspaceCapacityError(null, 1, 1)).toContain(
+      "workspace quota",
+    );
+    expect(railwayRuntimeWorkspaceCapacityError("service-1", 1, 1)).toBeNull();
+  });
+});
+
 describe("provisionRailwayRuntime", () => {
   test("creates an isolated service, volume, variables, deployment, and health route", async () => {
     const graphqlOperations: Array<{
@@ -244,8 +254,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         deploymentPolls += 1;
@@ -298,7 +308,6 @@ describe("provisionRailwayRuntime", () => {
     expect(input.variables).toMatchObject({
       WORKLIN_RUNTIME_MODE: "isolated",
       WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
-      PLATFORM_ORGANIZATION_ID: assistant.org_id,
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
       WORKLIN_RUNTIME_ROOT: "/runtime/customer",
@@ -314,6 +323,13 @@ describe("provisionRailwayRuntime", () => {
     expect(
       (volumeMutation?.variables.input as { mountPath?: string }).mountPath,
     ).toBe("/runtime/customer");
+    const deployMutation = graphqlOperations.find((operation) =>
+      operation.query.includes("serviceInstanceDeployV2"),
+    );
+    expect(deployMutation?.query).toContain(
+      "mutation serviceInstanceDeployV2",
+    );
+    expect(deployMutation?.query).not.toContain("serviceInstanceDeploy(");
     expect(
       graphqlOperations.map((operation) => {
         if (operation.query.includes("runtimeProjectServices"))
@@ -324,7 +340,8 @@ describe("provisionRailwayRuntime", () => {
         if (operation.query.includes("volumeCreate")) return "volume";
         if (operation.query.includes("variableCollectionUpsert"))
           return "variables";
-        if (operation.query.includes("serviceInstanceDeploy")) return "deploy";
+        if (operation.query.includes("serviceInstanceDeployV2"))
+          return "deploy";
         return "status";
       }),
     ).toEqual([
@@ -402,8 +419,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
@@ -606,8 +623,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
@@ -684,8 +701,8 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
-      if (request.query.includes("serviceInstanceDeploy")) {
-        return jsonResponse({ data: { serviceInstanceDeploy: "deploy-1" } });
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
         return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });

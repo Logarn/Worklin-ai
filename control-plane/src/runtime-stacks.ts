@@ -778,6 +778,21 @@ export function countAllocatedRuntimeServices(db: Database): number {
   );
 }
 
+export function countAllocatedRuntimeServicesForOrganization(
+  db: Database,
+  orgId: string,
+): number {
+  return (
+    db
+      .query<{ count: number }, [string]>(
+        `SELECT COUNT(*) AS count
+         FROM runtime_stacks
+         WHERE org_id = ? AND service_ref IS NOT NULL AND status != 'deleted'`,
+      )
+      .get(orgId)?.count ?? 0
+  );
+}
+
 export interface RuntimeServiceProvisioningLeaseClaim {
   stack: RuntimeStackRow | null;
   leaseAcquired: boolean;
@@ -1126,6 +1141,36 @@ export function markRuntimeStackFailed(
     )
     .run(error.slice(0, 2_000), nowIso(), stackId, lease, lease);
   assertLeaseMutation(result.changes, leaseToken);
+}
+
+export function markRuntimeStackSuspended(
+  db: Database,
+  stackId: string,
+  reason: string,
+  nowIso: () => string,
+): void {
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET status = 'suspended', last_error = ?, updated_at = ?
+    WHERE id = ? AND status != 'deleted'
+  `,
+  ).run(reason.slice(0, 2_000), nowIso(), stackId);
+}
+
+export function markRuntimeStackDeleted(
+  db: Database,
+  stackId: string,
+  reason: string,
+  nowIso: () => string,
+): void {
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET status = 'deleted', last_error = ?, updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(reason.slice(0, 2_000), nowIso(), stackId);
 }
 
 export function assistantApiStatusForRuntimeStack(

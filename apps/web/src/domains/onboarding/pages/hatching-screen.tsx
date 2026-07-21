@@ -4,30 +4,42 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
-import { getAssistant, getAssistantHealthz, hatchAssistant, type Assistant } from "@/assistant/api";
+import {
+  getAssistant,
+  getAssistantHealthz,
+  hatchAssistant,
+  type Assistant,
+} from "@/assistant/api";
 import { hostedRuntimeConnection } from "@/assistant/hosting";
 import { seedHatchAvatar } from "@/assistant/seed-hatch-avatar";
 import {
-    isPlatformHostedDisabled,
-    PLATFORM_HOSTED_DISABLED_MESSAGE,
-    resolveAssistantLifecycleState,
-    shouldRecoverFromHatchFailure,
+  isPlatformHostedDisabled,
+  PLATFORM_HOSTED_DISABLED_MESSAGE,
+  resolveAssistantLifecycleState,
+  shouldRecoverFromHatchFailure,
 } from "@/assistant/lifecycle";
 import { lifecycleService } from "@/assistant/lifecycle-service";
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import {
-    readSelectedVersion,
-    writeSelectedVersion,
+  readSelectedVersion,
+  writeSelectedVersion,
 } from "@/domains/onboarding/prefs";
 import {
-    applyChatgptSubscriptionProvider,
-    applyPendingProviderKey,
-    pendingProviderRequiresOAuth,
-    peekPendingProviderKey,
+  applyChatgptSubscriptionProvider,
+  applyPendingProviderKey,
+  pendingProviderRequiresOAuth,
+  peekPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
 import { isPooledRuntimeProvider } from "@/assistant/pooled-model-provider";
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
-import { getLocalGatewayUrl, getPlatformRuntimeUrl, isLocalMode, loadLockfile, primeLocalGatewayConnection, saveLockfileAssistant } from "@/lib/local-mode";
+import {
+  getLocalGatewayUrl,
+  getPlatformRuntimeUrl,
+  isLocalMode,
+  loadLockfile,
+  primeLocalGatewayConnection,
+  saveLockfileAssistant,
+} from "@/lib/local-mode";
 import { clearGatewayToken } from "@/lib/auth/gateway-session";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { resolveNavigation } from "@/lib/navigation/navigation-resolver";
@@ -57,13 +69,16 @@ const HATCHING_AVATAR_SEQUENCE_GIF = publicAsset(
 
 // Module-level promises so HMR remounts and StrictMode double-mounts
 // can await the same in-flight hatch instead of spawning duplicates.
-let localHatchPromise: Promise<import("@/runtime/local-mode-host").LocalHatchResult> | null = null;
-let platformHatchPromise: Promise<import("@/assistant/api").HatchResult> | null = null;
+let localHatchPromise: Promise<
+  import("@/runtime/local-mode-host").LocalHatchResult
+> | null = null;
+let platformHatchPromise: Promise<
+  import("@/assistant/api").HatchResult
+> | null = null;
 
 type HatchPhase = "initializing" | "provisioning" | "connecting" | "ready";
 type ProviderSetupState =
-  | { kind: "idle" }
-  | { kind: "chatgpt"; assistantId: string };
+  { kind: "idle" } | { kind: "chatgpt"; assistantId: string };
 
 const PHASE_TARGET: Record<HatchPhase, number> = {
   initializing: 0,
@@ -131,16 +146,14 @@ export function interpolateSegmentProgress(
 }
 
 export type HatchGateDecision =
-  | { kind: "proceed" }
-  | { kind: "wait" }
-  | { kind: "redirect"; to: string };
+  { kind: "proceed" } | { kind: "wait" } | { kind: "redirect"; to: string };
 
 export function decideHatchGate(): HatchGateDecision {
-  const decision = resolveNavigation(
-    buildNavigationState(),
-    { kind: "hatch-gate" },
-  );
-  if (decision.action === "redirect") return { kind: "redirect", to: decision.to };
+  const decision = resolveNavigation(buildNavigationState(), {
+    kind: "hatch-gate",
+  });
+  if (decision.action === "redirect")
+    return { kind: "redirect", to: decision.to };
   if (decision.action === "wait") return { kind: "wait" };
   return { kind: "proceed" };
 }
@@ -152,7 +165,8 @@ export function HatchingScreen() {
   const hostingParam = searchParams.get("hosting");
   const failParam = searchParams.get("fail");
   const electron = isElectron();
-  const useLocalHatch = isLocalMode() && hostingParam !== null && hostingParam !== "vellum-cloud";
+  const useLocalHatch =
+    isLocalMode() && hostingParam !== null && hostingParam !== "vellum-cloud";
   const sessionStatus = useAuthStore.use.sessionStatus();
   const [hatchTraits] = useState<CharacterTraits>(() =>
     randomCharacterTraits(BUNDLED_COMPONENTS),
@@ -192,7 +206,6 @@ export function HatchingScreen() {
     setPhase("ready");
     phaseRef.current = "ready";
   }, []);
-
 
   useEffect(() => {
     // Developer "Replay Hatch Failure" tool: when opened with `?fail`, skip the
@@ -253,10 +266,7 @@ export function HatchingScreen() {
             });
             return;
           }
-          void navigate(
-            routes.onboarding.prechat,
-            { replace: true },
-          );
+          void navigate(routes.onboarding.prechat, { replace: true });
         })();
       }, COMPLETION_NAVIGATE_DELAY_MS);
     };
@@ -323,7 +333,8 @@ export function HatchingScreen() {
                 runtimeUrl: getPlatformRuntimeUrl(),
                 hatchedAt: new Date().toISOString(),
                 organizationId:
-                  useOrganizationStore.getState().currentOrganizationId ?? undefined,
+                  useOrganizationStore.getState().currentOrganizationId ??
+                  undefined,
                 runtimeProvider: existing.data.runtime_provider ?? undefined,
               });
             }
@@ -418,10 +429,12 @@ export function HatchingScreen() {
               }
             }
             if (Date.now() - pollStartMs >= MAX_HATCH_WAIT_MS) {
-              setError("Your assistant is taking longer than expected. Please try again.");
+              setError(
+                "Your assistant is taking longer than expected. Please try again.",
+              );
               return;
             }
-            await new Promise<void>(resolve => {
+            await new Promise<void>((resolve) => {
               readyPollTimer = setTimeout(resolve, POLL_INTERVAL_MS);
             });
             readyPollTimer = null;
@@ -451,7 +464,9 @@ export function HatchingScreen() {
         } catch {
           localHatchPromise = null;
           if (cancelled) return;
-          setError("Failed to hatch local assistant. Check CLI logs for details.");
+          setError(
+            "Failed to hatch local assistant. Check CLI logs for details.",
+          );
         }
         return;
       }
@@ -555,7 +570,8 @@ export function HatchingScreen() {
                 runtimeUrl: getPlatformRuntimeUrl(),
                 hatchedAt: new Date().toISOString(),
                 organizationId:
-                  useOrganizationStore.getState().currentOrganizationId ?? undefined,
+                  useOrganizationStore.getState().currentOrganizationId ??
+                  undefined,
                 runtimeProvider: result.data.runtime_provider ?? undefined,
               });
             }
@@ -572,10 +588,12 @@ export function HatchingScreen() {
                 // Daemon not reachable yet
               }
               if (Date.now() - pollStartMs >= MAX_HATCH_WAIT_MS) {
-                setError("Your assistant is taking longer than expected. Please try again.");
+                setError(
+                  "Your assistant is taking longer than expected. Please try again.",
+                );
                 return;
               }
-              await new Promise<void>(resolve => {
+              await new Promise<void>((resolve) => {
                 pollTimer = setTimeout(resolve, POLL_INTERVAL_MS);
               });
               pollTimer = null;
@@ -654,51 +672,61 @@ export function HatchingScreen() {
   if (providerSetup.kind === "chatgpt") {
     return (
       <OnboardingLayout>
-        <div className={`mx-auto flex w-full max-w-xl flex-col items-center ${electron ? "min-h-full px-8 pt-21 pb-28 electron-prechat-type" : "min-h-screen justify-center px-6 pb-40"} text-[var(--content-default)]`}>
+        <div
+          className={`mx-auto flex w-full max-w-xl flex-col items-center ${electron ? "min-h-full px-8 pt-21 pb-28 electron-prechat-type" : "min-h-screen justify-center px-6 pb-40"} text-[var(--content-default)]`}
+        >
           <div
             className="w-full"
             style={{ animation: "fadeInUp 0.4s ease-out both" }}
           >
-            <h1 className={electron ? "text-title-large text-center" : "text-center text-3xl font-semibold tracking-tight"}>
+            <h1
+              className={
+                electron
+                  ? "text-title-large text-center"
+                  : "text-center text-3xl font-semibold tracking-tight"
+              }
+            >
               Connect ChatGPT
             </h1>
-            <p className={`text-center text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}>
+            <p
+              className={`text-center text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}
+            >
               Sign in so Worklin can use your ChatGPT subscription for this
               assistant.
             </p>
             <div className="mt-8">
               <ChatgptOAuthSection
                 assistantId={providerSetup.assistantId}
-                onConnected={() => {
-                  void (async () => {
-                    try {
-                      await applyChatgptSubscriptionProvider(
-                        providerSetup.assistantId,
-                        {
-                          userId: useAuthStore.getState().user?.id ?? null,
-                        },
-                      );
-                    } catch (err) {
-                      captureError(err, {
-                        context: "onboarding_apply_chatgpt_subscription",
-                      });
-                    }
-                    setProviderSetup({ kind: "idle" });
-                    finishReadyVisualState();
+                onConnected={async () => {
+                  try {
+                    await applyChatgptSubscriptionProvider(
+                      providerSetup.assistantId,
+                      {
+                        userId: useAuthStore.getState().user?.id ?? null,
+                      },
+                    );
                     await lifecycleService.checkAssistant(
                       providerSetup.assistantId,
                     );
-                    if (isNativePlatform()) {
-                      lifecycleService.markExpectingFirstMessage();
-                      void navigate(`${routes.assistant}?onboarding=1`, {
-                        replace: true,
-                      });
-                      return;
-                    }
-                    void navigate(routes.onboarding.prechat, {
+                  } catch (err) {
+                    captureError(err, {
+                      context: "onboarding_apply_chatgpt_subscription",
+                    });
+                    throw err;
+                  }
+
+                  setProviderSetup({ kind: "idle" });
+                  finishReadyVisualState();
+                  if (isNativePlatform()) {
+                    lifecycleService.markExpectingFirstMessage();
+                    void navigate(`${routes.assistant}?onboarding=1`, {
                       replace: true,
                     });
-                  })();
+                    return;
+                  }
+                  void navigate(routes.onboarding.prechat, {
+                    replace: true,
+                  });
                 }}
               />
             </div>
@@ -715,10 +743,18 @@ export function HatchingScreen() {
           role="alert"
           className={`mx-auto flex w-full max-w-xl flex-col items-center ${electron ? "min-h-full px-8 pt-21 pb-28 electron-prechat-type" : "min-h-screen justify-center px-6 pb-40"} text-center text-[var(--content-default)]`}
         >
-          <h1 className={electron ? "text-title-large" : "text-3xl font-semibold tracking-tight"}>
+          <h1
+            className={
+              electron
+                ? "text-title-large"
+                : "text-3xl font-semibold tracking-tight"
+            }
+          >
             Something went wrong
           </h1>
-          <p className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}>
+          <p
+            className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}
+          >
             {error}
           </p>
           {platformHostedDisabled && (
@@ -747,7 +783,9 @@ export function HatchingScreen() {
             data-testid="hatching-avatar-sequence-gif"
             className={`${electron ? "my-auto py-8" : "my-16"} h-auto w-full max-w-[192px] rounded-[28px] border border-white/6 shadow-[0_18px_48px_rgba(0,0,0,0.32)] onboarding-avatar-failed`}
           />
-          <div className={`flex w-full flex-col ${electron ? "gap-2.5 max-w-[280px]" : "gap-2 max-w-sm"}`}>
+          <div
+            className={`flex w-full flex-col ${electron ? "gap-2.5 max-w-[280px]" : "gap-2 max-w-sm"}`}
+          >
             <Button
               variant="primary"
               size="regular"
@@ -800,12 +838,22 @@ export function HatchingScreen() {
           in-flow below the progress bar. The 200px bar cap and 10px label
           mirror HatchingStepView.swift (widthCap(200), VFont.labelSmall).
           Web/iOS keep the centered layout. */}
-      <div className={`mx-auto flex w-full max-w-xl flex-col items-center ${electron ? "min-h-full px-8 pt-21 pb-28 electron-prechat-type" : "min-h-screen justify-center px-6 pb-40"} text-center text-[var(--content-default)]`}>
-        <h1 className={electron ? "text-title-large" : "text-3xl font-semibold tracking-tight"}>
+      <div
+        className={`mx-auto flex w-full max-w-xl flex-col items-center ${electron ? "min-h-full px-8 pt-21 pb-28 electron-prechat-type" : "min-h-screen justify-center px-6 pb-40"} text-center text-[var(--content-default)]`}
+      >
+        <h1
+          className={
+            electron
+              ? "text-title-large"
+              : "text-3xl font-semibold tracking-tight"
+          }
+        >
           {phase === "ready" ? "Your assistant is ready!" : "Waking up…"}
         </h1>
         {phase !== "ready" && (
-          <p className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}>
+          <p
+            className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}
+          >
             Hang tight — your assistant will have a few questions for you once
             it&apos;s up.
           </p>
@@ -824,7 +872,9 @@ export function HatchingScreen() {
           className={`w-full ${electron ? "max-w-[200px]" : "max-w-sm"}`}
           aria-label="Assistant startup progress"
         />
-        <p className={`text-[var(--content-tertiary)] ${electron ? "mt-4 text-label-small-default" : "mt-3 text-body-small-default"}`}>
+        <p
+          className={`text-[var(--content-tertiary)] ${electron ? "mt-4 text-label-small-default" : "mt-3 text-body-small-default"}`}
+        >
           {PHASE_LABEL[phase]}
         </p>
       </div>

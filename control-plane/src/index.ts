@@ -18,6 +18,7 @@ import { dirname } from "node:path";
 import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
+  countAllocatedRuntimeServicesForOrganization,
   claimRuntimeServiceProvisioningLease,
   deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
@@ -42,7 +43,6 @@ import {
 import { managedVoiceRoutingHintFromToken } from "./live-voice-provider-callback.js";
 import {
   ensureAssistantStoreSchema,
-  getActiveAssistant as getStoredActiveAssistant,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
   hasAcceptedAssistantConsent,
@@ -52,6 +52,7 @@ import {
 import {
   BoundedKeyedTaskScheduler,
   provisionRailwayRuntime,
+  railwayRuntimeWorkspaceCapacityError,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
 } from "./railway-runtime-provisioner.js";
@@ -67,9 +68,46 @@ import {
 } from "./artifact-sharing-store.js";
 import { pathEquals, pathIsOrStartsWith } from "./http-paths.js";
 import {
+  brandResearchRunPayload,
+  createOrGetBrandResearchRun,
+  ensureBrandResearchRunSchema,
+  getBrandResearchRunForUser,
+  listBrandResearchRunsForUser,
+  markBrandResearchRunCancelled,
+} from "./brand-research-runs.js";
+import {
+  acceptWorkspaceInvitationForUser,
+  assignAssistant,
+  canManageAssignments,
+  canManageMembers,
+  createWorkspaceInvitation,
+  deactivateWorkspaceMember,
+  ensureWorkspaceManagementSchema,
+  getWorkspaceOrganizationContext,
+  listAccessibleAssistantIds,
+  listAssistantAssignments,
+  listPendingWorkspaceInvitations,
+  listWorkspaceMembers,
+  listWorkspaceOrganizationsForUser,
+  revokeWorkspaceInvitation,
+  setWorkspaceMemberRole,
+  unassignAssistant,
+} from "./workspace-management-store.js";
+import {
+  getOrganizationMembership,
+  getOrCreateOrganizationMembership,
+  type OrganizationMembershipRow,
+  type OrganizationRole,
+} from "./organization-membership-store.js";
+import {
+  deleteWorkspaceResearchProviderCredential,
+  isWorkspaceResearchProviderId,
+  listWorkspaceResearchProviders,
+  saveWorkspaceResearchProviderCredential,
+} from "./workspace-research-providers.js";
+import {
   applyRuntimeTenantHeaders,
   createRuntimeTenantContext,
-  getOwnedAssistantForRuntime,
   RuntimeTenantContextError,
   runtimeTenantContextClaim,
   type RuntimeTenantContext,
@@ -143,6 +181,11 @@ const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const ACTOR_TOKEN_TTL_SECONDS = 5 * 60;
 const POLICY_EPOCH = 1;
 const TENANT_MUTATION_RESERVATION_FLOOR_BYTES = 4 * 1024 * 1024;
+const RELEASE_SHA =
+  process.env.WORKLIN_RELEASE_SHA ??
+  process.env.RAILWAY_GIT_COMMIT_SHA ??
+  process.env.GITHUB_SHA ??
+  "unknown";
 
 function runtimeWorkerSessionTimer() {
   return {
@@ -317,6 +360,8 @@ db.exec(`
 ensureArtifactSharingSchema(db);
 ensureAssistantStoreSchema(db);
 ensureRuntimeStackSchema(db);
+ensureBrandResearchRunSchema(db);
+ensureWorkspaceManagementSchema(db);
 ensureTenantRuntimeAdmissionSchema(db);
 ensureTenantRuntimeOperationsSchema(db);
 const pooledModelKeyVault = new PooledModelKeyVault(
@@ -495,7 +540,8 @@ async function fencePooledRuntimeCoordinator(reason: Error): Promise<void> {
     clearInterval(runtimeWorkerCoordinatorHeartbeat);
     runtimeWorkerCoordinatorHeartbeat = null;
   }
-  const abortedRequestCount = runtimeWorkerRequestAbortRegistry.abortAll(reason);
+  const abortedRequestCount =
+    runtimeWorkerRequestAbortRegistry.abortAll(reason);
   const revokedCapabilityCount =
     pooledModelKeyVault.revokeAllRequestCapabilities();
   const fence = await runtimeWorkerCoordinator.fenceCoordinatorOwnership();
@@ -842,10 +888,6 @@ function getOrCreateOrganization(user: UserRow): OrganizationRow {
   return getOrCreateStoredOrganization(db, user.id, nowIso);
 }
 
-function getActiveAssistant(user: UserRow): AssistantRow | null {
-  return getStoredActiveAssistant(db, user.id);
-}
-
 function getOrCreateAssistant(user: UserRow): AssistantRow {
   return getOrCreateStoredAssistant(db, user.id, nowIso);
 }
@@ -1107,6 +1149,12 @@ function scheduleRuntimeProvisioning(
     }
 
     try {
+      const workspaceCapacityError = railwayRuntimeWorkspaceCapacityError(
+        current.service_ref,
+        countAllocatedRuntimeServicesForOrganization(db, current.org_id),
+        railwayProvisionerConfig.maxRuntimeServicesPerWorkspace ?? 1,
+      );
+      if (workspaceCapacityError) throw new Error(workspaceCapacityError);
       await provisionRailwayRuntime({
         assistant,
         stack: current,
@@ -1213,10 +1261,9 @@ function scheduleRuntimeProvisioning(
 
 function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
   const owner = db
-    .query<
-      { consent_json: string | null },
-      [string]
-    >("SELECT consent_json FROM users WHERE id = ?")
+    .query<{ consent_json: string | null }, [string]>(
+      "SELECT consent_json FROM users WHERE id = ?",
+    )
     .get(assistant.user_id);
   return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
 }
@@ -1247,19 +1294,11 @@ function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
 }
 
 function resumeRuntimeProvisioning(): void {
-  const assistants = db
-    .query<AssistantRow & { owner_consent_json: string | null }, []>(
-      `SELECT assistants.*, users.consent_json AS owner_consent_json
-       FROM assistants
-       JOIN users ON users.id = assistants.user_id`,
-    )
-    .all();
-  for (const assistant of assistants) {
-    if (!hasAcceptedAssistantConsent(assistant.owner_consent_json)) continue;
-    const stack = runtimeStackForPayload(assistant);
-    if (pooledRuntimeEligible(stack)) continue;
-    scheduleRuntimeProvisioning(assistant, stack);
-  }
+  // Runtime creation is lazy. Do not turn a process restart into a signup
+  // sweep: assistants whose stacks were only created for a list response must
+  // remain unprovisioned until their first real request. Failed stacks are
+  // retried by the same request path, which also preserves the per-assistant
+  // idempotency boundary.
 }
 
 function operationalStatusPayload(
@@ -1428,8 +1467,8 @@ async function handleSession(req: Request, res: Response): Promise<void> {
     ensureUserSessionCookie(req, res, user);
     getOrCreateOrganization(user);
     // A Worklin account always owns a default assistant identity. Runtime
-    // provisioning remains consent-gated below, so session bootstrap itself
-    // cannot allocate external infrastructure.
+    // provisioning remains lazy, so session bootstrap itself cannot allocate
+    // external infrastructure.
     getOrCreateAssistant(user);
     sendJson(req, res, authenticatedPayload(user));
     return;
@@ -1502,12 +1541,6 @@ async function handleUserMe(
       "UPDATE users SET username = ?, consent_json = ?, updated_at = ? WHERE id = ?",
     ).run(nextUsername, consentJson, nowIso(), user.id);
     user = { ...user, username: nextUsername, consent_json: consentJson };
-    if (
-      body.consent !== undefined &&
-      hasAcceptedAssistantConsent(user.consent_json)
-    ) {
-      ensureAssistantRuntime(getOrCreateAssistant(user));
-    }
   }
   sendJson(req, res, {
     ...userPayload(user),
@@ -1516,13 +1549,631 @@ async function handleUserMe(
 }
 
 function handleOrganizations(req: Request, res: Response, user: UserRow): void {
-  const org = getOrCreateOrganization(user);
+  let organizations = listWorkspaceOrganizationsForUser(db, user.id);
+  if (organizations.length === 0) {
+    getOrCreateOrganization(user);
+    organizations = listWorkspaceOrganizationsForUser(db, user.id);
+  }
+  const results = organizations.map(({ id, name }) => ({ id, name }));
   sendJson(req, res, {
-    count: 1,
+    count: results.length,
     next: null,
     previous: null,
-    results: [{ id: org.id, name: org.name }],
+    results,
   });
+}
+
+class WorkspaceAccessError extends Error {
+  constructor(message = "This workspace membership is inactive.") {
+    super(message);
+    this.name = "WorkspaceAccessError";
+  }
+}
+
+function requestedWorkspaceId(req: Request): string | null {
+  return req.get("Vellum-Organization-Id")?.trim() || null;
+}
+
+function workspaceContext(req: Request, user: UserRow) {
+  const requestedOrgId = requestedWorkspaceId(req);
+  const selected = getWorkspaceOrganizationContext(db, user.id, requestedOrgId);
+  if (selected) {
+    if (selected.membership.status !== "active") {
+      throw new WorkspaceAccessError();
+    }
+    return {
+      org: selected.organization,
+      membership: selected.membership,
+    };
+  }
+
+  if (requestedOrgId) {
+    throw new WorkspaceAccessError("You do not have access to this workspace.");
+  }
+
+  const inactiveMembership = db
+    .query<OrganizationMembershipRow, [string]>(
+      `SELECT * FROM organization_memberships
+       WHERE user_id = ? AND status = 'deactivated'
+       ORDER BY created_at LIMIT 1`,
+    )
+    .get(user.id);
+  if (inactiveMembership) {
+    throw new WorkspaceAccessError();
+  }
+
+  const org = getOrCreateStoredOrganization(db, user.id, nowIso);
+  const ownerMembership =
+    getOrganizationMembership(db, org.id, user.id) ??
+    getOrCreateOrganizationMembership(db, org.id, user.id, "admin", nowIso);
+  return { org, membership: ownerMembership };
+}
+
+function workspaceMemberPayload(
+  member: ReturnType<typeof listWorkspaceMembers>[number],
+) {
+  return {
+    user_id: member.user_id,
+    email: member.email,
+    username: member.username,
+    first_name: member.first_name,
+    last_name: member.last_name,
+    role: member.role,
+    status: member.status,
+    created_at: member.created_at,
+    updated_at: member.updated_at,
+  };
+}
+
+function isOrganizationRole(value: unknown): value is OrganizationRole {
+  return value === "admin" || value === "manager" || value === "collaborator";
+}
+
+async function handleWorkspace(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  if (!pathIsOrStartsWith(url.pathname, "/v1/workspace")) return false;
+
+  const inviteAcceptMatch =
+    /^\/v1\/workspace\/invitations\/([^/]+)\/accept\/?$/.exec(url.pathname);
+  if (inviteAcceptMatch && req.method === "POST") {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    try {
+      const membership = acceptWorkspaceInvitationForUser(
+        db,
+        decodeURIComponent(inviteAcceptMatch[1]!),
+        { id: user.id, email: user.email },
+        new Date(),
+      );
+      sendJson(req, res, membership);
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Invitation could not be accepted.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  const context = workspaceContext(req, user);
+
+  if (pathEquals(url.pathname, "/v1/workspace/") && req.method === "GET") {
+    const assignments = listAssistantAssignments(db, context.org.id);
+    const accessibleIds = new Set(
+      listAccessibleAssistantIds(
+        db,
+        context.org.id,
+        user.id,
+        context.membership.role,
+      ),
+    );
+    const assistants = db
+      .query<
+        Pick<AssistantRow, "id" | "name" | "user_id" | "org_id">,
+        [string]
+      >(
+        "SELECT id, name, user_id, org_id FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+      )
+      .all(context.org.id)
+      .filter((assistant) => accessibleIds.has(assistant.id));
+    const visibleAssignments =
+      context.membership.role === "admin" ||
+      context.membership.role === "manager"
+        ? assignments
+        : assignments.filter((assignment) => assignment.user_id === user.id);
+    sendJson(req, res, {
+      organization: {
+        id: context.org.id,
+        name: context.org.name,
+        owner_user_id: context.org.user_id,
+      },
+      current_user: {
+        user_id: user.id,
+        role: context.membership.role,
+      },
+      members: listWorkspaceMembers(db, context.org.id).map(
+        workspaceMemberPayload,
+      ),
+      assistants,
+      assignments: visibleAssignments,
+      research_providers: listWorkspaceResearchProviders(db, context.org.id),
+      invitations:
+        context.membership.role === "admin"
+          ? listPendingWorkspaceInvitations(db, context.org.id, new Date())
+          : [],
+    });
+    return true;
+  }
+
+  const researchProviderMatch =
+    /^\/v1\/workspace\/research-providers\/([^/]+)\/?$/.exec(url.pathname);
+  if (
+    researchProviderMatch &&
+    (req.method === "POST" || req.method === "DELETE")
+  ) {
+    if (!canManageMembers(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Only workspace admins can manage research providers." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const providerId = decodeURIComponent(researchProviderMatch[1]!);
+    if (!isWorkspaceResearchProviderId(providerId)) {
+      sendJson(req, res, { detail: "Unsupported research provider." }, 400);
+      return true;
+    }
+    if (req.method === "DELETE") {
+      sendJson(req, res, {
+        ok: deleteWorkspaceResearchProviderCredential(
+          db,
+          context.org.id,
+          providerId,
+        ),
+      });
+      return true;
+    }
+    const body = parseJsonBody<{ credential?: string }>(req) ?? {};
+    try {
+      const provider = saveWorkspaceResearchProviderCredential(
+        db,
+        {
+          orgId: context.org.id,
+          providerId,
+          credential: body.credential ?? "",
+        },
+        env.actorSigningKey,
+        nowIso,
+      );
+      sendJson(req, res, provider, 201);
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Provider could not be connected.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  const revokeInviteMatch =
+    /^\/v1\/workspace\/invitations\/([^/]+)\/revoke\/?$/.exec(url.pathname);
+  if (revokeInviteMatch && req.method === "POST") {
+    if (!canManageMembers(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Only workspace admins can revoke invites." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const revoked = revokeWorkspaceInvitation(
+      db,
+      context.org.id,
+      decodeURIComponent(revokeInviteMatch[1]!),
+    );
+    sendJson(req, res, { ok: revoked });
+    return true;
+  }
+
+  if (
+    pathEquals(url.pathname, "/v1/workspace/members/invite/") &&
+    req.method === "POST"
+  ) {
+    if (!canManageMembers(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Only workspace admins can invite members." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const body = parseJsonBody<{ email?: string; role?: unknown }>(req) ?? {};
+    if (!isOrganizationRole(body.role) || !body.email?.trim()) {
+      sendJson(
+        req,
+        res,
+        { detail: "Email and a valid role are required." },
+        400,
+      );
+      return true;
+    }
+    try {
+      const invitation = createWorkspaceInvitation(
+        db,
+        {
+          orgId: context.org.id,
+          invitedByUserId: user.id,
+          email: body.email,
+          role: body.role,
+        },
+        new Date(),
+      );
+      sendJson(
+        req,
+        res,
+        {
+          id: invitation.id,
+          role: body.role,
+          expires_at: invitation.expiresAt,
+          invite_url: `${publicWebOrigin()}/assistant/workspace/invitations/${encodeURIComponent(invitation.token)}`,
+        },
+        201,
+      );
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Invitation could not be created.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  const roleMatch = /^\/v1\/workspace\/members\/([^/]+)\/role\/?$/.exec(
+    url.pathname,
+  );
+  if (roleMatch && req.method === "PATCH") {
+    if (!canManageMembers(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Only workspace admins can change roles." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const body = parseJsonBody<{ role?: unknown }>(req) ?? {};
+    if (!isOrganizationRole(body.role)) {
+      sendJson(req, res, { detail: "A valid role is required." }, 400);
+      return true;
+    }
+    try {
+      const member = setWorkspaceMemberRole(
+        db,
+        context.org.id,
+        decodeURIComponent(roleMatch[1]!),
+        body.role,
+        context.org.user_id,
+        nowIso,
+      );
+      sendJson(req, res, member);
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Role could not be changed.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  const memberMatch = /^\/v1\/workspace\/members\/([^/]+)\/?$/.exec(
+    url.pathname,
+  );
+  if (memberMatch && req.method === "DELETE") {
+    if (!canManageMembers(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Only workspace admins can remove members." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    try {
+      deactivateWorkspaceMember(
+        db,
+        context.org.id,
+        decodeURIComponent(memberMatch[1]!),
+        context.org.user_id,
+        nowIso,
+      );
+      sendJson(req, res, { ok: true });
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Member could not be removed.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  if (
+    pathEquals(url.pathname, "/v1/workspace/assistants/assignments/") &&
+    req.method === "POST"
+  ) {
+    if (!canManageAssignments(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "You do not have permission to assign assistants." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const body =
+      parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
+    const assistant = body.assistantId
+      ? db
+          .query<AssistantRow, [string, string]>(
+            "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
+          )
+          .get(body.assistantId, context.org.id)
+      : null;
+    const member = body.userId
+      ? getOrganizationMembership(db, context.org.id, body.userId)
+      : null;
+    if (!assistant || !member || member.status !== "active") {
+      sendJson(
+        req,
+        res,
+        { detail: "Assistant and active member are required." },
+        400,
+      );
+      return true;
+    }
+    sendJson(
+      req,
+      res,
+      assignAssistant(db, context.org.id, assistant.id, member.user_id, nowIso),
+      201,
+    );
+    return true;
+  }
+
+  if (
+    pathEquals(url.pathname, "/v1/workspace/assistants/assignments/") &&
+    req.method === "DELETE"
+  ) {
+    if (!canManageAssignments(context.membership.role)) {
+      sendJson(
+        req,
+        res,
+        { detail: "You do not have permission to assign assistants." },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const body =
+      parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
+    if (!body.assistantId || !body.userId) {
+      sendJson(req, res, { detail: "Assistant and member are required." }, 400);
+      return true;
+    }
+    unassignAssistant(db, context.org.id, body.assistantId, body.userId);
+    sendJson(req, res, { ok: true });
+    return true;
+  }
+
+  sendJson(req, res, { detail: "Workspace route not found." }, 404);
+  return true;
+}
+
+async function handleBrandResearchRuns(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  if (
+    pathEquals(url.pathname, "/v1/brand-research/runs/") &&
+    req.method === "GET"
+  ) {
+    const results = listBrandResearchRunsForUser(db, user.id).map(
+      brandResearchRunPayload,
+    );
+    sendJson(req, res, {
+      count: results.length,
+      next: null,
+      previous: null,
+      results,
+    });
+    return true;
+  }
+
+  if (
+    pathEquals(url.pathname, "/v1/brand-research/runs/") &&
+    req.method === "POST"
+  ) {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const body =
+      parseJsonBody<{
+        assistantId?: string;
+        brandName?: string;
+        websiteUrl?: string;
+      }>(req) ?? {};
+    const assistant = body.assistantId
+      ? accessibleAssistantsForUser(req, user).find(
+          (candidate) => candidate.id === body.assistantId,
+        )
+      : accessibleAssistantsForUser(req, user)[0];
+    if (!assistant) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    try {
+      const run = createOrGetBrandResearchRun(
+        db,
+        {
+          orgId: assistant.org_id,
+          userId: user.id,
+          assistantId: assistant.id,
+          brandName: body.brandName,
+          websiteUrl: body.websiteUrl,
+        },
+        nowIso,
+      );
+      sendJson(req, res, brandResearchRunPayload(run), 202);
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error ? error.message : "Invalid brand seed.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  const detailMatch = /^\/v1\/brand-research\/runs\/([^/]+)\/?$/.exec(
+    url.pathname,
+  );
+  if (detailMatch && req.method === "GET") {
+    const run = getBrandResearchRunForUser(db, detailMatch[1]!, user.id);
+    if (!run) {
+      sendJson(req, res, { detail: "Research run not found." }, 404);
+      return true;
+    }
+    sendJson(req, res, brandResearchRunPayload(run));
+    return true;
+  }
+
+  const cancelMatch = /^\/v1\/brand-research\/runs\/([^/]+)\/cancel\/?$/.exec(
+    url.pathname,
+  );
+  if (cancelMatch && req.method === "POST") {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const run = getBrandResearchRunForUser(db, cancelMatch[1]!, user.id);
+    if (!run) {
+      sendJson(req, res, { detail: "Research run not found." }, 404);
+      return true;
+    }
+    markBrandResearchRunCancelled(db, run.id, nowIso);
+    const updated = getBrandResearchRunForUser(db, run.id, user.id);
+    sendJson(req, res, updated ? brandResearchRunPayload(updated) : null);
+    return true;
+  }
+
+  return false;
+}
+
+function accessibleAssistantsForUser(
+  req: Request,
+  user: UserRow,
+): AssistantRow[] {
+  const workspace = workspaceContext(req, user);
+  if (workspace.org.user_id === user.id) {
+    const existing = db
+      .query<AssistantRow, [string]>(
+        "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+      )
+      .all(workspace.org.id);
+    if (existing.length === 0) getOrCreateAssistant(user);
+  }
+  const accessibleIds = new Set(
+    listAccessibleAssistantIds(
+      db,
+      workspace.org.id,
+      user.id,
+      workspace.membership.role,
+    ),
+  );
+  return db
+    .query<AssistantRow, [string]>(
+      "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+    )
+    .all(workspace.org.id)
+    .filter((assistant) => accessibleIds.has(assistant.id));
 }
 
 async function handleAssistants(
@@ -1532,7 +2183,7 @@ async function handleAssistants(
   user: UserRow,
 ): Promise<boolean> {
   if (pathEquals(url.pathname, "/v1/assistants/") && req.method === "GET") {
-    const assistant = getOrCreateAssistant(user);
+    const assistants = accessibleAssistantsForUser(req, user);
     const hosting = url.searchParams.get("hosting");
     const includeAssistant =
       hosting === null || hosting === "platform" || hosting === "all";
@@ -1540,10 +2191,9 @@ async function handleAssistants(
       sendJson(req, res, { count: 0, next: null, previous: null, results: [] });
       return true;
     }
-    const runtimeStack = hasAcceptedAssistantConsent(user.consent_json)
-      ? ensureAssistantRuntime(assistant)
-      : runtimeStackForPayload(assistant);
-    const results = [assistantPayload(assistant, user, runtimeStack)];
+    const results = assistants.map((assistant) =>
+      assistantPayload(assistant, user, runtimeStackForPayload(assistant)),
+    );
     sendJson(req, res, {
       count: results.length,
       next: null,
@@ -1557,10 +2207,17 @@ async function handleAssistants(
     pathEquals(url.pathname, "/v1/assistants/active/") &&
     req.method === "GET"
   ) {
-    const assistant = getOrCreateAssistant(user);
-    const runtimeStack = hasAcceptedAssistantConsent(user.consent_json)
-      ? ensureAssistantRuntime(assistant)
-      : runtimeStackForPayload(assistant);
+    const assistant = accessibleAssistantsForUser(req, user)[0];
+    if (!assistant) {
+      sendJson(
+        req,
+        res,
+        { detail: "No assistant has been assigned to you." },
+        404,
+      );
+      return true;
+    }
+    const runtimeStack = runtimeStackForPayload(assistant);
     sendJson(req, res, assistantPayload(assistant, user, runtimeStack));
     return true;
   }
@@ -1586,9 +2243,34 @@ async function handleAssistants(
       );
       return true;
     }
-    const existing = getActiveAssistant(user);
-    const assistant = existing ?? getOrCreateAssistant(user);
-    const runtimeStack = ensureAssistantRuntime(assistant);
+    const workspace = workspaceContext(req, user);
+    const existing =
+      workspace.org.user_id === user.id
+        ? db
+            .query<AssistantRow, [string]>(
+              "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+            )
+            .get(workspace.org.id)
+        : accessibleAssistantsForUser(req, user)[0];
+    const assistant =
+      existing ??
+      (workspace.org.user_id === user.id ? getOrCreateAssistant(user) : null);
+    if (!assistant) {
+      sendJson(
+        req,
+        res,
+        { detail: "A workspace admin must assign an assistant before hatch." },
+        403,
+      );
+      return true;
+    }
+    const runtimeStack = claimPreprovisionedRuntimeStack(
+      db,
+      assistant,
+      runtimeStackForPayload(assistant),
+      runtimeStackConfig,
+      nowIso,
+    );
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
       !pooledRuntimeEligible(runtimeStack) &&
@@ -1619,15 +2301,131 @@ async function handleAssistants(
     return true;
   }
 
+  const restartMatch = /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(
+    url.pathname,
+  );
+  if (restartMatch && req.method === "POST") {
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === restartMatch[1],
+    );
+    if (!assistant) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    if (!hasAcceptedAssistantConsent(user.consent_json)) {
+      sendJson(
+        req,
+        res,
+        { detail: "Assistant consent must be accepted before use." },
+        403,
+      );
+      return true;
+    }
+
+    const currentRuntimeStack = runtimeStackForPayload(assistant);
+    if (pooledRuntimeEligible(currentRuntimeStack)) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Assistant is ready.",
+          code: "runtime_active",
+          runtime_status: "active",
+          runtime_stack_id: currentRuntimeStack.id,
+        },
+        200,
+      );
+      return true;
+    }
+    if (isRuntimeStackRoutable(currentRuntimeStack)) {
+      // Preserve the existing restart behavior for a healthy runtime by
+      // forwarding the request to its gateway.
+      return false;
+    }
+
+    if (!assistantOwnerHasAcceptedConsent(assistant)) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "The assistant owner must accept the current consent terms before restarting it.",
+          code: "assistant_owner_consent_required",
+        },
+        409,
+      );
+      return true;
+    }
+
+    const runtimeStack = ensureAssistantRuntime(assistant);
+    if (isRuntimeStackRoutable(runtimeStack)) {
+      // A reserved runtime slot can become active during this retry.
+      return false;
+    }
+
+    if (runtimeStack.provider !== "railway") {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "This assistant runtime cannot be restarted automatically.",
+          code: "runtime_not_retryable",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        503,
+      );
+      return true;
+    }
+
+    const provisioningError = runtimeProvisioningConfigurationError();
+    if (provisioningError) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Managed assistant provisioning is not available.",
+          code: "platform_hosted_disabled",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        503,
+      );
+      return true;
+    }
+
+    if (
+      runtimeStack.status === "provisioning" ||
+      runtimeStack.status === "failed"
+    ) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Assistant runtime restart requested.",
+          code: "runtime_provisioning",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        202,
+      );
+      return true;
+    }
+
+    sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
+    return true;
+  }
+
   const operationalStatusMatch =
     /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(url.pathname);
   if (operationalStatusMatch && req.method === "GET") {
-    const assistant = db
-      .query<
-        AssistantRow,
-        [string, string]
-      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
-      .get(operationalStatusMatch[1]!, user.id);
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === operationalStatusMatch[1],
+    );
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
       return true;
@@ -1638,17 +2436,30 @@ async function handleAssistants(
 
   const assistantMatch = /^\/v1\/assistants\/([^/]+)\/?$/.exec(url.pathname);
   if (assistantMatch) {
-    const assistant = db
-      .query<
-        AssistantRow,
-        [string, string]
-      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
-      .get(assistantMatch[1]!, user.id);
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === assistantMatch[1],
+    );
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
       return true;
     }
     if (req.method === "PATCH") {
+      const workspace = workspaceContext(req, user);
+      if (
+        assistant.user_id !== user.id &&
+        workspace.membership.role !== "admin"
+      ) {
+        sendJson(
+          req,
+          res,
+          {
+            detail:
+              "Only the assistant owner or a workspace admin can rename it.",
+          },
+          403,
+        );
+        return true;
+      }
       if (!checkCsrf(req)) {
         sendJson(req, res, { detail: "CSRF validation failed." }, 403);
         return true;
@@ -1718,10 +2529,9 @@ async function handleArtifactInvitations(
       return true;
     }
     const assistant = db
-      .query<
-        AssistantRow,
-        [string, string]
-      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
+      .query<AssistantRow, [string, string]>(
+        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+      )
       .get(createMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
@@ -1965,12 +2775,7 @@ async function proxySharedArtifact(
     );
     return true;
   }
-  const runtimeStack = ensureRuntimeStackForAssistant(
-    db,
-    assistant,
-    runtimeStackConfig,
-    nowIso,
-  );
+  const runtimeStack = ensureAssistantRuntime(assistant);
   if (!isRuntimeStackRoutable(runtimeStack)) {
     sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
     return true;
@@ -2207,12 +3012,27 @@ async function proxyToGateway(
     return;
   }
 
-  const assistant = getOwnedAssistantForRuntime(db, assistantId, user.id);
+  const assistant = accessibleAssistantsForUser(req, user).find(
+    (candidate) => candidate.id === assistantId,
+  );
   if (!assistant) {
     sendJson(req, res, { detail: "Assistant not found." }, 404);
     return;
   }
 
+  if (!hasAcceptedAssistantConsent(user.consent_json)) {
+    sendJson(
+      req,
+      res,
+      { detail: "Assistant consent must be accepted before use." },
+      403,
+    );
+    return;
+  }
+
+  // This is the first real assistant request. Only here do we claim the
+  // stack and start lazy provisioning; list, consent, and hatch calls remain
+  // read-only with respect to Railway capacity.
   const runtimeStack = ensureAssistantRuntime(assistant);
   const routingPolicy = selectRuntimeWorkerRoutingPolicy(
     runtimeStack,
@@ -2470,9 +3290,8 @@ async function proxyToGateway(
       actorToken = route.actorToken;
       pooledRequestHandle = route.requestHandle;
       pooledLeaseBinding = route.binding;
-      unregisterPooledAbort = runtimeWorkerRequestAbortRegistry.register(
-        abortController,
-      );
+      unregisterPooledAbort =
+        runtimeWorkerRequestAbortRegistry.register(abortController);
     }
 
     if (routingPolicy.mode === "pooled") {
@@ -2969,7 +3788,9 @@ app.post(
   }),
 );
 
-app.get("/healthz", (req, res) => sendJson(req, res, { ok: true }));
+app.get("/healthz", (req, res) =>
+  sendJson(req, res, { ok: true, release_sha: RELEASE_SHA }),
+);
 app.get(
   "/readyz",
   asyncHandler(async (req, res) => {
@@ -3054,30 +3875,41 @@ app.use(
     const user = requireUser(req, res);
     if (!user) return;
 
-    if (pathEquals(url.pathname, "/v1/user/me/")) {
-      await handleUserMe(req, res, user);
-      return;
-    }
-    if (pathEquals(url.pathname, "/v1/organizations/")) {
-      handleOrganizations(req, res, user);
-      return;
-    }
-    if (pathEquals(url.pathname, "/v1/organizations/billing/summary/")) {
-      handleBilling(req, res);
-      return;
-    }
+    try {
+      if (await handleWorkspace(req, res, url, user)) return;
 
-    if (await handleArtifactInvitations(req, res, url, user)) return;
-    if (await proxySharedArtifact(req, res, url, user)) return;
+      if (pathEquals(url.pathname, "/v1/user/me/")) {
+        await handleUserMe(req, res, user);
+        return;
+      }
+      if (pathEquals(url.pathname, "/v1/organizations/")) {
+        handleOrganizations(req, res, user);
+        return;
+      }
+      if (await handleBrandResearchRuns(req, res, url, user)) return;
+      if (pathEquals(url.pathname, "/v1/organizations/billing/summary/")) {
+        handleBilling(req, res);
+        return;
+      }
 
-    if (pathIsOrStartsWith(url.pathname, "/v1/assistants/")) {
-      const handled = await handleAssistants(req, res, url, user);
-      if (handled) return;
-      await proxyToGateway(req, res, url, user);
-      return;
+      if (await handleArtifactInvitations(req, res, url, user)) return;
+      if (await proxySharedArtifact(req, res, url, user)) return;
+
+      if (pathIsOrStartsWith(url.pathname, "/v1/assistants/")) {
+        const handled = await handleAssistants(req, res, url, user);
+        if (handled) return;
+        await proxyToGateway(req, res, url, user);
+        return;
+      }
+
+      sendJson(req, res, { detail: "Not found." }, 404);
+    } catch (error) {
+      if (error instanceof WorkspaceAccessError) {
+        sendJson(req, res, { detail: error.message }, 403);
+        return;
+      }
+      throw error;
     }
-
-    sendJson(req, res, { detail: "Not found." }, 404);
   }),
 );
 
@@ -3098,7 +3930,6 @@ if (runtimeProvisionerError) {
     reason: runtimeProvisionerError,
   });
 }
-resumeRuntimeProvisioning();
 
 let runtimeWorkerHealthMonitor: ReturnType<typeof setInterval> | null = null;
 let runtimeWorkerHealthProbeInFlight = false;
@@ -3178,6 +4009,7 @@ if (
   );
   runtimeCapacityMonitor.unref();
 }
+resumeRuntimeProvisioning();
 
 // Bun's Node HTTP compatibility can let an Express-only process exit after
 // listen() unless another handle is active. Keep the control-plane alive in

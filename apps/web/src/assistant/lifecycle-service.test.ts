@@ -32,10 +32,26 @@ const TEST_ERROR_RETRY_DELAY_MS = 200;
 
 const getAssistantMock = mock(async () => ({ ok: false, status: 404 }));
 const getAssistantHealthzMock = mock(async () => ({ ok: true }));
+const restartAssistantMock = mock(
+  async (
+    _assistantId: string,
+  ): Promise<
+    | { ok: true; data: Record<string, unknown> }
+    | {
+        ok: false;
+        status: number;
+        error: Record<string, unknown>;
+      }
+  > => ({
+    ok: true,
+    data: {},
+  }),
+);
 
 mock.module("@/assistant/api", () => ({
   getAssistant: getAssistantMock,
   getAssistantHealthz: getAssistantHealthzMock,
+  restartAssistant: restartAssistantMock,
 }));
 
 const setSelfHostedConnectionMock = mock((_args: unknown) => {});
@@ -131,6 +147,7 @@ const baseInputs = {
 beforeEach(() => {
   getAssistantMock.mockClear();
   getAssistantHealthzMock.mockClear();
+  restartAssistantMock.mockClear();
   setSelfHostedConnectionMock.mockClear();
   // Re-baseline implementations every test so a `mockImplementationOnce`
   // or `mockImplementation` from a prior test doesn't leak.
@@ -145,6 +162,10 @@ beforeEach(() => {
   primeLocalGatewayConnectionWithRepairMock.mockClear();
   getAssistantMock.mockImplementation(async () => ({ ok: false, status: 404 }));
   getAssistantHealthzMock.mockImplementation(async () => ({ ok: true }));
+  restartAssistantMock.mockImplementation(async () => ({
+    ok: true,
+    data: {},
+  }));
   lifecycleService.__resetForTesting();
   // Deterministic baseline for the selection subscription's diff. Reset
   // AFTER __resetForTesting (state is `loading`, gateway mode is false)
@@ -167,6 +188,98 @@ afterEach(() => {
 });
 
 describe("lifecycleService — server state projection", () => {
+  test("retry requests a failed managed runtime restart before polling again", async () => {
+    getAssistantMock
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        data: {
+          id: "asst-retry",
+          status: "initializing",
+          runtime_status: "failed",
+          is_local: false,
+        },
+      }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        data: {
+          id: "asst-retry",
+          status: "initializing",
+          runtime_status: "provisioning",
+          is_local: false,
+        },
+      }));
+    lifecycleService.setInputs({
+      ...baseInputs,
+      queryClient: makeQueryClient(),
+    });
+
+    await lifecycleService.checkAssistant();
+    expect(useAssistantLifecycleStore.getState().assistantState.kind).toBe(
+      "error",
+    );
+
+    await lifecycleService.retryAssistant();
+
+    expect(restartAssistantMock).toHaveBeenCalledWith("asst-retry");
+    expect(useAssistantLifecycleStore.getState().assistantState).toEqual({
+      kind: "initializing",
+    });
+  });
+
+  test("retry does not restart after an unrelated server error", async () => {
+    getAssistantMock.mockImplementation(async () => ({
+      ok: false,
+      status: 500,
+      error: { detail: "Temporary platform error." },
+    }));
+    lifecycleService.setInputs({
+      ...baseInputs,
+      queryClient: makeQueryClient(),
+      selectedPlatformAssistantId: "asst-selected",
+    });
+
+    await lifecycleService.checkAssistant();
+    await lifecycleService.retryAssistant();
+
+    expect(restartAssistantMock).not.toHaveBeenCalled();
+    expect(getAssistantMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("retry surfaces an explicit restart failure without pretending to poll", async () => {
+    getAssistantMock.mockImplementationOnce(async () => ({
+      ok: true,
+      status: 200,
+      data: {
+        id: "asst-retry-failed",
+        status: "initializing",
+        runtime_status: "failed",
+        is_local: false,
+      },
+    }));
+    restartAssistantMock.mockImplementationOnce(async () => ({
+      ok: false,
+      status: 503,
+      error: { detail: "Managed assistant provisioning is not available." },
+    }));
+    lifecycleService.setInputs({
+      ...baseInputs,
+      queryClient: makeQueryClient(),
+    });
+
+    await lifecycleService.checkAssistant();
+    await lifecycleService.retryAssistant();
+
+    expect(restartAssistantMock).toHaveBeenCalledWith("asst-retry-failed");
+    expect(getAssistantMock).toHaveBeenCalledTimes(1);
+    expect(useAssistantLifecycleStore.getState().assistantState).toEqual({
+      kind: "error",
+      message: "Managed assistant provisioning is not available.",
+      retryAction: "restart_runtime",
+    });
+  });
+
   test("active result writes the assistant id and flips to active", async () => {
     getAssistantMock.mockImplementationOnce(async () => ({
       ok: true,
@@ -531,7 +644,7 @@ describe("lifecycleService — pre-init guards", () => {
     // a `useEffect` that calls a lifecycle action before
     // `RootLayout`'s passive effect has installed inputs.
     await lifecycleService.checkAssistant();
-    lifecycleService.retryAssistant();
+    await lifecycleService.retryAssistant();
     await lifecycleService.respondToInputs();
 
     expect(getAssistantMock).not.toHaveBeenCalled();
@@ -682,6 +795,7 @@ describe("lifecycleService — watchdog timeout", () => {
     expect(state.kind).toBe("error");
     if (state.kind === "error") {
       expect(state.message).toEqual(buildInitializingTimeoutError().message);
+      expect(state.retryAction).toBe("restart_runtime");
     }
   });
 });

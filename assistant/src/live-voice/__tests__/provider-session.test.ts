@@ -34,6 +34,9 @@ const binding = {
   engine: "hume" as const,
 };
 
+const BASE64URL_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
 beforeEach(() => {
   resetManagedVoiceSessionsForTesting();
   resetPooledVoiceLeaseFenceForTesting();
@@ -76,8 +79,17 @@ describe("managed voice session tokens", () => {
 
   test("rejects tampering, expiry, and replay after release", () => {
     const active = createManagedVoiceSession(binding);
+    const [payload, signature] = active.token.split(".");
+    const canonicalLastIndex = BASE64URL_ALPHABET.indexOf(signature.at(-1)!);
+    const alternateSignature =
+      signature.slice(0, -1) + BASE64URL_ALPHABET[canonicalLastIndex + 1];
     expect(
-      verifyManagedVoiceSessionToken(`${active.token.slice(0, -1)}x`),
+      Buffer.from(alternateSignature, "base64url").equals(
+        Buffer.from(signature, "base64url"),
+      ),
+    ).toBe(true);
+    expect(
+      verifyManagedVoiceSessionToken(`${payload}.${alternateSignature}`),
     ).toBeNull();
     expect(releaseManagedVoiceSession(binding.sessionId, binding.actorId)).toBe(
       true,

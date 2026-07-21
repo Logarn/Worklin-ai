@@ -16,6 +16,7 @@ import {
   ensureRuntimeStackSchema,
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
+import { ensureWorkspaceManagementSchema } from "./workspace-management-store.js";
 
 const CONTROL_PLANE_DIR = fileURLToPath(new URL("..", import.meta.url));
 const SESSION_SECRET = "s".repeat(32);
@@ -151,6 +152,7 @@ function createControlPlaneSchema(db: Database): void {
   `);
   ensureAssistantStoreSchema(db);
   ensureRuntimeStackSchema(db);
+  ensureWorkspaceManagementSchema(db);
 }
 
 function authenticatedHeaders(sessionId: string): Record<string, string> {
@@ -377,7 +379,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toMatchObject({
       code: "platform_hosted_disabled",
-      runtime_status: "failed",
+      runtime_status: "provisioning",
     });
 
     const assistant = db
@@ -399,6 +401,277 @@ describe("control-plane runtime provisioning guards", () => {
       runtime_status: "failed",
     });
     db.close();
+  });
+
+  test("restart retries a failed isolated runtime instead of only polling it", async () => {
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch() {
+        await Bun.sleep(1_000);
+        return Response.json({ errors: [{ message: "test stop" }] });
+      },
+    });
+    servers.push(railway);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const timestamp = new Date().toISOString();
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, '', '', ?, ?, ?)`,
+    ).run(
+      "user-retry",
+      "retry@example.com",
+      "retry",
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO organizations (
+        id, user_id, name, is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?)`,
+    ).run("org-retry", "user-retry", "Retry", timestamp, timestamp);
+    db.query(
+      `INSERT INTO assistants (
+        id, user_id, org_id, name, runtime_stack_id, isolation_version,
+        is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Worklin', ?, 2, 1, ?, ?)`,
+    ).run(
+      "asst-retry",
+      "user-retry",
+      "org-retry",
+      "rt-retry",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO assistants (
+        id, user_id, org_id, name, runtime_stack_id, isolation_version,
+        is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Worklin', ?, 2, 0, ?, ?)`,
+    ).run(
+      "asst-non-retryable",
+      "user-retry",
+      "org-retry",
+      "rt-non-retryable",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, 'failed', 'railway', NULL, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    ).run(
+      "rt-retry",
+      "org-retry",
+      "asst-retry",
+      "https://worklin.example.com",
+      "volume-retry",
+      "service-retry",
+      "runtime_v1:rt-retry",
+      "Previous deployment failed.",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, 'failed', 'preprovisioned', NULL, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    ).run(
+      "rt-non-retryable",
+      "org-retry",
+      "asst-non-retryable",
+      "https://worklin.example.com",
+      "volume-non-retryable",
+      "service-non-retryable",
+      "global",
+      "Unsupported runtime failure.",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      "session-retry",
+      "user-retry",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+    );
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath, {
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+      WORKLIN_RAILWAY_API_ENDPOINT: `http://127.0.0.1:${railway.port}`,
+      WORKLIN_RAILWAY_PROJECT_TOKEN: "project-token",
+      WORKLIN_RAILWAY_PROJECT_ID: "project-1",
+      WORKLIN_RAILWAY_ENVIRONMENT_ID: "environment-1",
+      WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: "5",
+      WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY: "1",
+    });
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/asst-retry/restart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-retry"),
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      detail: "Assistant runtime restart requested.",
+      code: "runtime_provisioning",
+      runtime_status: "provisioning",
+      runtime_stack_id: "rt-retry",
+    });
+
+    const unsupported = await fetch(
+      `${origin}/v1/assistants/asst-non-retryable/restart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-retry"),
+        body: "{}",
+      },
+    );
+    expect(unsupported.status).toBe(503);
+    expect(await unsupported.json()).toEqual({
+      detail: "This assistant runtime cannot be restarted automatically.",
+      code: "runtime_not_retryable",
+      runtime_status: "failed",
+      runtime_stack_id: "rt-non-retryable",
+    });
+  });
+
+  test("healthy runtime restart remains available to an assigned collaborator", async () => {
+    const runtimePaths: string[] = [];
+    const runtime = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        runtimePaths.push(new URL(request.url).pathname);
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(runtime);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const timestamp = new Date().toISOString();
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES
+        ('user-restart-owner', 'restart-owner@example.com', 'restart-owner', '', '', NULL, ?, ?),
+        ('user-restart-collaborator', 'restart-collaborator@example.com', 'restart-collaborator', '', '', ?, ?, ?)`,
+    ).run(timestamp, timestamp, ACCEPTED_CONSENT, timestamp, timestamp);
+    db.query(
+      `INSERT INTO organizations (
+        id, user_id, name, is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?)`,
+    ).run(
+      "org-restart-collaboration",
+      "user-restart-owner",
+      "Restart collaboration",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO organization_memberships (
+        org_id, user_id, role, status, created_at, updated_at
+      ) VALUES (?, ?, 'collaborator', 'active', ?, ?)`,
+    ).run(
+      "org-restart-collaboration",
+      "user-restart-collaborator",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO assistants (
+        id, user_id, org_id, name, runtime_stack_id, isolation_version,
+        is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Worklin', ?, 2, 1, ?, ?)`,
+    ).run(
+      "asst-restart-collaboration",
+      "user-restart-owner",
+      "org-restart-collaboration",
+      "rt-restart-collaboration",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO assistant_assignments (
+        org_id, assistant_id, user_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      "org-restart-collaboration",
+      "asst-restart-collaboration",
+      "user-restart-collaborator",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, 'active', 'railway', ?, ?, ?, ?, ?, '200', NULL, ?, ?)`,
+    ).run(
+      "rt-restart-collaboration",
+      "org-restart-collaboration",
+      "asst-restart-collaboration",
+      `http://127.0.0.1:${runtime.port}`,
+      "https://worklin.example.com",
+      "volume-restart-collaboration",
+      "service-restart-collaboration",
+      "runtime_v1:rt-restart-collaboration",
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      "session-restart-collaborator",
+      "user-restart-collaborator",
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+    );
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath);
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/asst-restart-collaboration/restart/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-restart-collaborator"),
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(runtimePaths).toEqual([
+      "/v1/assistants/asst-restart-collaboration/restart/",
+    ]);
   });
 
   test("an existing allowlisted legacy customer remains active", async () => {
@@ -815,7 +1088,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(runtimeRequests).toBe(0);
   });
 
-  test("startup resumes only assistants whose owners accepted consent", async () => {
+  test("startup does not provision assistants before their first real request", async () => {
     const dbPath = createTempDbPath();
     const db = new Database(dbPath);
     createControlPlaneSchema(db);
@@ -883,9 +1156,9 @@ describe("control-plane runtime provisioning guards", () => {
             data: { variableCollectionUpsert: true },
           });
         }
-        if (payload.query.includes("serviceInstanceDeploy")) {
+        if (payload.query.includes("serviceInstanceDeployV2")) {
           return Response.json({
-            data: { serviceInstanceDeploy: "deploy-accepted" },
+            data: { serviceInstanceDeployV2: "deploy-accepted" },
           });
         }
         if (payload.query.includes("query deployment")) {
@@ -914,48 +1187,23 @@ describe("control-plane runtime provisioning guards", () => {
     });
     await waitForHealth(origin);
 
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (
-        railwayOperations.some((operation) =>
-          operation.query.includes("serviceCreate"),
-        )
-      ) {
-        break;
-      }
-      await Bun.sleep(10);
-    }
-    await Bun.sleep(50);
+    await Bun.sleep(100);
     railway.stop(true);
 
     expect(
       railwayOperations.filter((operation) =>
         operation.query.includes("serviceCreate"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     const verificationDb = new Database(dbPath);
-    const stacks = verificationDb
-      .query<
-        RuntimeStackRow,
-        []
-      >("SELECT * FROM runtime_stacks ORDER BY assistant_id")
-      .all();
-    expect(stacks.map((stack) => stack.assistant_id)).toEqual([
-      "asst-accepted",
-    ]);
-    const variablesMutation = railwayOperations.find((operation) =>
-      operation.query.includes("variableCollectionUpsert"),
-    );
-    const input = variablesMutation?.variables.input as {
-      variables: Record<string, string>;
-    };
-    expect(stacks[0]?.actor_signing_key_scope).toStartWith("runtime_v1:");
-    expect(input.variables.ACTOR_TOKEN_SIGNING_KEY).toBe(
-      deriveRuntimeActorSigningKey(
-        ACTOR_SIGNING_KEY,
-        stacks[0]!.actor_signing_key_scope,
-      ),
-    );
-    expect(input.variables.ACTOR_TOKEN_SIGNING_KEY).not.toBe(ACTOR_SIGNING_KEY);
+    expect(
+      verificationDb
+        .query<
+          { count: number },
+          []
+        >("SELECT COUNT(*) AS count FROM runtime_stacks")
+        .get()?.count,
+    ).toBe(0);
     verificationDb.close();
   });
 });

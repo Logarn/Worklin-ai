@@ -327,7 +327,15 @@ function getCpuInfo(): CpuInfo {
 }
 
 export function handleHealth(): Response {
-  return Response.json({ status: "ok" });
+  return Response.json({
+    status: "ok",
+    version: APP_VERSION,
+    release_sha:
+      process.env.WORKLIN_RELEASE_SHA ??
+      process.env.RAILWAY_GIT_COMMIT_SHA ??
+      process.env.GITHUB_SHA ??
+      "unknown",
+  });
 }
 
 function getDetailedHealth() {
@@ -406,7 +414,15 @@ export function handleReadyz(): Response {
       }
     }
   }
-  return Response.json({ status: "ok" });
+  return Response.json({
+    status: "ok",
+    version: APP_VERSION,
+    release_sha:
+      process.env.WORKLIN_RELEASE_SHA ??
+      process.env.RAILWAY_GIT_COMMIT_SHA ??
+      process.env.GITHUB_SHA ??
+      "unknown",
+  });
 }
 
 function getIdentity() {

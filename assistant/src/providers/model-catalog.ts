@@ -744,7 +744,7 @@ const RAW_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
         pricing: { inputPer1mTokens: 1.74, outputPer1mTokens: 3.48 },
       },
     ],
-    defaultModel: "accounts/fireworks/models/kimi-k2p5",
+    defaultModel: "accounts/fireworks/models/kimi-k2p6",
     apiKeyUrl: "https://fireworks.ai/account/api-keys",
     apiKeyPlaceholder: "fw_...",
   },

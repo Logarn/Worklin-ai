@@ -28,6 +28,7 @@ import type {
   ConnectionProvider,
   ProviderConnection,
 } from "@/generated/daemon/types.gen";
+import { XAI_PROVIDER_PRESET } from "@/assistant/provider-connection-presets";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -58,6 +59,10 @@ let createResponseOk = true;
 let createResponseStatus = 200;
 let toastSuccessCalls: string[] = [];
 let configGetData: Record<string, unknown>;
+let availableProviderCredentials: Array<{
+  service: string;
+  field: string;
+}> = [];
 
 mock.module("@vellumai/design-library/components/toast", () => ({
   toast: {
@@ -246,7 +251,7 @@ mock.module("@/domains/settings/ai/use-stored-credential-presence", () => ({
 
 mock.module("@/domains/settings/ai/use-provider-credentials-list", () => ({
   useProviderCredentialsList: () => ({
-    credentials: [],
+    credentials: availableProviderCredentials,
     isLoading: false,
   }),
 }));
@@ -353,6 +358,7 @@ beforeEach(() => {
   createResponseOk = true;
   createResponseStatus = 200;
   toastSuccessCalls = [];
+  availableProviderCredentials = [];
   configGetData = {
     llm: {
       activeProfile: "balanced",
@@ -617,6 +623,138 @@ describe("ProviderCreateForm submit sequence", () => {
     expect(toastSuccessCalls).toEqual(["Provider connected and selected"]);
   });
 
+  test("the xAI preset saves its credential, endpoint, model, and active profile", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: null,
+        profileOrder: [],
+        profiles: {},
+      },
+    };
+    createdConnection = {
+      ...makeConnection("xai-personal", "openai-compatible"),
+      label: "xAI",
+      baseUrl: "https://api.x.ai/v1",
+      auth: {
+        type: "api_key",
+        credential: "credential/xai/api_key",
+      },
+      models: [{ id: "grok-4.3", displayName: "Grok 4.3" }],
+    } as ProviderConnection;
+
+    const { queryByPlaceholderText } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="openai-compatible"
+          defaultAuthType="api_key"
+          preset={XAI_PROVIDER_PRESET}
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    expect(getInputByPlaceholder("e.g. My Anthropic Key").value).toBe("xAI");
+    expect(getInputByPlaceholder("e.g. anthropic-personal").value).toBe(
+      "xai-personal",
+    );
+    expect(queryByPlaceholderText("https://api.example.com/v1")).toBeNull();
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        'button[role="combobox"][aria-label="Provider"]',
+      )?.disabled,
+    ).toBe(true);
+
+    fireEvent.change(getInputByPlaceholder("Enter your API key"), {
+      target: { value: "xai-test-key" },
+    });
+    fireEvent.click(getButton("Create"));
+
+    await waitFor(() => {
+      expect(configPatchCalls.length).toBe(1);
+    });
+
+    expect(secretsPostCalls[0].body).toEqual({
+      type: "credential",
+      name: "xai:api_key",
+      value: "xai-test-key",
+    });
+    expect(createConnectionCalls[0].body).toEqual({
+      name: "xai-personal",
+      provider: "openai-compatible",
+      label: "xAI",
+      auth: {
+        type: "api_key",
+        credential: "credential/xai/api_key",
+      },
+      base_url: "https://api.x.ai/v1",
+      models: [{ id: "grok-4.3" }],
+    });
+    expect(configPatchCalls[0].body).toMatchObject({
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            provider: "openai-compatible",
+            provider_connection: "xai-personal",
+            model: "grok-4.3",
+          },
+        },
+      },
+    });
+  });
+
+  test("the xAI preset exposes existing xAI credentials, not generic compatible credentials", () => {
+    availableProviderCredentials = [
+      { service: "xai", field: "team_key" },
+      { service: "openai-compatible", field: "other_key" },
+    ];
+
+    const { getByRole, getByText, queryByText } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="openai-compatible"
+          defaultAuthType="api_key"
+          preset={XAI_PROVIDER_PRESET}
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    fireEvent.click(getByText("Advanced"));
+    fireEvent.click(
+      getByRole("combobox", { name: "Credential reference" }),
+    );
+
+    expect(getByText("credential/xai/team_key")).toBeTruthy();
+    expect(queryByText("credential/openai-compatible/other_key")).toBeNull();
+  });
+
+  test("a generic OpenAI-compatible service cannot save without a model", () => {
+    const { getByText } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="openai-compatible"
+          defaultAuthType="api_key"
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    expect(
+      getByText("Add at least one model before connecting this service."),
+    ).toBeTruthy();
+    expect(getButton("Create").disabled).toBe(true);
+  });
+
   test("creating Kimi while Worklin credits are active switches the assistant to Kimi", async () => {
     configGetData = {
       llm: {
@@ -763,7 +901,7 @@ describe("ProviderCreateForm submit sequence", () => {
       label: "Fireworks",
       name: "fireworks",
       key: "fw_test",
-      model: "accounts/fireworks/models/kimi-k2p5",
+      model: "accounts/fireworks/models/kimi-k2p6",
     },
     {
       provider: "openrouter",

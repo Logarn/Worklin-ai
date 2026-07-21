@@ -374,7 +374,7 @@ describe("identity routes — health endpoint", () => {
 
       const res = handleReadyz();
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ status: "ok" });
+      expect(await res.json()).toMatchObject({ status: "ok" });
     });
 
     test("pooled worker readyz ignores a dormant CES client after daemon startup", () => {
@@ -388,7 +388,6 @@ describe("identity routes — health endpoint", () => {
       const res = handleReadyz();
       expect(res.status).toBe(200);
     });
-
     test("/v1/health reports ces.connected=true when CES is ready", async () => {
       const mockClient = {
         isReady: () => true,

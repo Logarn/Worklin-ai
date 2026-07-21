@@ -87,7 +87,6 @@ export interface RuntimeWorkerLeaseClaim {
   lease_generation: number;
   lease_expires_at: number;
 }
-
 export interface TokenClaims {
   iss: "vellum-auth";
   aud: TokenAudience;

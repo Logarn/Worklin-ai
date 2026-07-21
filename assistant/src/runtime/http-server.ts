@@ -1180,7 +1180,11 @@ export class RuntimeHttpServer {
       const authContext = ws.data.authContext;
       const trustContext =
         authContext?.principalType === "actor"
-          ? resolveAuthenticatedOwnerTrustContext(authContext, "vellum")
+          ? resolveAuthenticatedOwnerTrustContext({
+              actorPrincipalId: authContext.actorPrincipalId,
+              platformOwnerBound: Boolean(authContext.tenantContext),
+              sourceChannel: "vellum",
+            })
           : null;
       const result = await this.liveVoiceSessionManager.startSession(
         frame,

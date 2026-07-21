@@ -57,13 +57,29 @@ describe("runtime tenant context", () => {
     });
   });
 
-  test("rejects a caller that does not own the assistant", () => {
-    expect(() =>
+  test("binds an assigned collaborator to the same assistant runtime", () => {
+    expect(
       createRuntimeTenantContext(
         assistant,
         "user-2",
         runtimeStack,
         "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toMatchObject({
+      organizationId: "org-1",
+      userId: "user-2",
+      assistantId: "assistant-1",
+      actorId: "vellum-principal-user-2",
+    });
+  });
+
+  test("rejects a runtime stack belonging to another assistant", () => {
+    expect(() =>
+      createRuntimeTenantContext(
+        assistant,
+        "user-2",
+        { ...runtimeStack, assistant_id: "assistant-2" },
+        "33333333-3333-4333-8333-333333333333",
       ),
     ).toThrow(RuntimeTenantContextError);
   });

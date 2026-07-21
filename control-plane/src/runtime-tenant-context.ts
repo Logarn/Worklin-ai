@@ -63,8 +63,10 @@ export function createRuntimeTenantContext(
       "Runtime tenant context requires a user and request identity.",
     );
   }
+  // Workspace authorization is enforced before this helper is called. The
+  // runtime identity itself must bind to the assistant and organization, but
+  // an assigned manager or collaborator may act on the owner's assistant.
   if (
-    assistant.user_id !== userId ||
     runtimeStack.assistant_id !== assistant.id ||
     runtimeStack.org_id !== assistant.org_id
   ) {

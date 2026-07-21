@@ -68,7 +68,6 @@ function platformHeaders(): Record<string, string> {
     "x-worklin-request-id": PLATFORM_TENANT_CONTEXT.request_id,
   };
 }
-
 function mintPooledServiceToken(input: {
   organizationId: string;
   userId: string;
