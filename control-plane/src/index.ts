@@ -43,9 +43,11 @@ import {
 import { managedVoiceRoutingHintFromToken } from "./live-voice-provider-callback.js";
 import {
   ensureAssistantStoreSchema,
+  getAssistantAdminAccessConsent,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
   hasAcceptedAssistantConsent,
+  setAssistantAdminAccessConsent,
   type AssistantRow,
   type OrganizationRow,
 } from "./assistant-store.js";
@@ -347,6 +349,8 @@ db.exec(`
     name TEXT NOT NULL,
     runtime_stack_id TEXT,
     isolation_version INTEGER NOT NULL DEFAULT 2,
+    admin_access_consented INTEGER NOT NULL DEFAULT 0
+      CHECK(admin_access_consented IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -1030,7 +1034,7 @@ function assistantPayload(
     platform_actor_token: pooled
       ? null
       : mintActorToken(runtimeStack, tenantContext),
-    access_consented: hasAcceptedAssistantConsent(user.consent_json),
+    access_consented: row.admin_access_consented === 1,
   };
 }
 
@@ -2200,6 +2204,85 @@ async function handleAssistants(
       previous: null,
       results,
     });
+    return true;
+  }
+
+  const accessConsentMatch =
+    /^\/v1\/assistants\/([^/]+)\/access-consent\/?$/.exec(url.pathname);
+  if (accessConsentMatch) {
+    const assistantId = accessConsentMatch[1]!;
+    const workspace = workspaceContext(req, user);
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === assistantId,
+    );
+    if (!assistant || assistant.org_id !== workspace.org.id) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    const currentConsent = getAssistantAdminAccessConsent(
+      db,
+      assistantId,
+      workspace.org.id,
+    );
+    if (currentConsent === null) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    const canUpdateConsent =
+      assistant.user_id === user.id || workspace.membership.role === "admin";
+
+    if (req.method === "GET") {
+      sendJson(req, res, {
+        access_consented: currentConsent,
+        can_update: canUpdateConsent,
+      });
+      return true;
+    }
+
+    if (req.method === "PATCH") {
+      if (!canUpdateConsent) {
+        sendJson(
+          req,
+          res,
+          {
+            detail:
+              "Only the assistant owner or a workspace admin can change admin access.",
+          },
+          403,
+        );
+        return true;
+      }
+      if (!checkCsrf(req)) {
+        sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+        return true;
+      }
+      const body = parseJsonBody<{ access_consented?: unknown }>(req) ?? {};
+      if (typeof body.access_consented !== "boolean") {
+        sendJson(
+          req,
+          res,
+          { detail: "access_consented must be a boolean." },
+          400,
+        );
+        return true;
+      }
+      const updated = setAssistantAdminAccessConsent(
+        db,
+        assistantId,
+        workspace.org.id,
+        body.access_consented,
+        nowIso,
+      );
+      if (updated === null) {
+        sendJson(req, res, { detail: "Assistant not found." }, 404);
+        return true;
+      }
+      sendJson(req, res, { access_consented: updated, can_update: true });
+      return true;
+    }
+
+    res.setHeader("Allow", "GET, PATCH");
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
     return true;
   }
 

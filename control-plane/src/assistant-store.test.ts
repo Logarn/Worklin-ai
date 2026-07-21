@@ -7,8 +7,10 @@ import { join } from "node:path";
 import {
   ensureAssistantStoreSchema,
   getActiveAssistant,
+  getAssistantAdminAccessConsent,
   getOrCreateAssistant,
   hasAcceptedAssistantConsent,
+  setAssistantAdminAccessConsent,
 } from "./assistant-store.js";
 import { getOrganizationMembership } from "./organization-membership-store.js";
 
@@ -49,6 +51,7 @@ describe("default assistant store", () => {
       name: "Worklin",
       isolation_version: 2,
       runtime_stack_id: null,
+      admin_access_consented: 0,
       is_default: 1,
     });
     expect(getActiveAssistant(db, "user-1")?.id).toBe(assistant.id);
@@ -75,12 +78,12 @@ describe("default assistant store", () => {
     expect(second.org_id).not.toBe(first.org_id);
     expect(getActiveAssistant(db, "user-1")?.id).toBe(first.id);
     expect(getActiveAssistant(db, "user-2")?.id).toBe(second.id);
-    expect(
-      getOrganizationMembership(db, first.org_id, "user-1")?.role,
-    ).toBe("admin");
-    expect(
-      getOrganizationMembership(db, second.org_id, "user-2")?.role,
-    ).toBe("admin");
+    expect(getOrganizationMembership(db, first.org_id, "user-1")?.role).toBe(
+      "admin",
+    );
+    expect(getOrganizationMembership(db, second.org_id, "user-2")?.role).toBe(
+      "admin",
+    );
     expect(getOrganizationMembership(db, first.org_id, "user-2")).toBeNull();
     expect(getOrganizationMembership(db, second.org_id, "user-1")).toBeNull();
   });
@@ -236,6 +239,32 @@ describe("default assistant store", () => {
         )
         .run(NOW(), NOW()),
     ).toThrow();
+  });
+
+  test("keeps admin access consent scoped to the assistant workspace", () => {
+    const db = setupDb();
+    const first = getOrCreateAssistant(db, "user-1", NOW);
+    const second = getOrCreateAssistant(db, "user-2", NOW);
+
+    expect(getAssistantAdminAccessConsent(db, first.id, first.org_id)).toBe(
+      false,
+    );
+    expect(
+      setAssistantAdminAccessConsent(db, first.id, first.org_id, true, NOW),
+    ).toBe(true);
+    expect(getAssistantAdminAccessConsent(db, first.id, first.org_id)).toBe(
+      true,
+    );
+
+    expect(
+      getAssistantAdminAccessConsent(db, second.id, first.org_id),
+    ).toBeNull();
+    expect(
+      setAssistantAdminAccessConsent(db, second.id, first.org_id, true, NOW),
+    ).toBeNull();
+    expect(getAssistantAdminAccessConsent(db, second.id, second.org_id)).toBe(
+      false,
+    );
   });
 });
 
