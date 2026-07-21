@@ -15,10 +15,11 @@ import {
   Share2,
   Star,
   StarOff,
+  Trash2,
   TriangleAlert,
   Video,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -27,19 +28,33 @@ import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-s
 import { PageShell } from "@/components/page-shell";
 import { BrandResearchStatus } from "@/components/brand-research-status";
 import {
+  appsGetQueryKey,
   artifactsGetQueryKey,
   brandsGetQueryKey,
   useArtifactsByIdPatchMutation,
 } from "@/generated/daemon/@tanstack/react-query.gen";
-import type { ArtifactsByIdPatchData } from "@/generated/daemon/types.gen";
-import { captureError } from "@/lib/sentry/capture-error";
+import { appsByIdDeletePost } from "@/generated/daemon/sdk.gen";
+import type {
+  AppsGetResponse,
+  ArtifactsGetResponse,
+  ArtifactsByIdPatchData,
+} from "@/generated/daemon/types.gen";
+import { captureError, normalizeToError } from "@/lib/sentry/capture-error";
 import { useConversationStore } from "@/stores/conversation-store";
 import { usePinnedAppsStore } from "@/stores/pinned-apps-store";
 import { useViewerStore } from "@/stores/viewer-store";
+import type { AppSummary } from "@/types/app-types";
+import { clearAppHtmlCache } from "@/utils/app-html-cache";
 import { createDraftConversationId } from "@/utils/conversation-selection";
 import { formatFriendlyDate } from "@/utils/format-date";
 import { routes } from "@/utils/routes";
-import { Button, Input, Menu, toast } from "@vellumai/design-library";
+import {
+  Button,
+  ConfirmDialog,
+  Input,
+  Menu,
+  toast,
+} from "@vellumai/design-library";
 
 import {
   artifactMatchesFilter,
@@ -62,6 +77,16 @@ const FILTERS = [
   "documents",
 ] as const;
 type ArtifactFilter = (typeof FILTERS)[number];
+
+type AppDeleteState =
+  | { status: "idle" }
+  | {
+      status: "confirming";
+      assistantId: string;
+      app: AppSummary;
+      error: string | null;
+    }
+  | { status: "deleting"; assistantId: string; app: AppSummary };
 
 const FILTER_LABELS: Record<ArtifactFilter, string> = {
   all: "All",
@@ -92,6 +117,10 @@ export function BrandArtifactsPage() {
   } = useWorkData(assistantId);
   const [filter, setFilter] = useState<ArtifactFilter>("all");
   const [searchText, setSearchText] = useState("");
+  const [appDeleteState, setAppDeleteState] = useState<AppDeleteState>({
+    status: "idle",
+  });
+  const appDeleteInFlightRef = useRef(false);
   const brand = brands.find((item) => item.id === brandId);
   const brandName =
     brand?.name ??
@@ -106,6 +135,15 @@ export function BrandArtifactsPage() {
     );
     return () => setTopBarCenter(null);
   }, [brandId, brandName, setTopBarCenter]);
+
+  useEffect(() => {
+    if (
+      appDeleteState.status === "confirming" &&
+      appDeleteState.assistantId !== assistantId
+    ) {
+      setAppDeleteState({ status: "idle" });
+    }
+  }, [appDeleteState, assistantId]);
 
   const normalizedSearch = searchText.trim().toLowerCase();
   const patchArtifact = useArtifactsByIdPatchMutation();
@@ -137,6 +175,105 @@ export function BrandArtifactsPage() {
     } catch (error) {
       captureError(error, { context: "artifact_organization_update" });
       toast.error("Artifact could not be updated");
+    }
+  };
+  const handleConfirmAppDelete = async () => {
+    if (
+      appDeleteState.status !== "confirming" ||
+      appDeleteInFlightRef.current
+    ) {
+      return;
+    }
+    if (appDeleteState.assistantId !== assistantId) {
+      setAppDeleteState({ status: "idle" });
+      return;
+    }
+
+    const target = appDeleteState.app;
+    const targetAssistantId = appDeleteState.assistantId;
+    appDeleteInFlightRef.current = true;
+    setAppDeleteState({
+      status: "deleting",
+      assistantId: targetAssistantId,
+      app: target,
+    });
+
+    try {
+      const result = await appsByIdDeletePost({
+        path: { assistant_id: targetAssistantId, id: target.id },
+        throwOnError: true,
+      });
+      if (result.data?.success !== true) {
+        throw new Error(
+          "The assistant did not confirm that the app was deleted.",
+        );
+      }
+
+      const queryKey = appsGetQueryKey({
+        path: { assistant_id: targetAssistantId },
+      });
+      const artifactsQueryKey = artifactsGetQueryKey({
+        path: { assistant_id: targetAssistantId },
+        query: { status: "active" },
+      });
+      clearAppHtmlCache(targetAssistantId, target.id);
+      queryClient.setQueryData<AppsGetResponse>(queryKey, (current) =>
+        current
+          ? {
+              ...current,
+              apps: current.apps.filter((app) => app.id !== target.id),
+            }
+          : current,
+      );
+      queryClient.setQueryData<ArtifactsGetResponse>(
+        artifactsQueryKey,
+        (current) =>
+          current
+            ? {
+                ...current,
+                artifacts: current.artifacts.filter(
+                  (artifact) =>
+                    artifact.resourceType !== "app" ||
+                    artifact.resourceId !== target.id,
+                ),
+              }
+            : current,
+      );
+      if (pinnedAppIds.has(target.id)) {
+        try {
+          togglePin(target);
+        } catch (error) {
+          captureError(error, {
+            context: "work_app_pin_cleanup",
+            extra: { appId: target.id },
+          });
+        }
+      }
+      setAppDeleteState({ status: "idle" });
+      toast.success("App deleted", {
+        description: `${target.name} was permanently removed.`,
+      });
+      void queryClient.invalidateQueries({ queryKey });
+    } catch (error) {
+      const message = normalizeToError(error).message;
+      captureError(error, {
+        context: "work_app_delete",
+        extra: { assistantId: targetAssistantId, appId: target.id },
+      });
+      setAppDeleteState({
+        status: "confirming",
+        assistantId: targetAssistantId,
+        app: target,
+        error: message,
+      });
+      toast.error("App was not deleted", { description: message });
+    } finally {
+      appDeleteInFlightRef.current = false;
+    }
+  };
+  const handleCancelAppDelete = () => {
+    if (appDeleteState.status !== "deleting") {
+      setAppDeleteState({ status: "idle" });
     }
   };
   const visibleCopybooks = useMemo(
@@ -386,40 +523,98 @@ export function BrandArtifactsPage() {
                     favorite={pinnedAppIds.has(app.id)}
                     actions={
                       <LocalAppActionsMenu
+                        appName={app.name}
                         favorite={pinnedAppIds.has(app.id)}
                         onToggleFavorite={() => togglePin(app)}
+                        onDelete={() =>
+                          setAppDeleteState({
+                            status: "confirming",
+                            assistantId,
+                            app,
+                            error: null,
+                          })
+                        }
+                        disabled={appDeleteState.status === "deleting"}
                       />
                     }
                   />
                 ))}
-                {visibleRegistryArtifacts.map((artifact) => (
-                  <ArtifactCard
-                    key={artifact.id}
-                    icon={<ArtifactTypeIcon artifact={artifact} />}
-                    eyebrow={artifact.artifactType
-                      .replaceAll("_", " ")
-                      .toUpperCase()}
-                    title={artifact.title}
-                    detail={getArtifactDetail(artifact)}
-                    updatedAt={artifact.updatedAt}
-                    to={getArtifactDestination(artifact, brandId)}
-                    favorite={artifact.favorite}
-                    unavailable={!artifact.sourceExists}
-                    actions={
-                      <ArtifactActionsMenu
-                        artifact={artifact}
-                        brands={brands}
-                        disabled={patchArtifact.isPending}
-                        onUpdate={updateArtifact}
-                      />
-                    }
-                  />
-                ))}
+                {visibleRegistryArtifacts.map((artifact) => {
+                  const registeredApp =
+                    artifact.resourceType === "app"
+                      ? apps.find((app) => app.id === artifact.resourceId)
+                      : undefined;
+                  return (
+                    <ArtifactCard
+                      key={artifact.id}
+                      icon={<ArtifactTypeIcon artifact={artifact} />}
+                      eyebrow={artifact.artifactType
+                        .replaceAll("_", " ")
+                        .toUpperCase()}
+                      title={artifact.title}
+                      detail={getArtifactDetail(artifact)}
+                      updatedAt={artifact.updatedAt}
+                      to={getArtifactDestination(artifact, brandId)}
+                      favorite={artifact.favorite}
+                      unavailable={!artifact.sourceExists}
+                      actions={
+                        <ArtifactActionsMenu
+                          artifact={artifact}
+                          brands={brands}
+                          disabled={
+                            patchArtifact.isPending ||
+                            appDeleteState.status === "deleting"
+                          }
+                          onUpdate={updateArtifact}
+                          onDelete={
+                            registeredApp
+                              ? () =>
+                                  setAppDeleteState({
+                                    status: "confirming",
+                                    assistantId,
+                                    app: registeredApp,
+                                    error: null,
+                                  })
+                              : undefined
+                          }
+                        />
+                      }
+                    />
+                  );
+                })}
               </ul>
             )}
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={appDeleteState.status !== "idle"}
+        title="Delete app"
+        message={
+          appDeleteState.status === "idle" ? null : (
+            <span className="flex flex-col gap-2">
+              <span>
+                &ldquo;{appDeleteState.app.name}&rdquo; will be permanently
+                removed.
+              </span>
+              {appDeleteState.status === "confirming" &&
+              appDeleteState.error ? (
+                <span
+                  role="alert"
+                  className="text-body-small-default text-[var(--system-negative-strong)]"
+                >
+                  App was not deleted. {appDeleteState.error}
+                </span>
+              ) : null}
+            </span>
+          )
+        }
+        confirmLabel="Delete"
+        destructive
+        isPending={appDeleteState.status === "deleting"}
+        onConfirm={() => void handleConfirmAppDelete()}
+        onCancel={handleCancelAppDelete}
+      />
     </PageShell>
   );
 }
@@ -570,6 +765,7 @@ interface ArtifactActionsMenuProps {
     body: ArtifactsByIdPatchData["body"],
     successMessage: string,
   ) => Promise<void>;
+  onDelete?: () => void;
 }
 
 function ArtifactActionsMenu({
@@ -577,6 +773,7 @@ function ArtifactActionsMenu({
   brands,
   disabled,
   onUpdate,
+  onDelete,
 }: ArtifactActionsMenuProps) {
   const currentBrandId = artifact.brandId ?? UNASSIGNED_BRAND_ID;
   const brandChoices = [
@@ -652,17 +849,32 @@ function ArtifactActionsMenu({
         >
           Archive
         </Menu.Item>
+        {onDelete ? (
+          <Menu.Item
+            leftIcon={<Trash2 className="size-3.5" />}
+            onSelect={onDelete}
+            className="text-[var(--system-negative-strong)] data-[highlighted]:text-[var(--system-negative-strong)]"
+          >
+            Delete
+          </Menu.Item>
+        ) : null}
       </Menu.Content>
     </Menu.Root>
   );
 }
 
 function LocalAppActionsMenu({
+  appName,
   favorite,
   onToggleFavorite,
+  onDelete,
+  disabled,
 }: {
+  appName: string;
   favorite: boolean;
   onToggleFavorite: () => void;
+  onDelete: () => void;
+  disabled: boolean;
 }) {
   return (
     <Menu.Root>
@@ -671,7 +883,8 @@ function LocalAppActionsMenu({
           variant="outlined"
           size="compact"
           iconOnly={<Ellipsis />}
-          aria-label="App actions"
+          aria-label={`Actions for ${appName}`}
+          disabled={disabled}
           onClick={(event) => event.stopPropagation()}
         />
       </Menu.Trigger>
@@ -687,6 +900,14 @@ function LocalAppActionsMenu({
           onSelect={onToggleFavorite}
         >
           {favorite ? "Remove favorite" : "Favorite"}
+        </Menu.Item>
+        <Menu.Separator />
+        <Menu.Item
+          leftIcon={<Trash2 className="size-3.5" />}
+          onSelect={onDelete}
+          className="text-[var(--system-negative-strong)] data-[highlighted]:text-[var(--system-negative-strong)]"
+        >
+          Delete
         </Menu.Item>
       </Menu.Content>
     </Menu.Root>
