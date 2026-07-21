@@ -8,6 +8,7 @@ import { getMemoryCheckpoint, setMemoryCheckpoint } from "./checkpoints.js";
 import { getLastUserMessageTimestamp } from "./conversation-crud.js";
 import { runAsyncSqlite } from "./db-async-query.js";
 import { getSqlite } from "./db-connection.js";
+import { protectDatabaseDuringMaintenance } from "./db-protection.js";
 
 const log = getLogger("db-maintenance");
 
@@ -41,6 +42,8 @@ function getDbStats(): DbStats {
 }
 
 async function runDbMaintenance(): Promise<void> {
+  await protectDatabaseDuringMaintenance();
+
   const before = getDbStats();
   const freelistPct =
     before.pageCount > 0

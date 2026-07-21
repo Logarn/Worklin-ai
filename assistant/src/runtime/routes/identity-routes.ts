@@ -13,6 +13,7 @@ import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
 import { parseIdentityFields } from "../../daemon/handlers/identity.js";
 import { getProfilerRuntimeStatus } from "../../daemon/profiler-run-store.js";
+import { getSqlite } from "../../memory/db-connection.js";
 import { getMaxMigrationVersion } from "../../memory/migrations/registry.js";
 import { buildSystemPrompt } from "../../prompts/system-prompt.js";
 import { getConfiguredProvider } from "../../providers/provider-send-message.js";
@@ -30,6 +31,7 @@ import { getLastWorkspaceMigrationId } from "../../workspace/migrations/runner.j
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { runBtwSidechain } from "../btw-sidechain.js";
 import { getDaemonReadiness } from "../daemon-readiness.js";
+import { checkStorageReadiness } from "../storage-readiness.js";
 import { NotFoundError } from "./errors.js";
 import {
   getCachedIntro,
@@ -385,6 +387,37 @@ export function handleReadyz(): Response {
         {
           status: "starting",
           reason: daemonReadiness.reason ?? "daemon_starting",
+        },
+        { status: 503 },
+      );
+    }
+  }
+
+  // An idle pooled worker intentionally has no tenant database open. Its
+  // assignment lifecycle validates the restored database before activation,
+  // so probing SQLite here would make every idle worker look unhealthy.
+  if (!pooledRuntime) {
+    const storage = checkStorageReadiness(() => {
+      const sqlite = getSqlite();
+      sqlite.query("SELECT 1").get();
+      const result = sqlite.query("PRAGMA quick_check(1)").get() as {
+        quick_check?: unknown;
+      } | null;
+      if (result?.quick_check !== "ok") {
+        throw new Error(
+          `SQLite integrity check failed: ${String(result?.quick_check ?? "no result")}`,
+        );
+      }
+    });
+    if (!storage.ready) {
+      getLogger("health").error(
+        { error: storage.error },
+        "Runtime storage is not ready",
+      );
+      return Response.json(
+        {
+          status: "starting",
+          reason: "storage_unavailable",
         },
         { status: 503 },
       );
