@@ -5148,15 +5148,19 @@ components:
   schemas:
     AccessConsent:
       type: object
-      description: Serializer for the user-controlled admin log access consent toggle.
+      description: Serializer for the workspace-scoped admin log access consent toggle.
       properties:
         access_consented:
           type: boolean
           description: When True, Vellum admins may view the daemon log files (/workspace/data/logs/assistant-*.log)
             from this assistant pod for debugging. Defaults to False; the owner can
             revoke at any time.
+        can_update:
+          type: boolean
+          description: Whether the current workspace member may change this setting.
       required:
       - access_consented
+      - can_update
     AcknowledgeRequest:
       type: object
       description: Serializer for acknowledge/unacknowledge actions.

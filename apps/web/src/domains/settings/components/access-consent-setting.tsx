@@ -1,19 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-
-import {
-    assistantsAccessConsentRetrieveOptions,
-    assistantsAccessConsentRetrieveSetQueryData,
-} from "@/generated/api/@tanstack/react-query.gen";
-import { assistantsAccessConsentPartialUpdate } from "@/generated/api/sdk.gen";
-import {
-    useActiveAssistantIsPlatformHosted,
-    useActiveAssistantLifecycleIsLoading,
-    usePlatformGate,
-} from "@/hooks/use-platform-gate";
 import { Notice } from "@vellumai/design-library/components/notice";
 import { toast } from "@vellumai/design-library/components/toast";
 import { Toggle } from "@vellumai/design-library/components/toggle";
+
+import {
+  getAssistantAccessConsent,
+  updateAssistantAccessConsent,
+} from "@/domains/settings/api/assistant-access-consent";
+import {
+  useActiveAssistantIsPlatformHosted,
+  useActiveAssistantLifecycleIsLoading,
+  usePlatformGate,
+} from "@/hooks/use-platform-gate";
+import { useIsOrgReady } from "@/hooks/use-is-org-ready";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import { ApiError } from "@/utils/api-errors";
+
+function loadErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 404) {
+    return "This setting is not available for the selected assistant.";
+  }
+  if (error instanceof ApiError && error.status === 403) {
+    return "Only the assistant owner or a workspace admin can manage admin data access.";
+  }
+  return "Could not load this setting. Check your connection and try again.";
+}
+
+function updateErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 403) {
+    return "Only the assistant owner or a workspace admin can change this setting.";
+  }
+  return "Could not save this setting. Your previous choice is still active.";
+}
 
 export function AccessConsentSetting() {
   // platformHostedOnly: this consent toggle is per-assistant — Worklin
@@ -36,35 +55,45 @@ export function AccessConsentSetting() {
   // permanent spinner — they should fall through to the disabled-toggle
   // empty state below.
   const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
+  const assistantId = useResolvedAssistantsStore.use.activeAssistantId();
+  const isOrgReady = useIsOrgReady();
   const queryClient = useQueryClient();
+  const queryKey = ["assistant-access-consent", assistantId] as const;
 
-  const { data, isLoading, isError } = useQuery({
-    ...assistantsAccessConsentRetrieveOptions(),
-    enabled: platformGate === "full" && isPlatformHosted,
+  const { data, error, isLoading, isError, isFetching, refetch } = useQuery({
+    queryKey,
+    queryFn: () => getAssistantAccessConsent(assistantId!),
+    enabled:
+      platformGate === "full" &&
+      isPlatformHosted &&
+      isOrgReady &&
+      assistantId !== null,
+    retry: false,
   });
 
   const updateConsent = useMutation({
-    mutationFn: async (next: boolean) => {
-      const { data: updated } = await assistantsAccessConsentPartialUpdate({
-        body: { access_consented: next },
-        throwOnError: true,
-      });
-      return updated;
+    mutationFn: ({
+      targetAssistantId,
+      next,
+    }: {
+      targetAssistantId: string;
+      next: boolean;
+    }) => {
+      return updateAssistantAccessConsent(targetAssistantId, next);
     },
-    onSuccess: (updated) => {
-      assistantsAccessConsentRetrieveSetQueryData(
-        queryClient,
-        undefined,
+    onSuccess: (updated, variables) => {
+      queryClient.setQueryData(
+        ["assistant-access-consent", variables.targetAssistantId],
         updated,
       );
       toast.success(
-        updated?.access_consented
+        updated.access_consented
           ? "Admin data access enabled."
           : "Admin data access disabled.",
       );
     },
-    onError: () => {
-      toast.error("Failed to update log access consent.");
+    onError: (mutationError) => {
+      toast.error(updateErrorMessage(mutationError));
     },
   });
 
@@ -89,9 +118,17 @@ export function AccessConsentSetting() {
   const disabled =
     platformGate !== "full" ||
     !isPlatformHosted ||
+    !isOrgReady ||
+    !assistantId ||
     isLoading ||
     isError ||
+    data?.can_update === false ||
     updateConsent.isPending;
+  const visibleError = isError
+    ? loadErrorMessage(error)
+    : updateConsent.isError
+      ? updateErrorMessage(updateConsent.error)
+      : null;
 
   return (
     <div>
@@ -110,22 +147,47 @@ export function AccessConsentSetting() {
             . Off by default. Turn on temporarily when asking support to
             investigate an issue, then turn off when you&apos;re done.
           </p>
-          {platformGate === "full" && isError && (
-            <p className="mt-1 text-body-small-default text-[var(--system-negative-strong)]">
-              Failed to load consent setting.
+          {platformGate === "full" && visibleError && (
+            <div
+              className="mt-1 text-body-small-default text-[var(--system-negative-strong)]"
+              role="alert"
+            >
+              <span>{visibleError}</span>
+              {isError && (
+                <button
+                  type="button"
+                  className="ml-2 underline underline-offset-2 hover:no-underline disabled:opacity-50"
+                  disabled={isFetching}
+                  onClick={() => void refetch()}
+                >
+                  Try again
+                </button>
+              )}
+            </div>
+          )}
+          {platformGate === "full" && data?.can_update === false && (
+            <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+              Only the assistant owner or a workspace admin can change this
+              setting.
             </p>
           )}
         </div>
         <div className="flex items-center gap-2">
           {platformGate === "disabled" ? null : (
             <>
-              {(updateConsent.isPending || isResolving) && (
+              {(updateConsent.isPending || isResolving || isFetching) && (
                 <Loader2 className="h-4 w-4 animate-spin text-[var(--content-tertiary)]" />
               )}
               <Toggle
                 checked={checked}
                 disabled={disabled}
-                onChange={() => updateConsent.mutate(!checked)}
+                onChange={() => {
+                  if (!assistantId) return;
+                  updateConsent.mutate({
+                    targetAssistantId: assistantId,
+                    next: !checked,
+                  });
+                }}
               />
             </>
           )}
