@@ -315,7 +315,29 @@ describe("route-schema sync guard", () => {
       regexToOpenApiPath(String.raw`\/v1\/contacts\/(?!invites$)([^/]+)`),
     ).toBe("/v1/contacts/{param1}");
   });
+
+  test("route and schema comparison treats a trailing slash as equivalent", () => {
+    const schemaPaths = new Set([
+      "/v1/assistants/{assistantId}/config/privacy/",
+    ]);
+
+    expect(
+      findMatchingSchemaPath(
+        "/v1/assistants/{param1}/config/privacy",
+        schemaPaths,
+      ),
+    ).toBe(true);
+    expect(
+      findMatchingRoutePath("/v1/assistants/{assistantId}/config/privacy/", [
+        "/v1/assistants/{param1}/config/privacy",
+      ]),
+    ).toBe(true);
+  });
 });
+
+function comparablePath(path: string): string {
+  return path.length > 1 ? path.replace(/\/$/, "") : path;
+}
 
 /**
  * Returns the schema path string that matches a route path, or null if none.
@@ -325,12 +347,13 @@ function resolveSchemaPath(
   routePath: string,
   schemaPaths: Set<string>,
 ): string | null {
-  if (schemaPaths.has(routePath)) return routePath;
+  const comparableRoutePath = comparablePath(routePath);
 
-  const routeSegments = routePath.split("/");
+  const routeSegments = comparableRoutePath.split("/");
 
   for (const schemaPath of schemaPaths) {
-    const schemaSegments = schemaPath.split("/");
+    if (comparableRoutePath === comparablePath(schemaPath)) return schemaPath;
+    const schemaSegments = comparablePath(schemaPath).split("/");
     if (routeSegments.length !== schemaSegments.length) continue;
 
     const matches = routeSegments.every((seg, i) => {
@@ -356,13 +379,12 @@ function findMatchingSchemaPath(
   routePath: string,
   schemaPaths: Set<string>,
 ): boolean {
-  // Direct match
-  if (schemaPaths.has(routePath)) return true;
-
-  const routeSegments = routePath.split("/");
+  const comparableRoutePath = comparablePath(routePath);
+  const routeSegments = comparableRoutePath.split("/");
 
   for (const schemaPath of schemaPaths) {
-    const schemaSegments = schemaPath.split("/");
+    if (comparableRoutePath === comparablePath(schemaPath)) return true;
+    const schemaSegments = comparablePath(schemaPath).split("/");
     if (routeSegments.length !== schemaSegments.length) continue;
 
     const matches = routeSegments.every((seg, i) => {
@@ -386,12 +408,12 @@ function findMatchingRoutePath(
   schemaPath: string,
   routePaths: string[],
 ): boolean {
-  if (routePaths.includes(schemaPath)) return true;
-
-  const schemaSegments = schemaPath.split("/");
+  const comparableSchemaPath = comparablePath(schemaPath);
+  const schemaSegments = comparableSchemaPath.split("/");
 
   for (const routePath of routePaths) {
-    const routeSegments = routePath.split("/");
+    if (comparableSchemaPath === comparablePath(routePath)) return true;
+    const routeSegments = comparablePath(routePath).split("/");
     if (schemaSegments.length !== routeSegments.length) continue;
 
     const matches = schemaSegments.every((seg, i) => {
