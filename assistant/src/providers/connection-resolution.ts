@@ -184,6 +184,13 @@ export async function tryResolveProviderForConnectionName(
   const personalConnectionRequired =
     requirements.requirePersonal === true &&
     !isPersonalProviderConnection(connection);
+  if (providerMismatch && requirements.requirePersonal !== true) {
+    throw new ConnectionResolutionError(
+      connectionName,
+      "provider_mismatch",
+      `provider_connection "${connectionName}" has provider="${connection.provider}" but resolving profile declared provider="${expectedProvider}" — set the profile's provider_connection to a row matching its provider`,
+    );
+  }
   if (providerMismatch || personalConnectionRequired) {
     // A stale inherited connection may point at the wrong provider or at
     // platform auth. Recovery is intentionally restricted to a matching,

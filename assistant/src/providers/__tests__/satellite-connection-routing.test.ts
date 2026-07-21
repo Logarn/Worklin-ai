@@ -427,6 +427,63 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
     expect(sendMessageCalls.length).toBe(0);
   });
 
+  test("a managed route mismatch never borrows a matching personal connection", async () => {
+    const defaultProvider = makeFakeProvider("default-anthropic", "anthropic");
+
+    registerConnection(
+      {
+        name: "anthropic-managed",
+        provider: "anthropic",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-anthropic", "anthropic"),
+    );
+    registerConnection(
+      {
+        name: "openai-personal",
+        provider: "openai",
+        auth: {
+          type: "api_key",
+          credential: "credential/openai/api_key",
+        },
+      },
+      makeFakeProvider("openai-personal", "openai"),
+    );
+
+    setLlmConfig({
+      default: { provider: "anthropic", model: "claude-opus-4-7" },
+      profiles: {
+        managed: {
+          source: "managed",
+          provider: "openai",
+          provider_connection: "anthropic-managed",
+          model: "gpt-5.4",
+        },
+      },
+      callSites: {
+        replySuggestion: { profile: "managed" },
+      },
+    });
+
+    const wrapped = wrapWithCallSiteRouting(
+      defaultProvider,
+      providersConfigStub,
+    );
+    await expect(
+      wrapped.sendMessage(
+        [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        { tools: [], config: { callSite: "replySuggestion" } },
+      ),
+    ).rejects.toMatchObject({
+      name: "ConnectionResolutionError",
+      reason: "provider_mismatch",
+    });
+
+    expect(resolveProviderCalls).toHaveLength(0);
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
   test("a direct call-site override skips an inherited managed connection", async () => {
     const defaultProvider = makeFakeProvider("default-anthropic", "anthropic");
 
