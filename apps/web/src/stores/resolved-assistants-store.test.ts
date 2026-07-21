@@ -154,6 +154,53 @@ describe("upsertFromApi", () => {
     expect(entry.isLocal).toBe(true);
     expect(entry.isPlatformHosted).toBe(true);
   });
+
+  it("keeps runtime action capabilities from the platform payload", () => {
+    useResolvedAssistantsStore.getState().upsertFromApi({
+      id: "asst-capabilities",
+      name: "Managed",
+      created: "2026-01-01T00:00:00Z",
+      is_local: false,
+      runtime_action_capabilities: {
+        restart: {
+          capability: "restart",
+          supported: true,
+          code: "supported",
+          detail: "Restart this managed assistant.",
+        },
+        terminal: {
+          capability: "terminal",
+          supported: false,
+          code: "runtime_capability_unavailable",
+          detail: "Terminal is unavailable.",
+        },
+        doctor: {
+          capability: "doctor",
+          supported: false,
+          code: "runtime_capability_unavailable",
+          detail: "Doctor is unavailable.",
+        },
+        update_window: {
+          capability: "update_window",
+          supported: false,
+          code: "runtime_capability_unavailable",
+          detail: "Update windows are unavailable.",
+        },
+      },
+    } as Parameters<
+      ReturnType<typeof useResolvedAssistantsStore.getState>["upsertFromApi"]
+    >[0]);
+
+    expect(
+      useResolvedAssistantsStore.getState().assistants[0]
+        ?.runtimeActionCapabilities,
+    ).toMatchObject({
+      restart: { supported: true },
+      terminal: { supported: false },
+      doctor: { supported: false },
+      update_window: { supported: false },
+    });
+  });
 });
 
 describe("assistantsValidForOrg", () => {

@@ -7,6 +7,7 @@
  * overwritten, never user-provided custom titles.
  */
 
+import { resolveDefaultProfileKey } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import { getConfiguredProvider } from "../providers/provider-send-message.js";
 import type { Provider } from "../providers/types.js";
@@ -21,43 +22,20 @@ import {
   resolveOverrideProfile,
   updateConversationTitle,
 } from "./conversation-crud.js";
+import {
+  resolvePersistedTitleContext,
+  type TitleContext,
+  type TitleOrigin,
+} from "./conversation-title-context.js";
+
+export type {
+  TitleContext,
+  TitleOrigin,
+} from "./conversation-title-context.js";
 
 const log = getLogger("conversation-title-service");
 
 // ── Types ────────────────────────────────────────────────────────────
-
-export type TitleOrigin =
-  | "runtime_api"
-  | "channel_inbound"
-  | "voice_outbound"
-  | "voice_inbound"
-  | "guardian_request"
-  | "schedule"
-  | "task"
-  | "watcher"
-  | "subagent"
-  | "sequence"
-  | "heartbeat"
-  | "filing"
-  | "local"
-  | "task_submit"
-  | "memory_consolidation"
-  | "memory_retrospective"
-  | "misc";
-
-export interface TitleContext {
-  origin: TitleOrigin;
-  conversationKey?: string;
-  sourceChannel?: string;
-  assistantId?: string;
-  externalChatId?: string;
-  displayName?: string;
-  username?: string;
-  triggerTextSnippet?: string;
-  systemHint?: string;
-  metadataHints?: string[];
-  uxBrief?: string;
-}
 
 // ── Placeholder / loading state ──────────────────────────────────────
 
@@ -149,6 +127,35 @@ interface TitleProviderAttempt {
   profile?: string;
 }
 
+const INTERACTIVE_TITLE_ORIGINS = new Set<TitleOrigin>([
+  "runtime_api",
+  "channel_inbound",
+  "voice_outbound",
+  "voice_inbound",
+  "local",
+]);
+
+function resolveConversationTitleContext(
+  conversation: ReturnType<typeof getConversation>,
+  context?: TitleContext,
+): TitleContext | undefined {
+  const persistedContext = resolvePersistedTitleContext(conversation);
+
+  // Persisted system provenance is authoritative for compatibility rows. Keep
+  // any richer call-site hints, but do not let an interactive-looking call
+  // accidentally route a stored schedule/background conversation as chat.
+  if (
+    persistedContext &&
+    !INTERACTIVE_TITLE_ORIGINS.has(persistedContext.origin)
+  ) {
+    return context
+      ? { ...context, origin: persistedContext.origin }
+      : persistedContext;
+  }
+
+  return context ?? persistedContext;
+}
+
 function isUsableProfile(
   profile: ReturnType<typeof getConfig>["llm"]["profiles"][string] | undefined,
 ): boolean {
@@ -167,29 +174,49 @@ function isUserProfile(
 
 async function resolveTitleProviderAttempts(
   conversationId: string,
+  conversation: ReturnType<typeof getConversation>,
   explicitProvider?: Provider,
+  context?: TitleContext,
 ): Promise<TitleProviderAttempt[]> {
   if (explicitProvider) return [{ provider: explicitProvider }];
 
-  const conversation = getConversation(conversationId);
+  if (
+    (conversation && conversation.conversationType !== "standard") ||
+    (context && !INTERACTIVE_TITLE_ORIGINS.has(context.origin))
+  ) {
+    const provider = await getConfiguredProvider("conversationTitle", {
+      selectionSeed: conversationId,
+    });
+    return provider ? [{ provider }] : [];
+  }
+
   const config = getConfig();
   const profileKeys: string[] = [];
   const customCostProfile = "custom-cost-optimized";
   const activeProfile = config.llm.activeProfile;
+  const titleProfile =
+    resolveOverrideProfile(conversation) ??
+    config.llm.activeProfile ??
+    resolveDefaultProfileKey("mainAgent", config.llm);
+  if (!titleProfile) {
+    const provider = await getConfiguredProvider("conversationTitle", {
+      selectionSeed: conversationId,
+    });
+    return provider ? [{ provider }] : [];
+  }
   const hasUserFallback =
     isUserProfile(config.llm.profiles[customCostProfile]) ||
     (activeProfile != null &&
       isUserProfile(config.llm.profiles[activeProfile]));
-  const conversationProfile = resolveOverrideProfile(conversation);
-  const conversationProfileConfig = conversationProfile
-    ? config.llm.profiles[conversationProfile]
+  const titleProfileConfig = titleProfile
+    ? config.llm.profiles[titleProfile]
     : undefined;
   if (
-    conversationProfile &&
-    isUsableProfile(conversationProfileConfig) &&
-    (!hasUserFallback || isUserProfile(conversationProfileConfig))
+    titleProfile &&
+    isUsableProfile(titleProfileConfig) &&
+    (!hasUserFallback || isUserProfile(titleProfileConfig))
   ) {
-    profileKeys.push(conversationProfile);
+    profileKeys.push(titleProfile);
   }
 
   if (isUserProfile(config.llm.profiles[customCostProfile])) {
@@ -215,9 +242,11 @@ async function resolveTitleProviderAttempts(
   }
 
   const provider = await getConfiguredProvider("conversationTitle", {
+    forceOverrideProfile: true,
+    overrideProfile: titleProfile,
     selectionSeed: conversationId,
   });
-  return provider ? [{ provider }] : [];
+  return provider ? [{ provider, profile: titleProfile }] : [];
 }
 
 function persistFallbackTitle(
@@ -251,17 +280,28 @@ export async function generateAndPersistConversationTitle(
     return { title: conversation.title!, updated: false };
   }
 
+  const effectiveContext = resolveConversationTitleContext(
+    conversation,
+    context,
+  );
+
   const providerAttempts = await resolveTitleProviderAttempts(
     conversationId,
+    conversation,
     params.provider,
+    effectiveContext,
   );
   if (providerAttempts.length === 0) {
     // No provider available — fall back to context-derived title or untitled.
     // Deterministic, so keep it upgradeable by a later generation pass.
-    return persistFallbackTitle(conversationId, context);
+    return persistFallbackTitle(conversationId, effectiveContext);
   }
 
-  const prompt = buildTitlePrompt(context, userMessage, assistantResponse);
+  const prompt = buildTitlePrompt(
+    effectiveContext,
+    userMessage,
+    assistantResponse,
+  );
   let title = "";
   let lastError: unknown;
   for (const attempt of providerAttempts) {
@@ -319,7 +359,7 @@ export async function generateAndPersistConversationTitle(
       "All conversation title provider attempts failed",
     );
   }
-  return persistFallbackTitle(conversationId, context);
+  return persistFallbackTitle(conversationId, effectiveContext);
 }
 
 // ── Serial title-generation queue ────────────────────────────────────
@@ -395,6 +435,8 @@ export function queueGenerateConversationTitle(
 export interface RegenerateTitleParams {
   conversationId: string;
   provider?: Provider;
+  /** Explicit origin when the trigger already resolved persisted provenance. */
+  context?: TitleContext;
   signal?: AbortSignal;
   /**
    * Request-local transcript to title from. Pooled workers pass this from the
@@ -417,16 +459,23 @@ export interface TitleTranscriptMessage {
 export async function regenerateConversationTitle(
   params: RegenerateTitleParams,
 ): Promise<{ title: string; updated: boolean }> {
-  const { conversationId, signal } = params;
+  const { conversationId, context, signal } = params;
 
   const conversation = getConversation(conversationId);
   if (!conversation || !conversation.isAutoTitle) {
     return { title: conversation?.title ?? UNTITLED_FALLBACK, updated: false };
   }
 
+  const effectiveContext = resolveConversationTitleContext(
+    conversation,
+    context,
+  );
+
   const providerAttempts = await resolveTitleProviderAttempts(
     conversationId,
+    conversation,
     params.provider,
+    effectiveContext,
   );
   if (providerAttempts.length === 0) {
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };

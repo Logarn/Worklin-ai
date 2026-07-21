@@ -24,6 +24,10 @@ import { isPooledWorkerRuntime } from "../../../../config/env.js";
 import { getConfig } from "../../../../config/loader.js";
 import { getConversation } from "../../../../memory/conversation-crud.js";
 import {
+  resolvePersistedTitleContext,
+  type TitleContext,
+} from "../../../../memory/conversation-title-context.js";
+import {
   generateConversationTitleRequestBound,
   queueRegenerateConversationTitle,
   regenerateConversationTitleRequestBound,
@@ -94,14 +98,25 @@ function titleTranscript(
   return transcript;
 }
 
-function isStandardConversation(conversationId: string): boolean {
+function resolveStandardConversationTitleContext(conversationId: string): {
+  isStandard: boolean;
+  context?: TitleContext;
+} {
   try {
     const conversation = getConversation(conversationId);
-    return !conversation || conversation.conversationType === "standard";
+    if (conversation && conversation.conversationType !== "standard") {
+      return { isStandard: false };
+    }
+    return {
+      isStandard: true,
+      context:
+        resolvePersistedTitleContext(conversation) ??
+        ({ origin: "misc" } as const),
+    };
   } catch {
     // Preserve the existing fail-open behavior. The title service performs its
-    // own replaceability check before any provider call or persistence.
-    return true;
+    // own provenance and replaceability checks before provider use/persistence.
+    return { isStandard: true };
   }
 }
 
@@ -119,7 +134,10 @@ const stop: PluginHookFn<StopContext> = async (ctx) => {
     const isSecondPass = userTurnCount === SECOND_PASS_USER_TURN;
     if (!isFirstPass && !isSecondPass) return;
     if (isSecondPass && getConfig().conversations.skipAutoRetitling) return;
-    if (!isStandardConversation(ctx.conversationId)) return;
+    const titleRoute = resolveStandardConversationTitleContext(
+      ctx.conversationId,
+    );
+    if (!titleRoute.isStandard) return;
 
     // Keep pooled title work attached to the successful conversation POST.
     // The main response has already completed before this stop hook runs, and
@@ -138,12 +156,14 @@ const stop: PluginHookFn<StopContext> = async (ctx) => {
           conversationId: ctx.conversationId,
           userMessage,
           assistantResponse,
+          ...(titleRoute.context ? { context: titleRoute.context } : {}),
         });
         return;
       }
 
       await regenerateConversationTitleRequestBound({
         conversationId: ctx.conversationId,
+        ...(titleRoute.context ? { context: titleRoute.context } : {}),
         recentMessages: transcript.slice(-3),
       });
     } catch (err) {
@@ -168,7 +188,10 @@ const stop: PluginHookFn<StopContext> = async (ctx) => {
   // turns with no human present, and a refined LLM title isn't worth the
   // tokens there. The lookup fails open: on a read error the hook behaves as
   // before (queues regeneration; the service re-checks isAutoTitle).
-  if (!isStandardConversation(ctx.conversationId)) return;
+  const titleRoute = resolveStandardConversationTitleContext(
+    ctx.conversationId,
+  );
+  if (!titleRoute.isStandard) return;
 
   const { conversationId } = ctx;
   // Deferred to a later macrotask so the just-completed turn's persistence
@@ -177,7 +200,10 @@ const stop: PluginHookFn<StopContext> = async (ctx) => {
   // service is itself fire-and-forget and re-checks replaceability, owning
   // provider resolution, persistence, and the resulting broadcast.
   setTimeout(() => {
-    queueRegenerateConversationTitle({ conversationId });
+    queueRegenerateConversationTitle({
+      conversationId,
+      ...(titleRoute.context ? { context: titleRoute.context } : {}),
+    });
   }, 0);
 };
 

@@ -14,6 +14,16 @@ const mockRunBtwSidechain = mock(async (_params: Record<string, unknown>) => ({
   },
 }));
 
+interface MockConversation {
+  title: string | null;
+  isAutoTitle: number;
+  conversationType?: "standard" | "background" | "scheduled";
+  source?: string | null;
+  originChannel?: string | null;
+  inferenceProfile?: string | null;
+  inferenceProfileExpiresAt?: number | null;
+}
+
 const mockGetConversation = mock(
   (_conversationId: string) =>
     ({
@@ -22,7 +32,7 @@ const mockGetConversation = mock(
       inferenceProfile: null,
       inferenceProfileExpiresAt: null,
       conversationType: "standard",
-    }) as any,
+    }) as MockConversation,
 );
 const mockGetMessages = mock(() => [
   { role: "user", content: "first message" },
@@ -36,15 +46,37 @@ const mockGetConfiguredProvider = mock(
     _options: ConfiguredProviderOptions = {},
   ): Promise<Provider | null> => null,
 );
-let mockConfig = {
+
+function makeProvider(name: string): Provider {
+  return {
+    name,
+    sendMessage: mock(async () => {
+      throw new Error("provider.sendMessage should not be called directly");
+    }),
+  };
+}
+interface MockConfig {
   llm: {
-    activeProfile: undefined as string | undefined,
-    profiles: {} as Record<string, Record<string, unknown>>,
-  },
-};
+    default: Record<string, unknown>;
+    activeProfile?: string;
+    profiles: Record<string, Record<string, unknown>>;
+  };
+}
+
+function defaultMockConfig(): MockConfig {
+  return {
+    llm: {
+      default: { provider: "anthropic", model: "test-model" },
+      profiles: {},
+    },
+  };
+}
+
+let mockConfig: MockConfig = defaultMockConfig();
+const mockGetConfig = mock(() => mockConfig);
 
 mock.module("../config/loader.js", () => ({
-  getConfig: () => mockConfig,
+  getConfig: mockGetConfig,
 }));
 
 mock.module("../runtime/btw-sidechain.js", () => ({
@@ -103,6 +135,7 @@ import {
   regenerateConversationTitleRequestBound,
   repairConversationTitle,
   titleMutex,
+  type TitleOrigin,
 } from "../memory/conversation-title-service.js";
 
 describe("conversation-title-service", () => {
@@ -138,13 +171,10 @@ describe("conversation-title-service", () => {
     mockUpdateConversationTitle.mockClear();
     mockGetConfiguredProvider.mockClear();
     mockGetConfiguredProvider.mockImplementation(async () => null);
+    mockGetConfig.mockClear();
     mockPublishConversationTitleChanged.mockClear();
-    mockConfig = {
-      llm: {
-        activeProfile: undefined,
-        profiles: {},
-      },
-    };
+    mockConfig = defaultMockConfig();
+    mockGetConfig.mockImplementation(() => mockConfig);
   });
 
   test("uses the BTW side-chain helper for initial title generation", async () => {
@@ -183,6 +213,268 @@ describe("conversation-title-service", () => {
       "conv-1",
       "Project kickoff",
     );
+  });
+
+  test("uses the active chat profile when a managed title profile is still enabled", async () => {
+    const provider = makeProvider("openai-compatible");
+    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+    mockGetConfig.mockImplementationOnce(() => ({
+      llm: {
+        default: {
+          provider: "anthropic",
+          provider_connection: "anthropic-managed",
+        },
+        profiles: {
+          "cost-optimized": {
+            source: "managed",
+            provider: "anthropic",
+            provider_connection: "anthropic-managed",
+          },
+          "custom-balanced": {
+            source: "user",
+            provider: "openai-compatible",
+            provider_connection: "xai-personal",
+          },
+        },
+        activeProfile: "custom-balanced",
+      },
+    }));
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      userMessage: "Draft a launch email sequence",
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      {
+        forceOverrideProfile: true,
+        overrideProfile: "custom-balanced",
+        selectionSeed: "conv-1",
+      },
+    );
+  });
+
+  test("keeps a standard-row manual schedule on configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    mockGetConversation.mockReturnValue({
+      title: "Generating title...",
+      isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+      conversationType: "standard",
+      inferenceProfile: null,
+      inferenceProfileExpiresAt: null,
+    });
+    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+
+    await generateAndPersistConversationTitle({
+      conversationId: "conv-manual-schedule",
+      context: {
+        origin: "schedule",
+        systemHint: "Schedule (manual): Launch report",
+      },
+      userMessage: "Prepare the launch report",
+    });
+
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      { selectionSeed: "conv-manual-schedule" },
+    );
+    expect(mockGetConfig).not.toHaveBeenCalled();
+  });
+
+  test("keeps every system title origin on configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    const systemOrigins: TitleOrigin[] = [
+      "guardian_request",
+      "schedule",
+      "task",
+      "watcher",
+      "subagent",
+      "sequence",
+      "heartbeat",
+      "filing",
+      "task_submit",
+      "memory_consolidation",
+      "memory_retrospective",
+      "misc",
+    ];
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    for (const origin of systemOrigins) {
+      const conversationId = `conv-${origin}`;
+      await generateAndPersistConversationTitle({
+        conversationId,
+        context: { origin },
+        userMessage: "Run the system job",
+      });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        { selectionSeed: conversationId },
+      );
+    }
+
+    expect(mockGetConfig).not.toHaveBeenCalled();
+  });
+
+  test("keeps standard runtime, channel, and voice titles on the active chat profile", async () => {
+    const provider = makeProvider("openai-compatible");
+    const interactiveOrigins: TitleOrigin[] = [
+      "runtime_api",
+      "channel_inbound",
+      "voice_inbound",
+      "voice_outbound",
+      "local",
+    ];
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+    mockGetConfig.mockImplementation(() => ({
+      llm: {
+        default: {
+          provider: "anthropic",
+          provider_connection: "anthropic-managed",
+        },
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            provider: "openai-compatible",
+            provider_connection: "xai-personal",
+          },
+        },
+        activeProfile: "custom-balanced",
+      },
+    }));
+
+    for (const origin of interactiveOrigins) {
+      const conversationId = `conv-${origin}`;
+      await generateAndPersistConversationTitle({
+        conversationId,
+        context: { origin },
+        userMessage: "Draft a launch plan",
+      });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        {
+          forceOverrideProfile: true,
+          overrideProfile: "custom-balanced",
+          selectionSeed: conversationId,
+        },
+      );
+    }
+  });
+
+  test("keeps a human channel first pass on its pinned chat profile", async () => {
+    const provider = makeProvider("openai-compatible");
+    mockGetConversation.mockReturnValue({
+      title: "Generating title...",
+      isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+      conversationType: "standard",
+      source: "user",
+      originChannel: "slack",
+      inferenceProfile: "custom-channel",
+      inferenceProfileExpiresAt: null,
+    });
+    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+
+    await generateAndPersistConversationTitle({
+      conversationId: "conv-human-channel",
+      userMessage: "Summarize this customer thread",
+    });
+
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      {
+        forceOverrideProfile: true,
+        overrideProfile: "custom-channel",
+        selectionSeed: "conv-human-channel",
+      },
+    );
+  });
+
+  test("keeps background conversations on their configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    mockGetConversation.mockReturnValue({
+      title: "Generating title...",
+      isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+      conversationType: "background",
+      inferenceProfile: "custom-balanced",
+      inferenceProfileExpiresAt: null,
+    });
+    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+
+    await generateAndPersistConversationTitle({
+      conversationId: "conv-background",
+      context: { origin: "subagent", systemHint: "Background research" },
+    });
+
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      { selectionSeed: "conv-background" },
+    );
+    expect(mockGetConfig).not.toHaveBeenCalled();
+  });
+
+  test("title regeneration keeps pinned profiles for runtime, channel, and voice origins", async () => {
+    const provider = makeProvider("openai-compatible");
+    const interactiveRows: Array<
+      Pick<MockConversation, "source" | "originChannel">
+    > = [
+      { source: "user", originChannel: "vellum" },
+      { source: "slack", originChannel: "slack" },
+      { source: "user", originChannel: "phone" },
+    ];
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    for (const [index, row] of interactiveRows.entries()) {
+      const conversationId = `conv-interactive-${index}`;
+      mockGetConversation.mockReturnValue({
+        title: "Untitled Conversation",
+        isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+        conversationType: "standard",
+        ...row,
+        inferenceProfile: "custom-quality",
+        inferenceProfileExpiresAt: null,
+      });
+
+      const result = await regenerateConversationTitle({ conversationId });
+
+      expect(result).toEqual({ title: "Project kickoff", updated: true });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        {
+          forceOverrideProfile: true,
+          overrideProfile: "custom-quality",
+          selectionSeed: conversationId,
+        },
+      );
+    }
+  });
+
+  test("standard-row schedule and background regeneration keep configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    for (const source of ["schedule", "background"] as const) {
+      const conversationId = `conv-${source}-regeneration`;
+      mockGetConversation.mockReturnValue({
+        title: "Untitled Conversation",
+        isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+        conversationType: "standard",
+        source,
+        originChannel: "slack",
+        inferenceProfile: "custom-quality",
+        inferenceProfileExpiresAt: null,
+      });
+
+      const result = await regenerateConversationTitle({ conversationId });
+
+      expect(result).toEqual({ title: "Project kickoff", updated: true });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        { selectionSeed: conversationId },
+      );
+    }
+
+    expect(mockGetConfig).not.toHaveBeenCalled();
   });
 
   test("regeneration extracts text from JSON content blocks", async () => {
@@ -530,7 +822,7 @@ describe("conversation-title-service", () => {
     );
   });
 
-  test("falls back from an inaccessible BYOK speed profile to the active BYOK profile", async () => {
+  test("uses the active BYOK profile ahead of the cost profile", async () => {
     const speedProvider = {
       name: "openai-speed",
       sendMessage: mock(async () => {
@@ -595,16 +887,16 @@ describe("conversation-title-service", () => {
     });
 
     expect(result.title).toBe("Launch Planning");
-    expect(mockRunBtwSidechain).toHaveBeenCalledTimes(2);
+    expect(mockRunBtwSidechain).toHaveBeenCalledTimes(1);
     expect(mockGetConfiguredProvider.mock.calls.map((call) => call[1])).toEqual(
       [
         {
-          overrideProfile: "custom-cost-optimized",
+          overrideProfile: "custom-balanced",
           forceOverrideProfile: true,
           selectionSeed: "conv-1",
         },
         {
-          overrideProfile: "custom-balanced",
+          overrideProfile: "custom-cost-optimized",
           forceOverrideProfile: true,
           selectionSeed: "conv-1",
         },

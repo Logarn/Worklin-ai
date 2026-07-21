@@ -83,7 +83,7 @@ describe("SendMessageOptions.config.overrideProfile", () => {
     });
   });
 
-  test("CallSiteConfiguredProvider preserves explicit per-call call sites", async () => {
+  test("CallSiteConfiguredProvider preserves explicit call sites and bound routing metadata", async () => {
     let captured: SendMessageOptions | undefined;
     const inner: Provider = {
       name: "anthropic",
@@ -96,12 +96,56 @@ describe("SendMessageOptions.config.overrideProfile", () => {
       },
     };
 
-    const provider = new CallSiteConfiguredProvider(inner, "mainAgent");
+    const provider = new CallSiteConfiguredProvider(inner, "mainAgent", {
+      forceOverrideProfile: true,
+      overrideProfile: "custom-balanced",
+      selectionSeed: "conv-1",
+    });
     await provider.sendMessage(DUMMY_MESSAGES, {
       config: { callSite: "conversationTitle" },
     });
 
-    expect(captured?.config?.callSite).toBe("conversationTitle");
+    expect(captured?.config).toMatchObject({
+      callSite: "conversationTitle",
+      forceOverrideProfile: true,
+      overrideProfile: "custom-balanced",
+      selectionSeed: "conv-1",
+    });
+  });
+
+  test("explicit per-send routing metadata beats wrapper-bound values", async () => {
+    let captured: SendMessageOptions | undefined;
+    const inner: Provider = {
+      name: "anthropic",
+      async sendMessage(
+        _messages: Message[],
+        options?: SendMessageOptions,
+      ): Promise<ProviderResponse> {
+        captured = options;
+        return makeResponse("anthropic");
+      },
+    };
+
+    const provider = new CallSiteConfiguredProvider(inner, "mainAgent", {
+      forceOverrideProfile: true,
+      overrideProfile: "bound-profile",
+      selectionSeed: "bound-seed",
+    });
+    await provider.sendMessage(DUMMY_MESSAGES, {
+      config: {
+        callSite: "conversationTitle",
+        forceOverrideProfile: false,
+        overrideProfile: "per-send-profile",
+        selectionSeed: "per-send-seed",
+      },
+    });
+
+    expect(captured?.config).toMatchObject({
+      callSite: "conversationTitle",
+      forceOverrideProfile: false,
+      overrideProfile: "per-send-profile",
+      selectionSeed: "per-send-seed",
+    });
   });
 
   test("CallSiteConfiguredProvider carries forced profile resolution through explicit side-chain call sites", async () => {
@@ -120,9 +164,11 @@ describe("SendMessageOptions.config.overrideProfile", () => {
     const provider = new CallSiteConfiguredProvider(
       inner,
       "conversationTitle",
-      "custom-balanced",
-      true,
-      "conv-123",
+      {
+        overrideProfile: "custom-balanced",
+        forceOverrideProfile: true,
+        selectionSeed: "conv-123",
+      },
     );
     await provider.sendMessage(DUMMY_MESSAGES, {
       config: { callSite: "conversationTitle" },

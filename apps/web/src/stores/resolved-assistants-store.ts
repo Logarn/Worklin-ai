@@ -37,6 +37,7 @@ import {
   writeSelectedAssistantId,
 } from "@/assistant/selected-assistant-storage";
 import { isPlatformManagedAssistant } from "@/assistant/hosting";
+import type { RuntimeActionCapabilities } from "@/domains/settings/runtime-action-capabilities";
 import { useLockfileStore } from "@/stores/lockfile-store";
 import type { Lockfile } from "@/runtime/local-mode-host";
 import type { Assistant } from "@/generated/api/types.gen";
@@ -50,6 +51,7 @@ export interface ResolvedAssistant {
   /** Control-plane runtime provider. `pooled_worker` uses bounded request
    * polling and must never open the assistant-scoped indefinite SSE stream. */
   runtimeProvider?: string | null;
+  runtimeActionCapabilities?: RuntimeActionCapabilities;
   /** Owning org for platform entries; only the lockfile carries it, so
    *  API-sourced entries leave this undefined. */
   organizationId?: string;
@@ -138,6 +140,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
         isLocal: a.is_local,
         isPlatformHosted: isPlatformManagedAssistant(a),
         runtimeProvider: a.runtime_provider,
+        runtimeActionCapabilities: a.runtime_action_capabilities,
       }));
       set({
         assistantsHydrated: true,
@@ -155,6 +158,7 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
           isLocal: assistant.is_local,
           isPlatformHosted: isPlatformManagedAssistant(assistant),
           runtimeProvider: assistant.runtime_provider,
+          runtimeActionCapabilities: assistant.runtime_action_capabilities,
         };
         const idx = state.assistants.findIndex((a) => a.id === assistant.id);
         if (idx >= 0) {

@@ -17,6 +17,10 @@ import type {
 
 import { isPooledWorkerRuntime } from "../../../../config/env.js";
 import { getConversation } from "../../../../memory/conversation-crud.js";
+import {
+  resolvePersistedTitleContext,
+  type TitleContext,
+} from "../../../../memory/conversation-title-context.js";
 import { queueGenerateConversationTitle } from "../../../../memory/conversation-title-service.js";
 
 const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
@@ -24,6 +28,8 @@ const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
   // tenant lease. Their first title pass runs synchronously at the successful
   // stop hook instead, after the main assistant reply has completed.
   if (isPooledWorkerRuntime()) return;
+
+  let titleContext: TitleContext | undefined;
 
   // System conversations (background/scheduled) carry a deterministic title
   // from bootstrap. Their own job prompts arrive as non-interactive turns and
@@ -35,8 +41,11 @@ const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
     try {
       const conversation = getConversation(ctx.conversationId);
       if (conversation && conversation.conversationType !== "standard") return;
+      titleContext =
+        resolvePersistedTitleContext(conversation) ??
+        ({ origin: "misc" } as const);
     } catch {
-      // Fall through to queueing.
+      // The service re-reads persisted provenance before selecting a provider.
     }
   }
 
@@ -50,6 +59,7 @@ const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
     queueGenerateConversationTitle({
       conversationId: ctx.conversationId,
       userMessage: ctx.prompt,
+      ...(titleContext ? { context: titleContext } : {}),
     });
   }, 0);
 };

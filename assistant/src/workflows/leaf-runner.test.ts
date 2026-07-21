@@ -355,10 +355,8 @@ describe("runLeaf — profile override", () => {
       trustContext,
     });
     expect(lastResolveOpts?.overrideProfile).toBe("cost-optimized");
-    // The override must ALSO ride on the per-call send config. The schema path
-    // sets `callSite`, and CallSiteConfiguredProvider only injects its stored
-    // override when the per-call config omits `callSite` — so without an
-    // explicit pass-through the leaf silently resolves the default profile.
+    // The override stays explicit at the send boundary even though the
+    // configured provider also carries it as a fallback.
     expect(lastSendCall?.options.config?.callSite).toBe("workflowLeaf");
     expect(lastSendCall?.options.config?.overrideProfile).toBe(
       "cost-optimized",
