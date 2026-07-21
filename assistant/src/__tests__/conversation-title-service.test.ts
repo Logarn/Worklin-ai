@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
+import type { Provider } from "../providers/types.js";
+
 const mockRunBtwSidechain = mock(async (_params: Record<string, unknown>) => ({
   text: "Project kickoff",
   hadTextDeltas: true,
@@ -15,6 +17,8 @@ interface MockConversation {
   title: string | null;
   isAutoTitle: number;
   conversationType?: "standard" | "background" | "scheduled";
+  source?: string | null;
+  originChannel?: string | null;
   inferenceProfile?: string | null;
   inferenceProfileExpiresAt?: number | null;
 }
@@ -35,7 +39,9 @@ const mockGetMessages = mock(() => [
   { role: "user", content: "follow-up" },
 ]);
 const mockUpdateConversationTitle = mock(() => {});
-const mockGetConfiguredProvider = mock(async () => null);
+const mockGetConfiguredProvider = mock(
+  async (): Promise<Provider | null> => null,
+);
 
 interface MockConfig {
   llm: {
@@ -56,7 +62,7 @@ function defaultMockConfig(): MockConfig {
 
 const mockGetConfig = mock(defaultMockConfig);
 
-function makeProvider(name: string) {
+function makeProvider(name: string): Provider {
   return {
     name,
     sendMessage: mock(async () => {
@@ -104,6 +110,7 @@ import {
   queueGenerateConversationTitle,
   regenerateConversationTitle,
   titleMutex,
+  type TitleOrigin,
 } from "../memory/conversation-title-service.js";
 
 describe("conversation-title-service", () => {
@@ -198,6 +205,140 @@ describe("conversation-title-service", () => {
     );
   });
 
+  test("keeps a standard-row manual schedule on configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    mockGetConversation.mockReturnValue({
+      title: "Generating title...",
+      isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+      conversationType: "standard",
+      inferenceProfile: null,
+      inferenceProfileExpiresAt: null,
+    });
+    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+
+    await generateAndPersistConversationTitle({
+      conversationId: "conv-manual-schedule",
+      context: {
+        origin: "schedule",
+        systemHint: "Schedule (manual): Launch report",
+      },
+      userMessage: "Prepare the launch report",
+    });
+
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      { selectionSeed: "conv-manual-schedule" },
+    );
+    expect(mockGetConfig).not.toHaveBeenCalled();
+  });
+
+  test("keeps every system title origin on configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    const systemOrigins: TitleOrigin[] = [
+      "guardian_request",
+      "schedule",
+      "task",
+      "watcher",
+      "subagent",
+      "sequence",
+      "heartbeat",
+      "filing",
+      "task_submit",
+      "memory_consolidation",
+      "memory_retrospective",
+      "misc",
+    ];
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    for (const origin of systemOrigins) {
+      const conversationId = `conv-${origin}`;
+      await generateAndPersistConversationTitle({
+        conversationId,
+        context: { origin },
+        userMessage: "Run the system job",
+      });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        { selectionSeed: conversationId },
+      );
+    }
+
+    expect(mockGetConfig).not.toHaveBeenCalled();
+  });
+
+  test("keeps standard runtime, channel, and voice titles on the active chat profile", async () => {
+    const provider = makeProvider("openai-compatible");
+    const interactiveOrigins: TitleOrigin[] = [
+      "runtime_api",
+      "channel_inbound",
+      "voice_inbound",
+      "voice_outbound",
+      "local",
+    ];
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+    mockGetConfig.mockImplementation(() => ({
+      llm: {
+        default: {
+          provider: "anthropic",
+          provider_connection: "anthropic-managed",
+        },
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            provider: "openai-compatible",
+            provider_connection: "xai-personal",
+          },
+        },
+        activeProfile: "custom-balanced",
+      },
+    }));
+
+    for (const origin of interactiveOrigins) {
+      const conversationId = `conv-${origin}`;
+      await generateAndPersistConversationTitle({
+        conversationId,
+        context: { origin },
+        userMessage: "Draft a launch plan",
+      });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        {
+          forceOverrideProfile: true,
+          overrideProfile: "custom-balanced",
+          selectionSeed: conversationId,
+        },
+      );
+    }
+  });
+
+  test("keeps a human channel first pass on its pinned chat profile", async () => {
+    const provider = makeProvider("openai-compatible");
+    mockGetConversation.mockReturnValue({
+      title: "Generating title...",
+      isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+      conversationType: "standard",
+      source: "user",
+      originChannel: "slack",
+      inferenceProfile: "custom-channel",
+      inferenceProfileExpiresAt: null,
+    });
+    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+
+    await generateAndPersistConversationTitle({
+      conversationId: "conv-human-channel",
+      userMessage: "Summarize this customer thread",
+    });
+
+    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
+      "conversationTitle",
+      {
+        forceOverrideProfile: true,
+        overrideProfile: "custom-channel",
+        selectionSeed: "conv-human-channel",
+      },
+    );
+  });
+
   test("keeps background conversations on their configured title routing", async () => {
     const provider = makeProvider("anthropic");
     mockGetConversation.mockReturnValue({
@@ -221,30 +362,68 @@ describe("conversation-title-service", () => {
     expect(mockGetConfig).not.toHaveBeenCalled();
   });
 
-  test("title regeneration keeps a conversation-pinned chat profile", async () => {
+  test("title regeneration keeps pinned profiles for runtime, channel, and voice origins", async () => {
     const provider = makeProvider("openai-compatible");
-    mockGetConversation.mockReturnValue({
-      title: "Untitled Conversation",
-      isAutoTitle: AUTO_TITLE_DETERMINISTIC,
-      conversationType: "standard",
-      inferenceProfile: "custom-quality",
-      inferenceProfileExpiresAt: null,
-    });
-    mockGetConfiguredProvider.mockResolvedValueOnce(provider);
+    const interactiveRows: Array<
+      Pick<MockConversation, "source" | "originChannel">
+    > = [
+      { source: "user", originChannel: "vellum" },
+      { source: "slack", originChannel: "slack" },
+      { source: "user", originChannel: "phone" },
+    ];
+    mockGetConfiguredProvider.mockResolvedValue(provider);
 
-    const result = await regenerateConversationTitle({
-      conversationId: "conv-1",
-    });
+    for (const [index, row] of interactiveRows.entries()) {
+      const conversationId = `conv-interactive-${index}`;
+      mockGetConversation.mockReturnValue({
+        title: "Untitled Conversation",
+        isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+        conversationType: "standard",
+        ...row,
+        inferenceProfile: "custom-quality",
+        inferenceProfileExpiresAt: null,
+      });
 
-    expect(result).toEqual({ title: "Project kickoff", updated: true });
-    expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
-      "conversationTitle",
-      {
-        forceOverrideProfile: true,
-        overrideProfile: "custom-quality",
-        selectionSeed: "conv-1",
-      },
-    );
+      const result = await regenerateConversationTitle({ conversationId });
+
+      expect(result).toEqual({ title: "Project kickoff", updated: true });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        {
+          forceOverrideProfile: true,
+          overrideProfile: "custom-quality",
+          selectionSeed: conversationId,
+        },
+      );
+    }
+  });
+
+  test("standard-row schedule and background regeneration keep configured title routing", async () => {
+    const provider = makeProvider("anthropic");
+    mockGetConfiguredProvider.mockResolvedValue(provider);
+
+    for (const source of ["schedule", "background"] as const) {
+      const conversationId = `conv-${source}-regeneration`;
+      mockGetConversation.mockReturnValue({
+        title: "Untitled Conversation",
+        isAutoTitle: AUTO_TITLE_DETERMINISTIC,
+        conversationType: "standard",
+        source,
+        originChannel: "slack",
+        inferenceProfile: "custom-quality",
+        inferenceProfileExpiresAt: null,
+      });
+
+      const result = await regenerateConversationTitle({ conversationId });
+
+      expect(result).toEqual({ title: "Project kickoff", updated: true });
+      expect(mockGetConfiguredProvider).toHaveBeenLastCalledWith(
+        "conversationTitle",
+        { selectionSeed: conversationId },
+      );
+    }
+
+    expect(mockGetConfig).not.toHaveBeenCalled();
   });
 
   test("regeneration extracts text from JSON content blocks", async () => {

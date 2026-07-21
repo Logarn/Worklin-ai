@@ -22,43 +22,18 @@ import {
   resolveOverrideProfile,
   updateConversationTitle,
 } from "./conversation-crud.js";
+import {
+  resolvePersistedTitleContext,
+  type TitleContext,
+  type TitleOrigin,
+} from "./conversation-title-context.js";
+
+export type {
+  TitleContext,
+  TitleOrigin,
+} from "./conversation-title-context.js";
 
 const log = getLogger("conversation-title-service");
-
-// ── Types ────────────────────────────────────────────────────────────
-
-export type TitleOrigin =
-  | "runtime_api"
-  | "channel_inbound"
-  | "voice_outbound"
-  | "voice_inbound"
-  | "guardian_request"
-  | "schedule"
-  | "task"
-  | "watcher"
-  | "subagent"
-  | "sequence"
-  | "heartbeat"
-  | "filing"
-  | "local"
-  | "task_submit"
-  | "memory_consolidation"
-  | "memory_retrospective"
-  | "misc";
-
-export interface TitleContext {
-  origin: TitleOrigin;
-  conversationKey?: string;
-  sourceChannel?: string;
-  assistantId?: string;
-  externalChatId?: string;
-  displayName?: string;
-  username?: string;
-  triggerTextSnippet?: string;
-  systemHint?: string;
-  metadataHints?: string[];
-  uxBrief?: string;
-}
 
 // ── Placeholder / loading state ──────────────────────────────────────
 
@@ -145,10 +120,44 @@ export interface GenerateTitleParams {
   signal?: AbortSignal;
 }
 
+const INTERACTIVE_TITLE_ORIGINS = new Set<TitleOrigin>([
+  "runtime_api",
+  "channel_inbound",
+  "voice_outbound",
+  "voice_inbound",
+  "local",
+]);
+
+function resolveConversationTitleContext(
+  conversation: ReturnType<typeof getConversation>,
+  context?: TitleContext,
+): TitleContext | undefined {
+  const persistedContext = resolvePersistedTitleContext(conversation);
+
+  // Persisted system provenance is authoritative for compatibility rows. Keep
+  // any richer call-site hints, but do not let an interactive-looking call
+  // accidentally route a stored schedule/background conversation as chat.
+  if (
+    persistedContext &&
+    !INTERACTIVE_TITLE_ORIGINS.has(persistedContext.origin)
+  ) {
+    return context
+      ? { ...context, origin: persistedContext.origin }
+      : persistedContext;
+  }
+
+  return context ?? persistedContext;
+}
+
 function resolveConversationTitleProfile(
   conversation: ReturnType<typeof getConversation>,
+  context?: TitleContext,
 ): string | undefined {
   if (conversation && conversation.conversationType !== "standard") {
+    return undefined;
+  }
+
+  if (context && !INTERACTIVE_TITLE_ORIGINS.has(context.origin)) {
     return undefined;
   }
 
@@ -163,10 +172,11 @@ async function resolveConversationTitleProvider(
   conversationId: string,
   conversation: ReturnType<typeof getConversation>,
   provider?: Provider,
+  context?: TitleContext,
 ): Promise<Provider | null> {
   if (provider) return provider;
 
-  const titleProfile = resolveConversationTitleProfile(conversation);
+  const titleProfile = resolveConversationTitleProfile(conversation, context);
   return getConfiguredProvider("conversationTitle", {
     ...(titleProfile
       ? { forceOverrideProfile: true, overrideProfile: titleProfile }
@@ -191,21 +201,31 @@ export async function generateAndPersistConversationTitle(
     return { title: conversation.title!, updated: false };
   }
 
+  const effectiveContext = resolveConversationTitleContext(
+    conversation,
+    context,
+  );
+
   const provider = await resolveConversationTitleProvider(
     conversationId,
     conversation,
     params.provider,
+    effectiveContext,
   );
   if (!provider) {
     // No provider available — fall back to context-derived title or untitled.
     // Deterministic, so keep it upgradeable by a later generation pass.
-    const fallback = deriveFallbackTitle(context) ?? UNTITLED_FALLBACK;
+    const fallback = deriveFallbackTitle(effectiveContext) ?? UNTITLED_FALLBACK;
     updateConversationTitle(conversationId, fallback, AUTO_TITLE_DETERMINISTIC);
     publishConversationTitleChanged(conversationId, fallback);
     return { title: fallback, updated: true };
   }
 
-  const prompt = buildTitlePrompt(context, userMessage, assistantResponse);
+  const prompt = buildTitlePrompt(
+    effectiveContext,
+    userMessage,
+    assistantResponse,
+  );
   const result = await runBtwSidechain({
     content: prompt,
     provider,
@@ -239,7 +259,7 @@ export async function generateAndPersistConversationTitle(
     return { title: currentForFallback.title!, updated: false };
   }
 
-  const fallback = deriveFallbackTitle(context) ?? UNTITLED_FALLBACK;
+  const fallback = deriveFallbackTitle(effectiveContext) ?? UNTITLED_FALLBACK;
   updateConversationTitle(conversationId, fallback, AUTO_TITLE_DETERMINISTIC);
   publishConversationTitleChanged(conversationId, fallback);
   return { title: fallback, updated: true };
@@ -303,6 +323,8 @@ export function queueGenerateConversationTitle(
 export interface RegenerateTitleParams {
   conversationId: string;
   provider?: Provider;
+  /** Explicit origin when the trigger already resolved persisted provenance. */
+  context?: TitleContext;
   signal?: AbortSignal;
 }
 
@@ -314,17 +336,23 @@ export interface RegenerateTitleParams {
 export async function regenerateConversationTitle(
   params: RegenerateTitleParams,
 ): Promise<{ title: string; updated: boolean }> {
-  const { conversationId, signal } = params;
+  const { conversationId, context, signal } = params;
 
   const conversation = getConversation(conversationId);
   if (!conversation || !conversation.isAutoTitle) {
     return { title: conversation?.title ?? UNTITLED_FALLBACK, updated: false };
   }
 
+  const effectiveContext = resolveConversationTitleContext(
+    conversation,
+    context,
+  );
+
   const provider = await resolveConversationTitleProvider(
     conversationId,
     conversation,
     params.provider,
+    effectiveContext,
   );
   if (!provider) {
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };

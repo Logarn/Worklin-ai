@@ -113,6 +113,41 @@ describe("SendMessageOptions.config.overrideProfile", () => {
     });
   });
 
+  test("explicit per-send routing metadata beats wrapper-bound values", async () => {
+    let captured: SendMessageOptions | undefined;
+    const inner: Provider = {
+      name: "anthropic",
+      async sendMessage(
+        _messages: Message[],
+        options?: SendMessageOptions,
+      ): Promise<ProviderResponse> {
+        captured = options;
+        return makeResponse("anthropic");
+      },
+    };
+
+    const provider = new CallSiteConfiguredProvider(inner, "mainAgent", {
+      forceOverrideProfile: true,
+      overrideProfile: "bound-profile",
+      selectionSeed: "bound-seed",
+    });
+    await provider.sendMessage(DUMMY_MESSAGES, {
+      config: {
+        callSite: "conversationTitle",
+        forceOverrideProfile: false,
+        overrideProfile: "per-send-profile",
+        selectionSeed: "per-send-seed",
+      },
+    });
+
+    expect(captured?.config).toMatchObject({
+      callSite: "conversationTitle",
+      forceOverrideProfile: false,
+      overrideProfile: "per-send-profile",
+      selectionSeed: "per-send-seed",
+    });
+  });
+
   test("RetryProvider resolves model from named profile when overrideProfile is set", async () => {
     setLlmConfig({
       default: { provider: "anthropic", model: "claude-opus-4-7" },

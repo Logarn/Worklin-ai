@@ -16,21 +16,28 @@ import type {
 } from "@vellumai/plugin-api";
 
 import { getConversation } from "../../../../memory/conversation-crud.js";
+import {
+  resolvePersistedTitleContext,
+  type TitleContext,
+} from "../../../../memory/conversation-title-context.js";
 import { queueGenerateConversationTitle } from "../../../../memory/conversation-title-service.js";
 
 const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
-  // System conversations (background/scheduled) carry a deterministic title
-  // from bootstrap. Their own job prompts arrive as non-interactive turns and
-  // must not spend an LLM call on a title nobody reads — only a genuine user
-  // message (interactive turn) upgrades the deterministic title to a
-  // generated one. The lookup fails open: on a read error the hook behaves
-  // as before (queues generation; the service re-checks replaceability).
+  let titleContext: TitleContext | undefined;
+
+  // A remote human channel has no attached interactive UI, so
+  // `isNonInteractive` alone cannot identify background work. Recover the
+  // explicit persisted source/origin instead: Slack/user channel rows keep the
+  // chat profile, while standard-row schedules keep the title profile.
   if (ctx.isNonInteractive) {
     try {
       const conversation = getConversation(ctx.conversationId);
       if (conversation && conversation.conversationType !== "standard") return;
+      titleContext =
+        resolvePersistedTitleContext(conversation) ??
+        ({ origin: "misc" } as const);
     } catch {
-      // Fall through to queueing.
+      // The service re-reads persisted provenance before selecting a provider.
     }
   }
 
@@ -44,6 +51,7 @@ const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
     queueGenerateConversationTitle({
       conversationId: ctx.conversationId,
       userMessage: ctx.prompt,
+      ...(titleContext ? { context: titleContext } : {}),
     });
   }, 0);
 };

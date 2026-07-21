@@ -21,6 +21,24 @@
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
+interface MockTitleConversation {
+  conversationType: "standard" | "background" | "scheduled";
+  source?: string | null;
+  originChannel?: string | null;
+}
+
+let mockTitleConversation: MockTitleConversation | null = null;
+const getConversationMock = mock(
+  (_conversationId: string): MockTitleConversation | null =>
+    mockTitleConversation,
+);
+mock.module("../memory/conversation-crud.js", () => ({
+  getConversation: getConversationMock,
+  getMessages: mock(() => []),
+  updateMessageContent: mock(() => {}),
+  updateMessageMetadata: mock(() => {}),
+}));
+
 // Stub the title-generation service before importing anything that binds
 // to it, so both the default plugin and the hooks capture the stubbed binding.
 const queueGenerateConversationTitleMock = mock(
@@ -28,10 +46,15 @@ const queueGenerateConversationTitleMock = mock(
     conversationId: string;
     provider?: unknown;
     userMessage?: string;
+    context?: { origin: string };
   }): void => undefined,
 );
 const queueRegenerateConversationTitleMock = mock(
-  (_params: { conversationId: string; provider?: unknown }): void => undefined,
+  (_params: {
+    conversationId: string;
+    provider?: unknown;
+    context?: { origin: string; sourceChannel?: string };
+  }): void => undefined,
 );
 mock.module("../memory/conversation-title-service.js", () => ({
   queueGenerateConversationTitle: queueGenerateConversationTitleMock,
@@ -132,6 +155,11 @@ function makeStopCtx(overrides: Partial<StopContext> = {}): StopContext {
 describe("title-generate user-prompt-submit hook", () => {
   beforeEach(() => {
     resetPluginRegistryForTests();
+    mockTitleConversation = null;
+    getConversationMock.mockClear();
+    getConversationMock.mockImplementation(
+      (_conversationId: string) => mockTitleConversation,
+    );
     queueGenerateConversationTitleMock.mockReset();
     queueGenerateConversationTitleMock.mockImplementation(() => undefined);
   });
@@ -185,11 +213,127 @@ describe("title-generate user-prompt-submit hook", () => {
       queueGenerateConversationTitleMock.mock.calls[0]?.[0]?.userMessage,
     ).toBe("draft a plan");
   });
+
+  test("passes schedule origin for a noninteractive system row stored as standard", async () => {
+    mockTitleConversation = {
+      conversationType: "standard",
+      source: "schedule",
+    };
+
+    await userPromptSubmit(
+      makeCtx({
+        conversationId: "conv-manual-schedule",
+        isNonInteractive: true,
+        prompt: "Prepare the launch report",
+      }),
+    );
+    await flushMacrotasks();
+
+    expect(queueGenerateConversationTitleMock).toHaveBeenCalledWith({
+      conversationId: "conv-manual-schedule",
+      userMessage: "Prepare the launch report",
+      context: { origin: "schedule" },
+    });
+  });
+
+  test("treats remote human channel rows as channel inbound even without an interactive client", async () => {
+    const humanChannelRows: MockTitleConversation[] = [
+      {
+        conversationType: "standard",
+        source: "user",
+        originChannel: "slack",
+      },
+      {
+        conversationType: "standard",
+        source: "slack",
+        originChannel: null,
+      },
+    ];
+
+    for (const [index, conversation] of humanChannelRows.entries()) {
+      mockTitleConversation = conversation;
+      const conversationId = `conv-human-channel-${index}`;
+
+      await userPromptSubmit(
+        makeCtx({
+          conversationId,
+          isNonInteractive: true,
+          prompt: "Summarize this customer thread",
+        }),
+      );
+      await flushMacrotasks();
+
+      expect(queueGenerateConversationTitleMock).toHaveBeenLastCalledWith({
+        conversationId,
+        userMessage: "Summarize this customer thread",
+        context: { origin: "channel_inbound", sourceChannel: "slack" },
+      });
+    }
+
+    expect(queueGenerateConversationTitleMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("honors explicit stored channels ahead of the default user source", async () => {
+    const cases = [
+      { channel: "a2a", expectedOrigin: "misc" },
+      { channel: "platform", expectedOrigin: "runtime_api" },
+      { channel: "custom-agent", expectedOrigin: "misc" },
+    ];
+
+    for (const { channel, expectedOrigin } of cases) {
+      mockTitleConversation = {
+        conversationType: "standard",
+        source: "user",
+        originChannel: channel,
+      };
+      const conversationId = `conv-${channel}`;
+
+      await userPromptSubmit(
+        makeCtx({
+          conversationId,
+          isNonInteractive: true,
+          prompt: "Process this assistant request",
+        }),
+      );
+      await flushMacrotasks();
+
+      expect(queueGenerateConversationTitleMock).toHaveBeenLastCalledWith({
+        conversationId,
+        userMessage: "Process this assistant request",
+        context: { origin: expectedOrigin, sourceChannel: channel },
+      });
+    }
+  });
+
+  test("lets the service re-read first-turn provenance after a transient lookup failure", async () => {
+    getConversationMock.mockImplementationOnce(() => {
+      throw new Error("database temporarily unavailable");
+    });
+
+    await userPromptSubmit(
+      makeCtx({
+        conversationId: "conv-transient-first-turn",
+        isNonInteractive: true,
+        prompt: "Summarize the launch status",
+      }),
+    );
+    await flushMacrotasks();
+
+    expect(queueGenerateConversationTitleMock).toHaveBeenCalledWith({
+      conversationId: "conv-transient-first-turn",
+      userMessage: "Summarize the launch status",
+    });
+  });
 });
 
 describe("title-generate stop hook", () => {
   beforeEach(() => {
     resetPluginRegistryForTests();
+    mockTitleConversation = null;
+    getConversationMock.mockClear();
+    getConversationMock.mockImplementation(
+      (_conversationId: string) => mockTitleConversation,
+    );
     queueRegenerateConversationTitleMock.mockReset();
     queueRegenerateConversationTitleMock.mockImplementation(() => undefined);
     skipAutoRetitling = false;
@@ -210,6 +354,64 @@ describe("title-generate stop hook", () => {
     expect(call?.conversationId).toBe("conv-1");
     expect(call).not.toHaveProperty("provider");
     expect(call).not.toHaveProperty("signal");
+  });
+
+  test("passes persisted schedule origin when regenerating a standard compatibility row", async () => {
+    mockTitleConversation = {
+      conversationType: "standard",
+      source: "schedule",
+    };
+
+    await stop(
+      makeStopCtx({
+        conversationId: "conv-standard-schedule",
+        messages: historyWithUserTurns(3),
+      }),
+    );
+    await flushMacrotasks();
+
+    expect(queueRegenerateConversationTitleMock).toHaveBeenCalledWith({
+      conversationId: "conv-standard-schedule",
+      context: { origin: "schedule" },
+    });
+  });
+
+  test("keeps unrecognized persisted origins on configured routing during regeneration", async () => {
+    mockTitleConversation = {
+      conversationType: "standard",
+      source: "custom-background-trigger",
+    };
+
+    await stop(
+      makeStopCtx({
+        conversationId: "conv-custom-background",
+        messages: historyWithUserTurns(3),
+      }),
+    );
+    await flushMacrotasks();
+
+    expect(queueRegenerateConversationTitleMock).toHaveBeenCalledWith({
+      conversationId: "conv-custom-background",
+      context: { origin: "misc" },
+    });
+  });
+
+  test("lets the service re-read provenance after a transient lookup failure", async () => {
+    getConversationMock.mockImplementationOnce(() => {
+      throw new Error("database temporarily unavailable");
+    });
+
+    await stop(
+      makeStopCtx({
+        conversationId: "conv-transient-read",
+        messages: historyWithUserTurns(3),
+      }),
+    );
+    await flushMacrotasks();
+
+    expect(queueRegenerateConversationTitleMock).toHaveBeenCalledWith({
+      conversationId: "conv-transient-read",
+    });
   });
 
   test("defers the regeneration so the completed turn is persisted first", async () => {
