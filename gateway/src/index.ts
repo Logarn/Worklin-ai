@@ -1662,6 +1662,7 @@ async function main() {
   }
 
   const server = Bun.serve({
+    hostname: process.env.GATEWAY_HOST?.trim() || undefined,
     port: config.port,
     idleTimeout: 0,
     // Match the daemon's 512 MB limit (assistant/src/runtime/http-server.ts)
