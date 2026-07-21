@@ -34,6 +34,7 @@ import {
   resolveAndPersistHatchedAt,
   resolveHatchedAtReadOnly,
 } from "../../workspace/hatched-date.js";
+import { getIdentityChangeEpoch } from "../../workspace/identity-change-invalidation.js";
 import {
   IdentityFileConflictError,
   writeIdentityFileAtomicallyIfUnchanged as commitIdentityFile,
@@ -52,7 +53,6 @@ import {
   NotFoundError,
 } from "./errors.js";
 import {
-  clearCachedIntro,
   getCachedIntro,
   readWorkspaceGreetings,
   readWorkspaceIdentityIntro,
@@ -616,8 +616,6 @@ async function updateIdentity({ body, headers }: RouteHandlerArgs) {
       currentContent,
       updatedContent,
     );
-    invalidateIdentityIntroGeneration();
-
     try {
       publishIdentityChanged(
         updatedFields,
@@ -677,13 +675,7 @@ interface IdentityIntroResponse {
 
 let greetingGenerationInFlight: Promise<void> | null = null;
 let lastGreetingGenerationFailureAt = 0;
-let identityIntroGenerationVersion = 0;
-
-function invalidateIdentityIntroGeneration(): void {
-  identityIntroGenerationVersion += 1;
-  lastGreetingGenerationFailureAt = 0;
-  clearCachedIntro();
-}
+let lastGreetingGenerationFailureEpoch = -1;
 
 function identityIntroResponse(
   greetings: string[],
@@ -784,21 +776,24 @@ function triggerEmptyStateGreetingGeneration(
 
   if (
     lastGreetingGenerationFailureAt > 0 &&
+    lastGreetingGenerationFailureEpoch === getIdentityChangeEpoch() &&
     Date.now() - lastGreetingGenerationFailureAt <
       GREETING_GENERATION_FAILURE_COOLDOWN_MS
   ) {
     return false;
   }
 
-  const generationVersion = identityIntroGenerationVersion;
+  const generationEpoch = getIdentityChangeEpoch();
   greetingGenerationInFlight = new Promise<void>((resolve) => {
     queueMicrotask(() => {
-      void generateEmptyStateGreetings(localTimeContext, generationVersion)
+      void generateEmptyStateGreetings(localTimeContext, generationEpoch)
         .then((outcome) => {
           if (outcome === "failed") {
             lastGreetingGenerationFailureAt = Date.now();
+            lastGreetingGenerationFailureEpoch = generationEpoch;
           } else if (outcome === "cached") {
             lastGreetingGenerationFailureAt = 0;
+            lastGreetingGenerationFailureEpoch = -1;
           }
         })
         .finally(() => {
@@ -813,14 +808,12 @@ function triggerEmptyStateGreetingGeneration(
 
 async function generateEmptyStateGreetings(
   localTimeContext: string | null,
-  generationVersion: number,
+  generationEpoch: number,
 ): Promise<GreetingGenerationOutcome> {
   try {
     const provider = await getConfiguredProvider(EMPTY_STATE_GREETING_CALLSITE);
     if (!provider) {
-      return generationVersion === identityIntroGenerationVersion
-        ? "failed"
-        : "stale";
+      return generationEpoch === getIdentityChangeEpoch() ? "failed" : "stale";
     }
 
     const resolved = resolveCallSiteConfig(
@@ -854,25 +847,20 @@ async function generateEmptyStateGreetings(
 
     const greetings = parseGeneratedGreetings(result.text);
     if (greetings.length === 0) {
-      return generationVersion === identityIntroGenerationVersion
-        ? "failed"
-        : "stale";
+      return generationEpoch === getIdentityChangeEpoch() ? "failed" : "stale";
     }
 
-    if (generationVersion !== identityIntroGenerationVersion) {
+    if (generationEpoch !== getIdentityChangeEpoch()) {
       return "stale";
     }
 
-    setCachedIntro(greetings);
-    return "cached";
+    return setCachedIntro(greetings, generationEpoch) ? "cached" : "stale";
   } catch (err) {
     getLogger("identity").warn(
       { err },
       "Failed to generate empty-state greetings",
     );
-    return generationVersion === identityIntroGenerationVersion
-      ? "failed"
-      : "stale";
+    return generationEpoch === getIdentityChangeEpoch() ? "failed" : "stale";
   }
 }
 

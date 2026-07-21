@@ -13,14 +13,6 @@ export async function updateIdentityAvatarSection(
 ): Promise<void> {
   const identityPath = getWorkspacePromptPath("IDENTITY.md");
 
-  const sectionBody = description
-    ? `## Avatar\n${description}\n`
-    : "## Avatar\nNo description yet — describe what the current avatar looks like.\n";
-
-  // Match ## Avatar and its content up to (but not including) the next heading
-  // at any level, or end of file. Uses multiline ^ to match headings at line start.
-  const avatarSectionRegex = /## Avatar\n[\s\S]*?(?=^#{1,6} |\s*$)/m;
-
   try {
     await updateIdentityFileAtomically(identityPath, (content) => {
       if (content === null) {
@@ -31,10 +23,18 @@ export async function updateIdentityAvatarSection(
         return undefined;
       }
 
+      const newline = content.includes("\r\n") ? "\r\n" : "\n";
+      const normalizedDescription = description
+        ? description.replace(/\r\n|\r|\n/g, newline)
+        : "No description yet — describe what the current avatar looks like.";
+      const sectionBody = `## Avatar${newline}${normalizedDescription}${newline}${newline}`;
+      const avatarSectionRegex =
+        /^##[ \t]+Avatar[ \t]*(?:\r?\n|$)[\s\S]*?(?=^#{1,6}[ \t]+|$(?![\s\S]))/im;
+
       if (avatarSectionRegex.test(content)) {
         return content.replace(avatarSectionRegex, sectionBody);
       }
-      return content.trimEnd() + "\n\n" + sectionBody + "\n";
+      return `${content.trimEnd()}${newline}${newline}${sectionBody}`;
     });
   } catch (err) {
     log?.warn({ err }, "Failed to update IDENTITY.md avatar section");

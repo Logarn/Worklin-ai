@@ -2,8 +2,12 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 
 import { client } from "@/generated/daemon/client.gen";
 import type { IdentityGetResponse } from "@/generated/daemon/types.gen";
+import { ApiError } from "@/utils/api-errors";
 
-import { updateAssistantIdentity } from "./identity";
+import {
+  IdentityResponseValidationError,
+  updateAssistantIdentity,
+} from "./identity";
 
 const savedIdentity: IdentityGetResponse = {
   name: "North Star",
@@ -71,11 +75,14 @@ describe("updateAssistantIdentity", () => {
       response: new Response(null, { status: 200 }),
     });
 
-    await expect(
-      updateAssistantIdentity("assistant-123", {
-        role: "Lifecycle marketing partner",
-      }),
-    ).rejects.toThrow("could not be verified");
+    const error = await updateAssistantIdentity("assistant-123", {
+      role: "Lifecycle marketing partner",
+    }).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(IdentityResponseValidationError);
+    expect(error).not.toBeInstanceOf(ApiError);
+    expect((error as { status?: number }).status).toBeUndefined();
+    expect((error as Error).message).toContain("could not be verified");
   });
 
   test("surfaces persistence errors instead of returning success", async () => {

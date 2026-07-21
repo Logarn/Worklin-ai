@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 const checkpointStore = new Map<string, string>();
 
 mock.module("../memory/checkpoints.js", () => ({
+  deleteMemoryCheckpoint: (key: string) => checkpointStore.delete(key),
   getMemoryCheckpoint: (key: string) => checkpointStore.get(key) ?? null,
   setMemoryCheckpoint: (key: string, value: string) => {
     checkpointStore.set(key, value);
@@ -35,6 +36,10 @@ import {
   getCachedEmptyStateGreeting,
   setCachedEmptyStateGreeting,
 } from "../runtime/routes/empty-state-greeting-cache.js";
+import {
+  advanceIdentityChangeEpoch,
+  getIdentityChangeEpoch,
+} from "../workspace/identity-change-invalidation.js";
 
 const TIMESTAMP_KEY = "empty_state:greeting:cached_at";
 
@@ -85,6 +90,21 @@ describe("empty-state greeting cache", () => {
     setCachedEmptyStateGreeting("cached while on");
     cacheTtlMs = 0;
     expect(getCachedEmptyStateGreeting()).toBeNull();
+  });
+
+  test("rejects a generated greeting from an older identity epoch", () => {
+    const generationEpoch = getIdentityChangeEpoch();
+    expect(setCachedEmptyStateGreeting("old identity", generationEpoch)).toBe(
+      true,
+    );
+
+    advanceIdentityChangeEpoch();
+
+    expect(getCachedEmptyStateGreeting()).toBeNull();
+    expect(setCachedEmptyStateGreeting("stale result", generationEpoch)).toBe(
+      false,
+    );
+    expect(checkpointStore.size).toBe(0);
   });
 
   test("returns null when the timestamp checkpoint is missing", () => {

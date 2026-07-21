@@ -23,8 +23,8 @@ import { z } from "zod";
 import { getWorkspaceDir } from "../../util/platform.js";
 import {
   IdentityFileConflictError,
-  isWorkspaceIdentityPath,
   readIdentityContent,
+  resolveWorkspaceIdentityWriteTarget,
   withIdentityFileWriteLock,
   writeIdentityFileAtomicallyIfUnchanged,
 } from "../../workspace/identity-file-write.js";
@@ -422,10 +422,11 @@ function handleWorkspaceWrite({ body, headers }: RouteHandlerArgs) {
     return { path, size: buffer.byteLength };
   };
 
-  if (isWorkspaceIdentityPath(resolved)) {
-    const expectedContent = readIdentityContent(resolved);
+  const identityPath = resolveWorkspaceIdentityWriteTarget(resolved);
+  if (identityPath) {
+    const expectedContent = readIdentityContent(identityPath);
     return writeIdentityFileAtomicallyIfUnchanged(
-      resolved,
+      identityPath,
       expectedContent,
       buffer,
     )
@@ -534,11 +535,9 @@ function handleWorkspaceRename({ body, headers }: RouteHandlerArgs) {
     renameSync(resolvedOld, resolvedNew);
   };
 
-  const identityPath = isWorkspaceIdentityPath(resolvedOld)
-    ? resolvedOld
-    : isWorkspaceIdentityPath(resolvedNew)
-      ? resolvedNew
-      : null;
+  const identityPath =
+    resolveWorkspaceIdentityWriteTarget(resolvedOld) ??
+    resolveWorkspaceIdentityWriteTarget(resolvedNew);
   const finishRename = () => {
     publishSoundsConfigUpdatedForPaths(
       [oldPath, newPath],
@@ -588,8 +587,9 @@ function handleWorkspaceDelete({ body, headers }: RouteHandlerArgs) {
     return { success: true };
   };
 
-  if (isWorkspaceIdentityPath(resolved)) {
-    return withIdentityFileWriteLock(resolved, deleteWorkspacePath).then(
+  const identityPath = resolveWorkspaceIdentityWriteTarget(resolved);
+  if (identityPath) {
+    return withIdentityFileWriteLock(identityPath, deleteWorkspacePath).then(
       finishDelete,
     );
   }

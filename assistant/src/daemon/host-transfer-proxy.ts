@@ -18,6 +18,7 @@ import * as pendingInteractions from "../runtime/pending-interactions.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 import { AssistantError, ErrorCode } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
+import { writeIdentityFileIfTarget } from "../workspace/identity-file-write.js";
 
 const log = getLogger("host-transfer-proxy");
 
@@ -635,7 +636,14 @@ export class HostTransferProxy {
 
     try {
       await mkdir(dirname(entry.filePath), { recursive: true });
-      await writeFile(entry.filePath, data);
+      const identityWrite = await writeIdentityFileIfTarget(
+        entry.filePath,
+        data,
+        { overwrite: entry.overwrite === true },
+      );
+      if (!identityWrite) {
+        await writeFile(entry.filePath, data);
+      }
       const interaction = pendingInteractions.get(requestId);
       cleanup();
       interaction?.rpcResolve?.({

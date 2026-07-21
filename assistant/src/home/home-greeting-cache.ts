@@ -14,11 +14,16 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 
 import {
+  deleteMemoryCheckpoint,
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../memory/checkpoints.js";
 import { resolveGuardianPersona } from "../prompts/persona-resolver.js";
 import { getWorkspacePromptPath } from "../util/platform.js";
+import {
+  getIdentityChangeEpoch,
+  onIdentityChange,
+} from "../workspace/identity-change-invalidation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -29,6 +34,7 @@ const CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const CHECKPOINT_KEY_TEXT = "home:greeting:text";
 const CHECKPOINT_KEY_HASH = "home:greeting:content_hash";
 const CHECKPOINT_KEY_TIMESTAMP = "home:greeting:cached_at";
+const CHECKPOINT_KEY_IDENTITY_EPOCH = "home:greeting:identity_epoch";
 
 const IDENTITY_FILES = ["IDENTITY.md", "SOUL.md"] as const;
 
@@ -58,10 +64,13 @@ export function getCachedHomeGreeting(): string | null {
     const text = getMemoryCheckpoint(CHECKPOINT_KEY_TEXT);
     const hash = getMemoryCheckpoint(CHECKPOINT_KEY_HASH);
     const timestampStr = getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    const identityEpochStr = getMemoryCheckpoint(CHECKPOINT_KEY_IDENTITY_EPOCH);
 
-    if (!text || !hash || !timestampStr) {
+    if (!text || !hash || !timestampStr || !identityEpochStr) {
       return null;
     }
+
+    if (Number(identityEpochStr) !== getIdentityChangeEpoch()) return null;
 
     const cachedAt = Number(timestampStr);
     if (isNaN(cachedAt) || Date.now() - cachedAt > CACHE_TTL_MS) {
@@ -84,16 +93,38 @@ export function getCachedHomeGreeting(): string | null {
  * write landed; `false` on failure so callers don't report fresh content
  * that the next read cannot serve.
  */
-export function setCachedHomeGreeting(text: string): boolean {
+export function setCachedHomeGreeting(
+  text: string,
+  expectedIdentityEpoch = getIdentityChangeEpoch(),
+): boolean {
+  if (expectedIdentityEpoch !== getIdentityChangeEpoch()) return false;
+
   try {
     const hash = computeIdentityContentHash();
     const now = String(Date.now());
     setMemoryCheckpoint(CHECKPOINT_KEY_TEXT, text);
     setMemoryCheckpoint(CHECKPOINT_KEY_HASH, hash);
     setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, now);
+    setMemoryCheckpoint(
+      CHECKPOINT_KEY_IDENTITY_EPOCH,
+      String(expectedIdentityEpoch),
+    );
     return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.
     return false;
   }
 }
+
+export function clearCachedHomeGreeting(): void {
+  try {
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_TEXT);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_HASH);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_IDENTITY_EPOCH);
+  } catch {
+    // Cache invalidation is best-effort; epoch validation still rejects it.
+  }
+}
+
+onIdentityChange(clearCachedHomeGreeting);

@@ -12,8 +12,8 @@ import { minimatch } from "minimatch";
 import { ensureDir, pathExists } from "../../../util/fs.js";
 import {
   IdentityFileConflictError,
-  isWorkspaceIdentityPath,
   readIdentityContent,
+  resolveWorkspaceIdentityWriteTarget,
   writeIdentityFileAtomicallyIfUnchanged,
 } from "../../../workspace/identity-file-write.js";
 import { applyEdit } from "./edit-engine.js";
@@ -188,7 +188,15 @@ export class FileSystemOps {
     }
     const filePath = pathCheck.resolved;
 
-    if (!isWorkspaceIdentityPath(filePath)) {
+    let identityPath: string | null;
+    try {
+      identityPath = resolveWorkspaceIdentityWriteTarget(filePath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+
+    if (!identityPath) {
       return this.writeFileSafe(input);
     }
 
@@ -199,11 +207,11 @@ export class FileSystemOps {
 
     try {
       ensureDir(dirname(filePath));
-      const expectedContent = readIdentityContent(filePath);
+      const expectedContent = readIdentityContent(identityPath);
       const oldContent = expectedContent?.toString("utf-8") ?? "";
 
       await writeIdentityFileAtomicallyIfUnchanged(
-        filePath,
+        identityPath,
         expectedContent,
         input.content,
       );
@@ -322,7 +330,15 @@ export class FileSystemOps {
     }
     const filePath = pathCheck.resolved;
 
-    if (!isWorkspaceIdentityPath(filePath)) {
+    let identityPath: string | null;
+    try {
+      identityPath = resolveWorkspaceIdentityWriteTarget(filePath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+
+    if (!identityPath) {
       return this.editFileSafe(input);
     }
 
@@ -337,7 +353,7 @@ export class FileSystemOps {
 
     let content: string;
     try {
-      const expectedContent = readIdentityContent(filePath);
+      const expectedContent = readIdentityContent(identityPath);
       if (expectedContent === null) {
         return { ok: false, error: Err.notFound(filePath) };
       }
@@ -380,7 +396,7 @@ export class FileSystemOps {
 
     try {
       await writeIdentityFileAtomicallyIfUnchanged(
-        filePath,
+        identityPath,
         content,
         result.updatedContent,
       );

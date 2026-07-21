@@ -1,5 +1,6 @@
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -52,6 +53,7 @@ function setWorkspaceDir(dir: string): void {
 import { PKB_WORKSPACE_SCOPE } from "../memory/pkb/types.js";
 import { getTool } from "../tools/registry.js";
 import type { Tool, ToolContext } from "../tools/types.js";
+import { getIdentityChangeEpoch } from "../workspace/identity-change-invalidation.js";
 import { _setIdentityFileBeforeCommitHookForTests } from "../workspace/identity-file-write.js";
 
 let fileWriteTool: Tool;
@@ -181,6 +183,25 @@ describe("file_write tool (sandbox)", () => {
     expect(competingResult.isError).toBe(true);
     expect(competingResult.content).toContain("identity changed");
     expect(readFileSync(identityPath, "utf-8")).toContain("Name:** First");
+  });
+
+  test("coordinates writes through a hard link to workspace IDENTITY.md", async () => {
+    const dir = makeTempDir();
+    setWorkspaceDir(dir);
+    const identityPath = join(dir, "IDENTITY.md");
+    const hardLinkPath = join(dir, "identity-hard-link.md");
+    writeFileSync(identityPath, "original identity");
+    linkSync(identityPath, hardLinkPath);
+    const beforeEpoch = getIdentityChangeEpoch();
+
+    const result = await fileWriteTool.execute(
+      { path: hardLinkPath, content: "updated identity" },
+      makeContext(dir),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(readFileSync(identityPath, "utf-8")).toBe("updated identity");
+    expect(getIdentityChangeEpoch()).toBe(beforeEpoch + 1);
   });
 
   test("creates nested directories", async () => {

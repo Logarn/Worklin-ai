@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { Mutex } from "../util/mutex.js";
 import { getWorkspacePromptPath } from "../util/platform.js";
+import { advanceIdentityChangeEpoch } from "./identity-change-invalidation.js";
 
 const identityWriteLocks = new Map<string, Mutex>();
 
@@ -23,6 +26,12 @@ interface IdentitySnapshot {
 
 interface IdentityCommitHookContext {
   identityPath: string;
+}
+
+interface ComparablePath {
+  exists: boolean;
+  realPath: string;
+  stat: ReturnType<typeof statSync> | null;
 }
 
 type IdentityCommitHook = (
@@ -38,6 +47,126 @@ export class IdentityFileConflictError extends Error {
     );
     this.name = "IdentityFileConflictError";
   }
+}
+
+export class IdentityFileExistsError extends Error {
+  readonly code = "EEXIST";
+
+  constructor(identityPath: string) {
+    super(`Destination file already exists: ${identityPath}`);
+    this.name = "IdentityFileExistsError";
+  }
+}
+
+export class IdentityTargetResolutionError extends Error {
+  constructor(filePath: string, cause?: unknown) {
+    super(`Could not safely resolve identity write target: ${filePath}`, {
+      cause,
+    });
+    this.name = "IdentityTargetResolutionError";
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code =
+    error instanceof Error && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function inspectComparablePath(filePath: string): ComparablePath {
+  const absolutePath = resolve(filePath);
+  const trailing: string[] = [];
+  let current = absolutePath;
+
+  while (true) {
+    try {
+      lstatSync(current);
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw new IdentityTargetResolutionError(filePath, error);
+      }
+
+      const parent = dirname(current);
+      if (parent === current) {
+        throw new IdentityTargetResolutionError(filePath, error);
+      }
+      trailing.unshift(basename(current));
+      current = parent;
+      continue;
+    }
+
+    let realPath: string;
+    try {
+      realPath = realpathSync(current);
+    } catch (error) {
+      // An existing but unresolvable entry is commonly a dangling symlink.
+      throw new IdentityTargetResolutionError(filePath, error);
+    }
+
+    if (trailing.length > 0) {
+      return {
+        exists: false,
+        realPath: join(realPath, ...trailing),
+        stat: null,
+      };
+    }
+
+    try {
+      return {
+        exists: true,
+        realPath,
+        stat: statSync(absolutePath),
+      };
+    } catch (error) {
+      throw new IdentityTargetResolutionError(filePath, error);
+    }
+  }
+}
+
+/**
+ * Resolve a validated destination to the workspace identity file when it is a
+ * direct path or a filesystem alias. Existing aliases are compared by both
+ * real path and inode so symlinks, case aliases, and hard links are covered.
+ */
+export function resolveWorkspaceIdentityWriteTarget(
+  filePath: string,
+): string | null {
+  const identityPath = resolve(getWorkspacePromptPath("IDENTITY.md"));
+  const candidatePath = resolve(filePath);
+
+  if (candidatePath === identityPath) {
+    return identityPath;
+  }
+
+  const identity = inspectComparablePath(identityPath);
+  const candidate = inspectComparablePath(candidatePath);
+
+  if (candidate.realPath === identity.realPath) {
+    return identityPath;
+  }
+
+  if (
+    identity.exists &&
+    candidate.exists &&
+    identity.stat?.isFile() &&
+    candidate.stat?.isFile() &&
+    identity.stat.dev === candidate.stat.dev &&
+    identity.stat.ino === candidate.stat.ino
+  ) {
+    return identityPath;
+  }
+
+  return null;
+}
+
+function requireWorkspaceIdentityWriteTarget(filePath: string): string {
+  const identityPath = resolveWorkspaceIdentityWriteTarget(filePath);
+  if (!identityPath) {
+    throw new IdentityTargetResolutionError(filePath);
+  }
+  return identityPath;
 }
 
 function getIdentityWriteLock(identityPath: string): Mutex {
@@ -105,17 +234,15 @@ async function commitLocked(
     }
 
     renameSync(tempPath, identityPath);
+    advanceIdentityChangeEpoch();
   } finally {
     rmSync(tempPath, { force: true });
   }
 }
 
-export function isWorkspaceIdentityPath(filePath: string): boolean {
-  return resolve(filePath) === resolve(getWorkspacePromptPath("IDENTITY.md"));
-}
-
 export function readIdentityContent(identityPath: string): Buffer | null {
-  return readSnapshot(identityPath).content;
+  return readSnapshot(requireWorkspaceIdentityWriteTarget(identityPath))
+    .content;
 }
 
 export async function writeIdentityFileAtomicallyIfUnchanged(
@@ -123,14 +250,16 @@ export async function writeIdentityFileAtomicallyIfUnchanged(
   expectedContent: IdentityContent | null,
   content: IdentityContent,
 ): Promise<void> {
+  const resolvedIdentityPath =
+    requireWorkspaceIdentityWriteTarget(identityPath);
   const expectedBuffer =
     expectedContent === null ? null : toBuffer(expectedContent);
   const contentBuffer = toBuffer(content);
 
-  await getIdentityWriteLock(identityPath).withLock(async () => {
-    const snapshot = readSnapshot(identityPath);
+  await getIdentityWriteLock(resolvedIdentityPath).withLock(async () => {
+    const snapshot = readSnapshot(resolvedIdentityPath);
     await commitLocked(
-      identityPath,
+      resolvedIdentityPath,
       expectedBuffer,
       contentBuffer,
       snapshot.mode,
@@ -138,12 +267,51 @@ export async function writeIdentityFileAtomicallyIfUnchanged(
   });
 }
 
+export async function writeIdentityFileAtomically(
+  identityPath: string,
+  content: IdentityContent,
+  options?: { overwrite?: boolean },
+): Promise<void> {
+  const resolvedIdentityPath =
+    requireWorkspaceIdentityWriteTarget(identityPath);
+  const contentBuffer = toBuffer(content);
+
+  await getIdentityWriteLock(resolvedIdentityPath).withLock(async () => {
+    const snapshot = readSnapshot(resolvedIdentityPath);
+    if (options?.overwrite === false && snapshot.content !== null) {
+      throw new IdentityFileExistsError(resolvedIdentityPath);
+    }
+    await commitLocked(
+      resolvedIdentityPath,
+      snapshot.content,
+      contentBuffer,
+      snapshot.mode,
+    );
+  });
+}
+
+export async function writeIdentityFileIfTarget(
+  filePath: string,
+  content: IdentityContent,
+  options?: { overwrite?: boolean },
+): Promise<boolean> {
+  const identityPath = resolveWorkspaceIdentityWriteTarget(filePath);
+  if (!identityPath) {
+    return false;
+  }
+
+  await writeIdentityFileAtomically(identityPath, content, options);
+  return true;
+}
+
 export async function updateIdentityFileAtomically(
   identityPath: string,
   update: (content: string | null) => string | undefined,
 ): Promise<{ changed: boolean; content: string | null }> {
-  return getIdentityWriteLock(identityPath).withLock(async () => {
-    const snapshot = readSnapshot(identityPath);
+  const resolvedIdentityPath =
+    requireWorkspaceIdentityWriteTarget(identityPath);
+  return getIdentityWriteLock(resolvedIdentityPath).withLock(async () => {
+    const snapshot = readSnapshot(resolvedIdentityPath);
     const currentContent = snapshot.content?.toString("utf-8") ?? null;
     const updatedContent = update(currentContent);
 
@@ -152,7 +320,7 @@ export async function updateIdentityFileAtomically(
     }
 
     await commitLocked(
-      identityPath,
+      resolvedIdentityPath,
       snapshot.content,
       Buffer.from(updatedContent, "utf-8"),
       snapshot.mode,
@@ -165,7 +333,13 @@ export async function withIdentityFileWriteLock<T>(
   identityPath: string,
   operation: () => Promise<T> | T,
 ): Promise<T> {
-  return getIdentityWriteLock(identityPath).withLock(async () => operation());
+  const resolvedIdentityPath =
+    requireWorkspaceIdentityWriteTarget(identityPath);
+  return getIdentityWriteLock(resolvedIdentityPath).withLock(async () => {
+    const result = await operation();
+    advanceIdentityChangeEpoch();
+    return result;
+  });
 }
 
 export function _setIdentityFileBeforeCommitHookForTests(

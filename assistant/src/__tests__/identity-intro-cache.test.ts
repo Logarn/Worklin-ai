@@ -59,6 +59,10 @@ import {
   readWorkspaceIdentityIntro,
   setCachedIntro,
 } from "../runtime/routes/identity-intro-cache.js";
+import {
+  advanceIdentityChangeEpoch,
+  getIdentityChangeEpoch,
+} from "../workspace/identity-change-invalidation.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -127,6 +131,18 @@ describe("identity intro cache", () => {
     expect(checkpointStore.size).toBe(0);
   });
 
+  test("invalidates cached and in-flight greetings when the identity epoch advances", () => {
+    const generationEpoch = getIdentityChangeEpoch();
+    expect(setCachedIntro(["Old greeting"], generationEpoch)).toBe(true);
+
+    advanceIdentityChangeEpoch();
+
+    expect(getCachedIntro()).toBeNull();
+    expect(checkpointStore.size).toBe(0);
+    expect(setCachedIntro(["Stale greeting"], generationEpoch)).toBe(false);
+    expect(checkpointStore.size).toBe(0);
+  });
+
   test("returns null when cache is expired (TTL exceeded)", () => {
     workspaceFiles["IDENTITY.md"] = "- **Name:** Atlas";
 
@@ -188,6 +204,10 @@ describe("identity intro cache", () => {
     // Simulate a cache entry written by an older daemon version
     checkpointStore.set("identity:intro:greetings", "Legacy greeting");
     checkpointStore.set("identity:intro:cached_at", String(Date.now()));
+    checkpointStore.set(
+      "identity:intro:identity_epoch",
+      String(getIdentityChangeEpoch()),
+    );
 
     const cached = getCachedIntro();
     expect(cached).not.toBeNull();

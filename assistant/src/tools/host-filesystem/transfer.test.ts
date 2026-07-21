@@ -1,14 +1,17 @@
 import {
   existsSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 
+import { getIdentityChangeEpoch } from "../../workspace/identity-change-invalidation.js";
 import type { ToolContext } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +69,7 @@ mock.module("../../runtime/assistant-event-hub.js", () => ({
 const { hostFileTransferTool } = await import("./transfer.js");
 
 const testDirs: string[] = [];
+const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
 
 afterEach(() => {
   mockProxyAvailable = false;
@@ -73,6 +77,11 @@ afterEach(() => {
   toHostCalls.length = 0;
   for (const dir of testDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
+  }
+  if (originalWorkspaceDir === undefined) {
+    delete process.env.VELLUM_WORKSPACE_DIR;
+  } else {
+    process.env.VELLUM_WORKSPACE_DIR = originalWorkspaceDir;
   }
 });
 
@@ -138,6 +147,34 @@ describe("host_file_transfer local mode", () => {
 
     expect(result.isError).toBe(false);
     expect(existsSync(destFile)).toBe(true);
+  });
+
+  test("coordinates a write through a symlink alias of workspace IDENTITY.md", async () => {
+    const workingDir = makeTempDir();
+    process.env.VELLUM_WORKSPACE_DIR = workingDir;
+    const identityPath = join(workingDir, "IDENTITY.md");
+    const aliasPath = join(workingDir, "identity-alias.md");
+    writeFileSync(identityPath, "original identity");
+    symlinkSync(identityPath, aliasPath);
+
+    const srcDir = makeTempDir();
+    const srcFile = join(srcDir, "source.txt");
+    writeFileSync(srcFile, "transferred identity");
+    const beforeEpoch = getIdentityChangeEpoch();
+
+    const result = await hostFileTransferTool.execute(
+      {
+        source_path: srcFile,
+        dest_path: aliasPath,
+        direction: "to_sandbox",
+        overwrite: true,
+      },
+      makeContext(workingDir),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(readFileSync(identityPath, "utf-8")).toBe("transferred identity");
+    expect(getIdentityChangeEpoch()).toBe(beforeEpoch + 1);
   });
 
   test("out-of-bounds path is rejected", async () => {

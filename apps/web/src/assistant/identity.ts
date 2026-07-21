@@ -20,6 +20,13 @@ import {
 
 export type AssistantIdentityUpdate = IdentityPatchData["body"];
 
+export class IdentityResponseValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IdentityResponseValidationError";
+  }
+}
+
 export async function fetchAssistantIdentity(
   assistantId: string,
 ): Promise<IdentityGetResponse | null> {
@@ -64,8 +71,7 @@ export async function updateAssistantIdentity(
 
   for (const [field, value] of Object.entries(update)) {
     if (data[field as keyof AssistantIdentityUpdate] !== value) {
-      throw new ApiError(
-        response.status,
+      throw new IdentityResponseValidationError(
         "The assistant identity could not be verified after saving.",
       );
     }

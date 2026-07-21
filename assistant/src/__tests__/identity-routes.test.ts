@@ -1040,6 +1040,63 @@ describe("identity routes — intro greetings", () => {
     expect(checkpointStore.get("identity:intro:cached_at")).toBeUndefined();
   });
 
+  test("discards an old generation result after a non-PATCH workspace write", async () => {
+    const workspaceDir = getWorkspaceDir();
+    const identityPath = join(workspaceDir, "IDENTITY.md");
+    writeFileSync(
+      identityPath,
+      "# Identity\n\n- **Name:** Original Assistant\n",
+      "utf-8",
+    );
+    const deferredSidechain = createDeferred<SidechainResult>();
+    sidechainResultPromise = deferredSidechain.promise;
+
+    const introRoute = ROUTES.find(
+      (candidate) => candidate.operationId === "identity_intro",
+    );
+    const workspaceWriteRoute = WORKSPACE_ROUTES.find(
+      (candidate) => candidate.operationId === "workspace_write",
+    );
+    expect(introRoute).toBeDefined();
+    expect(workspaceWriteRoute).toBeDefined();
+
+    expect(introRoute!.handler({})).toMatchObject({
+      source: "fallback",
+      refreshing: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sidechainCalls).toHaveLength(1);
+
+    await workspaceWriteRoute!.handler({
+      body: {
+        path: "IDENTITY.md",
+        content: "# Identity\n\n- **Name:** Workspace Writer\n",
+      },
+    });
+
+    deferredSidechain.resolve({
+      text: JSON.stringify([
+        "Old greeting one.",
+        "Old greeting two.",
+        "Old greeting three.",
+        "Old greeting four.",
+        "Old greeting five.",
+      ]),
+      hadTextDeltas: false,
+      response: { content: [] },
+    });
+    await deferredSidechain.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(readFileSync(identityPath, "utf-8")).toContain("Workspace Writer");
+    expect(checkpointStore.get("identity:intro:greetings")).toBeUndefined();
+    expect(checkpointStore.get("identity:intro:cached_at")).toBeUndefined();
+    expect(
+      checkpointStore.get("identity:intro:identity_epoch"),
+    ).toBeUndefined();
+  });
+
   test("does not let an old generation failure delay greetings after identity is updated", async () => {
     const workspaceDir = getWorkspaceDir();
     writeFileSync(

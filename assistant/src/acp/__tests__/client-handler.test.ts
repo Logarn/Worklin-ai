@@ -1,12 +1,42 @@
-import { describe, expect, test } from "bun:test";
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 
 import type { ServerMessage } from "../../daemon/message-protocol.js";
+import { getIdentityChangeEpoch } from "../../workspace/identity-change-invalidation.js";
 import { VellumAcpClientHandler } from "../client-handler.js";
 
 const ACP_SESSION_ID = "acp-session-abc";
 const PARENT_CONVERSATION_ID = "conv-xyz";
+const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
+const testDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of testDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  if (originalWorkspaceDir === undefined) {
+    delete process.env.VELLUM_WORKSPACE_DIR;
+  } else {
+    process.env.VELLUM_WORKSPACE_DIR = originalWorkspaceDir;
+  }
+});
+
+function makeTempDir(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "acp-handler-test-")));
+  testDirs.push(dir);
+  return dir;
+}
 
 function makeHandler(): {
   handler: VellumAcpClientHandler;
@@ -100,5 +130,27 @@ describe("VellumAcpClientHandler replay suppression", () => {
       content: "live response",
     });
     expect(handler.responseText).toBe("live response");
+  });
+});
+
+describe("VellumAcpClientHandler.writeTextFile", () => {
+  test("coordinates writes through an alias of workspace IDENTITY.md", async () => {
+    const workspaceDir = makeTempDir();
+    process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
+    const identityPath = join(workspaceDir, "IDENTITY.md");
+    const aliasPath = join(workspaceDir, "identity-alias.md");
+    writeFileSync(identityPath, "original identity");
+    symlinkSync(identityPath, aliasPath);
+    const beforeEpoch = getIdentityChangeEpoch();
+    const { handler } = makeHandler();
+
+    await handler.writeTextFile({
+      sessionId: ACP_SESSION_ID,
+      path: aliasPath,
+      content: "ACP identity",
+    });
+
+    expect(readFileSync(identityPath, "utf-8")).toBe("ACP identity");
+    expect(getIdentityChangeEpoch()).toBe(beforeEpoch + 1);
   });
 });

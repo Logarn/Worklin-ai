@@ -21,6 +21,10 @@ import {
   setMemoryCheckpoint,
 } from "../../memory/checkpoints.js";
 import { getWorkspacePromptPath } from "../../util/platform.js";
+import {
+  getIdentityChangeEpoch,
+  onIdentityChange,
+} from "../../workspace/identity-change-invalidation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,6 +34,7 @@ const CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 const CHECKPOINT_KEY_GREETINGS = "identity:intro:greetings";
 const CHECKPOINT_KEY_TIMESTAMP = "identity:intro:cached_at";
+const CHECKPOINT_KEY_IDENTITY_EPOCH = "identity:intro:identity_epoch";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -139,8 +144,11 @@ export function getCachedIntro(): CachedIntro | null {
   try {
     const raw = getMemoryCheckpoint(CHECKPOINT_KEY_GREETINGS);
     const timestampStr = getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    const identityEpochStr = getMemoryCheckpoint(CHECKPOINT_KEY_IDENTITY_EPOCH);
 
-    if (!raw || !timestampStr) return null;
+    if (!raw || !timestampStr || !identityEpochStr) return null;
+
+    if (Number(identityEpochStr) !== getIdentityChangeEpoch()) return null;
 
     // TTL check
     const cachedAt = Number(timestampStr);
@@ -161,14 +169,25 @@ export function getCachedIntro(): CachedIntro | null {
   }
 }
 
-/** Store a greetings array in the cache along with the current timestamp. */
-export function setCachedIntro(greetings: string[]): void {
+/** Store greetings when the identity used to generate them is still current. */
+export function setCachedIntro(
+  greetings: string[],
+  expectedIdentityEpoch = getIdentityChangeEpoch(),
+): boolean {
+  if (expectedIdentityEpoch !== getIdentityChangeEpoch()) return false;
+
   try {
     const now = String(Date.now());
     setMemoryCheckpoint(CHECKPOINT_KEY_GREETINGS, JSON.stringify(greetings));
     setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, now);
+    setMemoryCheckpoint(
+      CHECKPOINT_KEY_IDENTITY_EPOCH,
+      String(expectedIdentityEpoch),
+    );
+    return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.
+    return false;
   }
 }
 
@@ -177,7 +196,10 @@ export function clearCachedIntro(): void {
   try {
     deleteMemoryCheckpoint(CHECKPOINT_KEY_GREETINGS);
     deleteMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_IDENTITY_EPOCH);
   } catch {
     // Cache invalidation is best-effort; the TTL still bounds stale content.
   }
 }
+
+onIdentityChange(clearCachedIntro);

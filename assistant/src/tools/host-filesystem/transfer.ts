@@ -1,11 +1,16 @@
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, realpath } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 
 import { supportsHostProxy } from "../../channels/types.js";
 import { HostTransferProxy } from "../../daemon/host-transfer-proxy.js";
 import { RiskLevel } from "../../permissions/types.js";
 import { assistantEventHub } from "../../runtime/assistant-event-hub.js";
+import {
+  IdentityFileExistsError,
+  resolveWorkspaceIdentityWriteTarget,
+  writeIdentityFileAtomically,
+} from "../../workspace/identity-file-write.js";
 import { sandboxPolicy } from "../shared/filesystem/path-policy.js";
 import type {
   ToolContext,
@@ -289,11 +294,23 @@ async function executeLocal(
   // COPYFILE_EXCL makes the call fail atomically if dest exists,
   // avoiding a TOCTOU race vs. a separate lstat check.
   try {
-    const flags = overwrite ? 0 : constants.COPYFILE_EXCL;
-    await copyFile(resolvedSource, destPath, flags);
+    const identityPath = resolveWorkspaceIdentityWriteTarget(destPath);
+    if (identityPath) {
+      await writeIdentityFileAtomically(
+        identityPath,
+        await readFile(resolvedSource),
+        { overwrite },
+      );
+    } else {
+      const flags = overwrite ? 0 : constants.COPYFILE_EXCL;
+      await copyFile(resolvedSource, destPath, flags);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (!overwrite && msg.includes("EEXIST")) {
+    if (
+      !overwrite &&
+      (err instanceof IdentityFileExistsError || msg.includes("EEXIST"))
+    ) {
       return {
         content: `Error: destination file already exists: ${destPath}. Set overwrite to true to replace it.`,
         isError: true,
