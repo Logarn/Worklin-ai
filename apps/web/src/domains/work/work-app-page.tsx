@@ -1,8 +1,15 @@
-import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2, RotateCcw } from "lucide-react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useParams } from "react-router";
 
-import { toast } from "@vellumai/design-library";
+import { Button } from "@vellumai/design-library/components/button";
+import { toast } from "@vellumai/design-library/components/toast";
 
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { AppViewerContainer } from "@/components/app-viewer-container";
@@ -19,7 +26,18 @@ interface LoadedApp {
   html: string;
 }
 
-export function LibraryDetailPage() {
+const APP_OPEN_ERROR =
+  "This app could not be opened. It may have been deleted, or your assistant may be temporarily unavailable.";
+
+function WorkAppState({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border border-[var(--border-base)] bg-[var(--surface-overlay)] px-6 py-5 text-center">
+      {children}
+    </div>
+  );
+}
+
+export function WorkAppPage() {
   const { appId, brandId = "unassigned" } = useParams<{
     appId: string;
     brandId: string;
@@ -29,12 +47,18 @@ export function LibraryDetailPage() {
 
   const [app, setApp] = useState<LoadedApp | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSharing, setIsSharing] = useState(false);
   const requestRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!appId) return;
-    requestRef.current = appId;
+    if (!appId) {
+      setError("This app link is incomplete.");
+      return;
+    }
+
+    const requestKey = `${assistantId}:${appId}:${loadAttempt}`;
+    requestRef.current = requestKey;
     setApp(null);
     setError(null);
 
@@ -43,7 +67,7 @@ export function LibraryDetailPage() {
       throwOnError: true,
     })
       .then(({ data: result }) => {
-        if (requestRef.current !== appId) return;
+        if (requestRef.current !== requestKey) return;
         primeAppHtmlCache(assistantId, result.appId, result.html);
         setApp({
           appId: result.appId,
@@ -52,15 +76,15 @@ export function LibraryDetailPage() {
           html: result.html,
         });
       })
-      .catch((err) => {
-        if (requestRef.current !== appId) return;
-        setError(err instanceof Error ? err.message : "Failed to open app");
+      .catch(() => {
+        if (requestRef.current !== requestKey) return;
+        setError(APP_OPEN_ERROR);
       });
 
     return () => {
-      requestRef.current = null;
+      if (requestRef.current === requestKey) requestRef.current = null;
     };
-  }, [assistantId, appId]);
+  }, [assistantId, appId, loadAttempt]);
 
   const handleClose = useCallback(() => {
     void navigate(routes.work.brandArtifacts(brandId));
@@ -77,39 +101,56 @@ export function LibraryDetailPage() {
     try {
       await shareApp(assistantId, app.appId, app.name);
       toast.success("App exported", { description: `${app.name}.vellum` });
-    } catch (err) {
+    } catch (shareError) {
       toast.error("Failed to share app", {
-        description: err instanceof Error ? err.message : undefined,
+        description:
+          shareError instanceof Error ? shareError.message : undefined,
       });
     } finally {
       setIsSharing(false);
     }
   }, [assistantId, app, isSharing]);
 
-  if (!appId) return null;
-
   if (error) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4">
-        <p className="text-body-medium-lighter text-[var(--content-tertiary)]">
+      <WorkAppState>
+        <h1 className="text-title-small text-[var(--content-emphasised)]">
+          App could not open
+        </h1>
+        <p className="mt-2 max-w-md text-body-small-default text-[var(--content-tertiary)]">
           {error}
         </p>
-        <button
-          type="button"
-          onClick={handleClose}
-          className="text-body-medium-default text-[var(--primary-base)] underline"
-        >
-          Back to artifacts
-        </button>
-      </div>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          {appId ? (
+            <Button
+              variant="outlined"
+              leftIcon={<RotateCcw />}
+              onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+            >
+              Try again
+            </Button>
+          ) : null}
+          <Button variant="primary" onClick={handleClose}>
+            Back to artifacts
+          </Button>
+        </div>
+      </WorkAppState>
     );
   }
 
   if (!app) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-[var(--content-tertiary)]" />
-      </div>
+      <WorkAppState>
+        <div role="status" aria-live="polite">
+          <Loader2
+            className="mx-auto size-6 animate-spin text-[var(--content-tertiary)]"
+            aria-hidden
+          />
+          <p className="mt-3 text-body-small-default text-[var(--content-secondary)]">
+            Opening app...
+          </p>
+        </div>
+      </WorkAppState>
     );
   }
 
