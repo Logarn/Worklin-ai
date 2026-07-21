@@ -3015,6 +3015,44 @@ async function proxyToGateway(
     redirect: "manual",
   });
 
+  // A runtime can stay reachable at the network layer while its SQLite
+  // volume is unreadable. Treat an application 5xx followed by a failed
+  // readiness probe as a runtime failure so the normal provisioning path can
+  // restart and revalidate the service instead of sending every user back
+  // into the same dead conversation.
+  if (response.status >= 500 && runtimeStack.provider === "railway") {
+    let runtimeReady = false;
+    try {
+      const readiness = await fetch(
+        new URL("/readyz", runtimeStack.gateway_url),
+        { signal: AbortSignal.timeout(3_000) },
+      );
+      runtimeReady = readiness.ok;
+      await readiness.body?.cancel();
+    } catch {
+      runtimeReady = false;
+    }
+
+    if (!runtimeReady) {
+      markRuntimeStackFailed(
+        db,
+        runtimeStack.id,
+        "Runtime readiness failed after an application error.",
+        nowIso,
+      );
+      const latest = getRuntimeStackById(db, runtimeStack.id);
+      if (latest) scheduleRuntimeProvisioning(assistant, latest);
+      await response.body?.cancel();
+      sendJson(
+        req,
+        res,
+        runtimeNotReadyPayload(latest),
+        503,
+      );
+      return;
+    }
+  }
+
   res.status(response.status);
   setCorsHeaders(req, res);
   for (const [key, value] of response.headers) {
