@@ -20,6 +20,25 @@ interface CachedSound {
   url: string;
 }
 
+export type SoundPreviewResult =
+  | "played"
+  | "played-fallback"
+  | "blocked"
+  | "unsupported"
+  | "disabled";
+
+type FilePlaybackResult = "played" | "blocked" | "failed";
+type FallbackPlaybackResult = "played" | "blocked" | "unsupported";
+
+function hasErrorName(error: unknown, name: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === name
+  );
+}
+
 function clampVolume(v: number): number {
   if (!Number.isFinite(v)) return 0.7;
   if (v < 0) return 0;
@@ -61,34 +80,42 @@ class SoundManager {
     const pool = eventConfig.sounds.filter(validateSoundFilename);
 
     if (pool.length === 0) {
-      this.playFallbackBlip(volume);
+      void this.playFallbackBlip(volume);
       return;
     }
 
     const filename = pool[Math.floor(Math.random() * pool.length)];
     if (!filename) {
-      this.playFallbackBlip(volume);
+      void this.playFallbackBlip(volume);
       return;
     }
-    const ok = await this.playFile(filename, volume);
-    if (!ok) {
-      this.playFallbackBlip(volume);
+    const result = await this.playFile(filename, volume);
+    if (result !== "played") {
+      void this.playFallbackBlip(volume);
     }
   }
 
-  async previewSound(filename: string, volumeOverride?: number): Promise<void> {
-    if (!this.featureEnabled) return;
+  async previewSound(
+    filename: string,
+    volumeOverride?: number,
+  ): Promise<SoundPreviewResult> {
+    if (!this.featureEnabled) return "disabled";
     const volume = clampVolume(volumeOverride ?? this.config?.volume ?? 0.7);
-    const ok = await this.playFile(filename, volume);
-    if (!ok) {
-      this.playFallbackBlip(volume);
-    }
+    const fileResult = await this.playFile(filename, volume);
+    if (fileResult === "played") return "played";
+
+    const fallbackResult = await this.playFallbackBlip(volume);
+    if (fallbackResult === "played") return "played-fallback";
+    if (fileResult === "blocked") return "blocked";
+    return fallbackResult;
   }
 
-  async previewFallbackBlip(volumeOverride?: number): Promise<void> {
-    if (!this.featureEnabled) return;
+  async previewFallbackBlip(
+    volumeOverride?: number,
+  ): Promise<SoundPreviewResult> {
+    if (!this.featureEnabled) return "disabled";
     const volume = clampVolume(volumeOverride ?? this.config?.volume ?? 0.7);
-    this.playFallbackBlip(volume);
+    return this.playFallbackBlip(volume);
   }
 
   clearCache(): void {
@@ -99,17 +126,20 @@ class SoundManager {
     this.pendingFetches.clear();
   }
 
-  private async playFile(filename: string, volume: number): Promise<boolean> {
-    if (!validateSoundFilename(filename)) return false;
-    const cached = await this.getOrFetch(filename);
-    if (!cached) return false;
+  private async playFile(
+    filename: string,
+    volume: number,
+  ): Promise<FilePlaybackResult> {
+    if (!validateSoundFilename(filename)) return "failed";
     try {
+      const cached = await this.getOrFetch(filename);
+      if (!cached) return "failed";
       const audio = new Audio(cached.url);
       audio.volume = volume;
       await audio.play();
-      return true;
-    } catch {
-      return false;
+      return "played";
+    } catch (error) {
+      return hasErrorName(error, "NotAllowedError") ? "blocked" : "failed";
     }
   }
 
@@ -139,21 +169,24 @@ class SoundManager {
     return promise;
   }
 
-  private playFallbackBlip(volume: number): void {
-    if (typeof window === "undefined") return;
+  private async playFallbackBlip(
+    volume: number,
+  ): Promise<FallbackPlaybackResult> {
+    if (typeof window === "undefined") return "unsupported";
     try {
       const AudioContextCtor =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext })
           .webkitAudioContext;
-      if (!AudioContextCtor) return;
+      if (!AudioContextCtor) return "unsupported";
       if (!this.audioContext) {
         this.audioContext = new AudioContextCtor();
       }
       const ctx = this.audioContext;
       if (ctx.state === "suspended") {
-        void ctx.resume();
+        await ctx.resume();
       }
+      if (ctx.state !== "running") return "blocked";
 
       const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -169,8 +202,9 @@ class SoundManager {
       gain.connect(ctx.destination);
       oscillator.start();
       oscillator.stop(ctx.currentTime + 0.2);
+      return "played";
     } catch {
-      // Autoplay can be blocked until the user interacts with the page.
+      return "blocked";
     }
   }
 }

@@ -1,19 +1,23 @@
 import { ChevronDown, Play, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Card } from "@vellumai/design-library/components/card";
+import { Toggle } from "@vellumai/design-library/components/toggle";
 
+import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import type { AvailableSound } from "@/domains/settings/api/sounds";
 import {
-    defaultSoundsConfig,
-    displayLabelForFilename,
-    SOUND_EVENT_DISPLAY_NAMES,
-    SOUND_EVENT_IDS,
-    type SoundEventConfig,
-    type SoundEventId,
+  defaultSoundsConfig,
+  displayLabelForFilename,
+  SOUND_EVENT_DISPLAY_NAMES,
+  SOUND_EVENT_IDS,
+  type SoundEventConfig,
+  type SoundEventId,
 } from "@/domains/settings/types/sounds";
-import { getSoundManager } from "@/domains/settings/utils/sound-manager";
-import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
+import {
+  getSoundManager,
+  type SoundPreviewResult,
+} from "@/domains/settings/utils/sound-manager";
 import {
   soundsAvailableGetOptions,
   soundsConfigGetOptions,
@@ -21,10 +25,53 @@ import {
   soundsConfigPutMutation,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { SoundsConfigGetResponse } from "@/generated/daemon/types.gen";
-import { Card } from "@vellumai/design-library/components/card";
-import { Toggle } from "@vellumai/design-library/components/toggle";
 
 type SoundsConfig = SoundsConfigGetResponse;
+
+const VOLUME_COMMIT_DELAY_MS = 200;
+
+type SoundPreviewFeedback =
+  | { state: "idle" }
+  | { state: "starting"; volume: number }
+  | { state: "finished"; result: SoundPreviewResult; volume: number }
+  | { state: "error" };
+
+function soundPreviewMessage(feedback: SoundPreviewFeedback): string | null {
+  if (feedback.state === "idle") return null;
+  if (feedback.state === "starting") return "Starting audio preview...";
+  if (feedback.state === "error") {
+    return "The audio preview could not start. Try again.";
+  }
+
+  const percent = Math.round(feedback.volume * 100);
+  switch (feedback.result) {
+    case "played":
+      return percent === 0
+        ? "Preview started muted at 0% volume."
+        : `Preview started at ${percent}% volume.`;
+    case "played-fallback":
+      return percent === 0
+        ? "The selected sound was unavailable. The default preview started at 0% volume."
+        : `The selected sound was unavailable. The default preview started at ${percent}% volume.`;
+    case "blocked":
+      return "Your browser blocked the audio preview. Allow audio and try again.";
+    case "unsupported":
+      return "Audio preview is not supported in this browser.";
+    case "disabled":
+      return "Turn on sound effects to preview audio.";
+  }
+}
+
+async function resolveSoundPreview(
+  play: () => Promise<SoundPreviewResult>,
+  volume: number,
+): Promise<SoundPreviewFeedback> {
+  try {
+    return { state: "finished", result: await play(), volume };
+  } catch {
+    return { state: "error" };
+  }
+}
 
 function ToggleRow({
   label,
@@ -70,6 +117,7 @@ function SoundEventRow({
   eventConfig,
   availableSounds,
   globalEnabled,
+  volume,
   onToggle,
   onAddSound,
   onRemoveSound,
@@ -79,17 +127,29 @@ function SoundEventRow({
   eventConfig: SoundEventConfig;
   availableSounds: AvailableSound[];
   globalEnabled: boolean;
+  volume: number;
   onToggle: (enabled: boolean) => void;
   onAddSound: (filename: string) => void;
   onRemoveSound: (filename: string) => void;
-  onPreview: (filename: string) => void;
+  onPreview: (filename: string) => Promise<SoundPreviewResult>;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [previewFeedback, setPreviewFeedback] = useState<SoundPreviewFeedback>({
+    state: "idle",
+  });
 
   const remaining = availableSounds.filter(
     (s) => !eventConfig.sounds.includes(s.filename),
   );
   const allAdded = availableSounds.length > 0 && remaining.length === 0;
+  const previewMessage = soundPreviewMessage(previewFeedback);
+
+  const handlePreview = async (filename: string) => {
+    setPreviewFeedback({ state: "starting", volume });
+    setPreviewFeedback(
+      await resolveSoundPreview(() => onPreview(filename), volume),
+    );
+  };
 
   return (
     <div className="py-3">
@@ -126,7 +186,8 @@ function SoundEventRow({
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => onPreview(filename)}
+                    onClick={() => void handlePreview(filename)}
+                    disabled={previewFeedback.state === "starting"}
                     className="inline-flex items-center rounded-md px-1.5 py-0.5 text-body-small-default text-[var(--content-tertiary)] hover:bg-[var(--surface-base)] dark:text-[var(--content-disabled)] dark:hover:bg-[var(--ghost-hover)]"
                     aria-label={`Preview ${filename}`}
                   >
@@ -143,6 +204,15 @@ function SoundEventRow({
                 </div>
               </div>
             ))
+          )}
+
+          {previewMessage && (
+            <p
+              role="status"
+              className="text-body-small-default text-[var(--content-tertiary)]"
+            >
+              {previewMessage}
+            </p>
           )}
 
           {availableSounds.length === 0 ? (
@@ -264,14 +334,70 @@ export function SoundsPage() {
     [assistantId, configOptions.queryKey, queryClient, saveMutation],
   );
 
+  const [draftVolume, setDraftVolume] = useState<number | null>(null);
+  const volumeCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const pendingVolumeRef = useRef<number | null>(null);
+  const configVolumeRef = useRef(config.volume);
+
+  useEffect(() => {
+    configVolumeRef.current = config.volume;
+  }, [config.volume]);
+
+  const clearVolumeCommitTimer = useCallback(() => {
+    if (volumeCommitTimerRef.current === null) return;
+    clearTimeout(volumeCommitTimerRef.current);
+    volumeCommitTimerRef.current = null;
+  }, []);
+
   const setGlobalEnabled = (enabled: boolean) => {
     updateConfig((prev) => ({ ...prev, globalEnabled: enabled }));
   };
-  const commitVolume = (volume: number) => {
-    updateConfig((prev) => ({ ...prev, volume }));
-  };
+  const commitVolume = useCallback(
+    (volume: number) => {
+      updateConfig((prev) => ({ ...prev, volume }));
+    },
+    [updateConfig],
+  );
 
-  const [draftVolume, setDraftVolume] = useState<number | null>(null);
+  const flushVolume = useCallback(
+    (value?: number) => {
+      clearVolumeCommitTimer();
+      const next = value ?? pendingVolumeRef.current;
+      pendingVolumeRef.current = null;
+      if (next === null) return;
+      if (next !== configVolumeRef.current) commitVolume(next);
+      setDraftVolume(null);
+    },
+    [clearVolumeCommitTimer, commitVolume],
+  );
+  const flushVolumeRef = useRef(flushVolume);
+
+  useEffect(() => {
+    flushVolumeRef.current = flushVolume;
+  }, [flushVolume]);
+
+  useEffect(
+    () => () => {
+      flushVolumeRef.current();
+    },
+    [assistantId],
+  );
+
+  const updateDraftVolume = useCallback(
+    (next: number) => {
+      setDraftVolume(next);
+      pendingVolumeRef.current = next;
+      clearVolumeCommitTimer();
+      volumeCommitTimerRef.current = setTimeout(
+        () => flushVolume(),
+        VOLUME_COMMIT_DELAY_MS,
+      );
+    },
+    [clearVolumeCommitTimer, flushVolume],
+  );
+
   const displayVolume = draftVolume ?? config.volume;
 
   const setEventEnabled = (event: SoundEventId, enabled: boolean) => {
@@ -318,11 +444,23 @@ export function SoundsPage() {
     });
   };
 
-  const previewDefault = () => {
-    void getSoundManager().previewFallbackBlip(config.volume);
+  const [previewFeedback, setPreviewFeedback] = useState<SoundPreviewFeedback>({
+    state: "idle",
+  });
+  const previewMessage = soundPreviewMessage(previewFeedback);
+
+  const previewDefault = async () => {
+    const volume = displayVolume;
+    setPreviewFeedback({ state: "starting", volume });
+    setPreviewFeedback(
+      await resolveSoundPreview(
+        () => getSoundManager().previewFallbackBlip(volume),
+        volume,
+      ),
+    );
   };
   const previewFile = (filename: string) => {
-    void getSoundManager().previewSound(filename, config.volume);
+    return getSoundManager().previewSound(filename, displayVolume);
   };
 
   return (
@@ -335,39 +473,46 @@ export function SoundsPage() {
           onChange={setGlobalEnabled}
         />
         <Divider />
-        <div className="flex items-center gap-3 py-3">
-          <span className="text-body-medium-lighter text-[var(--content-default)]">
+        <div className="flex flex-wrap items-center gap-3 py-3">
+          <label
+            htmlFor="sound-effect-volume"
+            className="text-body-medium-lighter text-[var(--content-default)]"
+          >
             Volume
-          </span>
+          </label>
           <input
+            id="sound-effect-volume"
             type="range"
             min={0}
             max={1}
             step={0.05}
             value={displayVolume}
-            onChange={(e) => setDraftVolume(parseFloat(e.target.value))}
+            onChange={(event) =>
+              updateDraftVolume(Number(event.currentTarget.value))
+            }
             onPointerUp={(e) => {
-              const next = parseFloat(e.currentTarget.value);
-              setDraftVolume(null);
-              if (next !== config.volume) commitVolume(next);
+              flushVolume(Number(e.currentTarget.value));
+            }}
+            onPointerCancel={(e) => {
+              flushVolume(Number(e.currentTarget.value));
             }}
             onKeyUp={(e) => {
-              const next = parseFloat(e.currentTarget.value);
-              setDraftVolume(null);
-              if (next !== config.volume) commitVolume(next);
+              flushVolume(Number(e.currentTarget.value));
             }}
             onBlur={(e) => {
-              const next = parseFloat(e.currentTarget.value);
-              setDraftVolume(null);
-              if (next !== config.volume) commitVolume(next);
+              flushVolume(Number(e.currentTarget.value));
             }}
-            className="h-1 w-48 cursor-pointer"
+            className="h-6 w-full max-w-48 cursor-pointer accent-[var(--primary-base)]"
             disabled={!config.globalEnabled}
             aria-label="Sound effect volume"
+            aria-valuetext={`${Math.round(displayVolume * 100)}%`}
           />
-          <span className="tabular-nums text-body-small-default text-[var(--content-tertiary)]">
+          <output
+            htmlFor="sound-effect-volume"
+            className="w-10 text-right tabular-nums text-body-small-default text-[var(--content-tertiary)]"
+          >
             {Math.round(displayVolume * 100)}%
-          </span>
+          </output>
         </div>
         <Divider />
         <div className="flex items-center justify-between py-3">
@@ -376,14 +521,24 @@ export function SoundsPage() {
           </span>
           <button
             type="button"
-            onClick={previewDefault}
-            disabled={!config.globalEnabled}
+            onClick={() => void previewDefault()}
+            disabled={
+              !config.globalEnabled || previewFeedback.state === "starting"
+            }
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border-base)] bg-white px-3 py-1.5 text-body-medium-lighter text-[var(--content-default)] hover:bg-[var(--surface-base)] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-[var(--surface-lift)] dark:hover:bg-[var(--ghost-hover)]"
           >
             <Play className="h-3.5 w-3.5" />
             Preview
           </button>
         </div>
+        {previewMessage && (
+          <p
+            role="status"
+            className="pb-1 text-body-small-default text-[var(--content-tertiary)]"
+          >
+            {previewMessage}
+          </p>
+        )}
       </Card>
 
       <Card>
@@ -406,12 +561,13 @@ export function SoundsPage() {
               }
               availableSounds={available}
               globalEnabled={config.globalEnabled}
+              volume={displayVolume}
               onToggle={(enabled) => setEventEnabled(event, enabled)}
               onAddSound={(filename) => addSoundToEvent(event, filename)}
               onRemoveSound={(filename) =>
                 removeSoundFromEvent(event, filename)
               }
-              onPreview={(filename) => previewFile(filename)}
+              onPreview={previewFile}
             />
           ))}
         </div>

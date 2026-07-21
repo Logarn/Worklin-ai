@@ -1,11 +1,11 @@
 import { ArrowUpRight, Info } from "lucide-react";
 import {
-    useCallback,
-    useEffect,
-    useMemo,
-    useRef,
-    useState,
-    type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { Link } from "react-router";
 
@@ -15,27 +15,27 @@ import { Toggle } from "@vellumai/design-library/components/toggle";
 
 import { DetailCard } from "@/components/detail-card";
 import {
-    getLocalSetting,
-    removeLocalSetting,
-    setLocalSetting,
+  getLocalSetting,
+  removeLocalSetting,
+  setLocalSetting,
 } from "@/utils/local-settings";
 import {
-    CTRL_PTT_ACTIVATOR,
-    FN_PTT_ACTIVATOR,
-    LS_PTT_ACTIVATION_KEY,
-    activatorDisplayName,
-    activatorsEqual,
-    modifierLabel,
-    parseActivator,
-    serializeActivator,
-    sortModifiers,
-    type PTTActivator,
-    type PTTModifier,
+  CTRL_PTT_ACTIVATOR,
+  FN_PTT_ACTIVATOR,
+  LS_PTT_ACTIVATION_KEY,
+  activatorDisplayName,
+  activatorsEqual,
+  modifierLabel,
+  parseActivator,
+  serializeActivator,
+  sortModifiers,
+  type PTTActivator,
+  type PTTModifier,
 } from "@/utils/ptt-activator";
 import { routes } from "@/utils/routes";
 import {
-    LS_VOICE_INPUT_DEVICE,
-    getPreferredInputDeviceId,
+  LS_VOICE_INPUT_DEVICE,
+  getPreferredInputDeviceId,
 } from "@/utils/voice-input-device";
 import { canConfigureFnPushToTalk } from "@/runtime/hotkey";
 
@@ -74,8 +74,50 @@ type ConversationTimeoutValue =
 
 const DEFAULT_CONVERSATION_TIMEOUT: ConversationTimeoutValue = "30";
 
-const labelClasses =
-  "text-body-small-default text-[var(--content-tertiary)]";
+const labelClasses = "text-body-small-default text-[var(--content-tertiary)]";
+
+type MicrophonePermissionStatus =
+  "idle" | "requesting" | "granted" | "denied" | "unsupported" | "unavailable";
+
+function getMediaDevices(): MediaDevices | undefined {
+  return typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+}
+
+function microphonePermissionStatusFromError(
+  error: unknown,
+): Exclude<MicrophonePermissionStatus, "idle" | "requesting" | "granted"> {
+  if (typeof error === "object" && error !== null && "name" in error) {
+    switch (error.name) {
+      case "NotAllowedError":
+      case "PermissionDeniedError":
+      case "SecurityError":
+        return "denied";
+      case "NotSupportedError":
+      case "TypeError":
+        return "unsupported";
+    }
+  }
+  return "unavailable";
+}
+
+function microphonePermissionMessage(
+  status: MicrophonePermissionStatus,
+): string | null {
+  switch (status) {
+    case "idle":
+      return null;
+    case "requesting":
+      return "Waiting for microphone permission...";
+    case "granted":
+      return "Microphone access granted.";
+    case "denied":
+      return "Microphone access was denied. Update your browser settings to allow it.";
+    case "unsupported":
+      return "Microphone access is not supported in this browser.";
+    case "unavailable":
+      return "A microphone is unavailable or already in use.";
+  }
+}
 
 export function VoicePage() {
   return (
@@ -111,21 +153,28 @@ const SYSTEM_DEFAULT_DEVICE = "";
 function MicrophoneCard() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [needsPermission, setNeedsPermission] = useState(false);
+  const [permissionStatus, setPermissionStatus] =
+    useState<MicrophonePermissionStatus>("idle");
   const [deviceId, setDeviceId] = useState<string>(() =>
     getPreferredInputDeviceId(),
   );
 
-  const refreshDevices = useCallback(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
+  const refreshDevices = useCallback(async (): Promise<boolean> => {
+    const mediaDevices = getMediaDevices();
+    if (!mediaDevices?.enumerateDevices) {
+      setDevices([]);
+      setNeedsPermission(true);
+      return false;
+    }
     try {
-      const all = await navigator.mediaDevices.enumerateDevices();
+      const all = await mediaDevices.enumerateDevices();
       const inputs = all.filter((device) => device.kind === "audioinput");
       // Until mic permission is granted, browsers redact device ids and
       // labels, so inputs exist but none are selectable — offer a
       // permission prompt instead of a picker with only System Default.
-      setNeedsPermission(
-        inputs.length > 0 && inputs.every((device) => !device.label),
-      );
+      const devicesReady =
+        inputs.length > 0 && inputs.some((device) => Boolean(device.label));
+      setNeedsPermission(!devicesReady);
       // Chromium lists "default"/"communications" pseudo-devices that mirror
       // a physical device already in the list; our own System Default option
       // covers that case without the duplicate rows.
@@ -137,27 +186,38 @@ function MicrophoneCard() {
             device.deviceId !== "communications",
         ),
       );
+      return devicesReady;
     } catch {
       setDevices([]);
-      setNeedsPermission(false);
+      setNeedsPermission(true);
+      return false;
     }
   }, []);
 
   const requestMicAccess = useCallback(async () => {
+    const mediaDevices = getMediaDevices();
+    if (!mediaDevices?.getUserMedia) {
+      setPermissionStatus("unsupported");
+      return;
+    }
+
+    setPermissionStatus("requesting");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await mediaDevices.getUserMedia({
         audio: true,
       });
       for (const track of stream.getTracks()) track.stop();
-    } catch {
-      // Denied or no device — the picker keeps showing System Default.
+      const devicesReady = await refreshDevices();
+      setPermissionStatus(devicesReady ? "granted" : "unavailable");
+    } catch (error) {
+      setPermissionStatus(microphonePermissionStatusFromError(error));
+      await refreshDevices();
     }
-    void refreshDevices();
   }, [refreshDevices]);
 
   useEffect(() => {
     void refreshDevices();
-    const mediaDevices = navigator.mediaDevices;
+    const mediaDevices = getMediaDevices();
     if (!mediaDevices?.addEventListener) return;
     const onDeviceChange = () => void refreshDevices();
     mediaDevices.addEventListener("devicechange", onDeviceChange);
@@ -191,6 +251,7 @@ function MicrophoneCard() {
   const selectedValue = options.some((option) => option.value === deviceId)
     ? deviceId
     : SYSTEM_DEFAULT_DEVICE;
+  const permissionMessage = microphonePermissionMessage(permissionStatus);
 
   return (
     <DetailCard
@@ -206,15 +267,32 @@ function MicrophoneCard() {
             aria-label="Microphone"
           />
         </div>
-        {needsPermission && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outlined" onClick={requestMicAccess}>
-              Allow Microphone Access
-            </Button>
-            <span className={labelClasses}>
-              Grant microphone access to list your available input devices.
-            </span>
-          </div>
+        {needsPermission &&
+          permissionStatus !== "granted" &&
+          permissionStatus !== "unsupported" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outlined"
+                onClick={requestMicAccess}
+                disabled={permissionStatus === "requesting"}
+              >
+                {permissionStatus === "requesting"
+                  ? "Requesting Access..."
+                  : permissionStatus === "unavailable"
+                    ? "Try Microphone Again"
+                    : "Allow Microphone Access"}
+              </Button>
+              {permissionStatus === "idle" && (
+                <span className={labelClasses}>
+                  Grant microphone access to list your available input devices.
+                </span>
+              )}
+            </div>
+          )}
+        {permissionMessage && (
+          <span role="status" className={labelClasses}>
+            {permissionMessage}
+          </span>
         )}
       </div>
     </DetailCard>
@@ -439,9 +517,10 @@ function PushToTalkCard() {
               <div className="flex items-start gap-1 pt-1 text-body-small-default text-[var(--content-quiet)]">
                 <Info className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>
-                  Push-to-Talk only works while this tab is focused, and browsers
-                  may intercept some shortcuts (e.g. Ctrl+T) before the page can
-                  see them. For always-on PTT, use the Worklin desktop app.
+                  Push-to-Talk only works while this tab is focused, and
+                  browsers may intercept some shortcuts (e.g. Ctrl+T) before the
+                  page can see them. For always-on PTT, use the Worklin desktop
+                  app.
                 </span>
               </div>
             )}
