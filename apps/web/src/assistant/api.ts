@@ -12,7 +12,6 @@ import {
   assistantsList,
   assistantsRestartDetailCreate,
   assistantsRetireDetailDestroy,
-  assistantsRetireDestroy,
   assistantsRetrieve,
 } from "@/generated/api/sdk.gen";
 import type {
@@ -605,24 +604,6 @@ export async function restartAssistant(
 export type RetireResult =
   | { ok: true }
   | { ok: false; status: number; error: Record<string, unknown> };
-
-export async function retireAssistant(): Promise<RetireResult> {
-  const { error, response } = await assistantsRetireDestroy({
-    throwOnError: false,
-  });
-
-  assertHasResponse(response, error, "Failed to retire assistant.");
-
-  if (response.ok) {
-    return { ok: true };
-  }
-
-  return {
-    ok: false,
-    status: response.status,
-    error: toErrorObject(error, response),
-  };
-}
 
 export async function retireAssistantById(
   assistantId: string,

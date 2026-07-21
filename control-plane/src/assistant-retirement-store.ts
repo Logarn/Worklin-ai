@@ -19,6 +19,9 @@ export interface AssistantRetirementRow {
   volume_cleanup_confirmed: number;
   lease_token: string | null;
   lease_expires_at: number | null;
+  final_status: "pending" | "reconciliation_required" | "completed";
+  completed_at: string | null;
+  last_error: string | null;
   requested_at: string;
   updated_at: string;
 }
@@ -36,6 +39,24 @@ export interface AssistantRetirementLeaseClaim {
 }
 
 const initializedDatabases = new WeakSet<Database>();
+
+function tableColumns(db: Database, table: string): Set<string> {
+  return new Set(
+    db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name),
+  );
+}
+
+function addRetirementColumnIfMissing(
+  db: Database,
+  column: string,
+  ddl: string,
+): void {
+  if (tableColumns(db, "assistant_retirements").has(column)) return;
+  db.exec(`ALTER TABLE assistant_retirements ADD COLUMN ${ddl}`);
+}
 
 export function ensureAssistantRetirementSchema(db: Database): void {
   if (initializedDatabases.has(db)) return;
@@ -56,12 +77,23 @@ export function ensureAssistantRetirementSchema(db: Database): void {
         CHECK(volume_cleanup_confirmed IN (0, 1)),
       lease_token TEXT,
       lease_expires_at INTEGER,
+      final_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(final_status IN ('pending', 'reconciliation_required', 'completed')),
+      completed_at TEXT,
+      last_error TEXT,
       requested_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_assistant_retirements_org
       ON assistant_retirements(org_id, updated_at);
   `);
+  addRetirementColumnIfMissing(
+    db,
+    "final_status",
+    "final_status TEXT NOT NULL DEFAULT 'pending' CHECK(final_status IN ('pending', 'reconciliation_required', 'completed'))",
+  );
+  addRetirementColumnIfMissing(db, "completed_at", "completed_at TEXT");
+  addRetirementColumnIfMissing(db, "last_error", "last_error TEXT");
   initializedDatabases.add(db);
 }
 
@@ -139,8 +171,8 @@ export function suspendAssistantForRetirement(
            requested_by_user_id, provider, service_ref,
            workspace_volume_ref, service_cleanup_confirmed,
            volume_cleanup_confirmed, lease_token, lease_expires_at,
-           requested_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+           final_status, completed_at, last_error, requested_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'pending', NULL, NULL, ?, ?)
          ON CONFLICT(runtime_stack_id) DO UPDATE SET
            service_ref = COALESCE(
              excluded.service_ref,
@@ -158,6 +190,8 @@ export function suspendAssistantForRetirement(
              assistant_retirements.volume_cleanup_confirmed,
              excluded.volume_cleanup_confirmed
            ),
+           final_status = 'pending',
+           last_error = NULL,
            updated_at = excluded.updated_at`,
       ).run(
         currentStack.id,
@@ -275,7 +309,8 @@ export function claimAssistantRetirementLease(
 
       db.query(
         `UPDATE assistant_retirements
-         SET lease_token = ?, lease_expires_at = ?, updated_at = ?
+         SET lease_token = ?, lease_expires_at = ?, final_status = 'pending',
+             last_error = NULL, updated_at = ?
          WHERE runtime_stack_id = ?
            AND (
              lease_token IS NULL
@@ -318,6 +353,7 @@ export function renewAssistantRetirementLease(
        SET lease_expires_at = ?, updated_at = ?
        WHERE runtime_stack_id = ?
          AND lease_token = ?
+         AND lease_expires_at > ?
          AND EXISTS (
            SELECT 1 FROM runtime_stacks
            WHERE id = ? AND status = 'suspended'
@@ -328,6 +364,7 @@ export function renewAssistantRetirementLease(
       nowIso(),
       stackId,
       leaseToken,
+      nowMs,
       stackId,
     );
   if (result.changes !== 1) {
@@ -361,13 +398,92 @@ export function confirmAssistantRetirementResourceCleanup(
     resource === "service"
       ? "service_cleanup_confirmed"
       : "volume_cleanup_confirmed";
+  const attemptColumn =
+    resource === "service"
+      ? "service_create_attempted_at"
+      : "volume_create_attempted_at";
+  db.transaction(() => {
+    const result = db
+      .query(
+        `UPDATE assistant_retirements
+         SET ${column} = 1, updated_at = ?
+         WHERE runtime_stack_id = ? AND lease_token = ?`,
+      )
+      .run(nowIso(), stackId, leaseToken);
+    if (result.changes !== 1) {
+      throw new Error("Assistant retirement lease was lost.");
+    }
+    const stackResult = db
+      .query(
+        `UPDATE runtime_stacks
+         SET ${attemptColumn} = NULL, updated_at = ?
+         WHERE id = ? AND status = 'suspended'`,
+      )
+      .run(nowIso(), stackId);
+    if (stackResult.changes !== 1) {
+      throw new Error("Assistant retirement lease was lost.");
+    }
+  }).immediate();
+}
+
+export function recordAssistantRetirementResource(
+  db: Database,
+  stackId: string,
+  resource: "service" | "volume",
+  resourceId: string,
+  leaseToken: string,
+  nowIso: () => string,
+): void {
+  ensureAssistantRetirementSchema(db);
+  if (!resourceId) throw new Error("Retirement resource ID is required.");
+  const retirementColumn =
+    resource === "service" ? "service_ref" : "workspace_volume_ref";
+  const stackColumn = retirementColumn;
+  const attemptColumn =
+    resource === "service"
+      ? "service_create_attempted_at"
+      : "volume_create_attempted_at";
+  db.transaction(() => {
+    const retirementResult = db
+      .query(
+        `UPDATE assistant_retirements
+         SET ${retirementColumn} = ?, updated_at = ?
+         WHERE runtime_stack_id = ? AND lease_token = ?`,
+      )
+      .run(resourceId, nowIso(), stackId, leaseToken);
+    if (retirementResult.changes !== 1) {
+      throw new Error("Assistant retirement lease was lost.");
+    }
+    const stackResult = db
+      .query(
+        `UPDATE runtime_stacks
+         SET ${stackColumn} = ?, ${attemptColumn} = NULL, updated_at = ?
+         WHERE id = ? AND status = 'suspended'`,
+      )
+      .run(resourceId, nowIso(), stackId);
+    if (stackResult.changes !== 1) {
+      throw new Error("Assistant retirement lease was lost.");
+    }
+  }).immediate();
+}
+
+export function markAssistantRetirementReconciliationRequired(
+  db: Database,
+  stackId: string,
+  leaseToken: string,
+  error: string,
+  nowIso: () => string,
+): void {
+  ensureAssistantRetirementSchema(db);
   const result = db
     .query(
       `UPDATE assistant_retirements
-       SET ${column} = 1, updated_at = ?
+       SET final_status = 'reconciliation_required',
+           last_error = ?,
+           updated_at = ?
        WHERE runtime_stack_id = ? AND lease_token = ?`,
     )
-    .run(nowIso(), stackId, leaseToken);
+    .run(error.slice(0, 2_000), nowIso(), stackId, leaseToken);
   if (result.changes !== 1) {
     throw new Error("Assistant retirement lease was lost.");
   }
@@ -439,8 +555,20 @@ export function finalizeAssistantRetirement(
     if (deletedStack.changes !== 1) {
       throw new Error("Assistant runtime could not be marked deleted.");
     }
-    db.query(
-      "DELETE FROM assistant_retirements WHERE runtime_stack_id = ? AND lease_token = ?",
-    ).run(stackId, leaseToken);
+    const completedRetirement = db
+      .query(
+        `UPDATE assistant_retirements
+         SET final_status = 'completed',
+             completed_at = ?,
+             last_error = NULL,
+             lease_token = NULL,
+             lease_expires_at = NULL,
+             updated_at = ?
+         WHERE runtime_stack_id = ? AND lease_token = ?`,
+      )
+      .run(timestamp, timestamp, stackId, leaseToken);
+    if (completedRetirement.changes !== 1) {
+      throw new Error("Assistant retirement audit state could not be completed.");
+    }
   }).immediate();
 }

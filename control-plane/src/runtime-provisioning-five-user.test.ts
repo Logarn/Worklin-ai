@@ -487,6 +487,7 @@ describe("five-customer isolated runtime launch", () => {
 
       const expectedServiceName = railwayRuntimeServiceName(
         customer.assistantId,
+        stack!.id,
       );
       const expectedServiceId = `service-${expectedServiceName}`;
       expect(stack!.service_ref).toBe(expectedServiceId);

@@ -934,10 +934,11 @@ export function renewRuntimeServiceProvisioningLease(
       SET provisioning_lease_expires_at = ?, updated_at = ?
       WHERE id = ?
         AND provisioning_lease_token = ?
+        AND provisioning_lease_expires_at > ?
         AND status IN ('provisioning', 'failed')
     `,
     )
-    .run(nowMs + leaseTtlMs, nowIso(), stackId, leaseToken);
+    .run(nowMs + leaseTtlMs, nowIso(), stackId, leaseToken, nowMs);
   if (result.changes !== 1) {
     throw new Error("Runtime provisioning lease was lost.");
   }
@@ -1002,9 +1003,11 @@ export function recordRuntimeServiceCreateAttempt(
       WHERE id = ?
         AND service_ref IS NULL
         AND provisioning_lease_token = ?
+        AND provisioning_lease_expires_at > ?
+        AND status IN ('provisioning', 'failed')
     `,
     )
-    .run(attemptedAt, nowIso(), stackId, leaseToken);
+    .run(attemptedAt, nowIso(), stackId, leaseToken, attemptedAt);
   assertLeaseMutation(result.changes, leaseToken);
 }
 
@@ -1041,9 +1044,11 @@ export function recordRuntimeVolumeCreateAttempt(
       WHERE id = ?
         AND workspace_volume_ref IS NULL
         AND provisioning_lease_token = ?
+        AND provisioning_lease_expires_at > ?
+        AND status IN ('provisioning', 'failed')
     `,
     )
-    .run(attemptedAt, nowIso(), stackId, leaseToken);
+    .run(attemptedAt, nowIso(), stackId, leaseToken, attemptedAt);
   assertLeaseMutation(result.changes, leaseToken);
 }
 

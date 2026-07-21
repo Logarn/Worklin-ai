@@ -25,6 +25,7 @@ import {
   releaseRuntimeServiceProvisioningLease,
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
+import { railwayRuntimeServiceName } from "./railway-runtime-provisioner.js";
 import {
   assignAssistant,
   ensureWorkspaceManagementSchema,
@@ -287,12 +288,23 @@ interface FakeRailway {
   requests: RailwayRequest[];
   serviceIds: Set<string>;
   volumeIds: Set<string>;
+  serviceNames: Map<string, string>;
+  serviceVariables: Map<string, Record<string, string>>;
+  serviceVolumes: Map<string, Set<string>>;
   serviceDeleteFailures: number;
+}
+
+interface FakeRailwayOwnership {
+  serviceId: string;
+  assistantId: string;
+  stackId: string;
+  volumeIds?: string[];
 }
 
 async function startFakeRailway(
   serviceIds: string[] = [],
   volumeIds: string[] = [],
+  ownership: FakeRailwayOwnership[] = [],
 ): Promise<FakeRailway> {
   const port = await freePort();
   const state: FakeRailway = {
@@ -300,8 +312,28 @@ async function startFakeRailway(
     requests: [],
     serviceIds: new Set(serviceIds),
     volumeIds: new Set(volumeIds),
+    serviceNames: new Map(
+      serviceIds.map((id) => [id, `shared-${id}`]),
+    ),
+    serviceVariables: new Map(),
+    serviceVolumes: new Map(),
     serviceDeleteFailures: 0,
   };
+  for (const owned of ownership) {
+    state.serviceNames.set(
+      owned.serviceId,
+      railwayRuntimeServiceName(owned.assistantId, owned.stackId),
+    );
+    state.serviceVariables.set(owned.serviceId, {
+      WORKLIN_PLATFORM_ASSISTANT_ID: owned.assistantId,
+      WORKLIN_RUNTIME_STACK_ID: owned.stackId,
+      WORKLIN_RUNTIME_OWNERSHIP: "worklin-isolated-runtime-v1",
+    });
+    state.serviceVolumes.set(
+      owned.serviceId,
+      new Set(owned.volumeIds ?? []),
+    );
+  }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port,
@@ -319,7 +351,9 @@ async function startFakeRailway(
           data: {
             project: {
               services: {
-                edges: [...state.serviceIds].map((id) => ({ node: { id } })),
+                edges: [...state.serviceIds].map((id) => ({
+                  node: { id, name: state.serviceNames.get(id) ?? `shared-${id}` },
+                })),
               },
               volumes: {
                 edges: [...state.volumeIds].map((id) => ({ node: { id } })),
@@ -328,8 +362,53 @@ async function startFakeRailway(
           },
         });
       }
+      if (body.query.includes("runtimeEnvironmentConfig")) {
+        return Response.json({
+          data: {
+            environment: {
+              config: {
+                services: Object.fromEntries(
+                  [...state.serviceIds].map((serviceId) => [
+                    serviceId,
+                    {
+                      volumeMounts: Object.fromEntries(
+                        [...(state.serviceVolumes.get(serviceId) ?? [])].map(
+                          (volumeId) => [volumeId, { mountPath: "/data" }],
+                        ),
+                      ),
+                    },
+                  ]),
+                ),
+              },
+            },
+          },
+        });
+      }
+      if (body.query.includes("runtimeOwnershipVariables")) {
+        return Response.json({
+          data: {
+            variables:
+              state.serviceVariables.get(String(body.variables.serviceId)) ?? {},
+          },
+        });
+      }
+      if (body.query.includes("variableCollectionUpsert")) {
+        const input = body.variables.input as {
+          serviceId: string;
+          variables: Record<string, string>;
+        };
+        state.serviceVariables.set(input.serviceId, {
+          ...(state.serviceVariables.get(input.serviceId) ?? {}),
+          ...input.variables,
+        });
+        return Response.json({ data: { variableCollectionUpsert: true } });
+      }
       if (body.query.includes("mutation volumeDelete")) {
-        state.volumeIds.delete(String(body.variables.volumeId));
+        const volumeId = String(body.variables.volumeId);
+        state.volumeIds.delete(volumeId);
+        for (const volumes of state.serviceVolumes.values()) {
+          volumes.delete(volumeId);
+        }
         return Response.json({ data: { volumeDelete: true } });
       }
       if (body.query.includes("mutation serviceDelete")) {
@@ -457,6 +536,14 @@ describe("control-plane assistant retirement", () => {
     const railway = await startFakeRailway(
       ["runtime-service", "control-plane-service"],
       ["runtime-volume"],
+      [
+        {
+          serviceId: "runtime-service",
+          assistantId: "assistant-owner",
+          stackId: oldStackId,
+          volumeIds: ["runtime-volume"],
+        },
+      ],
     );
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
@@ -472,14 +559,16 @@ describe("control-plane assistant retirement", () => {
     );
     expect(response.status).toBe(204);
     expect(
-      railway.requests.map((request) =>
+      railway.requests
+        .map((request) =>
         request.query.includes("volumeDelete")
           ? "volumeDelete"
           : request.query.includes("serviceDelete")
             ? "serviceDelete"
             : "query",
-      ),
-    ).toEqual(["query", "volumeDelete", "query", "serviceDelete"]);
+        )
+        .filter((operation) => operation !== "query"),
+    ).toEqual(["volumeDelete", "serviceDelete"]);
     expect(
       railway.requests.every(
         (request) => request.projectToken === "project-token",
@@ -493,7 +582,6 @@ describe("control-plane assistant retirement", () => {
       "artifact_invitations",
       "artifact_grants",
       "brand_research_runs",
-      "assistant_retirements",
     ]) {
       expect(countRows(after, table)).toBe(0);
     }
@@ -504,6 +592,27 @@ describe("control-plane assistant retirement", () => {
       service_capacity_reserved: 0,
       gateway_url: null,
     });
+    const tombstone = after
+        .query<
+          {
+            owner_user_id: string;
+            requested_by_user_id: string;
+            final_status: string;
+            completed_at: string | null;
+            service_cleanup_confirmed: number;
+            volume_cleanup_confirmed: number;
+          },
+          []
+        >("SELECT * FROM assistant_retirements")
+        .get();
+    expect(tombstone).toMatchObject({
+      owner_user_id: "owner-user",
+      requested_by_user_id: "owner-user",
+      final_status: "completed",
+      service_cleanup_confirmed: 1,
+      volume_cleanup_confirmed: 1,
+    });
+    expect(tombstone?.completed_at).toBeString();
     after.close();
 
     const repeated = await fetch(
@@ -541,7 +650,45 @@ describe("control-plane assistant retirement", () => {
       method: "DELETE",
       headers: authenticatedHeaders("owner-session", "org-owner"),
     });
-    expect(legacyRoute.status).toBe(204);
+    expect(legacyRoute.status).toBe(409);
+    expect(await legacyRoute.json()).toMatchObject({
+      code: "assistant_retirement_id_required",
+    });
+    const afterLegacy = new Database(dbPath);
+    expect(countRows(afterLegacy, "assistants")).toBe(1);
+    afterLegacy.close();
+  });
+
+  test("the legacy unscoped route never selects among multiple assistants", async () => {
+    const dbPath = createTempDbPath();
+    const db = initializeDb(dbPath);
+    seedUser(db, "admin-user", "admin-session");
+    seedUser(db, "other-user", "other-session");
+    seedOrganization(db, "org-owner", "admin-user");
+    seedMembership(db, "org-owner", "other-user", "collaborator");
+    seedAssistant(db, "assistant-first", "admin-user", "org-owner");
+    seedAssistant(db, "assistant-second", "other-user", "org-owner");
+    db.close();
+
+    const railway = await startFakeRailway();
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath, railway.endpoint);
+    await waitForHealth(origin);
+
+    const response = await fetch(`${origin}/v1/assistants/retire/`, {
+      method: "DELETE",
+      headers: authenticatedHeaders("admin-session", "org-owner"),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "assistant_retirement_id_required",
+    });
+    const after = new Database(dbPath);
+    expect(countRows(after, "assistants")).toBe(2);
+    expect(countRows(after, "assistant_retirements")).toBe(0);
+    after.close();
+    expect(railway.requests).toHaveLength(0);
   });
 
   test("requires CSRF and owner or active workspace-admin authorization", async () => {
@@ -571,6 +718,18 @@ describe("control-plane assistant retirement", () => {
       },
     );
     expect(missingCsrf.status).toBe(403);
+
+    const unsupportedHeaderToken = await fetch(
+      `${origin}/v1/assistants/assistant-auth/retire/`,
+      {
+        method: "DELETE",
+        headers: {
+          "X-Session-Token": "owner-session",
+          "Vellum-Organization-Id": "org-owner",
+        },
+      },
+    );
+    expect(unsupportedHeaderToken.status).toBe(401);
 
     const manager = await fetch(
       `${origin}/v1/assistants/assistant-auth/retire/`,
@@ -630,6 +789,14 @@ describe("control-plane assistant retirement", () => {
     const railway = await startFakeRailway(
       ["runtime-service"],
       ["runtime-volume"],
+      [
+        {
+          serviceId: "runtime-service",
+          assistantId: "assistant-partial",
+          stackId,
+          volumeIds: ["runtime-volume"],
+        },
+      ],
     );
     railway.serviceDeleteFailures = 1;
     const port = await freePort();
@@ -692,6 +859,70 @@ describe("control-plane assistant retirement", () => {
     complete.close();
   });
 
+  test("keeps older unproven Railway rows suspended and capacity reserved for reconciliation", async () => {
+    const dbPath = createTempDbPath();
+    const db = initializeDb(dbPath);
+    seedUser(db, "owner-user", "owner-session");
+    seedOrganization(db, "org-owner", "owner-user");
+    const stackId = seedAssistant(
+      db,
+      "assistant-legacy-row",
+      "owner-user",
+      "org-owner",
+      { serviceRef: "shared-service", volumeRef: "shared-volume" },
+    );
+    db.close();
+
+    const railway = await startFakeRailway(
+      ["shared-service", "control-plane-service"],
+      ["shared-volume"],
+    );
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath, railway.endpoint);
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/assistant-legacy-row/retire/`,
+      {
+        method: "DELETE",
+        headers: authenticatedHeaders("owner-session", "org-owner"),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "runtime_retirement_reconciliation_required",
+      runtime_status: "suspended",
+    });
+    expect(mutationCount(railway, "volumeDelete")).toBe(0);
+    expect(mutationCount(railway, "serviceDelete")).toBe(0);
+
+    const after = new Database(dbPath);
+    expect(getRuntimeStackById(after, stackId)).toMatchObject({
+      status: "suspended",
+      service_ref: "shared-service",
+      workspace_volume_ref: "shared-volume",
+    });
+    expect(
+      after
+        .query<
+          { final_status: string; last_error: string | null },
+          []
+        >("SELECT final_status, last_error FROM assistant_retirements")
+        .get(),
+    ).toMatchObject({
+      final_status: "reconciliation_required",
+    });
+    expect(
+      after
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM runtime_stacks WHERE status != 'deleted' AND service_ref IS NOT NULL",
+        )
+        .get()?.count,
+    ).toBe(1);
+    after.close();
+  });
+
   test("waits for an in-flight provisioner and cannot be marked active afterward", async () => {
     const dbPath = createTempDbPath();
     const db = initializeDb(dbPath);
@@ -713,7 +944,17 @@ describe("control-plane assistant retirement", () => {
     );
     db.close();
 
-    const railway = await startFakeRailway(["runtime-service"]);
+    const railway = await startFakeRailway(
+      ["runtime-service"],
+      [],
+      [
+        {
+          serviceId: "runtime-service",
+          assistantId: "assistant-race",
+          stackId,
+        },
+      ],
+    );
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     spawnControlPlane(port, dbPath, railway.endpoint);
@@ -785,7 +1026,17 @@ describe("control-plane assistant retirement", () => {
     });
     db.close();
 
-    const railway = await startFakeRailway(["runtime-service"], []);
+    const railway = await startFakeRailway(
+      ["runtime-service"],
+      [],
+      [
+        {
+          serviceId: "runtime-service",
+          assistantId: "assistant-missing",
+          stackId: "runtime-assistant-missing",
+        },
+      ],
+    );
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     spawnControlPlane(port, dbPath, railway.endpoint);
@@ -827,11 +1078,7 @@ describe("control-plane assistant retirement", () => {
     ]);
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
-    spawnControlPlane(port, dbPath, railway.endpoint, {
-      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "false",
-      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "true",
-      WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS: "assistant-legacy",
-    });
+    spawnControlPlane(port, dbPath, railway.endpoint);
     await waitForHealth(origin);
 
     const response = await fetch(
@@ -843,17 +1090,142 @@ describe("control-plane assistant retirement", () => {
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      code: "legacy_shared_retirement_blocked",
+      code: "legacy_shared_retirement_unsupported",
     });
     expect(railway.requests).toHaveLength(0);
     const after = new Database(dbPath);
     expect(countRows(after, "assistants")).toBe(1);
     expect(getRuntimeStackById(after, stackId)).toMatchObject({
-      status: "suspended",
-      gateway_url: null,
+      status: "active",
+      gateway_url: "http://runtime.railway.internal:8080",
       service_ref: "legacy-shared-runtime",
       workspace_volume_ref: "/data/shared-runtime",
     });
+    after.close();
+  });
+
+  test("leaves an unsupported runtime provider usable", async () => {
+    const dbPath = createTempDbPath();
+    const db = initializeDb(dbPath);
+    seedUser(db, "owner-user", "owner-session");
+    seedOrganization(db, "org-owner", "owner-user");
+    const stackId = seedAssistant(
+      db,
+      "assistant-unsupported",
+      "owner-user",
+      "org-owner",
+      {
+        provider: "unsupported-provider",
+        gatewayUrl: "http://unsupported-runtime.internal:8080",
+        serviceRef: "unsupported-service",
+        volumeRef: "unsupported-volume",
+      },
+    );
+    db.close();
+
+    const railway = await startFakeRailway();
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath, railway.endpoint);
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/assistant-unsupported/retire/`,
+      {
+        method: "DELETE",
+        headers: authenticatedHeaders("owner-session", "org-owner"),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "runtime_retirement_unsupported",
+      runtime_status: "active",
+    });
+    expect(railway.requests).toHaveLength(0);
+
+    const after = new Database(dbPath);
+    expect(countRows(after, "assistants")).toBe(1);
+    expect(countRows(after, "assistant_retirements")).toBe(0);
+    expect(getRuntimeStackById(after, stackId)).toMatchObject({
+      status: "active",
+      gateway_url: "http://unsupported-runtime.internal:8080",
+      service_ref: "unsupported-service",
+      workspace_volume_ref: "unsupported-volume",
+    });
+    after.close();
+  });
+
+  test("never deletes an unmarked preprovisioned slot", async () => {
+    const dbPath = createTempDbPath();
+    const db = initializeDb(dbPath);
+    seedUser(db, "owner-user", "owner-session");
+    seedOrganization(db, "org-owner", "owner-user");
+    const stackId = seedAssistant(
+      db,
+      "assistant-unmarked-slot",
+      "owner-user",
+      "org-owner",
+      {
+        provider: "preprovisioned",
+        serviceRef: "reserved-service",
+        volumeRef: "reserved-volume",
+        capacityReserved: 1,
+      },
+    );
+    db.close();
+
+    const railway = await startFakeRailway(
+      ["reserved-service"],
+      ["reserved-volume"],
+    );
+    railway.serviceNames.set(
+      "reserved-service",
+      railwayRuntimeServiceName("assistant-unmarked-slot", stackId),
+    );
+    railway.serviceVolumes.set(
+      "reserved-service",
+      new Set(["reserved-volume"]),
+    );
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, dbPath, railway.endpoint, {
+      WORKLIN_PREPROVISIONED_RUNTIME_SLOTS: JSON.stringify([
+        {
+          serviceRef: "reserved-service",
+          gatewayUrl: "http://reserved-service.railway.internal:8080",
+          workspaceVolumeRef: "reserved-volume",
+        },
+      ]),
+    });
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/assistants/assistant-unmarked-slot/retire/`,
+      {
+        method: "DELETE",
+        headers: authenticatedHeaders("owner-session", "org-owner"),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "runtime_retirement_reconciliation_required",
+      runtime_status: "suspended",
+    });
+    expect(mutationCount(railway, "volumeDelete")).toBe(0);
+    expect(mutationCount(railway, "serviceDelete")).toBe(0);
+
+    const after = new Database(dbPath);
+    expect(getRuntimeStackById(after, stackId)).toMatchObject({
+      status: "suspended",
+      service_capacity_reserved: 1,
+    });
+    expect(
+      after
+        .query<{ final_status: string }, []>(
+          "SELECT final_status FROM assistant_retirements",
+        )
+        .get()?.final_status,
+    ).toBe("reconciliation_required");
     after.close();
   });
 
@@ -878,6 +1250,14 @@ describe("control-plane assistant retirement", () => {
     const railway = await startFakeRailway(
       ["reserved-service"],
       ["reserved-volume"],
+      [
+        {
+          serviceId: "reserved-service",
+          assistantId: "assistant-preprovisioned",
+          stackId: oldStackId,
+          volumeIds: ["reserved-volume"],
+        },
+      ],
     );
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;

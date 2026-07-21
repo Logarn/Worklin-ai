@@ -13,6 +13,7 @@ import {
   finalizeAssistantRetirement,
   getAssistantRetirement,
   releaseAssistantRetirementLease,
+  renewAssistantRetirementLease,
   suspendAssistantForRetirement,
 } from "./assistant-retirement-store.js";
 import {
@@ -236,7 +237,22 @@ describe("assistant retirement persistence", () => {
       service_capacity_reserved: 0,
       provisioning_lease_token: null,
     });
-    expect(getAssistantRetirement(db, stack.id)).toBeNull();
+    expect(getAssistantRetirement(db, stack.id)).toMatchObject({
+      assistant_id: assistant.id,
+      org_id: assistant.org_id,
+      owner_user_id: assistant.user_id,
+      requested_by_user_id: assistant.user_id,
+      provider: "railway",
+      service_ref: "service-1",
+      workspace_volume_ref: "volume-1",
+      service_cleanup_confirmed: 1,
+      volume_cleanup_confirmed: 1,
+      final_status: "completed",
+      completed_at: NOW(),
+      lease_token: null,
+      lease_expires_at: null,
+      last_error: null,
+    });
     for (const table of [
       "assistants",
       "assistant_assignments",
@@ -342,5 +358,94 @@ describe("assistant retirement persistence", () => {
         NOW,
       ).leaseAcquired,
     ).toBe(true);
+    expect(() =>
+      renewAssistantRetirementLease(
+        db,
+        stack.id,
+        "retirement-second",
+        7_300,
+        5_000,
+        NOW,
+      ),
+    ).toThrow("lease was lost");
+  });
+
+  test("rolls back assistant deletion and capacity release when finalization fails", () => {
+    const { db, assistant } = setupDb();
+    const stack = activeStack(db, assistant);
+    seedAssistantScopedRows(db, assistant);
+    suspendAssistantForRetirement(
+      db,
+      assistant,
+      stack,
+      assistant.user_id,
+      NOW,
+    );
+    expect(
+      claimAssistantRetirementLease(
+        db,
+        stack.id,
+        "retirement-lease",
+        1_000,
+        5_000,
+        NOW,
+      ).leaseAcquired,
+    ).toBe(true);
+    confirmAssistantRetirementResourceCleanup(
+      db,
+      stack.id,
+      "volume",
+      "retirement-lease",
+      NOW,
+    );
+    confirmAssistantRetirementResourceCleanup(
+      db,
+      stack.id,
+      "service",
+      "retirement-lease",
+      NOW,
+    );
+    db.exec(`
+      CREATE TRIGGER reject_runtime_deletion
+      BEFORE UPDATE OF status ON runtime_stacks
+      WHEN NEW.status = 'deleted'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected finalization failure');
+      END;
+    `);
+
+    expect(() =>
+      finalizeAssistantRetirement(
+        db,
+        stack.id,
+        "retirement-lease",
+        NOW,
+      ),
+    ).toThrow("injected finalization failure");
+
+    expect(countAllocatedRuntimeServices(db)).toBe(1);
+    expect(getRuntimeStackById(db, stack.id)?.status).toBe("suspended");
+    expect(getAssistantRetirement(db, stack.id)).toMatchObject({
+      final_status: "pending",
+      service_cleanup_confirmed: 1,
+      volume_cleanup_confirmed: 1,
+      lease_token: "retirement-lease",
+    });
+    for (const table of [
+      "assistants",
+      "assistant_assignments",
+      "artifact_invitations",
+      "artifact_grants",
+      "brand_research_runs",
+    ]) {
+      expect(
+        db
+          .query<
+            { count: number },
+            []
+          >(`SELECT COUNT(*) AS count FROM ${table}`)
+          .get()?.count,
+      ).toBe(1);
+    }
   });
 });

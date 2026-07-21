@@ -4,6 +4,9 @@ import type { AssistantRuntimeRow, RuntimeStackRow } from "./runtime-stacks.js";
 
 const DEFAULT_API_ENDPOINT = "https://backboard.railway.com/graphql/v2";
 const DEFAULT_REPOSITORY = "Logarn/Worklin-ai";
+const RUNTIME_OWNERSHIP_VERSION = "worklin-isolated-runtime-v1";
+const RUNTIME_OWNERSHIP_VERSION_VARIABLE = "WORKLIN_RUNTIME_OWNERSHIP";
+const RUNTIME_STACK_ID_VARIABLE = "WORKLIN_RUNTIME_STACK_ID";
 const SUCCESSFUL_DEPLOYMENT_STATUSES = new Set(["SUCCESS"]);
 const FAILED_DEPLOYMENT_STATUSES = new Set([
   "CANCELLED",
@@ -64,13 +67,19 @@ export interface ProvisionRailwayRuntimeOptions {
 
 export interface RailwayRuntimeRetirementPersistence {
   renewLease(): void;
+  recordService(serviceId: string): void;
+  recordVolume(volumeId: string): void;
   confirmVolumeCleanup(): void;
   confirmServiceCleanup(): void;
 }
 
 export interface RetireRailwayRuntimeOptions {
+  assistantId: string;
+  stackId: string;
   serviceId: string | null;
   volumeId: string | null;
+  serviceCreateAttempted: boolean;
+  volumeCreateAttempted: boolean;
   serviceCleanupConfirmed: boolean;
   volumeCleanupConfirmed: boolean;
   config: RailwayProvisionerConfig;
@@ -81,6 +90,7 @@ export interface RetireRailwayRuntimeOptions {
 export type RailwayRuntimeRetirementErrorCode =
   | "configuration"
   | "protected_service"
+  | "ownership_unverified"
   | "cleanup_unconfirmed";
 
 export class RailwayRuntimeRetirementError extends Error {
@@ -100,7 +110,7 @@ interface GraphqlEnvelope<T> {
 }
 
 interface RailwayResourceConnection {
-  edges: Array<{ node: { id: string } }>;
+  edges: Array<{ node: { id: string; name?: string } }>;
   pageInfo?: {
     hasNextPage: boolean;
     endCursor: string | null;
@@ -112,6 +122,16 @@ interface RailwayProjectResourcesResponse {
     services: RailwayResourceConnection;
     volumes: RailwayResourceConnection;
   } | null;
+}
+
+interface RailwayProjectResourceInventory {
+  services: Map<string, string>;
+  volumeIds: Set<string>;
+}
+
+interface RailwayEnvironmentServiceState {
+  exists: boolean;
+  volumeIds: Set<string>;
 }
 
 function boolEnv(value: string | undefined): boolean {
@@ -232,7 +252,10 @@ export function railwayRuntimeWorkspaceCapacityError(
   return `Railway runtime workspace quota (${maxRuntimeServices}) has been reached.`;
 }
 
-export function railwayRuntimeServiceName(assistantId: string): string {
+export function railwayRuntimeServiceName(
+  assistantId: string,
+  stackId?: string,
+): string {
   const legacyPrefix = "worklin-runtime-";
   const maxLegacySuffixLength = 32 - legacyPrefix.length;
   const suffix = assistantId
@@ -241,13 +264,13 @@ export function railwayRuntimeServiceName(assistantId: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   const normalized = suffix || "assistant";
-  if (normalized.length <= maxLegacySuffixLength) {
+  if (!stackId && normalized.length <= maxLegacySuffixLength) {
     return `${legacyPrefix}${normalized}`;
   }
 
   const prefix = "worklin-rt-";
   const hash = createHash("sha256")
-    .update(assistantId)
+    .update(stackId ? `${assistantId}\0${stackId}` : assistantId)
     .digest("hex")
     .slice(0, 12);
   const readableLength = 32 - prefix.length - hash.length - 1;
@@ -406,6 +429,19 @@ class RailwayGraphqlClient {
   }
 
   async findVolumeForService(serviceId: string): Promise<string | null> {
+    const state = await this.environmentServiceState(serviceId);
+    const volumeIds = [...state.volumeIds];
+    if (volumeIds.length > 1) {
+      throw new Error(
+        `Railway service ${serviceId} has multiple mounted volumes.`,
+      );
+    }
+    return volumeIds[0] ?? null;
+  }
+
+  async environmentServiceState(
+    serviceId: string,
+  ): Promise<RailwayEnvironmentServiceState> {
     const data = await this.request<{
       environment: { config?: unknown } | null;
     }>(
@@ -426,11 +462,12 @@ class RailwayGraphqlClient {
       !Array.isArray(config.services)
         ? (config.services as Record<string, unknown>)
         : null;
+    const serviceEntry = services?.[serviceId];
     const service =
-      services?.[serviceId] &&
-      typeof services[serviceId] === "object" &&
-      !Array.isArray(services[serviceId])
-        ? (services[serviceId] as Record<string, unknown>)
+      serviceEntry &&
+      typeof serviceEntry === "object" &&
+      !Array.isArray(serviceEntry)
+        ? (serviceEntry as Record<string, unknown>)
         : null;
     const volumeMounts =
       service?.volumeMounts &&
@@ -438,13 +475,44 @@ class RailwayGraphqlClient {
       !Array.isArray(service.volumeMounts)
         ? (service.volumeMounts as Record<string, unknown>)
         : null;
-    const volumeIds = volumeMounts ? Object.keys(volumeMounts) : [];
-    if (volumeIds.length > 1) {
-      throw new Error(
-        `Railway service ${serviceId} has multiple mounted volumes.`,
-      );
-    }
-    return volumeIds[0] ?? null;
+    return {
+      exists: service !== null,
+      volumeIds: new Set(volumeMounts ? Object.keys(volumeMounts) : []),
+    };
+  }
+
+  async serviceVariables(serviceId: string): Promise<Record<string, string>> {
+    const data = await this.request<{ variables: Record<string, string> }>(
+      `query runtimeOwnershipVariables(
+        $projectId: String!
+        $environmentId: String!
+        $serviceId: String
+      ) {
+        variables(
+          projectId: $projectId
+          environmentId: $environmentId
+          serviceId: $serviceId
+        )
+      }`,
+      {
+        projectId: this.config.projectId,
+        environmentId: this.config.environmentId,
+        serviceId,
+      },
+    );
+    return data.variables;
+  }
+
+  async setOwnershipMarkers(
+    serviceId: string,
+    assistantId: string,
+    stackId: string,
+  ): Promise<void> {
+    await this.setVariables(serviceId, {
+      WORKLIN_PLATFORM_ASSISTANT_ID: assistantId,
+      [RUNTIME_STACK_ID_VARIABLE]: stackId,
+      [RUNTIME_OWNERSHIP_VERSION_VARIABLE]: RUNTIME_OWNERSHIP_VERSION,
+    });
   }
 
   async setVariables(
@@ -496,11 +564,8 @@ class RailwayGraphqlClient {
     return data.deployment.status.toUpperCase();
   }
 
-  async projectResourceIds(): Promise<{
-    serviceIds: Set<string>;
-    volumeIds: Set<string>;
-  }> {
-    const serviceIds = new Set<string>();
+  async projectResourceInventory(): Promise<RailwayProjectResourceInventory> {
+    const services = new Map<string, string>();
     const volumeIds = new Set<string>();
     let servicesAfter: string | null = null;
     let volumesAfter: string | null = null;
@@ -517,7 +582,7 @@ class RailwayGraphqlClient {
           ) {
             project(id: $projectId) {
               services(first: 100, after: $servicesAfter) {
-                edges { node { id } }
+                edges { node { id name } }
                 pageInfo { hasNextPage endCursor }
               }
               volumes(first: 100, after: $volumesAfter) {
@@ -532,7 +597,10 @@ class RailwayGraphqlClient {
         throw new Error("Configured Railway project was not found.");
       }
       for (const edge of data.project.services.edges) {
-        serviceIds.add(edge.node.id);
+        if (typeof edge.node.name !== "string" || !edge.node.name) {
+          throw new Error("Railway returned a service without a name.");
+        }
+        services.set(edge.node.id, edge.node.name);
       }
       for (const edge of data.project.volumes.edges) {
         volumeIds.add(edge.node.id);
@@ -545,7 +613,7 @@ class RailwayGraphqlClient {
       servicesComplete = servicesPage?.hasNextPage !== true;
       volumesComplete = volumesPage?.hasNextPage !== true;
       if (servicesComplete && volumesComplete) {
-        return { serviceIds, volumeIds };
+        return { services, volumeIds };
       }
       if (!servicesComplete) {
         if (!servicesPage?.endCursor || servicesPage.endCursor === servicesAfter) {
@@ -588,66 +656,85 @@ class RailwayGraphqlClient {
   }
 }
 
-function railwayRetirementConfigurationError(
+export function railwayRuntimeRetirementConfigurationError(
+  config: RailwayProvisionerConfig,
+): string | null {
+  if (!config.projectToken) {
+    return "WORKLIN_RAILWAY_PROJECT_TOKEN is required for runtime cleanup.";
+  }
+  if (!config.projectId) {
+    return "WORKLIN_RAILWAY_PROJECT_ID is required for runtime cleanup.";
+  }
+  if (!config.environmentId) {
+    return "WORKLIN_RAILWAY_ENVIRONMENT_ID is required for runtime cleanup.";
+  }
+  if (!config.controlPlaneServiceId) {
+    return "RAILWAY_SERVICE_ID is required to protect the control-plane service.";
+  }
+  if (config.provisioningLeaseTtlMs <= config.requestTimeoutMs) {
+    return "The Railway cleanup lease TTL must exceed the API request timeout.";
+  }
+  return null;
+}
+
+function ownershipError(message: string): RailwayRuntimeRetirementError {
+  return new RailwayRuntimeRetirementError("ownership_unverified", message);
+}
+
+function ownershipVariablesMatch(
+  variables: Record<string, string>,
+  assistantId: string,
+  stackId: string,
+): boolean {
+  return (
+    variables.WORKLIN_PLATFORM_ASSISTANT_ID === assistantId &&
+    variables[RUNTIME_STACK_ID_VARIABLE] === stackId &&
+    variables[RUNTIME_OWNERSHIP_VERSION_VARIABLE] === RUNTIME_OWNERSHIP_VERSION
+  );
+}
+
+function ownershipVariablesAreAbsent(
+  variables: Record<string, string>,
+): boolean {
+  return (
+    variables.WORKLIN_PLATFORM_ASSISTANT_ID === undefined &&
+    variables[RUNTIME_STACK_ID_VARIABLE] === undefined &&
+    variables[RUNTIME_OWNERSHIP_VERSION_VARIABLE] === undefined
+  );
+}
+
+async function verifyServiceOwnership(
+  client: RailwayGraphqlClient,
   options: RetireRailwayRuntimeOptions,
-): RailwayRuntimeRetirementError | null {
-  const needsCleanup =
-    !options.serviceCleanupConfirmed || !options.volumeCleanupConfirmed;
-  if (!needsCleanup) return null;
-  if (!options.config.projectToken) {
-    return new RailwayRuntimeRetirementError(
-      "configuration",
-      "WORKLIN_RAILWAY_PROJECT_TOKEN is required for runtime cleanup.",
-    );
-  }
-  if (!options.config.projectId) {
-    return new RailwayRuntimeRetirementError(
-      "configuration",
-      "WORKLIN_RAILWAY_PROJECT_ID is required for runtime cleanup.",
-    );
-  }
-  if (!options.config.controlPlaneServiceId) {
-    return new RailwayRuntimeRetirementError(
-      "configuration",
-      "RAILWAY_SERVICE_ID is required to protect the control-plane service.",
-    );
-  }
-  if (
-    options.config.provisioningLeaseTtlMs <= options.config.requestTimeoutMs
-  ) {
-    return new RailwayRuntimeRetirementError(
-      "configuration",
-      "The Railway cleanup lease TTL must exceed the API request timeout.",
-    );
-  }
-  if (
-    options.serviceId &&
-    options.serviceId === options.config.controlPlaneServiceId
-  ) {
-    return new RailwayRuntimeRetirementError(
+  serviceId: string,
+  expectedServiceName: string,
+): Promise<RailwayEnvironmentServiceState> {
+  if (serviceId === options.config.controlPlaneServiceId) {
+    throw new RailwayRuntimeRetirementError(
       "protected_service",
       "Refusing to delete the Railway control-plane service.",
     );
   }
-  if (!options.volumeCleanupConfirmed && !options.serviceId) {
-    return new RailwayRuntimeRetirementError(
-      "configuration",
-      "A persisted runtime service is required to verify volume ownership.",
+  const inventory = await client.projectResourceInventory();
+  const actualName = inventory.services.get(serviceId);
+  if (actualName !== expectedServiceName) {
+    throw ownershipError(
+      "The persisted Railway service is absent or does not match this runtime stack's deterministic identity.",
     );
   }
-  if (!options.volumeCleanupConfirmed && !options.volumeId) {
-    return new RailwayRuntimeRetirementError(
-      "cleanup_unconfirmed",
-      "The Railway volume cleanup outcome cannot be reconciled without its persisted ID.",
+  const environmentState = await client.environmentServiceState(serviceId);
+  if (!environmentState.exists) {
+    throw ownershipError(
+      "The Railway service is not associated with the configured runtime environment.",
     );
   }
-  if (!options.serviceCleanupConfirmed && !options.serviceId) {
-    return new RailwayRuntimeRetirementError(
-      "cleanup_unconfirmed",
-      "The Railway service cleanup outcome cannot be reconciled without its persisted ID.",
+  const variables = await client.serviceVariables(serviceId);
+  if (!ownershipVariablesMatch(variables, options.assistantId, options.stackId)) {
+    throw ownershipError(
+      "The Railway service does not carry the exact assistant and runtime-stack ownership markers.",
     );
   }
-  return null;
+  return environmentState;
 }
 
 async function reconcileRailwayDeletion(
@@ -656,17 +743,25 @@ async function reconcileRailwayDeletion(
   resourceId: string,
   deleteResource: () => Promise<void>,
 ): Promise<void> {
-  const before = await client.projectResourceIds();
-  const ids = resource === "service" ? before.serviceIds : before.volumeIds;
+  const before = await client.projectResourceInventory();
+  const ids =
+    resource === "service" ? new Set(before.services.keys()) : before.volumeIds;
   if (!ids.has(resourceId)) return;
 
   try {
     await deleteResource();
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.toLowerCase().includes("lease") &&
+      error.message.toLowerCase().includes("lost")
+    ) {
+      throw error;
+    }
     try {
-      const after = await client.projectResourceIds();
+      const after = await client.projectResourceInventory();
       const remainingIds =
-        resource === "service" ? after.serviceIds : after.volumeIds;
+        resource === "service" ? new Set(after.services.keys()) : after.volumeIds;
       if (!remainingIds.has(resourceId)) return;
     } catch (reconcileError) {
       throw new RailwayRuntimeRetirementError(
@@ -686,8 +781,14 @@ async function reconcileRailwayDeletion(
 export async function retireRailwayRuntime(
   options: RetireRailwayRuntimeOptions,
 ): Promise<void> {
-  const configurationError = railwayRetirementConfigurationError(options);
-  if (configurationError) throw configurationError;
+  const needsCleanup =
+    !options.serviceCleanupConfirmed || !options.volumeCleanupConfirmed;
+  const configurationError = needsCleanup
+    ? railwayRuntimeRetirementConfigurationError(options.config)
+    : null;
+  if (configurationError) {
+    throw new RailwayRuntimeRetirementError("configuration", configurationError);
+  }
   if (options.serviceCleanupConfirmed && options.volumeCleanupConfirmed) return;
 
   const client = new RailwayGraphqlClient(
@@ -695,15 +796,135 @@ export async function retireRailwayRuntime(
     options.fetchImpl ?? fetch,
     options.persistence.renewLease,
   );
-  if (!options.volumeCleanupConfirmed) {
-    const volumeId = options.volumeId!;
-    await reconcileRailwayDeletion(client, "volume", volumeId, () =>
-      client.deleteVolume(volumeId),
+  const expectedServiceName = railwayRuntimeServiceName(
+    options.assistantId,
+    options.stackId,
+  );
+  let serviceId = options.serviceId;
+  let volumeId = options.volumeId;
+  let serviceCleanupConfirmed = options.serviceCleanupConfirmed;
+  let volumeCleanupConfirmed = options.volumeCleanupConfirmed;
+
+  if (
+    serviceId &&
+    serviceId === options.config.controlPlaneServiceId
+  ) {
+    throw new RailwayRuntimeRetirementError(
+      "protected_service",
+      "Refusing to delete the Railway control-plane service.",
     );
-    options.persistence.confirmVolumeCleanup();
   }
-  if (!options.serviceCleanupConfirmed) {
-    const serviceId = options.serviceId!;
+
+  if (!serviceId && !serviceCleanupConfirmed) {
+    if (!options.serviceCreateAttempted) {
+      throw ownershipError(
+        "The Railway service identity is missing without a reconcilable creation attempt.",
+      );
+    }
+    const inventory = await client.projectResourceInventory();
+    const matches = [...inventory.services.entries()].filter(
+      ([, name]) => name === expectedServiceName,
+    );
+    if (matches.length > 1) {
+      throw ownershipError(
+        "Multiple Railway services match this runtime stack's deterministic identity.",
+      );
+    }
+    if (matches.length === 0) {
+      options.persistence.confirmServiceCleanup();
+      serviceCleanupConfirmed = true;
+    } else {
+      serviceId = matches[0]![0];
+      const environmentState = await client.environmentServiceState(serviceId);
+      if (!environmentState.exists) {
+        throw ownershipError(
+          "The reconciled Railway service is not associated with the configured runtime environment.",
+        );
+      }
+      const variables = await client.serviceVariables(serviceId);
+      if (ownershipVariablesAreAbsent(variables)) {
+        await client.setOwnershipMarkers(
+          serviceId,
+          options.assistantId,
+          options.stackId,
+        );
+      } else if (
+        !ownershipVariablesMatch(variables, options.assistantId, options.stackId)
+      ) {
+        throw ownershipError(
+          "The reconciled Railway service carries conflicting ownership markers.",
+        );
+      }
+      options.persistence.recordService(serviceId);
+    }
+  }
+
+  let environmentState: RailwayEnvironmentServiceState | null = null;
+  if (serviceId) {
+    const inventory = await client.projectResourceInventory();
+    if (!inventory.services.has(serviceId)) {
+      if (!volumeCleanupConfirmed) {
+        if (volumeId && !inventory.volumeIds.has(volumeId)) {
+          options.persistence.confirmVolumeCleanup();
+          volumeCleanupConfirmed = true;
+        } else {
+          throw ownershipError(
+            "The Railway service is absent, but its volume cleanup cannot be proven.",
+          );
+        }
+      }
+      options.persistence.confirmServiceCleanup();
+      return;
+    }
+    environmentState = await verifyServiceOwnership(
+      client,
+      options,
+      serviceId,
+      expectedServiceName,
+    );
+  }
+
+  if (!volumeId && !volumeCleanupConfirmed) {
+    if (!options.volumeCreateAttempted || !serviceId || !environmentState) {
+      throw ownershipError(
+        "The Railway volume identity is missing without an exact owned service and reconcilable creation attempt.",
+      );
+    }
+    const mountedVolumes = [...environmentState.volumeIds];
+    if (mountedVolumes.length > 1) {
+      throw ownershipError(
+        "The owned Railway service has multiple mounted volumes and cannot be retired automatically.",
+      );
+    }
+    if (mountedVolumes.length === 0) {
+      options.persistence.confirmVolumeCleanup();
+      volumeCleanupConfirmed = true;
+    } else {
+      volumeId = mountedVolumes[0]!;
+      options.persistence.recordVolume(volumeId);
+    }
+  }
+
+  if (!volumeCleanupConfirmed && volumeId) {
+    const inventory = await client.projectResourceInventory();
+    if (!inventory.volumeIds.has(volumeId)) {
+      options.persistence.confirmVolumeCleanup();
+      volumeCleanupConfirmed = true;
+    } else {
+      if (!serviceId || !environmentState?.volumeIds.has(volumeId)) {
+        throw ownershipError(
+          "The persisted Railway volume is not mounted to the exact owned runtime service.",
+        );
+      }
+      await reconcileRailwayDeletion(client, "volume", volumeId, () =>
+        client.deleteVolume(volumeId),
+      );
+      options.persistence.confirmVolumeCleanup();
+      volumeCleanupConfirmed = true;
+    }
+  }
+
+  if (!serviceCleanupConfirmed && serviceId) {
     await reconcileRailwayDeletion(client, "service", serviceId, () =>
       client.deleteService(serviceId),
     );
@@ -821,7 +1042,10 @@ export async function provisionRailwayRuntime(
     fetchImpl,
     options.persistence.renewLease,
   );
-  const serviceName = railwayRuntimeServiceName(options.assistant.id);
+  const serviceName = railwayRuntimeServiceName(
+    options.assistant.id,
+    options.stack.id,
+  );
   let serviceId = options.stack.service_ref;
   let volumeId = options.stack.workspace_volume_ref;
 
@@ -865,6 +1089,26 @@ export async function provisionRailwayRuntime(
     }
     options.persistence.recordService(serviceId);
   }
+
+  await client.setVariables(serviceId, {
+    WORKLIN_RUNTIME_MODE: "isolated",
+    WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+    WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
+    [RUNTIME_STACK_ID_VARIABLE]: options.stack.id,
+    [RUNTIME_OWNERSHIP_VERSION_VARIABLE]: RUNTIME_OWNERSHIP_VERSION,
+    RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
+    DEFAULT_ASSISTANT_ID: "self",
+    UNMAPPED_POLICY: "default",
+    ACTOR_TOKEN_SIGNING_KEY: options.runtimeActorSigningKey,
+    CES_SERVICE_TOKEN: randomBytes(32).toString("hex"),
+    WORKLIN_RUNTIME_ROOT: options.config.mountPath,
+    VELLUM_WORKSPACE_DIR: `${options.config.mountPath}/workspace`,
+    GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
+    CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
+    CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
+  });
+
   if (!volumeId) {
     volumeId = await client.findVolumeForService(serviceId);
     if (!volumeId && options.stack.volume_create_attempted_at !== null) {
@@ -902,23 +1146,6 @@ export async function provisionRailwayRuntime(
   }
 
   const gatewayUrl = `http://${serviceName}.railway.internal:${options.config.runtimePort}`;
-  await client.setVariables(serviceId, {
-    WORKLIN_RUNTIME_MODE: "isolated",
-    WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
-    WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
-    WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
-    RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
-    DEFAULT_ASSISTANT_ID: "self",
-    UNMAPPED_POLICY: "default",
-    ACTOR_TOKEN_SIGNING_KEY: options.runtimeActorSigningKey,
-    CES_SERVICE_TOKEN: randomBytes(32).toString("hex"),
-    WORKLIN_RUNTIME_ROOT: options.config.mountPath,
-    VELLUM_WORKSPACE_DIR: `${options.config.mountPath}/workspace`,
-    GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
-    CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
-    CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
-  });
-
   const deploymentId = await client.deploy(serviceId);
   await waitForDeployment(client, deploymentId, options.config, sleep, now);
   const healthStatus = await waitForHealth(

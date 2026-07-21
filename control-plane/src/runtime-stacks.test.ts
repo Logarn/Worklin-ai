@@ -20,8 +20,10 @@ import {
   markRuntimeStackSuspended,
   operationalStateForRuntimeStack,
   prepareRuntimeStackActorSigningScope,
+  recordRuntimeServiceCreateAttempt,
   recordRuntimeStackService,
   recordRuntimeStackVolume,
+  recordRuntimeVolumeCreateAttempt,
   releaseRuntimeServiceProvisioningLease,
   renewRuntimeServiceProvisioningLease,
   runtimeActorSigningKeyScope,
@@ -892,6 +894,70 @@ describe("runtime stack provisioning defaults", () => {
       service_ref: "service-created-in-flight",
     });
     expect(countAllocatedRuntimeServices(db)).toBe(1);
+  });
+
+  test("create-attempt authorization is atomic with an active unexpired provisioning lease", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    claimRuntimeServiceProvisioningLease(
+      db,
+      stack.id,
+      1,
+      "lease-provisioning",
+      1_000,
+      5_000,
+      NOW,
+    );
+
+    recordRuntimeServiceCreateAttempt(
+      db,
+      stack.id,
+      2_000,
+      NOW,
+      "lease-provisioning",
+    );
+    recordRuntimeVolumeCreateAttempt(
+      db,
+      stack.id,
+      2_000,
+      NOW,
+      "lease-provisioning",
+    );
+    expect(() =>
+      renewRuntimeServiceProvisioningLease(
+        db,
+        stack.id,
+        "lease-provisioning",
+        6_000,
+        5_000,
+        NOW,
+      ),
+    ).toThrow("lease was lost");
+    markRuntimeStackSuspended(db, stack.id, "assistant retirement", NOW);
+
+    expect(() =>
+      recordRuntimeServiceCreateAttempt(
+        db,
+        stack.id,
+        2_100,
+        NOW,
+        "lease-provisioning",
+      ),
+    ).toThrow("lease was lost");
+    expect(() =>
+      recordRuntimeVolumeCreateAttempt(
+        db,
+        stack.id,
+        6_100,
+        NOW,
+        "lease-provisioning",
+      ),
+    ).toThrow("lease was lost");
   });
 
   test("atomically assigns one preprovisioned slot to only one assistant", () => {
