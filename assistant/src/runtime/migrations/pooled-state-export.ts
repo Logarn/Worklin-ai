@@ -1,16 +1,26 @@
 import { createHash } from "node:crypto";
-import { createReadStream, lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import {
+  createReadStream,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { sanitizeConfigForTransfer } from "../../config/sanitize-for-transfer.js";
 import type { AuthContext } from "../auth/types.js";
 import {
   streamExportVBundle,
   type StreamExportVBundleResult,
+  walkDirectoryForMetadata,
 } from "./vbundle-builder.js";
 import type { ManifestType } from "./vbundle-validator.js";
 
-const POOLED_SKIP_DIRS = [
+export const POOLED_STATE_SKIP_DIRS = [
+  "embedding-models",
+  "data/qdrant",
+  "signals",
+  "deprecated",
   "credentials",
   "secrets",
   "gateway-secrets",
@@ -19,7 +29,8 @@ const POOLED_SKIP_DIRS = [
   "logs",
 ] as const;
 
-const POOLED_SKIP_FILES = [
+export const POOLED_STATE_SKIP_FILES = [
+  ".backup.key",
   ".gateway.key",
   ".runtime-token",
   "guardian-token.json",
@@ -41,6 +52,8 @@ export interface PooledStateExportInput {
   createdAt: Date;
   assistantName: string;
   runtimeVersion: string;
+  workspaceQuotaBytes: number;
+  archiveOverheadBytes: number;
   checkpoint?: () => void | Promise<void>;
 }
 
@@ -63,6 +76,7 @@ export interface PooledStateExportReceipt {
   checksumSha256: string;
   manifestChecksumSha256: string;
   byteSize: number;
+  workspaceByteSize: number;
   credentialsIncluded: 0;
   secretsRedacted: true;
 }
@@ -111,8 +125,8 @@ export async function exportPooledWorkerState(
       workspaceDir: input.workspaceDir,
       checkpoint: input.checkpoint,
       credentials: [],
-      additionalSkipDirs: POOLED_SKIP_DIRS,
-      additionalSkipFiles: POOLED_SKIP_FILES,
+      additionalSkipDirs: POOLED_STATE_SKIP_DIRS,
+      additionalSkipFiles: POOLED_STATE_SKIP_FILES,
       rejectSymlinks: true,
       bundleId: input.bundleId,
       createdAt: input.createdAt,
@@ -122,6 +136,19 @@ export async function exportPooledWorkerState(
     });
 
     const files = validatePooledManifest(result.manifest);
+    const workspaceByteSize = sumPooledStateFileBytes(files);
+    const objectByteLimit = safeByteSum(
+      input.workspaceQuotaBytes,
+      input.archiveOverheadBytes,
+    );
+    if (workspaceByteSize > input.workspaceQuotaBytes) {
+      throw new Error("Pooled workspace exceeds its configured storage quota.");
+    }
+    if (result.size > objectByteLimit) {
+      throw new Error(
+        "Pooled state archive exceeds the workspace quota and archive overhead limit.",
+      );
+    }
     const checksumSha256 = await hashFileSha256(result.tempPath);
     return {
       tempPath: result.tempPath,
@@ -139,6 +166,7 @@ export async function exportPooledWorkerState(
         checksumSha256,
         manifestChecksumSha256: result.manifest.checksum,
         byteSize: result.size,
+        workspaceByteSize,
         credentialsIncluded: 0,
         secretsRedacted: true,
       },
@@ -148,6 +176,98 @@ export async function exportPooledWorkerState(
     await result?.cleanup().catch(() => {});
     throw error;
   }
+}
+
+export interface PooledWorkspaceStateMeasurement {
+  totalBytes: number;
+  files: ReadonlyMap<string, number>;
+}
+
+export function measurePooledWorkspaceState(
+  workspaceDir: string,
+): PooledWorkspaceStateMeasurement {
+  const canonicalWorkspace = assertCanonicalWorkspace(workspaceDir);
+  const { files, symlinks, droppedSymlinks } = walkDirectoryForMetadata(
+    canonicalWorkspace,
+    "workspace",
+    {
+      includeBinary: true,
+      skipDirs: [...POOLED_STATE_SKIP_DIRS],
+      skipFiles: [...POOLED_STATE_SKIP_FILES],
+    },
+  );
+  if (symlinks.length > 0 || droppedSymlinks.length > 0) {
+    throw new Error("Pooled workspace quota scan rejected workspace symlinks.");
+  }
+  const measured = new Map<string, number>();
+  let totalBytes = 0;
+  for (const file of files) {
+    const size =
+      file.archivePath === "workspace/config.json"
+        ? Buffer.byteLength(
+            sanitizePooledStateConfig(readFileSync(file.diskPath, "utf8")),
+          )
+        : file.size;
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error(
+        "Pooled workspace quota scan found an invalid file size.",
+      );
+    }
+    measured.set(file.archivePath, size);
+    totalBytes = safeByteSum(totalBytes, size);
+  }
+  return { totalBytes, files: measured };
+}
+
+export function pooledStateArchivePathForFile(
+  workspaceDir: string,
+  filePath: string,
+): string | null {
+  const root = assertCanonicalWorkspace(workspaceDir);
+  const target = resolve(filePath);
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  if (!target.startsWith(rootPrefix)) return null;
+  const relativePath = relative(root, target).replace(/\\/gu, "/");
+  if (!relativePath || relativePath.startsWith("../")) return null;
+  if (
+    POOLED_STATE_SKIP_DIRS.some(
+      (skip) => relativePath === skip || relativePath.startsWith(`${skip}/`),
+    ) ||
+    POOLED_STATE_SKIP_FILES.includes(
+      basename(relativePath) as (typeof POOLED_STATE_SKIP_FILES)[number],
+    ) ||
+    relativePath.endsWith(".db-wal") ||
+    relativePath.endsWith(".db-shm") ||
+    relativePath.endsWith(".db-journal")
+  ) {
+    return null;
+  }
+  return `workspace/${relativePath}`;
+}
+
+export function pooledStateSerializedContentByteSize(
+  archivePath: string,
+  content: string,
+): number {
+  return Buffer.byteLength(
+    archivePath === "workspace/config.json"
+      ? sanitizePooledStateConfig(content)
+      : content,
+  );
+}
+
+function sumPooledStateFileBytes(
+  files: readonly PooledStateFileReceipt[],
+): number {
+  return files.reduce((total, file) => safeByteSum(total, file.byteSize), 0);
+}
+
+function safeByteSum(left: number, right: number): number {
+  const total = left + right;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error("Pooled workspace byte total is invalid.");
+  }
+  return total;
 }
 
 export function requireVerifiedPooledStateServiceContext(
@@ -318,24 +438,22 @@ async function hashFileSha256(path: string): Promise<string> {
 }
 
 function assertExportInput(input: PooledStateExportInput): void {
-  const lexicalWorkspace = resolve(input.workspaceDir);
-  if (
-    !isAbsolute(input.workspaceDir) ||
-    input.workspaceDir !== lexicalWorkspace ||
-    !lstatSync(lexicalWorkspace).isDirectory() ||
-    lstatSync(lexicalWorkspace).isSymbolicLink() ||
-    realpathSync(lexicalWorkspace) !== lexicalWorkspace
-  ) {
-    throw new Error(
-      "Pooled state workspace must be a canonical absolute directory.",
-    );
-  }
+  assertCanonicalWorkspace(input.workspaceDir);
   assertOpaqueId(input.workerStackId, "worker stack");
   assertOpaqueId(input.assistantName, "assistant name");
   assertOpaqueId(input.runtimeVersion, "runtime version");
   if (!Number.isSafeInteger(input.generation) || input.generation < 0) {
     throw new Error("Pooled state generation is invalid.");
   }
+  if (
+    !Number.isSafeInteger(input.workspaceQuotaBytes) ||
+    input.workspaceQuotaBytes < 0 ||
+    !Number.isSafeInteger(input.archiveOverheadBytes) ||
+    input.archiveOverheadBytes < 1
+  ) {
+    throw new Error("Pooled workspace quota or archive overhead is invalid.");
+  }
+  safeByteSum(input.workspaceQuotaBytes, input.archiveOverheadBytes);
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
       input.bundleId,
@@ -346,6 +464,22 @@ function assertExportInput(input: PooledStateExportInput): void {
   if (!Number.isFinite(input.createdAt.getTime())) {
     throw new Error("Pooled state creation time is invalid.");
   }
+}
+
+function assertCanonicalWorkspace(workspaceDir: string): string {
+  const lexicalWorkspace = resolve(workspaceDir);
+  if (
+    !isAbsolute(workspaceDir) ||
+    workspaceDir !== lexicalWorkspace ||
+    !lstatSync(lexicalWorkspace).isDirectory() ||
+    lstatSync(lexicalWorkspace).isSymbolicLink() ||
+    realpathSync(lexicalWorkspace) !== lexicalWorkspace
+  ) {
+    throw new Error(
+      "Pooled state workspace must be a canonical absolute directory.",
+    );
+  }
+  return lexicalWorkspace;
 }
 
 function assertOpaqueId(value: string, label: string): string {

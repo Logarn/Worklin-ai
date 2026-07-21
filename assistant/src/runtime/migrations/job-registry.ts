@@ -19,6 +19,9 @@
 
 import { randomUUID } from "node:crypto";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -179,6 +182,7 @@ export class MigrationJobRegistry {
     type: MigrationJobType,
     runner: (job: MigrationJob) => Promise<T>,
   ): MigrationJob {
+    assertPooledRuntimeAsyncOperationSupported("migration jobs");
     const existingId = this.inFlight.get(type);
     if (existingId !== undefined) {
       const existing = this.jobs.get(existingId);
@@ -238,6 +242,10 @@ export class MigrationJobRegistry {
     return Array.from(this.jobs.values(), cloneJob);
   }
 
+  public inFlightCount(): number {
+    return this.inFlight.size;
+  }
+
   /**
    * Drop completed/failed jobs whose `completedAt` is older than
    * `completedJobTtlMs`. Pending/running jobs are always retained.
@@ -270,12 +278,17 @@ export const migrationJobs = new MigrationJobRegistry();
  */
 const SWEEP_INTERVAL_MS = 60 * 1000;
 
-const sweepIntervalId: NodeJS.Timeout = setInterval(() => {
-  migrationJobs.sweep();
-}, SWEEP_INTERVAL_MS);
+const sweepIntervalId: NodeJS.Timeout | null = isPooledWorkerRuntime()
+  ? null
+  : setInterval(() => {
+      migrationJobs.sweep();
+    }, SWEEP_INTERVAL_MS);
 
 // `.unref()` exists on Node/Bun Timeout objects. Guard defensively in case
 // an alternative runtime returns a plain number.
-if (typeof (sweepIntervalId as { unref?: () => void }).unref === "function") {
+if (
+  sweepIntervalId &&
+  typeof (sweepIntervalId as { unref?: () => void }).unref === "function"
+) {
   (sweepIntervalId as { unref: () => void }).unref();
 }

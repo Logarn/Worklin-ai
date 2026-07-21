@@ -76,6 +76,8 @@ function exportInput(workspaceDir: string) {
     createdAt: CREATED_AT,
     assistantName: "Worklin",
     runtimeVersion: "1.0.0",
+    workspaceQuotaBytes: 1_024 * 1_024,
+    archiveOverheadBytes: 64 * 1_024,
   };
 }
 
@@ -154,6 +156,9 @@ describe("pooled state export", () => {
         first.manifest.checksum,
       );
       expect(first.receipt.byteSize).toBeGreaterThan(0);
+      expect(first.receipt.workspaceByteSize).toBe(
+        first.receipt.files.reduce((total, file) => total + file.byteSize, 0),
+      );
       expect(validateVBundle(readFileSync(first.tempPath)).is_valid).toBe(true);
 
       const entries = readTarEntries(readFileSync(first.tempPath));
@@ -206,6 +211,16 @@ describe("pooled state export", () => {
     await expect(
       exportPooledWorkerState(exportInput(workspace)),
     ).rejects.toThrow("rejected workspace symlinks");
+  });
+
+  test("rejects an exact manifest total above the tenant workspace quota", async () => {
+    const workspace = await workspaceFixture();
+    await expect(
+      exportPooledWorkerState({
+        ...exportInput(workspace),
+        workspaceQuotaBytes: 1,
+      }),
+    ).rejects.toThrow("exceeds its configured storage quota");
   });
 
   test("rejects a workspace reached through a symlinked parent", async () => {

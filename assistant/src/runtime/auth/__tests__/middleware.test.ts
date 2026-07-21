@@ -27,16 +27,23 @@ mock.module("../../../util/logger.js", () => ({
 
 // Track auth bypass state for tests
 let authDisabled = false;
+let platformIsolated = false;
+let platformAssistantId = "";
+let platformOrganizationId = "";
 mock.module("../../../config/env.js", () => ({
   isHttpAuthDisabled: () => authDisabled,
+  isPlatformIsolatedRuntime: () => platformIsolated,
+  isPooledWorkerRuntime: () => false,
+  getRuntimeWorkerStackId: () => "",
+  getRuntimeWorkerLeaseAuthorityFile: () => "",
+  getPlatformAssistantId: () => platformAssistantId,
+  getPlatformOrganizationId: () => platformOrganizationId,
   hasUngatedHttpAuthDisabled: () => false,
   getGatewayInternalBaseUrl: () => "http://localhost:7822",
 }));
 
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../../assistant-scope.js";
-import {
-  authenticateRequest,
-} from "../middleware.js";
+import { authenticateRequest } from "../middleware.js";
 import { initAuthSigningKey, mintToken } from "../token-service.js";
 import type { ScopeProfile, TokenAudience } from "../types.js";
 
@@ -49,6 +56,8 @@ function mintValidToken(overrides?: {
   policy_epoch?: number;
   exp?: number;
   ttlSeconds?: number;
+  tenant_context?: import("../types.js").RuntimeTenantContextClaim;
+  service_tenant_context?: import("../types.js").RuntimeServiceTenantContextClaim;
 }): string {
   // When exp is provided explicitly, compute ttlSeconds from it.
   // Otherwise use a default 300-second TTL.
@@ -63,12 +72,40 @@ function mintValidToken(overrides?: {
     scope_profile: overrides?.scope_profile ?? "actor_client_v1",
     policy_epoch: overrides?.policy_epoch ?? 1,
     ttlSeconds: ttl,
+    tenant_context: overrides?.tenant_context,
+    service_tenant_context: overrides?.service_tenant_context,
   });
+}
+
+const TENANT_CONTEXT: import("../types.js").RuntimeTenantContextClaim = {
+  version: 1,
+  organization_id: "org-test",
+  user_id: "user-test",
+  assistant_id: "assistant-test",
+  actor_id: "principal-test",
+  request_id: "request-test",
+};
+
+function tenantHeaders(
+  overrides: Record<string, string> = {},
+): Record<string, string> {
+  return {
+    "x-worklin-tenant-context-version": "1",
+    "x-worklin-org-id": TENANT_CONTEXT.organization_id,
+    "x-worklin-user-id": TENANT_CONTEXT.user_id,
+    "x-worklin-assistant-id": TENANT_CONTEXT.assistant_id,
+    "x-worklin-actor-id": TENANT_CONTEXT.actor_id,
+    "x-worklin-request-id": TENANT_CONTEXT.request_id,
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
   initAuthSigningKey(TEST_KEY);
   authDisabled = false;
+  platformIsolated = false;
+  platformAssistantId = "";
+  platformOrganizationId = "";
 });
 
 afterAll(() => {
@@ -206,6 +243,238 @@ describe("authenticateRequest", () => {
     if (result.ok) {
       expect(result.context.actorPrincipalId).toBe("dev-bypass");
     }
+  });
+
+  test("isolated runtime ignores the dev bypass and requires a signed tenant context", () => {
+    authDisabled = true;
+    platformIsolated = true;
+    platformAssistantId = TENANT_CONTEXT.assistant_id;
+
+    const result = authenticateRequest(
+      new Request("http://localhost/v1/messages", { method: "POST" }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.response.status).toBe(401);
+  });
+
+  test("isolated runtime requires explicit tenant binding for gateway service principals", () => {
+    platformIsolated = true;
+    platformAssistantId = TENANT_CONTEXT.assistant_id;
+    platformOrganizationId = TENANT_CONTEXT.organization_id;
+    const unboundToken = mintValidToken({
+      sub: "svc:gateway:self",
+      scope_profile: "gateway_service_v1",
+    });
+
+    const unbound = authenticateRequest(
+      new Request("http://localhost/v1/health", {
+        headers: { Authorization: `Bearer ${unboundToken}` },
+      }),
+    );
+    expect(unbound.ok).toBe(false);
+    if (!unbound.ok) expect(unbound.response.status).toBe(403);
+
+    const boundToken = mintValidToken({
+      sub: "svc:gateway:self",
+      scope_profile: "gateway_service_v1",
+      service_tenant_context: {
+        version: 1,
+        assistant_id: TENANT_CONTEXT.assistant_id,
+        organization_id: TENANT_CONTEXT.organization_id,
+        service_id: "gateway",
+        request_id: "service-request",
+      },
+    });
+    const bound = authenticateRequest(
+      new Request("http://localhost/v1/health", {
+        headers: { Authorization: `Bearer ${boundToken}` },
+      }),
+    );
+    expect(bound.ok).toBe(true);
+    if (bound.ok) {
+      expect(bound.context.principalType).toBe("svc_gateway");
+      expect(bound.context.serviceTenantContext).toEqual({
+        version: 1,
+        assistantId: TENANT_CONTEXT.assistant_id,
+        organizationId: TENANT_CONTEXT.organization_id,
+        serviceId: "gateway",
+        requestId: "service-request",
+      });
+    }
+  });
+
+  test("isolated runtime rejects service binding for another organization", () => {
+    platformIsolated = true;
+    platformAssistantId = TENANT_CONTEXT.assistant_id;
+    platformOrganizationId = TENANT_CONTEXT.organization_id;
+    const token = mintValidToken({
+      sub: "svc:gateway:self",
+      scope_profile: "gateway_service_v1",
+      service_tenant_context: {
+        version: 1,
+        assistant_id: TENANT_CONTEXT.assistant_id,
+        organization_id: "other-org",
+        service_id: "gateway",
+        request_id: "service-request",
+      },
+    });
+
+    const result = authenticateRequest(
+      new Request("http://localhost/v1/health", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.response.status).toBe(403);
+  });
+
+  test.each([
+    {
+      label: "daemon service",
+      sub: "svc:daemon:self",
+      scope_profile: "gateway_service_v1" as const,
+    },
+    {
+      label: "local client",
+      sub: "local:self:conversation-test",
+      scope_profile: "local_v1" as const,
+    },
+  ])(
+    "hosted isolated and pooled runtimes reject an unbound $label principal",
+    ({ sub, scope_profile }) => {
+      platformIsolated = true;
+      platformAssistantId = TENANT_CONTEXT.assistant_id;
+      const token = mintValidToken({ sub, scope_profile });
+
+      const result = authenticateRequest(
+        new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.response.status).toBe(403);
+    },
+  );
+
+  test.each([
+    {
+      label: "daemon service",
+      sub: "svc:daemon:self",
+      scope_profile: "gateway_service_v1" as const,
+    },
+    {
+      label: "local client",
+      sub: "local:self:conversation-test",
+      scope_profile: "local_v1" as const,
+    },
+  ])(
+    "self-hosted auth preserves an unbound $label principal",
+    ({ sub, scope_profile }) => {
+      platformIsolated = false;
+      const token = mintValidToken({ sub, scope_profile });
+
+      const result = authenticateRequest(
+        new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.context.serviceTenantContext).toBeUndefined();
+        expect(result.context.tenantContext).toBeUndefined();
+      }
+    },
+  );
+
+  test("rejects a token carrying both actor and service tenant contexts", () => {
+    platformIsolated = true;
+    platformAssistantId = TENANT_CONTEXT.assistant_id;
+    const token = mintValidToken({
+      tenant_context: TENANT_CONTEXT,
+      service_tenant_context: {
+        version: 1,
+        assistant_id: TENANT_CONTEXT.assistant_id,
+        service_id: "gateway",
+        request_id: "service-request",
+      },
+    });
+
+    const result = authenticateRequest(
+      new Request("http://localhost/v1/messages", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...tenantHeaders(),
+        },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.response.status).toBe(403);
+  });
+
+  test("isolated runtime normalizes a valid signed tenant context into AuthContext", () => {
+    platformIsolated = true;
+    platformAssistantId = TENANT_CONTEXT.assistant_id;
+    platformOrganizationId = TENANT_CONTEXT.organization_id;
+    const token = mintValidToken({ tenant_context: TENANT_CONTEXT });
+
+    const result = authenticateRequest(
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...tenantHeaders(),
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.context.tenantContext).toEqual({
+        version: 1,
+        organizationId: "org-test",
+        userId: "user-test",
+        assistantId: "assistant-test",
+        actorId: "principal-test",
+        requestId: "request-test",
+      });
+      expect(result.context.assistantId).toBe("self");
+    }
+  });
+
+  test("isolated runtime rejects forged canonical metadata and wrong runtime binding", () => {
+    platformIsolated = true;
+    platformAssistantId = TENANT_CONTEXT.assistant_id;
+    const token = mintValidToken({ tenant_context: TENANT_CONTEXT });
+
+    const forgedHeader = authenticateRequest(
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...tenantHeaders({ "x-worklin-user-id": "other-user" }),
+        },
+      }),
+    );
+    expect(forgedHeader.ok).toBe(false);
+    if (!forgedHeader.ok) expect(forgedHeader.response.status).toBe(403);
+
+    platformAssistantId = "other-assistant";
+    const wrongRuntime = authenticateRequest(
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...tenantHeaders(),
+        },
+      }),
+    );
+    expect(wrongRuntime.ok).toBe(false);
+    if (!wrongRuntime.ok) expect(wrongRuntime.response.status).toBe(403);
   });
 
   test("returns 401 with refresh_required when policy epoch is stale", async () => {

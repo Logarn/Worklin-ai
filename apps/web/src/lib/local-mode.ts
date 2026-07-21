@@ -153,7 +153,7 @@ export function getLockfile(): Lockfile {
  * cache only advances once the on-disk write succeeds.
  */
 export async function saveLockfileAssistant(
-  assistant: { assistantId: string; name?: string; cloud: string; runtimeUrl: string; hatchedAt: string; organizationId?: string },
+  assistant: { assistantId: string; name?: string; cloud: string; runtimeUrl: string; hatchedAt: string; organizationId?: string; runtimeProvider?: string },
 ): Promise<void> {
   const result = await saveLockfileAssistantHost(
     assistant,
@@ -194,7 +194,7 @@ export async function setActiveLockfileAssistant(
  * in `assistants` belongs to that org.
  */
 export async function syncPlatformAssistantsToLockfile(
-  assistants: Array<{ id: string; name?: string; is_local: boolean; created: string }>,
+  assistants: Array<{ id: string; name?: string; is_local: boolean; created: string; runtime_provider?: string | null }>,
   organizationId?: string,
   shouldApply: () => boolean = () => true,
 ): Promise<void> {
@@ -213,6 +213,7 @@ export async function syncPlatformAssistantsToLockfile(
       cloud: "vellum",
       runtimeUrl: getPlatformRuntimeUrl(),
       hatchedAt: a.created,
+      ...(a.runtime_provider != null && { runtimeProvider: a.runtime_provider }),
       ...(organizationId != null && { organizationId }),
     }));
 

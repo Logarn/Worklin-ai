@@ -6,6 +6,7 @@ import {
   assertRuntimeWorkerStateReadyForLease,
   beginRuntimeWorkerStateExport,
   beginRuntimeWorkerStateRestore,
+  buildRuntimeWorkerStateBundleId,
   buildRuntimeWorkerStateObjectKey,
   completeRuntimeWorkerStateExport,
   completeRuntimeWorkerStateRestore,
@@ -26,6 +27,7 @@ const CHECKSUM_A = "a".repeat(64);
 const CHECKSUM_B = "b".repeat(64);
 const tenantA = { orgId: "org-a", assistantId: "assistant-a" };
 const tenantB = { orgId: "org-b", assistantId: "assistant-b" };
+const LEASE_GENERATION = 7;
 
 function setupDb(): Database {
   const db = new Database(":memory:");
@@ -74,18 +76,222 @@ async function expectAsyncStateError(
   }
 }
 
-function makeStorage(overrides?: Partial<RuntimeWorkerStateStorage>): RuntimeWorkerStateStorage {
+function makeStorage(
+  overrides?: Partial<RuntimeWorkerStateStorage>,
+): RuntimeWorkerStateStorage {
   return {
-    restore: async ({ object }) => ({
+    restore: async ({ object, expectedWorkspaceByteSize }) => ({
       checksumSha256: object?.checksumSha256 ?? null,
+      workspaceByteSize: expectedWorkspaceByteSize ?? 0,
     }),
-    export: async ({ tenant, nextGeneration }) =>
-      objectFor(tenant, nextGeneration),
+    export: async ({ tenant, nextStateGeneration }) => ({
+      object: objectFor(tenant, nextStateGeneration),
+      workspaceByteSize: 3_072,
+    }),
     ...overrides,
   };
 }
 
 describe("runtime worker tenant checkpoints", () => {
+  test("migrates GCS-only provider constraints without losing checkpoints", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE runtime_worker_state_checkpoints (
+        org_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        worker_stack_id TEXT,
+        operation_id TEXT,
+        restored_generation INTEGER,
+        object_provider TEXT CHECK(
+          object_provider IS NULL OR object_provider = 'gcs'
+        ),
+        object_bucket TEXT,
+        object_key TEXT,
+        checksum_sha256 TEXT,
+        byte_size INTEGER,
+        object_format TEXT,
+        failure_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(org_id, assistant_id)
+      );
+      CREATE TABLE runtime_worker_state_objects (
+        org_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        object_provider TEXT NOT NULL CHECK(object_provider = 'gcs'),
+        object_bucket TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        checksum_sha256 TEXT NOT NULL,
+        byte_size INTEGER NOT NULL,
+        object_format TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(org_id, assistant_id, generation),
+        UNIQUE(object_provider, object_bucket, object_key)
+      );
+      INSERT INTO runtime_worker_state_checkpoints VALUES (
+        'org-a',
+        'assistant-a',
+        1,
+        'checkpointed',
+        NULL,
+        NULL,
+        NULL,
+        'gcs',
+        'worklin-runtime-state',
+        'tenant-state/org-a/assistant-a/generation-1.vbundle',
+        '${CHECKSUM_A}',
+        4096,
+        'vbundle-v1',
+        NULL,
+        '${NOW_ISO()}',
+        '${NOW_ISO()}'
+      );
+      INSERT INTO runtime_worker_state_objects VALUES (
+        'org-a',
+        'assistant-a',
+        1,
+        'gcs',
+        'worklin-runtime-state',
+        'tenant-state/org-a/assistant-a/generation-1.vbundle',
+        '${CHECKSUM_A}',
+        4096,
+        'vbundle-v1',
+        '${NOW_ISO()}'
+      );
+    `);
+
+    ensureRuntimeWorkerStateCheckpointSchema(db);
+
+    expect(getRuntimeWorkerStateCheckpoint(db, tenantA)).toMatchObject({
+      generation: 1,
+      object_provider: "gcs",
+      checksum_sha256: CHECKSUM_A,
+    });
+    expect(() =>
+      db
+        .query(
+          `INSERT INTO runtime_worker_state_objects (
+            org_id, assistant_id, generation, object_provider, object_bucket,
+            object_key, checksum_sha256, byte_size, object_format, created_at
+          ) VALUES (
+          ?, ?, 1, 's3', ?, ?, ?, 4096, 'vbundle-v1', ?
+        )`,
+        )
+        .run(
+          tenantB.orgId,
+          tenantB.assistantId,
+          "worklin-runtime-state",
+          buildRuntimeWorkerStateObjectKey(tenantB, 1),
+          CHECKSUM_B,
+          NOW_ISO(),
+        ),
+    ).not.toThrow();
+    expect(() =>
+      db
+        .query(
+          `INSERT INTO runtime_worker_state_objects (
+            org_id, assistant_id, generation, object_provider, object_bucket,
+            object_key, checksum_sha256, byte_size, object_format, created_at
+          ) VALUES (
+          'org-c', 'assistant-c', 1, 'other', 'bucket',
+          'tenant-state/org-c/assistant-c/generation-1.vbundle',
+          ?, 4096, 'vbundle-v1', ?
+        )`,
+        )
+        .run(CHECKSUM_A, NOW_ISO()),
+    ).toThrow();
+  });
+
+  test("preserves workspace bytes while migrating legacy GCS provider constraints", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE runtime_worker_state_checkpoints (
+        org_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        worker_stack_id TEXT,
+        operation_id TEXT,
+        restored_generation INTEGER,
+        object_provider TEXT CHECK(
+          object_provider IS NULL OR object_provider = 'gcs'
+        ),
+        object_bucket TEXT,
+        object_key TEXT,
+        checksum_sha256 TEXT,
+        byte_size INTEGER,
+        workspace_bytes INTEGER,
+        object_format TEXT,
+        failure_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(org_id, assistant_id)
+      );
+      CREATE TABLE runtime_worker_state_objects (
+        org_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        object_provider TEXT NOT NULL CHECK(object_provider = 'gcs'),
+        object_bucket TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        checksum_sha256 TEXT NOT NULL,
+        byte_size INTEGER NOT NULL,
+        workspace_bytes INTEGER,
+        object_format TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(org_id, assistant_id, generation),
+        UNIQUE(object_provider, object_bucket, object_key)
+      );
+      INSERT INTO runtime_worker_state_checkpoints VALUES (
+        'org-a', 'assistant-a', 1, 'checkpointed', NULL, NULL, NULL,
+        'gcs', 'worklin-runtime-state',
+        'tenant-state/org-a/assistant-a/generation-1.vbundle',
+        '${CHECKSUM_A}', 4096, 3072, 'vbundle-v1', NULL,
+        '${NOW_ISO()}', '${NOW_ISO()}'
+      );
+      INSERT INTO runtime_worker_state_objects VALUES (
+        'org-a', 'assistant-a', 1, 'gcs', 'worklin-runtime-state',
+        'tenant-state/org-a/assistant-a/generation-1.vbundle',
+        '${CHECKSUM_A}', 4096, 3072, 'vbundle-v1', '${NOW_ISO()}'
+      );
+    `);
+
+    ensureRuntimeWorkerStateCheckpointSchema(db);
+
+    expect(getRuntimeWorkerStateCheckpoint(db, tenantA)?.workspace_bytes).toBe(
+      3072,
+    );
+    expect(
+      db
+        .query<{ workspace_bytes: number | null }, []>(
+          `SELECT workspace_bytes
+           FROM runtime_worker_state_objects
+           WHERE org_id = 'org-a' AND assistant_id = 'assistant-a'`,
+        )
+        .get()?.workspace_bytes,
+    ).toBe(3072);
+  });
+
+  test("derives a deterministic UUID from the tenant state object identity", () => {
+    const first = buildRuntimeWorkerStateBundleId(tenantA, 3);
+    expect(first).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(buildRuntimeWorkerStateBundleId(tenantA, 3)).toBe(first);
+    expect(buildRuntimeWorkerStateBundleId(tenantA, 4)).not.toBe(first);
+    expect(buildRuntimeWorkerStateBundleId(tenantB, 3)).not.toBe(first);
+    expect(buildRuntimeWorkerStateBundleId(tenantA, 3, "s3")).not.toBe(first);
+    expect(() =>
+      buildRuntimeWorkerStateObjectKey(
+        { orgId: "..", assistantId: "assistant-a" },
+        3,
+      ),
+    ).toThrow("cannot be a path segment");
+  });
+
   test("restores before readiness and exports a monotonic checkpoint before release", async () => {
     const db = setupDb();
     const restored = await restoreRuntimeWorkerStateWithStorage(
@@ -93,6 +299,7 @@ describe("runtime worker tenant checkpoints", () => {
       makeStorage(),
       tenantA,
       "worker-1",
+      LEASE_GENERATION,
       0,
       "restore-1",
       NOW_ISO,
@@ -108,12 +315,7 @@ describe("runtime worker tenant checkpoints", () => {
       assertRuntimeWorkerStateReadyForLease(db, tenantA, "worker-1").status,
     ).toBe("ready");
     expectStateError(
-      () =>
-        assertRuntimeWorkerStateExportedForRelease(
-          db,
-          tenantA,
-          "worker-1",
-        ),
+      () => assertRuntimeWorkerStateExportedForRelease(db, tenantA, "worker-1"),
       "state_not_exported",
     );
 
@@ -122,6 +324,7 @@ describe("runtime worker tenant checkpoints", () => {
       makeStorage(),
       tenantA,
       "worker-1",
+      LEASE_GENERATION,
       0,
       "export-1",
       NOW_ISO,
@@ -133,11 +336,8 @@ describe("runtime worker tenant checkpoints", () => {
       checksum_sha256: CHECKSUM_A,
     });
     expect(
-      assertRuntimeWorkerStateExportedForRelease(
-        db,
-        tenantA,
-        "worker-1",
-      ).generation,
+      assertRuntimeWorkerStateExportedForRelease(db, tenantA, "worker-1")
+        .generation,
     ).toBe(1);
 
     const released = markRuntimeWorkerStateReleased(
@@ -163,6 +363,7 @@ describe("runtime worker tenant checkpoints", () => {
     expect(restorePlan).toEqual({
       generation: 1,
       object: objectFor(tenantA, 1),
+      workspaceByteSize: 3_072,
       idempotent: false,
     });
     completeRuntimeWorkerStateRestore(
@@ -172,6 +373,7 @@ describe("runtime worker tenant checkpoints", () => {
       1,
       "restore-2",
       CHECKSUM_A,
+      3_072,
       NOW_ISO,
     );
     expect(
@@ -232,14 +434,7 @@ describe("runtime worker tenant checkpoints", () => {
       [tenantA, "worker-a", "restore-a"],
       [tenantB, "worker-b", "restore-b"],
     ] as const) {
-      beginRuntimeWorkerStateRestore(
-        db,
-        tenant,
-        worker,
-        0,
-        operation,
-        NOW_ISO,
-      );
+      beginRuntimeWorkerStateRestore(db, tenant, worker, 0, operation, NOW_ISO);
       completeRuntimeWorkerStateRestore(
         db,
         tenant,
@@ -247,6 +442,7 @@ describe("runtime worker tenant checkpoints", () => {
         0,
         operation,
         null,
+        0,
         NOW_ISO,
       );
     }
@@ -267,6 +463,7 @@ describe("runtime worker tenant checkpoints", () => {
           0,
           "export-b",
           objectFor(tenantA, 1),
+          3_072,
           NOW_ISO,
         ),
       "cross_tenant_object",
@@ -287,6 +484,7 @@ describe("runtime worker tenant checkpoints", () => {
           0,
           "export-b",
           signedUrlObject,
+          3_072,
           NOW_ISO,
         ),
       "cross_tenant_object",
@@ -315,6 +513,7 @@ describe("runtime worker tenant checkpoints", () => {
           }),
           tenantA,
           "worker-1",
+          LEASE_GENERATION,
           0,
           "restore-1",
           NOW_ISO,
@@ -346,6 +545,7 @@ describe("runtime worker tenant checkpoints", () => {
       makeStorage(),
       tenantA,
       "worker-1",
+      LEASE_GENERATION,
       0,
       "restore-1",
       NOW_ISO,
@@ -361,6 +561,7 @@ describe("runtime worker tenant checkpoints", () => {
           }),
           tenantA,
           "worker-1",
+          LEASE_GENERATION,
           0,
           "export-1",
           NOW_ISO,
@@ -374,12 +575,7 @@ describe("runtime worker tenant checkpoints", () => {
       failure_code: "storage_unavailable",
     });
     expectStateError(
-      () =>
-        assertRuntimeWorkerStateExportedForRelease(
-          db,
-          tenantA,
-          "worker-1",
-        ),
+      () => assertRuntimeWorkerStateExportedForRelease(db, tenantA, "worker-1"),
       "quarantined",
     );
     expect(
@@ -406,6 +602,7 @@ describe("runtime worker tenant checkpoints", () => {
       0,
       "restore-1",
       null,
+      0,
       NOW_ISO,
     );
     beginRuntimeWorkerStateExport(
@@ -423,6 +620,7 @@ describe("runtime worker tenant checkpoints", () => {
       0,
       "export-1",
       objectFor(tenantA, 1),
+      3_072,
       NOW_ISO,
     );
     db.query(
@@ -442,6 +640,7 @@ describe("runtime worker tenant checkpoints", () => {
           0,
           "replay-export",
           objectFor(tenantA, 1),
+          3_072,
           NOW_ISO,
         ),
       "object_replay",
@@ -486,6 +685,7 @@ describe("runtime worker tenant checkpoints", () => {
           1,
           "restore-2",
           CHECKSUM_B,
+          3_072,
           NOW_ISO,
         ),
       "checksum_mismatch",

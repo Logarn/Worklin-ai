@@ -7,6 +7,7 @@ import { availableParallelism, cpus, totalmem } from "node:os";
 
 import { z } from "zod";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import { getCpuLimit, getIsPlatform } from "../../config/env-registry.js";
 import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
@@ -368,7 +369,8 @@ export function handleDetailedHealth(): Response {
 export function handleReadyz(): Response {
   const isolatedRuntime =
     process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() === "isolated";
-  if (isolatedRuntime) {
+  const pooledRuntime = isPooledWorkerRuntime();
+  if (isolatedRuntime || pooledRuntime) {
     const daemonReadiness = getDaemonReadiness();
     if (!daemonReadiness.ready) {
       return Response.json(
@@ -381,22 +383,27 @@ export function handleReadyz(): Response {
     }
   }
 
-  const cesClient = getCesClient();
-  if (!cesClient?.isReady()) {
-    getLogger("health").warn(
-      { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
-      isolatedRuntime
-        ? "CES not ready — isolated runtime remains unavailable"
-        : "CES not ready — continuing in compatibility mode",
-    );
-    if (isolatedRuntime) {
-      return Response.json(
-        {
-          status: "starting",
-          reason: cesClient ? "ces_not_ready" : "ces_unavailable",
-        },
-        { status: 503 },
+  // Pooled interactive-only workers deliberately keep CES disabled. Their
+  // request-scoped model key and credential paths are served by the control
+  // plane and fail closed independently.
+  if (!pooledRuntime) {
+    const cesClient = getCesClient();
+    if (!cesClient?.isReady()) {
+      getLogger("health").warn(
+        { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
+        isolatedRuntime
+          ? "CES not ready — isolated runtime remains unavailable"
+          : "CES not ready — continuing in compatibility mode",
       );
+      if (isolatedRuntime) {
+        return Response.json(
+          {
+            status: "starting",
+            reason: cesClient ? "ces_not_ready" : "ces_unavailable",
+          },
+          { status: 503 },
+        );
+      }
     }
   }
   return Response.json({ status: "ok" });
@@ -545,6 +552,10 @@ function buildLocalTimeContext(
 function triggerEmptyStateGreetingGeneration(
   localTimeContext: string | null,
 ): boolean {
+  if (isPooledWorkerRuntime()) {
+    return false;
+  }
+
   if (greetingGenerationInFlight) {
     return true;
   }

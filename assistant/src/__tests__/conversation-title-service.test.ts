@@ -100,6 +100,7 @@ import {
   generateAndPersistConversationTitle,
   queueGenerateConversationTitle,
   regenerateConversationTitle,
+  regenerateConversationTitleRequestBound,
   repairConversationTitle,
   titleMutex,
 } from "../memory/conversation-title-service.js";
@@ -299,6 +300,47 @@ describe("conversation-title-service", () => {
       "conv-1",
       "Project kickoff",
       1,
+    );
+  });
+
+  test("request-bound regeneration persists a title from in-memory turn context", async () => {
+    const provider = {
+      name: "test-provider",
+      sendMessage: mock(async () => {
+        throw new Error("provider.sendMessage should not be called directly");
+      }),
+    };
+
+    const result = await regenerateConversationTitleRequestBound({
+      conversationId: "conv-1",
+      provider,
+      recentMessages: [
+        { role: "assistant", text: "We narrowed the launch to Nairobi" },
+        { role: "user", text: "Build the investor demo checklist" },
+        { role: "assistant", text: "Here is the launch checklist" },
+      ],
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockGetMessages).not.toHaveBeenCalled();
+    expect(mockRunBtwSidechain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [
+          "Recent messages:",
+          "Assistant: We narrowed the launch to Nairobi",
+          "User: Build the investor demo checklist",
+          "Assistant: Here is the launch checklist",
+        ].join("\n"),
+      }),
+    );
+    expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
+      "conv-1",
+      "Project kickoff",
+      1,
+    );
+    expect(mockPublishConversationTitleChanged).toHaveBeenCalledWith(
+      "conv-1",
+      "Project kickoff",
     );
   });
 

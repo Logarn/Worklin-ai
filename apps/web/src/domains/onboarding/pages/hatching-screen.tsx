@@ -25,6 +25,7 @@ import {
     pendingProviderRequiresOAuth,
     peekPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
+import { isPooledRuntimeProvider } from "@/assistant/pooled-model-provider";
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import { getLocalGatewayUrl, getPlatformRuntimeUrl, isLocalMode, loadLockfile, primeLocalGatewayConnection, saveLockfileAssistant } from "@/lib/local-mode";
 import { clearGatewayToken } from "@/lib/auth/gateway-session";
@@ -81,6 +82,20 @@ const PHASE_LABEL: Record<HatchPhase, string> = {
 };
 
 function providerSetupErrorMessage(err: unknown): string {
+  const code =
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code?: unknown }).code === "string"
+      ? (err as { code: string }).code
+      : undefined;
+  if (
+    code?.startsWith("pooled_provider_") &&
+    err instanceof Error &&
+    err.message
+  ) {
+    return err.message;
+  }
   const status =
     typeof err === "object" &&
     err !== null &&
@@ -253,14 +268,25 @@ export function HatchingScreen() {
 
     const applyProviderBeforeReady = async (
       assistantId: string,
+      runtimeProvider?: string | null,
     ): Promise<boolean> => {
-      const pendingProvider = peekPendingProviderKey();
-      if (pendingProviderRequiresOAuth(pendingProvider)) {
+      const providerKeyScope = {
+        userId: useAuthStore.getState().user?.id ?? null,
+      };
+      const pendingProvider = peekPendingProviderKey(providerKeyScope);
+      if (
+        pendingProviderRequiresOAuth(pendingProvider) &&
+        !isPooledRuntimeProvider(runtimeProvider)
+      ) {
         setProviderSetup({ kind: "chatgpt", assistantId });
         return false;
       }
       try {
-        await applyPendingProviderKey(assistantId);
+        await applyPendingProviderKey(
+          assistantId,
+          runtimeProvider,
+          providerKeyScope,
+        );
       } catch (err) {
         captureError(err, { context: "onboarding_apply_provider_key" });
         setError(providerSetupErrorMessage(err));
@@ -298,10 +324,12 @@ export function HatchingScreen() {
                 hatchedAt: new Date().toISOString(),
                 organizationId:
                   useOrganizationStore.getState().currentOrganizationId ?? undefined,
+                runtimeProvider: existing.data.runtime_provider ?? undefined,
               });
             }
             const providerReady = await applyProviderBeforeReady(
               existing.data.id,
+              existing.data.runtime_provider,
             );
             if (!providerReady) return;
             handleHatchReady();
@@ -317,7 +345,12 @@ export function HatchingScreen() {
           // Fall through to normal hatch
         }
         if (cancelled) return;
-        if (preflightFoundNoAssistant && !peekPendingProviderKey()) {
+        if (
+          preflightFoundNoAssistant &&
+          !peekPendingProviderKey({
+            userId: useAuthStore.getState().user?.id ?? null,
+          })
+        ) {
           void navigate(`${routes.onboarding.provider}?next=hatching`, {
             replace: true,
           });
@@ -523,6 +556,7 @@ export function HatchingScreen() {
                 hatchedAt: new Date().toISOString(),
                 organizationId:
                   useOrganizationStore.getState().currentOrganizationId ?? undefined,
+                runtimeProvider: result.data.runtime_provider ?? undefined,
               });
             }
 
@@ -548,7 +582,10 @@ export function HatchingScreen() {
             }
             if (cancelled) return;
 
-            const providerReady = await applyProviderBeforeReady(assistantId);
+            const providerReady = await applyProviderBeforeReady(
+              assistantId,
+              result.data.runtime_provider,
+            );
             if (!providerReady) return;
           }
 
@@ -637,6 +674,9 @@ export function HatchingScreen() {
                     try {
                       await applyChatgptSubscriptionProvider(
                         providerSetup.assistantId,
+                        {
+                          userId: useAuthStore.getState().user?.id ?? null,
+                        },
                       );
                     } catch (err) {
                       captureError(err, {

@@ -5209,6 +5209,13 @@ components:
         configuration: {}
         status:
           $ref: '#/components/schemas/AssistantStatusEnum'
+        runtime_provider:
+          type: string
+          nullable: true
+          readOnly: true
+          description: Runtime transport provider selected by the Worklin control
+            plane. Pooled workers use bounded request polling instead of an
+            assistant-scoped long-lived event stream.
         created:
           type: string
           format: date-time

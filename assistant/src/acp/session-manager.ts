@@ -14,6 +14,7 @@ import type { AcpSessionUpdate } from "../daemon/message-types/acp.js";
 import { getDb } from "../memory/db-connection.js";
 import { acpSessionHistory } from "../memory/schema.js";
 import * as pendingInteractions from "../runtime/pending-interactions.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { getLogger } from "../util/logger.js";
 import { AcpAgentProcess } from "./agent-process.js";
 import { resolveAgentWithAutoInstall } from "./auto-install.js";
@@ -192,6 +193,7 @@ export class AcpSessionManager {
     parentConversationId: string,
     sendToVellum: (msg: ServerMessage) => void,
   ): Promise<{ acpSessionId: string; protocolSessionId: string }> {
+    assertPooledRuntimeAsyncOperationSupported("ACP sessions");
     this.assertCapacity();
 
     const acpSessionId = randomUUID();
@@ -355,6 +357,7 @@ export class AcpSessionManager {
     acpSessionId: string,
     sendToVellum: (msg: ServerMessage) => void,
   ): Promise<void> {
+    assertPooledRuntimeAsyncOperationSupported("ACP sessions");
     if (
       this.sessions.has(acpSessionId) ||
       this.pendingResumes.has(acpSessionId)

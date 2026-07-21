@@ -7,7 +7,13 @@
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { resolveScopeProfile } from "./scopes.js";
 import { parseSub } from "./subject.js";
-import type { AuthContext, TokenClaims } from "./types.js";
+import type {
+  AuthContext,
+  RuntimeServiceTenantContext,
+  RuntimeTenantContext,
+  RuntimeWorkerLeaseContext,
+  TokenClaims,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Result type
@@ -32,7 +38,12 @@ export type BuildAuthContextResult =
  * sub encodes. Daemon code must never derive internal scoping from
  * externally-provided assistant IDs.
  */
-export function buildAuthContext(claims: TokenClaims): BuildAuthContextResult {
+export function buildAuthContext(
+  claims: TokenClaims,
+  tenantContext?: RuntimeTenantContext,
+  serviceTenantContext?: RuntimeServiceTenantContext,
+  pooledWorkerLease?: RuntimeWorkerLeaseContext,
+): BuildAuthContextResult {
   const subResult = parseSub(claims.sub);
   if (!subResult.ok) {
     return { ok: false, reason: subResult.reason };
@@ -59,6 +70,9 @@ export function buildAuthContext(claims: TokenClaims): BuildAuthContextResult {
     policyEpoch: claims.policy_epoch,
     artifactId: claims.artifact_id,
     collaborationRole: claims.collaboration_role,
+    tenantContext,
+    serviceTenantContext,
+    pooledWorkerLease,
   };
 
   return { ok: true, context };

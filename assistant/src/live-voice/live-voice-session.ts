@@ -425,12 +425,24 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
       const handle = await this.startVoiceTurn({
         conversationId: this.conversationId,
         voiceSessionId: this.context.sessionId,
+        assistantId: this.context.tenantContext?.assistantId,
         userMessageChannel: "vellum",
         assistantMessageChannel: "vellum",
         userMessageInterface: "macos",
         assistantMessageInterface: "macos",
         voiceControlPrompt:
           "You are speaking in a local live voice session. Keep replies brief and conversational.",
+        trustContext: this.context.ownerTrust
+          ? {
+              sourceChannel: "vellum",
+              trustClass: "guardian",
+              guardianChatId: "local",
+              guardianExternalUserId: this.context.ownerTrust.actorPrincipalId,
+              guardianPrincipalId: this.context.ownerTrust.actorPrincipalId,
+              requesterExternalUserId: this.context.ownerTrust.actorPrincipalId,
+              requesterIdentifier: this.context.ownerTrust.userId,
+            }
+          : undefined,
         approvalMode: "local-live-voice",
         content,
         isInbound: true,

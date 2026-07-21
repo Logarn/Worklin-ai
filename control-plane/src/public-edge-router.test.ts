@@ -2,27 +2,29 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { connect, createServer, type Server } from "node:net";
 
 import {
-  ELEVENLABS_SPEECH_ENGINE_UPSTREAM_PATH,
   createPublicEdgeRouter,
   routeInitialRequest,
 } from "./public-edge-router.js";
 
+const ELEVENLABS_SPEECH_ENGINE_UPSTREAM_PATH =
+  "/v1/live-voice/providers/elevenlabs/upstream";
 const servers: Server[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    servers.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve) => server.close(() => resolve())),
-    ),
+    servers
+      .splice(0)
+      .map(
+        (server) =>
+          new Promise<void>((resolve) => server.close(() => resolve())),
+      ),
   );
 });
 
-describe("combined-runtime public edge", () => {
-  test("routes only the exact ElevenLabs upstream path to the gateway", () => {
+describe("public edge", () => {
+  test("routes every request through the control plane", () => {
     const options = {
       controlPlaneUrl: "http://control-plane.internal:8082",
-      gatewayUrl: "http://gateway.internal:7830",
     };
     expect(
       routeInitialRequest(
@@ -31,7 +33,7 @@ describe("combined-runtime public edge", () => {
         ),
         options,
       ).toString(),
-    ).toBe("http://gateway.internal:7830/");
+    ).toBe("http://control-plane.internal:8082/");
     expect(
       routeInitialRequest(
         Buffer.from(
@@ -40,15 +42,29 @@ describe("combined-runtime public edge", () => {
         options,
       ).toString(),
     ).toBe("http://control-plane.internal:8082/");
+    expect(
+      routeInitialRequest(
+        Buffer.from(
+          `GET ${ELEVENLABS_SPEECH_ENGINE_UPSTREAM_PATH} HTTP/1.1\r\n` +
+            "Host: public-edge.example.com\r\n" +
+            "Connection: keep-alive\r\n\r\n" +
+            "GET /v1/contacts HTTP/1.1\r\n" +
+            "Host: localhost\r\n\r\n",
+        ),
+        options,
+      ).toString(),
+    ).toBe("http://control-plane.internal:8082/");
   });
 
-  test("preserves ordinary HTTP traffic and the provider WebSocket handshake", async () => {
-    let gatewayRequest = "";
-    const controlPlaneUrl = await listenResponder("control-plane");
-    const gatewayUrl = await listenResponder("gateway", (request) => {
-      gatewayRequest = request;
-    });
-    const edge = createPublicEdgeRouter({ controlPlaneUrl, gatewayUrl });
+  test("sends the ElevenLabs path only to the control plane", async () => {
+    let controlPlaneRequest = "";
+    const controlPlaneUrl = await listenResponder(
+      "control-plane",
+      (request) => {
+        controlPlaneRequest = request;
+      },
+    );
+    const edge = createPublicEdgeRouter({ controlPlaneUrl });
     const edgeUrl = new URL(await listen(edge));
 
     expect(await rawRequest(edgeUrl, "/readyz")).toEndWith("control-plane");
@@ -58,16 +74,15 @@ describe("combined-runtime public edge", () => {
         Upgrade: "websocket",
         "X-ElevenLabs-Speech-Engine-Authorization": "signed-provider-token",
       }),
-    ).toEndWith("gateway");
-    expect(gatewayRequest).toContain(
-      "X-ElevenLabs-Speech-Engine-Authorization: signed-provider-token",
+    ).toEndWith("control-plane");
+    expect(controlPlaneRequest).toContain(
+      `GET ${ELEVENLABS_SPEECH_ENGINE_UPSTREAM_PATH} HTTP/1.1`,
     );
   });
 
-  test("keeps provider WebSocket frames flowing after the upgrade", async () => {
-    const controlPlaneUrl = await listenResponder("control-plane");
-    const gatewayUrl = await listenUpgradeEcho();
-    const edge = createPublicEdgeRouter({ controlPlaneUrl, gatewayUrl });
+  test("keeps WebSocket frames flowing only to the control plane", async () => {
+    const controlPlaneUrl = await listenUpgradeEcho();
+    const edge = createPublicEdgeRouter({ controlPlaneUrl });
     const edgeUrl = new URL(await listen(edge));
 
     expect(await rawUpgradeEcho(edgeUrl, "voice-frame")).toBe("voice-frame");

@@ -48,6 +48,8 @@ export class CredentialBroker {
    */
   injectTransient(service: string, field: string, value: string): void {
     const key = credentialKey(service, field);
+    const replaced = this.transientValues.get(key);
+    if (replaced) replaced.value = "";
     this.transientValues.set(key, { value });
     log.info(
       { service, field },
@@ -160,6 +162,26 @@ export class CredentialBroker {
     if (count > 0) {
       log.info({ count }, "All usage tokens revoked");
     }
+  }
+
+  /**
+   * Zero retained one-time values and remove every broker reference to them.
+   *
+   * JavaScript strings are immutable, so the runtime may retain internal
+   * copies outside our control. Clearing each mutable wrapper before deleting
+   * the map entry is the strongest deterministic zeroization this process can
+   * provide and prevents a later tenant assignment from retrieving the value.
+   */
+  clearTransientValues(): number {
+    const count = this.transientValues.size;
+    for (const transient of this.transientValues.values()) {
+      transient.value = "";
+    }
+    this.transientValues.clear();
+    if (count > 0) {
+      log.info({ count }, "All transient credential values cleared");
+    }
+    return count;
   }
 
   /**
@@ -421,7 +443,21 @@ export class CredentialBroker {
     }
     return count;
   }
+
+  /** Number of one-time values still retained by this broker. */
+  get transientValueCount(): number {
+    return this.transientValues.size;
+  }
 }
 
 /** Shared singleton broker instance used by vault and browser tools. */
 export const credentialBroker = new CredentialBroker();
+
+/**
+ * Clear every process-local credential capability at a tenant assignment
+ * boundary. This is intentionally safe to call more than once.
+ */
+export function resetCredentialBrokerForTenantAssignment(): void {
+  credentialBroker.revokeAll();
+  credentialBroker.clearTransientValues();
+}

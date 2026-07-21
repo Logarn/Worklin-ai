@@ -69,6 +69,25 @@ export interface RuntimeTenantContextClaim {
   request_id: string;
 }
 
+export interface RuntimeServiceTenantContextClaim {
+  version: 1;
+  assistant_id: string;
+  service_id: "gateway";
+  request_id: string;
+  organization_id?: string;
+}
+
+export interface RuntimeWorkerLeaseClaim {
+  version: 1;
+  issuer_service_id: "runtime_dispatcher";
+  organization_id: string;
+  user_id: string;
+  assistant_id: string;
+  worker_stack_id: string;
+  lease_generation: number;
+  lease_expires_at: number;
+}
+
 export interface TokenClaims {
   iss: "vellum-auth";
   aud: TokenAudience;
@@ -81,6 +100,8 @@ export interface TokenClaims {
   artifact_id?: string;
   collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
   tenant_context?: RuntimeTenantContextClaim;
+  service_tenant_context?: RuntimeServiceTenantContextClaim;
+  pooled_worker_lease?: RuntimeWorkerLeaseClaim;
 }
 
 // ---------------------------------------------------------------------------

@@ -404,6 +404,7 @@ export interface LockfileAssistant {
   species?: string;
   hatchedAt?: string;
   organizationId?: string;
+  runtimeProvider?: string;
   resources?: LocalAssistantResources;
 }
 

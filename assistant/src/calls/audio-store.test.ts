@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getAudio, storeAudio } from "./audio-store.js";
+import {
+  createStreamingEntry,
+  getAudio,
+  resetAudioStoreForTenantAssignment,
+  storeAudio,
+} from "./audio-store.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,6 +27,10 @@ function makeBuffer(sizeBytes: number): Buffer {
 // ---------------------------------------------------------------------------
 
 describe("audio-store", () => {
+  beforeEach(() => {
+    resetAudioStoreForTenantAssignment();
+  });
+
   describe("storeAudio / getAudio", () => {
     test("stores and retrieves audio by id", () => {
       const buf = makeBuffer(1024);
@@ -93,5 +102,25 @@ describe("audio-store", () => {
       // The first entry should have been evicted
       expect(getAudio(ids[0]!)).toBeNull();
     });
+  });
+
+  test("tenant reset removes buffers and closes streaming subscribers", async () => {
+    const bufferId = storeAudio(makeBuffer(32), "mp3");
+    const streaming = createStreamingEntry("opus");
+    streaming.push(new Uint8Array([1, 2, 3]));
+
+    const result = getAudio(streaming.audioId);
+    expect(result?.type).toBe("stream");
+    if (!result || result.type !== "stream") {
+      throw new Error("Expected a streaming audio result");
+    }
+    const reader = result.stream.getReader();
+    expect((await reader.read()).value).toEqual(new Uint8Array([1, 2, 3]));
+
+    resetAudioStoreForTenantAssignment();
+
+    expect(getAudio(bufferId)).toBeNull();
+    expect(getAudio(streaming.audioId)).toBeNull();
+    expect((await reader.read()).done).toBe(true);
   });
 });

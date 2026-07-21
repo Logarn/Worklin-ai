@@ -26,6 +26,8 @@ export type GatewayConfig = {
   runtimeInitialBackoffMs: number;
   runtimeMaxRetries: number;
   runtimeAssistantScopeMode?: "off" | "enforce" | "claim_once";
+  runtimeWorkerLeaseAuthorityFile?: string;
+  runtimeWorkerStackId?: string;
   runtimeProxyRequireAuth: boolean;
   runtimeTimeoutMs: number;
   shutdownDrainMs: number;
@@ -186,6 +188,11 @@ export function loadConfig(): GatewayConfig {
           envFlagTrue(process.env.IS_PLATFORM)
         ? "enforce"
         : "off";
+  const runtimeWorkerStackId =
+    process.env.WORKLIN_RUNTIME_WORKER_STACK_ID?.trim() || undefined;
+  const runtimeWorkerLeaseAuthorityFile =
+    process.env.WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE?.trim() ||
+    undefined;
   const runtimeTimeoutMs =
     parsePositiveInteger(
       process.env.RUNTIME_TIMEOUT_MS,
@@ -221,6 +228,8 @@ export function loadConfig(): GatewayConfig {
       hasVelayBaseUrl: !!velayBaseUrl,
       port,
       runtimeAssistantScopeMode,
+      runtimeWorkerLeaseAuthorityFile,
+      runtimeWorkerStackId,
       runtimeProxyRequireAuth,
       runtimeTimeoutMs,
       trustProxy,
@@ -249,6 +258,8 @@ export function loadConfig(): GatewayConfig {
     runtimeInitialBackoffMs: 500,
     runtimeMaxRetries: 2,
     runtimeAssistantScopeMode,
+    runtimeWorkerLeaseAuthorityFile,
+    runtimeWorkerStackId,
     runtimeProxyRequireAuth,
     runtimeTimeoutMs,
     shutdownDrainMs: 5000,

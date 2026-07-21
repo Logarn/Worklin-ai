@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GatewayConfig } from "../config.js";
@@ -67,6 +67,41 @@ function platformHeaders(): Record<string, string> {
     "x-worklin-actor-id": PLATFORM_TENANT_CONTEXT.actor_id,
     "x-worklin-request-id": PLATFORM_TENANT_CONTEXT.request_id,
   };
+}
+
+function mintPooledServiceToken(input: {
+  organizationId: string;
+  userId: string;
+  assistantId: string;
+  generation: number;
+  requestId: string;
+}): string {
+  const now = Math.floor(Date.now() / 1_000);
+  return mintToken({
+    aud: "vellum-gateway",
+    sub: "svc:gateway:self",
+    scope_profile: "gateway_service_v1",
+    policy_epoch: CURRENT_POLICY_EPOCH,
+    ttlSeconds: 30,
+    jti: input.requestId,
+    service_tenant_context: {
+      version: 1,
+      organization_id: input.organizationId,
+      assistant_id: input.assistantId,
+      service_id: "gateway",
+      request_id: input.requestId,
+    },
+    pooled_worker_lease: {
+      version: 1,
+      issuer_service_id: "runtime_dispatcher",
+      organization_id: input.organizationId,
+      user_id: input.userId,
+      assistant_id: input.assistantId,
+      worker_stack_id: "worker-1",
+      lease_generation: input.generation,
+      lease_expires_at: now + 45,
+    },
+  });
 }
 const originalGatewaySecurityDir = process.env.GATEWAY_SECURITY_DIR;
 const claimDirectories: string[] = [];
@@ -160,6 +195,176 @@ describe("runtime proxy auth enforcement", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
+  });
+
+  test("pooled worker service request preserves its lease through exchange", async () => {
+    let capturedHeaders: Headers | undefined;
+    fetchMock = mock(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        capturedHeaders = init?.headers as Headers;
+        return Response.json({ ok: true });
+      },
+    );
+    const now = Math.floor(Date.now() / 1_000);
+    const authorityDirectory = realpathSync(
+      mkdtempSync(join(tmpdir(), "worklin-lease-authority-")),
+    );
+    claimDirectories.push(authorityDirectory);
+    const authorityFile = join(authorityDirectory, "active-lease.json");
+    const edgeToken = mintToken({
+      aud: "vellum-gateway",
+      sub: "svc:gateway:self",
+      scope_profile: "gateway_service_v1",
+      policy_epoch: CURRENT_POLICY_EPOCH,
+      ttlSeconds: 30,
+      jti: "pooled-request-1",
+      service_tenant_context: {
+        version: 1,
+        organization_id: "org-test",
+        assistant_id: "test-assistant",
+        service_id: "gateway",
+        request_id: "pooled-request-1",
+      },
+      pooled_worker_lease: {
+        version: 1,
+        issuer_service_id: "runtime_dispatcher",
+        organization_id: "org-test",
+        user_id: "test-user",
+        assistant_id: "test-assistant",
+        worker_stack_id: "worker-1",
+        lease_generation: 7,
+        lease_expires_at: now + 45,
+      },
+    });
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        runtimeWorkerLeaseAuthorityFile: authorityFile,
+        runtimeWorkerStackId: "worker-1",
+      }),
+    );
+
+    const response = await handler(
+      new Request(
+        "http://localhost:7830/v1/internal/pooled-worker/state/export",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${edgeToken}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(readFileSync(authorityFile, "utf8"))).toMatchObject({
+      version: 1,
+      worker_stack_id: "worker-1",
+      authority_generation: 7,
+      active_lease: {
+        organization_id: "org-test",
+        user_id: "test-user",
+        assistant_id: "test-assistant",
+        lease_generation: 7,
+      },
+    });
+    const upstreamAuthorization = capturedHeaders?.get("authorization");
+    expect(upstreamAuthorization).toStartWith("Bearer ");
+    const verified = verifyToken(
+      upstreamAuthorization!.slice("Bearer ".length),
+      "vellum-daemon",
+    );
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.claims.pooled_worker_lease).toMatchObject({
+        organization_id: "org-test",
+        user_id: "test-user",
+        assistant_id: "test-assistant",
+        worker_stack_id: "worker-1",
+        lease_generation: 7,
+      });
+    }
+  });
+
+  test("exact secret resolution rejects cross-tenant and stale lease generations", async () => {
+    mockUpstream();
+    const authorityDirectory = realpathSync(
+      mkdtempSync(join(tmpdir(), "worklin-secret-lease-authority-")),
+    );
+    claimDirectories.push(authorityDirectory);
+    const authorityFile = join(authorityDirectory, "active-lease.json");
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        runtimeWorkerLeaseAuthorityFile: authorityFile,
+        runtimeWorkerStackId: "worker-1",
+      }),
+    );
+    const submitSecret = (
+      token: string,
+      assistantId: string,
+      requestId: string,
+    ) =>
+      handler(
+        new Request(
+          `http://localhost:7830/v1/assistants/${assistantId}/secret`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              requestId,
+              value: "test-only",
+              delivery: "transient_send",
+            }),
+          },
+        ),
+      );
+
+    const tenantA7 = mintPooledServiceToken({
+      organizationId: "org-a",
+      userId: "user-a",
+      assistantId: "asst-a",
+      generation: 7,
+      requestId: "secret-a-7",
+    });
+    expect((await submitSecret(tenantA7, "asst-a", "prompt-a")).status).toBe(
+      200,
+    );
+
+    // The same generation can never be rebound to another tenant.
+    const tenantB7 = mintPooledServiceToken({
+      organizationId: "org-b",
+      userId: "user-b",
+      assistantId: "asst-b",
+      generation: 7,
+      requestId: "secret-b-7",
+    });
+    expect((await submitSecret(tenantB7, "asst-b", "prompt-b")).status).toBe(
+      503,
+    );
+
+    const tenantB8 = mintPooledServiceToken({
+      organizationId: "org-b",
+      userId: "user-b",
+      assistantId: "asst-b",
+      generation: 8,
+      requestId: "secret-b-8",
+    });
+    expect((await submitSecret(tenantB8, "asst-b", "prompt-b")).status).toBe(
+      200,
+    );
+
+    // After reassignment, the old tenant's exact resolver never reaches the
+    // worker even if its signed token has not reached wall-clock expiry.
+    expect((await submitSecret(tenantA7, "asst-a", "prompt-a")).status).toBe(
+      403,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   test("auth required: replaces client edge token with exchange token for upstream", async () => {

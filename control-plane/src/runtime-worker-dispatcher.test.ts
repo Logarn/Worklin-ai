@@ -87,19 +87,24 @@ const CHECKSUM = "a".repeat(64);
 function lifecycle(): RuntimeWorkerLifecycleAdapter {
   return {
     storage: {
-      restore: async ({ object }) => ({
+      restore: async ({ object, expectedWorkspaceByteSize }) => ({
         checksumSha256: object?.checksumSha256 ?? null,
+        workspaceByteSize: expectedWorkspaceByteSize ?? 0,
       }),
       export: async ({ objectKey }) => ({
-        provider: "gcs",
-        bucket: "worklin-runtime-state",
-        objectKey,
-        checksumSha256: CHECKSUM,
-        byteSize: 4_096,
-        format: "vbundle-v1",
+        object: {
+          provider: "gcs",
+          bucket: "worklin-runtime-state",
+          objectKey,
+          checksumSha256: CHECKSUM,
+          byteSize: 4_096,
+          format: "vbundle-v1",
+        },
+        workspaceByteSize: 3_072,
       }),
     },
     sanitize: async () => {},
+    revokeAuthority: async () => {},
   };
 }
 
@@ -117,8 +122,7 @@ describe("runtime worker pool config", () => {
     expect(
       runtimeWorkerPoolConfigFromEnv({
         WORKLIN_RUNTIME_WORKER_POOL_ENABLED: "true",
-        WORKLIN_RUNTIME_WORKER_POOL_STACK_IDS:
-          " worker-1, worker-2, worker-1 ",
+        WORKLIN_RUNTIME_WORKER_POOL_STACK_IDS: " worker-1, worker-2, worker-1 ",
         WORKLIN_RUNTIME_WORKER_POOL_MAX_CONCURRENCY: "2",
         WORKLIN_RUNTIME_WORKER_POOL_LEASE_TTL_MS: "45000",
       }),

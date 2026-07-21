@@ -19,7 +19,7 @@ import {
   parseInterfaceId,
   supportsHostProxy,
 } from "../../channels/types.js";
-import { isHttpAuthDisabled } from "../../config/env.js";
+import { isHttpAuthDisabled, isPooledWorkerRuntime } from "../../config/env.js";
 import { getConfig } from "../../config/loader.js";
 import {
   mergeConsecutiveAssistantMessages,
@@ -34,6 +34,7 @@ import {
   formatCompactResult,
   isModelSlashCommand,
 } from "../../daemon/conversation-process.js";
+import { findConversation } from "../../daemon/conversation-registry.js";
 import {
   buildSlashContextForContent,
   resolveSlash,
@@ -107,6 +108,7 @@ import { getConfiguredProvider } from "../../providers/provider-send-message.js"
 import type { Provider } from "../../providers/types.js";
 import { checkIngressForSecrets } from "../../security/secret-ingress.js";
 import { getSubagentManager } from "../../subagent/index.js";
+import { createAbortReason } from "../../util/abort-reasons.js";
 import { getLogger } from "../../util/logger.js";
 import {
   getWorkspaceDir,
@@ -117,6 +119,7 @@ import { assistantEventHub, broadcastMessage } from "../assistant-event-hub.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { getPersistedSeq } from "../assistant-stream-state.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
+import { getConversationSuggestionState } from "../conversation-suggestion-cache.js";
 import { routeGuardianReply } from "../guardian-reply-router.js";
 import { healGuardianBindingDrift } from "../guardian-vellum-migration.js";
 import type {
@@ -127,6 +130,8 @@ import type {
 } from "../http-types.js";
 import { resolveLocalTrustContext } from "../local-actor-identity.js";
 import * as pendingInteractions from "../pending-interactions.js";
+import { resolveAuthenticatedOwnerTrustContext } from "../platform-owner-trust.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import {
   publishConversationListAndMetadataChanged,
   publishConversationMessagesChanged,
@@ -635,13 +640,15 @@ export function handleListMessages({
     if (isLatestPage && beforeTimestampRaw == null) {
       return {
         messages: [],
+        conversationId: null,
         hasMore: false,
         oldestTimestamp: null,
         oldestMessageId: null,
         seq: null,
+        isProcessing: false,
       };
     }
-    return { messages: [] };
+    return { messages: [], conversationId: null, isProcessing: false };
   }
 
   const beforeTimestamp = beforeTimestampRaw
@@ -957,6 +964,8 @@ export function handleListMessages({
   // client can apply only stream events with a higher `seq`. Null when
   // nothing has been persisted in-process (cold/aged-out/post-restart).
   const persistedSeq = getPersistedSeq(resolvedConversationId);
+  const isProcessing =
+    findConversation(resolvedConversationId)?.isProcessing() ?? false;
 
   if (isPaginated) {
     // Prefer the page's oldest visible row (the documented cursor semantic).
@@ -976,23 +985,32 @@ export function handleListMessages({
     if (isLatestPage && beforeTimestamp == null) {
       return {
         messages,
+        conversationId: resolvedConversationId,
         hasMore,
         oldestTimestamp: oldestTimestamp ?? null,
         oldestMessageId: oldestMessageId ?? null,
         seq: persistedSeq,
+        isProcessing,
       };
     }
 
     return {
       messages,
+      conversationId: resolvedConversationId,
       hasMore,
       ...(oldestTimestamp != null ? { oldestTimestamp } : {}),
       ...(oldestMessageId != null ? { oldestMessageId } : {}),
       seq: persistedSeq,
+      isProcessing,
     };
   }
 
-  return { messages, seq: persistedSeq };
+  return {
+    messages,
+    conversationId: resolvedConversationId,
+    seq: persistedSeq,
+    isProcessing,
+  };
 }
 
 /**
@@ -1072,16 +1090,18 @@ export function persistOnboardingArtifacts(onboarding: {
     log.warn({ err }, "Failed to write onboarding section to persona file");
   }
 
-  void writeRelationshipState().catch((err) => {
-    log.warn(
-      { err },
-      "Failed to kick off relationship-state write after onboarding",
-    );
-  });
+  if (!isPooledWorkerRuntime()) {
+    void writeRelationshipState().catch((err) => {
+      log.warn(
+        { err },
+        "Failed to kick off relationship-state write after onboarding",
+      );
+    });
+  }
 }
 
 export async function handleSendMessage(
-  { body: rawBody, headers }: RouteHandlerArgs,
+  { body: rawBody, headers, authContext, abortSignal }: RouteHandlerArgs,
   deps: {
     sendMessageDeps?: SendMessageDeps;
     approvalConversationGenerator?: ApprovalConversationGenerator;
@@ -1397,13 +1417,22 @@ export async function handleSendMessage(
       conversation.setTrustContext(resolveLocalTrustContext(sourceChannel));
     } else {
       const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
-      let trustCtx = resolveTrustContext({
-        assistantId,
-        sourceChannel: "vellum",
-        conversationExternalId: "local",
-        actorExternalId: actorPrincipalId,
-      });
-      if (trustCtx.trustClass === "unknown") {
+      // Platform web requests already carry a signed tenant owner identity.
+      // Resolve that identity directly so a pooled runtime never uses one
+      // user's shared guardian row as another user's owner.
+      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext(
+        authContext,
+        sourceChannel,
+      );
+      let trustCtx =
+        authenticatedOwnerTrust ??
+        resolveTrustContext({
+          assistantId,
+          sourceChannel: "vellum",
+          conversationExternalId: "local",
+          actorExternalId: actorPrincipalId,
+        });
+      if (!authenticatedOwnerTrust && trustCtx.trustClass === "unknown") {
         // Attempt to heal guardian binding drift: after a DB reset the
         // guardian binding gets a new vellum-principal-* UUID while the
         // client still holds a valid JWT with the old one. The signing
@@ -1550,6 +1579,9 @@ export async function handleSendMessage(
 
   if (isFirstOnboarding) {
     persistOnboardingArtifacts(body.onboarding!);
+    if (isPooledWorkerRuntime()) {
+      await writeRelationshipState();
+    }
     try {
       recordOnboardingEvent({
         screen: "complete",
@@ -1816,7 +1848,7 @@ export async function handleSendMessage(
       // starts processing.
       const conversationId = mapping.conversationId;
       const message = slashResult.message;
-      setTimeout(() => {
+      const finishSlashCommand = async () => {
         broadcastMessage({
           type: "user_message_echo",
           text: rawContent,
@@ -1839,10 +1871,20 @@ export async function handleSendMessage(
         );
         publishConversationMessagesChanged(conversationId, originClientId);
         conversation.setProcessing(false);
-        silentlyWithLog(conversation.drainQueue(), "slash-command queue drain");
-      }, 0);
+        await silentlyWithLog(
+          conversation.drainQueue(),
+          "slash-command queue drain",
+        );
+      };
 
-      cleanupDeferred = true;
+      if (isPooledWorkerRuntime()) {
+        await finishSlashCommand();
+      } else {
+        setTimeout(() => {
+          void finishSlashCommand();
+        }, 0);
+        cleanupDeferred = true;
+      }
       return response;
     } finally {
       // No-op for the slash-command early-return path (handled inside
@@ -1855,6 +1897,7 @@ export async function handleSendMessage(
   }
 
   if (slashResult.kind === "compact") {
+    assertPooledRuntimeAsyncOperationSupported("asynchronous compaction");
     conversation.setProcessing(true);
     const slashMeta = {
       userMessageChannel: sourceChannel,
@@ -2084,8 +2127,12 @@ export async function handleSendMessage(
   });
   publishConversationMessagesChanged(mapping.conversationId, originClientId);
 
-  // Fire-and-forget the agent loop; events flow to the hub via broadcastMessage.
-  conversation
+  // Dedicated runtimes keep the existing fire-and-forget HTTP behavior: their
+  // long-lived event stream owns progressive delivery. A pooled worker has no
+  // idle SSE lease, so keep this request (and therefore its worker lease) alive
+  // until the turn settles. The web client then reads the completed, persisted
+  // transcript through the bounded /messages polling fallback.
+  const agentLoop = conversation
     .runAgentLoop(resolvedContent, messageId, {
       onEvent: broadcastMessage,
       isInteractive,
@@ -2097,6 +2144,29 @@ export async function handleSendMessage(
         "Agent loop failed (POST /messages)",
       );
     });
+  if (isPooledWorkerRuntime()) {
+    // The pooled HTTP response stays open while the turn runs. If the browser,
+    // proxy, or bounded heartbeat response goes away, stop provider work
+    // immediately instead of leaving an orphaned loop behind after its lease
+    // is released.
+    const abortPooledTurn = () => {
+      conversation.abort(
+        createAbortReason(
+          "signal_cancel",
+          "pooledMessageRequest",
+          mapping.conversationId,
+        ),
+      );
+    };
+    if (abortSignal?.aborted) abortPooledTurn();
+    else
+      abortSignal?.addEventListener("abort", abortPooledTurn, { once: true });
+    try {
+      await agentLoop;
+    } finally {
+      abortSignal?.removeEventListener("abort", abortPooledTurn);
+    }
+  }
 
   return {
     accepted: true,
@@ -2434,9 +2504,6 @@ function buildChannelMetadata(
 // Module-level state
 // ---------------------------------------------------------------------------
 
-const suggestionCache = new Map<string, string>();
-const suggestionInFlight = new Map<string, Promise<string | null>>();
-
 function resolveAttachments(attachmentIds: string[]) {
   const resolved = getAttachmentsByIds(attachmentIds, {
     hydrateFileData: true,
@@ -2508,6 +2575,13 @@ export const ROUTES: RouteDefinition[] = [
       messages: z
         .array(ConversationMessageSchema)
         .describe("Array of message objects"),
+      conversationId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Resolved internal conversation id. Null while a supplied conversationKey has not materialized yet. Request-polled clients use this to submit pending interactions while the originating message request is still open.",
+        ),
       hasMore: z
         .boolean()
         .optional()
@@ -2530,6 +2604,12 @@ export const ROUTES: RouteDefinition[] = [
         .optional()
         .describe(
           "Global SSE `seq` of the last event whose content is durably persisted for this conversation in the current daemon process. A client can align this snapshot with the `/events` stream by applying only events with `seq` greater than this value. Null when no events have been persisted in this process (cold conversation, after a daemon restart, or when the conversation has aged out of the in-memory map) — clients should cold-start in that case. Absent on older daemons that predate this field.",
+        ),
+      isProcessing: z
+        .boolean()
+        .optional()
+        .describe(
+          "Whether this conversation's agent loop is currently processing a turn. Request-polled clients wait for false before treating the latest assistant row as complete. Optional only for wire compatibility with older daemons; this daemon always emits it.",
         ),
     }),
     handler: (args) => handleListMessages(args),
@@ -2676,9 +2756,6 @@ export const ROUTES: RouteDefinition[] = [
       stale: z.boolean().optional(),
     }),
     handler: async (args) =>
-      handleGetSuggestion(args, {
-        suggestionCache,
-        suggestionInFlight,
-      }),
+      handleGetSuggestion(args, getConversationSuggestionState()),
   },
 ];

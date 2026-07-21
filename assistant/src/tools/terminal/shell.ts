@@ -11,6 +11,7 @@ import { redactSecrets } from "../../security/secret-scanner.js";
 import { getLogger } from "../../util/logger.js";
 import { getDataDir, getWorkspaceDir } from "../../util/platform.js";
 import {
+  assertBackgroundToolExecutionSupported,
   generateBackgroundToolId,
   isBackgroundToolLimitReached,
   MAX_BACKGROUND_TOOLS,
@@ -367,6 +368,7 @@ export const shellTool = {
     // delivered to the conversation as a wake when the process exits.
     // -----------------------------------------------------------------------
     if (background) {
+      assertBackgroundToolExecutionSupported();
       // Check the registry limit BEFORE spawning so we never leak an
       // untracked process when the registry is full.
       if (isBackgroundToolLimitReached()) {

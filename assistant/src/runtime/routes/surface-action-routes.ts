@@ -18,6 +18,7 @@ import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { processGuardianDecision } from "../guardian-action-service.js";
 import { healGuardianBindingDrift } from "../guardian-vellum-migration.js";
 import { resolveLocalTrustContext } from "../local-actor-identity.js";
+import { resolveAuthenticatedOwnerTrustContext } from "../platform-owner-trust.js";
 import {
   resolveTrustContext,
   withSourceChannel,
@@ -52,6 +53,7 @@ function applyTrustContext(
     }): void;
   },
   actorPrincipalId: string | undefined,
+  authContext: RouteHandlerArgs["authContext"],
 ): void {
   if (!conversation.setTrustContext) return;
 
@@ -62,13 +64,21 @@ function applyTrustContext(
       conversation.setTrustContext(resolveLocalTrustContext(sourceChannel));
     } else {
       const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
-      let trustCtx = resolveTrustContext({
-        assistantId,
+      // Keep platform owner actions tenant-scoped even when the runtime uses
+      // a shared contacts database for external channel identities.
+      const authenticatedOwnerTrust = resolveAuthenticatedOwnerTrustContext(
+        authContext,
         sourceChannel,
-        conversationExternalId: "local",
-        actorExternalId: actorPrincipalId,
-      });
-      if (trustCtx.trustClass === "unknown") {
+      );
+      let trustCtx =
+        authenticatedOwnerTrust ??
+        resolveTrustContext({
+          assistantId,
+          sourceChannel,
+          conversationExternalId: "local",
+          actorExternalId: actorPrincipalId,
+        });
+      if (!authenticatedOwnerTrust && trustCtx.trustClass === "unknown") {
         const healed = healGuardianBindingDrift(actorPrincipalId);
         if (healed) {
           trustCtx = resolveTrustContext({
@@ -100,6 +110,7 @@ function applyTrustContext(
 async function handleSurfaceAction({
   body,
   headers,
+  authContext,
 }: RouteHandlerArgs): Promise<{
   ok: boolean;
   conversationId?: string;
@@ -185,7 +196,7 @@ async function handleSurfaceAction({
   }
 
   const actorPrincipalId = headers?.["x-vellum-actor-principal-id"];
-  applyTrustContext(conversation, actorPrincipalId);
+  applyTrustContext(conversation, actorPrincipalId, authContext);
 
   try {
     const raw = await conversation.handleSurfaceAction(

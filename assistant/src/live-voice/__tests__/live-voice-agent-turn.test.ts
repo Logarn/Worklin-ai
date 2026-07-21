@@ -55,7 +55,11 @@ class MockStreamingTranscriber implements StreamingTranscriber {
   }
 }
 
-function createContext(startFrame: LiveVoiceClientStartFrame = START_FRAME): {
+function createContext(
+  startFrame: LiveVoiceClientStartFrame = START_FRAME,
+  ownerTrust?: LiveVoiceSessionFactoryContext["ownerTrust"],
+  tenantContext?: LiveVoiceSessionFactoryContext["tenantContext"],
+): {
   context: LiveVoiceSessionFactoryContext;
   frames: LiveVoiceServerFrame[];
 } {
@@ -67,6 +71,8 @@ function createContext(startFrame: LiveVoiceClientStartFrame = START_FRAME): {
     context: {
       sessionId: "session-123",
       startFrame,
+      ...(ownerTrust ? { ownerTrust } : {}),
+      ...(tenantContext ? { tenantContext } : {}),
       sendFrame: mock(async (payload) => {
         const frame = sequencer.next(payload);
         frames.push(frame);
@@ -90,6 +96,8 @@ function createSessionHarness(
     startVoiceTurn?: LiveVoiceTurnStarter;
     createTurnId?: () => string;
     emitMetrics?: boolean;
+    ownerTrust?: LiveVoiceSessionFactoryContext["ownerTrust"];
+    tenantContext?: LiveVoiceSessionFactoryContext["tenantContext"];
   } = {},
 ) {
   const transcriber =
@@ -98,7 +106,11 @@ function createSessionHarness(
       { type: "final", text: "world" },
       { type: "closed" },
     ]);
-  const { context, frames } = createContext(options.startFrame);
+  const { context, frames } = createContext(
+    options.startFrame,
+    options.ownerTrust,
+    options.tenantContext,
+  );
   const startVoiceTurn =
     options.startVoiceTurn ??
     mock(async () => ({ turnId: "bridge-turn-1", abort: mock() }));
@@ -138,6 +150,36 @@ async function waitFor(
 }
 
 describe("LiveVoiceSession assistant turn", () => {
+  test("routes native voice turns only to the authenticated tenant assistant", async () => {
+    const startVoiceTurn = mock(async (_options: VoiceTurnOptions) => ({
+      turnId: "bridge-turn-1",
+      abort: mock(),
+    }));
+    const { session } = createSessionHarness({
+      startVoiceTurn,
+      tenantContext: {
+        version: 1,
+        organizationId: "org-1",
+        userId: "user-1",
+        assistantId: "assistant-authenticated",
+        actorId: "actor-1",
+        requestId: "request-1",
+      },
+    });
+
+    await session.start();
+    await session.handleClientFrame({ type: "ptt_release" });
+    await waitFor(
+      () => startVoiceTurn.mock.calls.length === 1,
+      "Timed out waiting for authenticated assistant routing",
+    );
+
+    expect(startVoiceTurn.mock.calls[0]?.[0]).toMatchObject({
+      assistantId: "assistant-authenticated",
+      conversationId: "conversation-123",
+    });
+  });
+
   test("runs final transcripts through the voice bridge and forwards ordered assistant events", async () => {
     const startVoiceTurn = mock(async (options: VoiceTurnOptions) => {
       options.callbacks?.assistant_text_delta?.({
@@ -159,6 +201,10 @@ describe("LiveVoiceSession assistant turn", () => {
     });
     const { frames, session, transcriber } = createSessionHarness({
       startVoiceTurn,
+      ownerTrust: {
+        actorPrincipalId: "vellum-principal-user-1",
+        userId: "user-1",
+      },
     });
 
     await session.start();
@@ -177,6 +223,12 @@ describe("LiveVoiceSession assistant turn", () => {
       assistantMessageInterface: "macos",
       content: "hello world",
       isInbound: true,
+      trustContext: {
+        sourceChannel: "vellum",
+        trustClass: "guardian",
+        guardianPrincipalId: "vellum-principal-user-1",
+        requesterIdentifier: "user-1",
+      },
     });
     expect(voiceTurnOptions?.signal).toBeInstanceOf(AbortSignal);
     expect(frames.map((frame) => frame.type)).toEqual([

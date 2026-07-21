@@ -624,6 +624,7 @@ export async function provisionRailwayRuntime(
     WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
     WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
     WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
+    PLATFORM_ORGANIZATION_ID: options.assistant.org_id,
     RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
     DEFAULT_ASSISTANT_ID: "self",
     UNMAPPED_POLICY: "default",

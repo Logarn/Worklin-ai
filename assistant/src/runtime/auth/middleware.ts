@@ -22,11 +22,22 @@
  * so downstream code always has a typed context to consume.
  */
 
-import { isHttpAuthDisabled } from "../../config/env.js";
+import {
+  getRuntimeWorkerLeaseAuthorityFile,
+  getRuntimeWorkerStackId,
+  isHttpAuthDisabled,
+  isPlatformIsolatedRuntime,
+  isPooledWorkerRuntime,
+} from "../../config/env.js";
 import { getLogger } from "../../util/logger.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { extractBearerToken } from "../middleware/auth.js";
 import { buildAuthContext } from "./context.js";
+import {
+  createPooledWorkerLeaseFileAuthority,
+  validatePooledWorkerServiceAuthorization,
+} from "./pooled-worker-service-auth.js";
+import { validateRuntimeTenantContext } from "./runtime-tenant-context.js";
 import { resolveScopeProfile } from "./scopes.js";
 import { verifyToken } from "./token-service.js";
 import type { AuthContext } from "./types.js";
@@ -74,7 +85,7 @@ function buildDevBypassContext(): AuthContext {
  */
 export function authenticateRequest(req: Request): AuthenticateResult {
   // Dev bypass: skip JWT verification entirely
-  if (isHttpAuthDisabled()) {
+  if (isHttpAuthDisabled() && !isPlatformIsolatedRuntime()) {
     return { ok: true, context: buildDevBypassContext() };
   }
 
@@ -163,8 +174,91 @@ export function authenticateRequest(req: Request): AuthenticateResult {
     };
   }
 
-  // Build normalized AuthContext from verified claims
-  const contextResult = buildAuthContext(verifyResult.claims);
+  const pooledRuntime = isPooledWorkerRuntime();
+  const expectedWorkerStackId = getRuntimeWorkerStackId();
+  const pooledServiceResult = validatePooledWorkerServiceAuthorization({
+    claims: verifyResult.claims,
+    pooledRuntime,
+    expectedWorkerStackId,
+    authority: pooledRuntime
+      ? createPooledWorkerLeaseFileAuthority(
+          getRuntimeWorkerLeaseAuthorityFile(),
+          expectedWorkerStackId,
+        )
+      : null,
+  });
+  if (!pooledServiceResult.ok) {
+    log.warn(
+      { reason: pooledServiceResult.reason, path },
+      "Auth denied: invalid pooled worker lease identity",
+    );
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          error: {
+            code: pooledServiceResult.unavailable
+              ? "SERVICE_UNAVAILABLE"
+              : "FORBIDDEN",
+            message: pooledServiceResult.unavailable
+              ? "Pooled worker lease authority unavailable"
+              : "Invalid pooled worker lease identity",
+          },
+        },
+        { status: pooledServiceResult.unavailable ? 503 : 403 },
+      ),
+    };
+  }
+
+  const tenantResult = validateRuntimeTenantContext(
+    req.headers,
+    verifyResult.claims,
+  );
+  if (!tenantResult.ok) {
+    log.warn(
+      { reason: tenantResult.reason, path },
+      "Auth denied: invalid runtime tenant context",
+    );
+    const unavailable =
+      tenantResult.reason === "tenant_context_runtime_identity_missing";
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          error: {
+            code: unavailable ? "SERVICE_UNAVAILABLE" : "FORBIDDEN",
+            message: unavailable
+              ? "Runtime assistant identity unavailable"
+              : "Invalid runtime tenant context",
+          },
+        },
+        { status: unavailable ? 503 : 403 },
+      ),
+    };
+  }
+
+  // Build normalized AuthContext from verified claims and the independently
+  // validated tenant envelope.
+  const contextResult = buildAuthContext(
+    verifyResult.claims,
+    tenantResult.context,
+    tenantResult.serviceContext,
+    pooledRuntime && verifyResult.claims.pooled_worker_lease
+      ? {
+          version: 1,
+          organizationId:
+            verifyResult.claims.pooled_worker_lease.organization_id,
+          userId: verifyResult.claims.pooled_worker_lease.user_id,
+          assistantId: verifyResult.claims.pooled_worker_lease.assistant_id,
+          workerStackId:
+            verifyResult.claims.pooled_worker_lease.worker_stack_id,
+          leaseGeneration:
+            verifyResult.claims.pooled_worker_lease.lease_generation,
+          leaseExpiresAtSeconds:
+            verifyResult.claims.pooled_worker_lease.lease_expires_at,
+        }
+      : undefined,
+  );
   if (!contextResult.ok) {
     log.warn(
       { reason: contextResult.reason, path, sub: verifyResult.claims.sub },
@@ -186,5 +280,3 @@ export function authenticateRequest(req: Request): AuthenticateResult {
 
   return { ok: true, context: contextResult.context };
 }
-
-

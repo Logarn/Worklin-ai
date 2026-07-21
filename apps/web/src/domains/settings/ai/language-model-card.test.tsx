@@ -10,6 +10,7 @@ import {
   secretsGetQueryKey,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { ConfigGetResponse, ProviderConnection } from "@/generated/daemon/types.gen";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 mock.module("@/assistant/use-active-assistant-id", () => ({
   useActiveAssistantId: () => "asst-1",
@@ -96,6 +97,7 @@ function Wrapper({
 
 afterEach(() => {
   cleanup();
+  useResolvedAssistantsStore.setState({ assistants: [] });
 });
 
 describe("LanguageModelCard", () => {
@@ -125,5 +127,34 @@ describe("LanguageModelCard", () => {
 
     expect(getByText("Key required")).toBeTruthy();
     expect(queryByText("Key connected")).toBeNull();
+  });
+
+  test("uses the pooled vault-only settings surface for pooled assistants", () => {
+    useResolvedAssistantsStore.setState({
+      assistants: [
+        {
+          id: "asst-1",
+          name: "Pool assistant",
+          isLocal: false,
+          isPlatformHosted: true,
+          runtimeProvider: "pooled_worker",
+        },
+      ],
+    });
+
+    const { getByText, queryByText } = render(
+      <Wrapper>
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(getByText("Your assistant's model")).toBeTruthy();
+    expect(getByText("Replace API key")).toBeTruthy();
+    expect(getByText("Remove API key")).toBeTruthy();
+    expect(
+      getByText(/custom endpoints, credential aliases, ChatGPT subscription/i),
+    ).toBeTruthy();
+    expect(queryByText("Use Worklin credits")).toBeNull();
+    expect(queryByText("Manage providers")).toBeNull();
   });
 });

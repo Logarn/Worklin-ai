@@ -17,6 +17,7 @@ import { ensureRuntimeStackSchema } from "./runtime-stacks.js";
 
 const NOW_ISO = () => "2026-07-20T14:00:00.000Z";
 const CHECKSUM = "c".repeat(64);
+const WORKSPACE_BYTES = 3_072;
 const assistantOne = { id: "asst-1", org_id: "org-1" };
 const assistantTwo = { id: "asst-2", org_id: "org-2" };
 const poolConfig: RuntimeWorkerPoolConfig = {
@@ -90,22 +91,129 @@ function exportedObject(objectKey: string): RuntimeWorkerStateObject {
   };
 }
 
+function exportedState(objectKey: string) {
+  return {
+    object: exportedObject(objectKey),
+    workspaceByteSize: WORKSPACE_BYTES,
+  };
+}
+
 function immediateLifecycle(
   overrides: Partial<RuntimeWorkerLifecycleAdapter> = {},
 ): RuntimeWorkerLifecycleAdapter {
   return {
     storage: {
-      restore: async ({ object }) => ({
+      restore: async ({ object, expectedWorkspaceByteSize }) => ({
         checksumSha256: object?.checksumSha256 ?? null,
+        workspaceByteSize: expectedWorkspaceByteSize ?? 0,
       }),
-      export: async ({ objectKey }) => exportedObject(objectKey),
+      export: async ({ objectKey }) => exportedState(objectKey),
     },
     sanitize: async () => {},
+    revokeAuthority: async () => {},
     ...overrides,
   };
 }
 
 describe("runtime worker checkpoint lifecycle integration", () => {
+  test("keeps lease generations separate from tenant state generations", async () => {
+    const db = setupDb();
+    const restoreGenerations: Array<{
+      leaseGeneration: number;
+      stateGeneration: number;
+    }> = [];
+    const exportGenerations: Array<{
+      leaseGeneration: number;
+      currentStateGeneration: number;
+      nextStateGeneration: number;
+    }> = [];
+    const sanitizeGenerations: number[] = [];
+    const lifecycle = immediateLifecycle({
+      storage: {
+        restore: async ({
+          leaseGeneration,
+          stateGeneration,
+          object,
+          expectedWorkspaceByteSize,
+        }) => {
+          restoreGenerations.push({ leaseGeneration, stateGeneration });
+          return {
+            checksumSha256: object?.checksumSha256 ?? null,
+            workspaceByteSize: expectedWorkspaceByteSize ?? 0,
+          };
+        },
+        export: async ({
+          leaseGeneration,
+          currentStateGeneration,
+          nextStateGeneration,
+          objectKey,
+        }) => {
+          exportGenerations.push({
+            leaseGeneration,
+            currentStateGeneration,
+            nextStateGeneration,
+          });
+          return exportedState(objectKey);
+        },
+      },
+      sanitize: async ({ leaseGeneration }) => {
+        sanitizeGenerations.push(leaseGeneration);
+      },
+    });
+
+    expect(
+      await dispatchRuntimeWorker(
+        db,
+        assistantOne,
+        poolConfig,
+        "lease-1",
+        1_000,
+        NOW_ISO,
+        lifecycle,
+      ),
+    ).toMatchObject({
+      status: "leased",
+      assignment: { lease: { lease_generation: 1 } },
+    });
+    expect(
+      await releaseDispatchedRuntimeWorker(
+        db,
+        assistantOne,
+        "lease-1",
+        1_001,
+        NOW_ISO,
+        lifecycle,
+      ),
+    ).toEqual({ status: "released" });
+    expect(
+      await dispatchRuntimeWorker(
+        db,
+        assistantOne,
+        poolConfig,
+        "lease-2",
+        1_002,
+        NOW_ISO,
+        lifecycle,
+      ),
+    ).toMatchObject({
+      status: "leased",
+      assignment: { lease: { lease_generation: 2 } },
+    });
+
+    expect(restoreGenerations).toEqual([
+      { leaseGeneration: 1, stateGeneration: 0 },
+      { leaseGeneration: 2, stateGeneration: 1 },
+    ]);
+    expect(exportGenerations).toEqual([
+      {
+        leaseGeneration: 1,
+        currentStateGeneration: 0,
+        nextStateGeneration: 1,
+      },
+    ]);
+    expect(sanitizeGenerations).toEqual([1]);
+  });
+
   test("fails closed without a lifecycle adapter and does not claim a lease", async () => {
     const db = setupDb();
     expect(
@@ -123,10 +231,7 @@ describe("runtime worker checkpoint lifecycle integration", () => {
     });
     expect(
       db
-        .query<
-          { count: number },
-          []
-        >(
+        .query<{ count: number }, []>(
           `SELECT COUNT(*) AS count
            FROM runtime_worker_leases
            WHERE lease_token IS NOT NULL`,
@@ -147,9 +252,9 @@ describe("runtime worker checkpoint lifecycle integration", () => {
         restore: async () => {
           restoreStarted = true;
           await restoreGate;
-          return { checksumSha256: null };
+          return { checksumSha256: null, workspaceByteSize: 0 };
         },
-        export: async ({ objectKey }) => exportedObject(objectKey),
+        export: async ({ objectKey }) => exportedState(objectKey),
       },
     });
 
@@ -197,12 +302,14 @@ describe("runtime worker checkpoint lifecycle integration", () => {
       base,
     );
 
-    let finishExport!: (object: RuntimeWorkerStateObject) => void;
+    let finishExport!: (object: ReturnType<typeof exportedState>) => void;
     let exportObjectKey = "";
     let sanitizeCalls = 0;
-    const exportGate = new Promise<RuntimeWorkerStateObject>((resolve) => {
-      finishExport = resolve;
-    });
+    const exportGate = new Promise<ReturnType<typeof exportedState>>(
+      (resolve) => {
+        finishExport = resolve;
+      },
+    );
     const gated = immediateLifecycle({
       storage: {
         restore: base.storage.restore,
@@ -236,13 +343,11 @@ describe("runtime worker checkpoint lifecycle integration", () => {
         .query<
           { lease_token: string | null },
           [string]
-        >(
-          "SELECT lease_token FROM runtime_worker_leases WHERE runtime_stack_id = ?",
-        )
+        >("SELECT lease_token FROM runtime_worker_leases WHERE runtime_stack_id = ?")
         .get("worker-1")?.lease_token,
     ).toBe("lease-1");
 
-    finishExport(exportedObject(exportObjectKey));
+    finishExport(exportedState(exportObjectKey));
     expect(await release).toEqual({ status: "released" });
     expect(sanitizeCalls).toBe(1);
   });
@@ -261,7 +366,7 @@ describe("runtime worker checkpoint lifecycle integration", () => {
           restore: async () => {
             throw new Error("storage unavailable");
           },
-          export: async ({ objectKey }) => exportedObject(objectKey),
+          export: async ({ objectKey }) => exportedState(objectKey),
         },
       }),
     );
@@ -350,9 +455,9 @@ describe("runtime worker checkpoint lifecycle integration", () => {
         storage: {
           restore: async () => {
             await restoreGate;
-            return { checksumSha256: null };
+            return { checksumSha256: null, workspaceByteSize: 0 };
           },
-          export: async ({ objectKey }) => exportedObject(objectKey),
+          export: async ({ objectKey }) => exportedState(objectKey),
         },
       }),
     );
@@ -375,11 +480,18 @@ describe("runtime worker checkpoint lifecycle integration", () => {
     const restorePolicies: string[] = [];
     const lifecycle = immediateLifecycle({
       storage: {
-        restore: async ({ object, credentialPolicy }) => {
+        restore: async ({
+          object,
+          credentialPolicy,
+          expectedWorkspaceByteSize,
+        }) => {
           restorePolicies.push(credentialPolicy);
-          return { checksumSha256: object?.checksumSha256 ?? null };
+          return {
+            checksumSha256: object?.checksumSha256 ?? null,
+            workspaceByteSize: expectedWorkspaceByteSize ?? 0,
+          };
         },
-        export: async ({ objectKey }) => exportedObject(objectKey),
+        export: async ({ objectKey }) => exportedState(objectKey),
       },
     });
     await dispatchRuntimeWorker(
@@ -399,7 +511,7 @@ describe("runtime worker checkpoint lifecycle integration", () => {
         restore: lifecycle.storage.restore,
         export: async ({ objectKey, credentialPolicy }) => {
           exportPolicies.push(credentialPolicy);
-          return exportedObject(objectKey);
+          return exportedState(objectKey);
         },
       },
       sanitize: async ({ credentialPolicy }) => {
@@ -418,9 +530,7 @@ describe("runtime worker checkpoint lifecycle integration", () => {
       ),
     ).toEqual({ status: "sanitization_failed" });
     expect(exportPolicies).toEqual([RUNTIME_WORKER_STATE_CREDENTIAL_POLICY]);
-    expect(sanitizePolicies).toEqual([
-      RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
-    ]);
+    expect(sanitizePolicies).toEqual([RUNTIME_WORKER_STATE_CREDENTIAL_POLICY]);
     expect(
       await dispatchRuntimeWorker(
         db,
@@ -464,5 +574,171 @@ describe("runtime worker checkpoint lifecycle integration", () => {
       RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
       RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
     ]);
+  });
+
+  test("revokes authority after sanitization and before durable lease release", async () => {
+    const db = setupDb();
+    const base = immediateLifecycle();
+    await dispatchRuntimeWorker(
+      db,
+      assistantOne,
+      poolConfig,
+      "lease-1",
+      1_000,
+      NOW_ISO,
+      base,
+    );
+
+    const events: string[] = [];
+    const revocationFailure = immediateLifecycle({
+      storage: {
+        restore: base.storage.restore,
+        export: async ({ objectKey }) => {
+          events.push("export");
+          return exportedState(objectKey);
+        },
+      },
+      sanitize: async () => {
+        events.push("sanitize");
+      },
+      revokeAuthority: async () => {
+        events.push("revoke");
+        throw new Error("gateway unavailable");
+      },
+    });
+    expect(
+      await releaseDispatchedRuntimeWorker(
+        db,
+        assistantOne,
+        "lease-1",
+        1_001,
+        NOW_ISO,
+        revocationFailure,
+      ),
+    ).toEqual({ status: "authority_revocation_failed" });
+    expect(events).toEqual(["export", "sanitize", "revoke"]);
+    expect(
+      db
+        .query<
+          { lease_token: string | null },
+          [string]
+        >("SELECT lease_token FROM runtime_worker_leases WHERE runtime_stack_id = ?")
+        .get("worker-1")?.lease_token,
+    ).toBe("lease-1");
+
+    const retryEvents: string[] = [];
+    expect(
+      await releaseDispatchedRuntimeWorker(
+        db,
+        assistantOne,
+        "lease-1",
+        1_002,
+        NOW_ISO,
+        immediateLifecycle({
+          sanitize: async () => {
+            retryEvents.push("sanitize");
+          },
+          revokeAuthority: async ({ leaseGeneration }) => {
+            retryEvents.push(`revoke:${leaseGeneration}`);
+          },
+        }),
+      ),
+    ).toEqual({ status: "released" });
+    expect(retryEvents).toEqual(["sanitize", "revoke:1"]);
+    expect(
+      db
+        .query<
+          { lease_token: string | null },
+          [string]
+        >("SELECT lease_token FROM runtime_worker_leases WHERE runtime_stack_id = ?")
+        .get("worker-1")?.lease_token,
+    ).toBeNull();
+  });
+
+  test("final release CAS cannot clear a newer worker generation", async () => {
+    const db = setupDb();
+    const base = immediateLifecycle();
+    await dispatchRuntimeWorker(
+      db,
+      assistantOne,
+      poolConfig,
+      "lease-1",
+      1_000,
+      NOW_ISO,
+      base,
+    );
+
+    const events: string[] = [];
+    const result = await releaseDispatchedRuntimeWorker(
+      db,
+      assistantOne,
+      "lease-1",
+      1_001,
+      NOW_ISO,
+      immediateLifecycle({
+        storage: {
+          restore: base.storage.restore,
+          export: async ({ objectKey }) => {
+            events.push("export");
+            return exportedState(objectKey);
+          },
+        },
+        sanitize: async () => {
+          events.push("sanitize");
+        },
+        revokeAuthority: async () => {
+          events.push("revoke");
+          // Simulate ownership changing after the exact old generation was
+          // revoked but before the coordinator commits its final DB release.
+          db.query(
+            `UPDATE runtime_worker_leases
+             SET lease_token = 'lease-2',
+                 lease_generation = 2,
+                 lease_expires_at = 90000
+             WHERE runtime_stack_id = 'worker-1'`,
+          ).run();
+        },
+      }),
+    );
+
+    expect(result).toEqual({ status: "lease_lost" });
+    expect(events).toEqual(["export", "sanitize", "revoke"]);
+    expect(
+      db
+        .query<
+          {
+            assistant_id: string | null;
+            lease_token: string | null;
+            lease_generation: number;
+            sanitized_at: number | null;
+          },
+          [string]
+        >(
+          `SELECT assistant_id, lease_token, lease_generation, sanitized_at
+           FROM runtime_worker_leases
+           WHERE runtime_stack_id = ?`,
+        )
+        .get("worker-1"),
+    ).toEqual({
+      assistant_id: assistantOne.id,
+      lease_token: "lease-2",
+      lease_generation: 2,
+      sanitized_at: null,
+    });
+    expect(
+      db
+        .query<
+          { status: string; worker_stack_id: string | null },
+          [string, string]
+        >(
+          `SELECT status, worker_stack_id
+           FROM runtime_worker_state_checkpoints
+           WHERE org_id = ? AND assistant_id = ?`,
+        )
+        .get(assistantOne.org_id, assistantOne.id),
+    ).toEqual({
+      status: "exported",
+      worker_stack_id: "worker-1",
+    });
   });
 });

@@ -20,6 +20,7 @@ import {
 } from "../memory/canonical-guardian-store.js";
 import { revokeScopedApprovalGrantsForContext } from "../memory/scoped-approval-grants.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../runtime/assistant-scope.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { computeToolApprovalDigest } from "../security/tool-approval-digest.js";
 import { getCatalogProvider } from "../tts/provider-catalog.js";
 import type { TtsProvider, TtsProviderId } from "../tts/types.js";
@@ -154,6 +155,7 @@ export class CallController {
       trustContext?: TrustContext;
     },
   ) {
+    assertPooledRuntimeAsyncOperationSupported("telephony calls");
     this.callSessionId = callSessionId;
     this.transport = transport;
     this.task = task;

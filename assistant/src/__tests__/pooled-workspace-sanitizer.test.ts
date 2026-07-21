@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -9,10 +10,20 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import {
+  createManagedVoiceSession,
+  releaseManagedVoiceSession,
+  resetManagedVoiceSessionsForTesting,
+} from "../live-voice/provider-session.js";
+import {
+  installInternalPooledVoiceLeaseAuthority,
+  resetPooledVoiceLeaseFenceForTesting,
+} from "../services/pooled-voice-lease-fence.js";
 import {
   createNodePooledWorkspaceFileSystem,
   createPooledWorkspaceSanitizer,
@@ -28,6 +39,16 @@ const TENANT: PooledWorkspaceTenant = {
   assistantId: "assistant-1",
 };
 const WORKER = "worker-1";
+const GENERATION = 4;
+const LEASE_ENV_KEYS = [
+  "WORKLIN_RUNTIME_MODE",
+  "WORKLIN_RUNTIME_WORKER_STACK_ID",
+  "WORKLIN_RUNTIME_WORKER_STATE_TRANSPORT_ENABLED",
+  "WORKLIN_RUNTIME_WORKER_VOICE_LEASE_FENCING_ENABLED",
+] as const;
+const originalLeaseEnv = new Map(
+  LEASE_ENV_KEYS.map((key) => [key, process.env[key]]),
+);
 
 describe("pooled workspace sanitizer", () => {
   let root: string;
@@ -44,6 +65,9 @@ describe("pooled workspace sanitizer", () => {
   let fileSystem: PooledWorkspaceFileSystem;
 
   beforeEach(() => {
+    resetManagedVoiceSessionsForTesting();
+    resetPooledVoiceLeaseFenceForTesting();
+    for (const key of LEASE_ENV_KEYS) delete process.env[key];
     root = realpathSync(
       mkdtempSync(join(tmpdir(), "pooled-workspace-sanitizer-")),
     );
@@ -66,8 +90,9 @@ describe("pooled workspace sanitizer", () => {
     proofs = {
       tenant: TENANT,
       workerStackId: WORKER,
-      leaseReleased: true,
-      activeLeaseToken: null,
+      generation: GENERATION,
+      leaseDraining: true,
+      activeTenantRequestCount: 0,
       activeTenantProcessCount: 0,
       activeTenantSessionCount: 0,
     };
@@ -89,6 +114,12 @@ describe("pooled workspace sanitizer", () => {
   });
 
   afterEach(() => {
+    resetManagedVoiceSessionsForTesting();
+    resetPooledVoiceLeaseFenceForTesting();
+    for (const [key, value] of originalLeaseEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -131,11 +162,13 @@ describe("pooled workspace sanitizer", () => {
     const receipt = await sanitizer().sanitize({
       tenant: TENANT,
       workerStackId: WORKER,
+      generation: GENERATION,
     });
 
     expect(receipt).toEqual({
       status: "sanitized",
       workerStackId: WORKER,
+      generation: GENERATION,
       remainingTenantPaths: 0,
       credentialsTouched: false,
     });
@@ -159,39 +192,123 @@ describe("pooled workspace sanitizer", () => {
     expect(proofCallbackCalls).toBe(1);
   });
 
+  test("preserves a live gateway socket outside the tenant workspace", async () => {
+    const runtimeIpcDir = realpathSync(mkdtempSync("/tmp/worklin-ipc-"));
+    const gatewaySocket = join(runtimeIpcDir, "gateway.sock");
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(gatewaySocket, resolve);
+    });
+
+    try {
+      writeFileSync(join(tenantWorkspace, "state.json"), "{}");
+      const receipt = await sanitizer().sanitize({
+        tenant: TENANT,
+        workerStackId: WORKER,
+        generation: GENERATION,
+      });
+
+      expect(receipt.status).toBe("sanitized");
+      expect(readdirSync(tenantWorkspace)).toEqual([]);
+      expect(server.listening).toBe(true);
+      expect(lstatSync(gatewaySocket).isSocket()).toBe(true);
+      expect(removedPaths).not.toContain(gatewaySocket);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+      rmSync(runtimeIpcDir, { recursive: true, force: true });
+    }
+  });
+
   test("is idempotent while still requiring fresh exclusive proofs", async () => {
     writeFileSync(join(tenantWorkspace, "state.json"), "{}");
     const service = sanitizer();
     const first = await service.sanitize({
       tenant: TENANT,
       workerStackId: WORKER,
+      generation: GENERATION,
     });
     const second = await service.sanitize({
       tenant: TENANT,
       workerStackId: WORKER,
+      generation: GENERATION,
     });
 
     expect(first.status).toBe("sanitized");
     expect(second).toEqual({
       status: "already_sanitized",
       workerStackId: WORKER,
+      generation: GENERATION,
       remainingTenantPaths: 0,
       credentialsTouched: false,
     });
     expect(proofCallbackCalls).toBe(2);
   });
 
+  test("blocks sanitization during active voice and proceeds after the session is released", async () => {
+    process.env.WORKLIN_RUNTIME_WORKER_VOICE_LEASE_FENCING_ENABLED = "true";
+    installInternalPooledVoiceLeaseAuthority(() => ({
+      tenant: TENANT,
+      workerStackId: WORKER,
+      generation: 4,
+    }));
+    const voice = createManagedVoiceSession({
+      sessionId: "voice-session-1",
+      assistantId: TENANT.assistantId,
+      conversationId: "conversation-1",
+      actorId: "actor-1",
+      organizationId: TENANT.orgId,
+      engine: "hume",
+    });
+    const statePath = join(tenantWorkspace, "state.json");
+    writeFileSync(statePath, "{}");
+    const service = sanitizer();
+
+    await expect(
+      service.sanitize({
+        tenant: TENANT,
+        workerStackId: WORKER,
+        generation: GENERATION,
+      }),
+    ).rejects.toThrow("zero active voice sessions");
+    expect(existsSync(statePath)).toBe(true);
+    expect(removedPaths).toEqual([]);
+
+    expect(releaseManagedVoiceSession(voice.binding.sessionId, "actor-1")).toBe(
+      true,
+    );
+    await expect(
+      service.sanitize({
+        tenant: TENANT,
+        workerStackId: WORKER,
+        generation: GENERATION,
+      }),
+    ).resolves.toMatchObject({
+      status: "sanitized",
+      workerStackId: WORKER,
+    });
+    expect(readdirSync(tenantWorkspace)).toEqual([]);
+  });
+
   test.each([
     {
-      label: "active lease",
+      label: "lease not draining",
       mutate: (value: Record<string, unknown>) => {
-        value.leaseReleased = false;
+        value.leaseDraining = false;
       },
     },
     {
-      label: "lease token",
+      label: "stale generation",
       mutate: (value: Record<string, unknown>) => {
-        value.activeLeaseToken = "still-leased";
+        value.generation = GENERATION - 1;
+      },
+    },
+    {
+      label: "tenant request",
+      mutate: (value: Record<string, unknown>) => {
+        value.activeTenantRequestCount = 1;
       },
     },
     {
@@ -222,8 +339,9 @@ describe("pooled workspace sanitizer", () => {
       sanitizer().sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
-    ).rejects.toThrow("released lease and zero active tenant");
+    ).rejects.toThrow("current draining lease generation");
     expect(readCalls).toBe(0);
     expect(removedPaths).toEqual([]);
     expect(existsSync(join(tenantWorkspace, "keep.txt"))).toBe(true);
@@ -240,6 +358,7 @@ describe("pooled workspace sanitizer", () => {
       sanitizer().sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("belongs to another tenant or worker");
     expect(proofCallbackCalls).toBe(1);
@@ -256,6 +375,7 @@ describe("pooled workspace sanitizer", () => {
       sanitizer().sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("not a strict child");
     expect(existsSync(join(outside, "keep.txt"))).toBe(true);
@@ -274,6 +394,7 @@ describe("pooled workspace sanitizer", () => {
       sanitizer().sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("must not be a symlink");
     expect(readFile(join(outside, "keep.txt"))).toBe("keep");
@@ -291,6 +412,7 @@ describe("pooled workspace sanitizer", () => {
       sanitizer().sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("rejects symbolic links");
     expect(readFile(join(tenantWorkspace, "ordinary.txt"))).toBe("keep");
@@ -304,12 +426,14 @@ describe("pooled workspace sanitizer", () => {
       sanitizer({ cesSecurityPaths: [tenantWorkspace] }).sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("protected CES security");
     await expect(
       sanitizer({ gatewaySecurityPaths: [tenantWorkspace] }).sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("protected gateway security");
     expect(readFile(join(tenantWorkspace, "credential"))).toBe("keep");
@@ -336,6 +460,7 @@ describe("pooled workspace sanitizer", () => {
       sanitizer({ fileSystem: changingFileSystem }).sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("changed during sanitization");
     expect(existsSync(file)).toBe(true);
@@ -362,6 +487,7 @@ describe("pooled workspace sanitizer", () => {
       sanitizer({ fileSystem: racingFileSystem }).sanitize({
         tenant: TENANT,
         workerStackId: WORKER,
+        generation: GENERATION,
       }),
     ).rejects.toThrow("found remaining tenant paths");
     expect(existsSync(reappeared)).toBe(true);

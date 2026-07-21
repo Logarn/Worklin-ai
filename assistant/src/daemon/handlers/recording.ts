@@ -7,6 +7,7 @@ import { attachFileBackedAttachmentToMessage } from "../../memory/attachments-st
 import { addMessage, getConversation } from "../../memory/conversation-crud.js";
 import { syncMessageToDisk } from "../../memory/conversation-disk-view.js";
 import { broadcastMessage } from "../../runtime/assistant-event-hub.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../../runtime/pooled-runtime-policy.js";
 import type { RecordingOptions, RecordingStatus } from "../message-protocol.js";
 import { log } from "./shared.js";
 
@@ -80,6 +81,7 @@ export function handleRecordingStart(
   options: RecordingOptions | undefined,
   operationToken?: string,
 ): string | null {
+  assertPooledRuntimeAsyncOperationSupported("screen recordings");
   const existingRecordingId = recordingOwnerByConversation.get(conversationId);
   if (existingRecordingId) {
     log.warn(
@@ -140,6 +142,7 @@ export function handleRecordingStart(
 export function handleRecordingStop(
   conversationId: string,
 ): string | undefined {
+  assertPooledRuntimeAsyncOperationSupported("screen recordings");
   let recordingId = recordingOwnerByConversation.get(conversationId);
   let ownerConversationId = conversationId;
 
@@ -213,6 +216,7 @@ export function handleRecordingStop(
 export function handleRecordingPause(
   conversationId: string,
 ): string | undefined {
+  assertPooledRuntimeAsyncOperationSupported("screen recordings");
   let recordingId = recordingOwnerByConversation.get(conversationId);
 
   // Global fallback
@@ -249,6 +253,7 @@ export function handleRecordingPause(
 export function handleRecordingResume(
   conversationId: string,
 ): string | undefined {
+  assertPooledRuntimeAsyncOperationSupported("screen recordings");
   let recordingId = recordingOwnerByConversation.get(conversationId);
 
   // Global fallback
@@ -615,6 +620,7 @@ async function finalizeAndPublishRecording(params: {
 export async function handleRecordingStatusCore(
   msg: RecordingStatus,
 ): Promise<void> {
+  assertPooledRuntimeAsyncOperationSupported("screen recordings");
   const recordingId = msg.conversationId;
   let conversationId = standaloneRecordingConversationId.get(recordingId);
 

@@ -147,6 +147,19 @@ export class AuthSessionCache {
   getAll(): AuthSession[] {
     return Array.from(this.sessions.values());
   }
+
+  /**
+   * Drop assignment-bound in-memory browser authentication state.
+   *
+   * Pooled workers restore a different tenant's workspace into the same
+   * process. Marking the cache unloaded is important: the next lookup must
+   * reload the newly assigned tenant's persisted sessions instead of
+   * retaining the prior tenant's domains.
+   */
+  resetForTenantAssignment(): void {
+    this.sessions.clear();
+    this.loaded = false;
+  }
 }
 
 // Singleton export

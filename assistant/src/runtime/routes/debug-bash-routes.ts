@@ -18,6 +18,7 @@ import { getIsContainerized } from "../../config/env-registry.js";
 import { buildSanitizedEnv } from "../../tools/terminal/safe-env.js";
 import { getWorkspaceDir } from "../../util/platform.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -37,6 +38,7 @@ interface DebugBashResult {
 }
 
 function handleDebugBash({ body }: RouteHandlerArgs): Promise<DebugBashResult> {
+  assertPooledRuntimeAsyncOperationSupported("debug shell jobs");
   if (getIsContainerized()) {
     return Promise.resolve({
       stdout: "",

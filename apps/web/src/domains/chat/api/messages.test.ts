@@ -15,8 +15,15 @@ import {
   mapRuntimeToolCalls,
   normalizeContentBlocks,
   normalizeContentOrder,
+  pollForResponse,
   postChatMessage,
 } from "@/domains/chat/api/messages";
+import { beginRequestPolledTurn } from "@/domains/chat/api/request-polled-turn";
+import { restoreRequestPolledInteractions } from "@/domains/chat/api/request-polled-interactions";
+import { handleConfirmationSubmit } from "@/domains/chat/confirmation-actions";
+import { useInteractionStore } from "@/domains/chat/interaction-store";
+import { useStreamStore } from "@/domains/chat/stream-store";
+import { INITIAL_TURN_STATE, useTurnStore } from "@/domains/chat/turn-store";
 import { messageText } from "@/domains/chat/utils/message-test-helpers";
 import type {
   ConversationContentBlock,
@@ -63,6 +70,9 @@ beforeEach(() => {
 afterEach(() => {
   daemonClient.post = originalPost;
   daemonClient.get = originalGet;
+  useInteractionStore.getState().resetAll();
+  useStreamStore.setState({ streamContext: null });
+  useTurnStore.setState(INITIAL_TURN_STATE);
 });
 
 // ---------------------------------------------------------------------------
@@ -134,6 +144,209 @@ describe("postChatMessage — clientMessageId wire format", () => {
     expect(
       (capturedBody as Record<string, unknown>).clientMessageId,
     ).toBeUndefined();
+  });
+});
+
+describe("pollForResponse — bounded pooled delivery", () => {
+  test("waits for processing=false and exposes persisted partial snapshots", async () => {
+    const partial = wireMessage({
+      id: "reply-1",
+      content: "Part",
+    });
+    const complete = wireMessage({
+      id: "reply-1",
+      content: "Part complete",
+    });
+    const user = wireMessage({
+      id: "user-1",
+      role: "user",
+      content: "Question",
+    });
+    const snapshots: string[] = [];
+    let calls = 0;
+    daemonClient.get = mock(async () => {
+      calls++;
+      const reply = calls === 1 ? partial : complete;
+      return {
+        data: {
+          messages: [user, reply],
+          isProcessing: calls === 1,
+          seq: calls,
+        },
+        error: null,
+        response: new Response(null, { status: 200 }),
+      };
+    }) as typeof daemonClient.get;
+
+    const reply = await pollForResponse("asst-1", "user-1", "conv-1", {
+      intervalMs: 0,
+      timeoutMs: 1_000,
+      onSnapshot: (snapshot) => {
+        snapshots.push(snapshot.messages.at(-1)?.content ?? "");
+      },
+    });
+
+    expect(calls).toBe(2);
+    expect(snapshots).toEqual(["Part", "Part complete"]);
+    expect(reply?.content).toBe("Part complete");
+  });
+
+  test("preserves first-reply fallback for older daemons without processing state", async () => {
+    const user = wireMessage({ id: "user-1", role: "user" });
+    const replyMessage = wireMessage({ id: "reply-1", content: "Done" });
+    daemonClient.get = mock(async () => ({
+      data: { messages: [user, replyMessage] },
+      error: null,
+      response: new Response(null, { status: 200 }),
+    })) as typeof daemonClient.get;
+
+    const reply = await pollForResponse("asst-1", "user-1", "conv-1", {
+      intervalMs: 0,
+      timeoutMs: 1_000,
+    });
+
+    expect(reply?.id).toBe("reply-1");
+    expect(daemonClient.get).toHaveBeenCalledTimes(1);
+  });
+
+  test("surfaces partial approval state while POST is pending and settles only after an explicit decision", async () => {
+    let resolveApproval!: (decision: "allow" | "deny") => void;
+    const approvalDecision = new Promise<"allow" | "deny">((resolve) => {
+      resolveApproval = resolve;
+    });
+    let postSettled = false;
+    let workerReleased = false;
+    let pendingApprovalVisible = false;
+    const snapshots: string[] = [];
+    const user = wireMessage({
+      id: "user-server-1",
+      clientMessageId: "client-user-1",
+      role: "user",
+      content: "Run the tool",
+    });
+    const partial = wireMessage({
+      id: "reply-1",
+      content: "I need permission",
+    });
+    const complete = wireMessage({
+      id: "reply-1",
+      content: "Tool completed",
+    });
+    let messageGetCalls = 0;
+    const messageQueries: unknown[] = [];
+    let approvalResolved = false;
+    daemonClient.get = mock(
+      async (options: { url?: string; query?: unknown }) => {
+        if (options.url?.includes("pending-interactions")) {
+          return {
+            data: {
+              pendingConfirmation: approvalResolved
+                ? null
+                : {
+                    requestId: "approval-1",
+                    title: "Allow tool?",
+                    toolName: "demo_tool",
+                    toolUseId: "tool-use-1",
+                  },
+              pendingSecret: null,
+            },
+            error: null,
+            response: new Response(null, { status: 200 }),
+          };
+        }
+
+        messageGetCalls++;
+        messageQueries.push(options.query);
+        if (messageGetCalls > 1) {
+          await approvalDecision;
+        }
+        return {
+          data: {
+            conversationId: "conv-internal-1",
+            messages: [user, messageGetCalls === 1 ? partial : complete],
+            isProcessing: messageGetCalls === 1,
+            seq: messageGetCalls,
+          },
+          error: null,
+          response: new Response(null, { status: 200 }),
+        };
+      },
+    ) as typeof daemonClient.get;
+    daemonClient.post = mock(async (options: { url?: string }) => {
+      expect(options.url).toContain("/confirm");
+      approvalResolved = true;
+      resolveApproval("allow");
+      return {
+        data: { accepted: true },
+        error: null,
+        response: new Response(null, { status: 200 }),
+      };
+    }) as typeof daemonClient.post;
+    useInteractionStore.getState().resetAll();
+    useTurnStore.getState().requestSend("pooled-turn-1");
+
+    const turn = beginRequestPolledTurn({
+      post: async () => {
+        await approvalDecision;
+        postSettled = true;
+        workerReleased = true;
+        return { accepted: true };
+      },
+      observe: (signal) =>
+        pollForResponse("asst-1", "", "draft-1", {
+          conversationKey: "draft-1",
+          clientMessageId: "client-user-1",
+          signal,
+          intervalMs: 0,
+          timeoutMs: 1_000,
+          onSnapshot: async (snapshot) => {
+            snapshots.push(snapshot.messages.at(-1)?.content ?? "");
+            if (snapshot.conversationId) {
+              useStreamStore.getState().setStreamContext({
+                assistantId: "asst-1",
+                conversationId: snapshot.conversationId,
+              });
+              await restoreRequestPolledInteractions({
+                assistantId: "asst-1",
+                conversationId: snapshot.conversationId,
+                isCurrent: () => true,
+              });
+              pendingApprovalVisible =
+                useInteractionStore.getState().pendingConfirmation
+                  ?.requestId === "approval-1";
+            }
+          },
+        }),
+    });
+
+    for (let i = 0; i < 20 && !pendingApprovalVisible; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(pendingApprovalVisible).toBe(true);
+    expect(snapshots).toEqual(["I need permission"]);
+    expect(messageQueries[0]).toEqual({ conversationKey: "draft-1" });
+    expect(postSettled).toBe(false);
+    expect(workerReleased).toBe(false);
+    expect(useInteractionStore.getState().pendingConfirmation?.title).toBe(
+      "Allow tool?",
+    );
+    expect(useTurnStore.getState().phase).toBe("awaiting_user_input");
+
+    // Nothing in polling grants permission. Only the normal approval action
+    // resolves the paused turn.
+    await handleConfirmationSubmit("allow");
+
+    const [postResult, reply] = await Promise.all([
+      turn.postResult,
+      turn.observation,
+    ]);
+    expect(postResult).toEqual({ accepted: true });
+    expect(reply?.content).toBe("Tool completed");
+    expect(snapshots).toEqual(["I need permission", "Tool completed"]);
+    expect(postSettled).toBe(true);
+    expect(workerReleased).toBe(true);
+    expect(useInteractionStore.getState().pendingConfirmation).toBeNull();
   });
 });
 
@@ -302,8 +515,14 @@ describe("normalizeContentBlocks", () => {
     // `mapRuntimeToolCalls` path synthesizes, so the block-native renderer can
     // key it instead of dropping it
     expect(result).toEqual([
-      { type: "tool_use", toolCall: { name: "bash", input: {}, id: "tool-history-msg-7-0" } },
-      { type: "tool_use", toolCall: { name: "edit", input: {}, id: "tool-history-msg-7-1" } },
+      {
+        type: "tool_use",
+        toolCall: { name: "bash", input: {}, id: "tool-history-msg-7-0" },
+      },
+      {
+        type: "tool_use",
+        toolCall: { name: "edit", input: {}, id: "tool-history-msg-7-1" },
+      },
     ]);
   });
 

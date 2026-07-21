@@ -8,6 +8,8 @@ import {
 } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
+import { withPooledVoiceSanitizationFence } from "./pooled-voice-lease-fence.js";
+
 export interface PooledWorkspaceTenant {
   orgId: string;
   assistantId: string;
@@ -16,6 +18,7 @@ export interface PooledWorkspaceTenant {
 export interface PooledWorkspaceSanitizeReceipt {
   status: "sanitized" | "already_sanitized";
   workerStackId: string;
+  generation: number;
   remainingTenantPaths: 0;
   credentialsTouched: false;
 }
@@ -30,8 +33,9 @@ export interface PooledWorkspaceBinding {
 export interface PooledWorkspaceSanitizationProofs {
   tenant: PooledWorkspaceTenant;
   workerStackId: string;
-  leaseReleased: true;
-  activeLeaseToken: null;
+  generation: number;
+  leaseDraining: true;
+  activeTenantRequestCount: 0;
   activeTenantProcessCount: 0;
   activeTenantSessionCount: 0;
 }
@@ -51,6 +55,7 @@ export interface PooledWorkspaceProofGuard {
     input: {
       tenant: PooledWorkspaceTenant;
       workerStackId: string;
+      generation: number;
     },
     operation: (proofs: PooledWorkspaceSanitizationProofs) => Promise<T>,
   ): Promise<T>;
@@ -81,6 +86,7 @@ export interface PooledWorkspaceSanitizer {
   sanitize(input: {
     tenant: PooledWorkspaceTenant;
     workerStackId: string;
+    generation: number;
   }): Promise<PooledWorkspaceSanitizeReceipt>;
 }
 
@@ -116,60 +122,67 @@ export function createPooledWorkspaceSanitizer(
       assertOpaqueId(input.tenant.orgId, "organization");
       assertOpaqueId(input.tenant.assistantId, "assistant");
       assertOpaqueId(input.workerStackId, "worker stack");
+      if (!Number.isSafeInteger(input.generation) || input.generation < 1) {
+        throw new Error("Pooled workspace lease generation is invalid.");
+      }
 
       return proofGuard.withExclusiveSanitizationProofs(
         input,
         async (proofs) => {
           assertProofs(proofs, input);
-          const binding = await proofGuard.resolveCurrentTenantWorkspace(input);
-          assertBinding(binding, input);
+          return withPooledVoiceSanitizationFence(input, async () => {
+            const binding =
+              await proofGuard.resolveCurrentTenantWorkspace(input);
+            assertBinding(binding, input);
 
-          const boundary = await resolveSanitizationBoundary({
-            binding,
-            fileSystem,
-            cesSecurityPaths,
-            gatewaySecurityPaths,
-          });
-          const entries = await scanWorkspaceTree(
-            fileSystem,
-            boundary.workspace.path,
-          );
-          await assertBoundaryUnchanged(fileSystem, boundary);
-          for (const entry of entries) {
-            await assertBoundaryUnchanged(fileSystem, boundary);
-            await assertEntryUnchanged(
+            const boundary = await resolveSanitizationBoundary({
+              binding,
+              fileSystem,
+              cesSecurityPaths,
+              gatewaySecurityPaths,
+            });
+            const entries = await scanWorkspaceTree(
               fileSystem,
               boundary.workspace.path,
-              entry,
             );
-            if (entry.kind === "directory") {
-              await fileSystem.fsyncDirectory(entry.path);
-              await fileSystem.removeDirectory(entry.path);
-            } else {
-              await fileSystem.removeFile(entry.path);
+            await assertBoundaryUnchanged(fileSystem, boundary);
+            for (const entry of entries) {
+              await assertBoundaryUnchanged(fileSystem, boundary);
+              await assertEntryUnchanged(
+                fileSystem,
+                boundary.workspace.path,
+                entry,
+              );
+              if (entry.kind === "directory") {
+                await fileSystem.fsyncDirectory(entry.path);
+                await fileSystem.removeDirectory(entry.path);
+              } else {
+                await fileSystem.removeFile(entry.path);
+              }
             }
-          }
 
-          await assertBoundaryUnchanged(fileSystem, boundary);
-          await fileSystem.fsyncDirectory(boundary.workspace.path);
-          const remaining = await scanWorkspaceTree(
-            fileSystem,
-            boundary.workspace.path,
-          );
-          if (remaining.length !== 0) {
-            throw new Error(
-              "Pooled workspace sanitization verification found remaining tenant paths.",
+            await assertBoundaryUnchanged(fileSystem, boundary);
+            await fileSystem.fsyncDirectory(boundary.workspace.path);
+            const remaining = await scanWorkspaceTree(
+              fileSystem,
+              boundary.workspace.path,
             );
-          }
-          await assertBoundaryUnchanged(fileSystem, boundary);
-          await fileSystem.fsyncDirectory(boundary.workspace.path);
+            if (remaining.length !== 0) {
+              throw new Error(
+                "Pooled workspace sanitization verification found remaining tenant paths.",
+              );
+            }
+            await assertBoundaryUnchanged(fileSystem, boundary);
+            await fileSystem.fsyncDirectory(boundary.workspace.path);
 
-          return {
-            status: entries.length === 0 ? "already_sanitized" : "sanitized",
-            workerStackId: input.workerStackId,
-            remainingTenantPaths: 0,
-            credentialsTouched: false,
-          };
+            return {
+              status: entries.length === 0 ? "already_sanitized" : "sanitized",
+              workerStackId: input.workerStackId,
+              generation: input.generation,
+              remainingTenantPaths: 0,
+              credentialsTouched: false,
+            };
+          });
         },
       );
     },
@@ -360,19 +373,24 @@ function assertBinding(
 
 function assertProofs(
   proofs: PooledWorkspaceSanitizationProofs,
-  input: { tenant: PooledWorkspaceTenant; workerStackId: string },
+  input: {
+    tenant: PooledWorkspaceTenant;
+    workerStackId: string;
+    generation: number;
+  },
 ): void {
   if (
     proofs.workerStackId !== input.workerStackId ||
     proofs.tenant.orgId !== input.tenant.orgId ||
     proofs.tenant.assistantId !== input.tenant.assistantId ||
-    proofs.leaseReleased !== true ||
-    proofs.activeLeaseToken !== null ||
+    proofs.generation !== input.generation ||
+    proofs.leaseDraining !== true ||
+    proofs.activeTenantRequestCount !== 0 ||
     proofs.activeTenantProcessCount !== 0 ||
     proofs.activeTenantSessionCount !== 0
   ) {
     throw new Error(
-      "Pooled workspace sanitization requires a released lease and zero active tenant processes or sessions.",
+      "Pooled workspace sanitization requires the current draining lease generation and zero active tenant requests, processes, or sessions.",
     );
   }
 }

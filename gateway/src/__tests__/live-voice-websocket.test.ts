@@ -11,7 +11,12 @@ import {
 } from "bun:test";
 
 import { CURRENT_POLICY_EPOCH } from "../auth/policy.js";
-import { initSigningKey, mintToken } from "../auth/token-service.js";
+import {
+  initSigningKey,
+  mintToken,
+  verifyToken,
+} from "../auth/token-service.js";
+import type { RuntimeTenantContextClaim } from "../auth/types.js";
 import type { GatewayConfig } from "../config.js";
 import {
   createLiveVoiceWebsocketHandler,
@@ -35,6 +40,30 @@ function mintEdgeToken(actorPrincipalId: string = "test-user"): string {
     policy_epoch: CURRENT_POLICY_EPOCH,
     ttlSeconds: 300,
   });
+}
+
+function mintTenantEdgeToken(context: RuntimeTenantContextClaim): string {
+  return mintToken({
+    aud: "vellum-gateway",
+    sub: `actor:${context.assistant_id}:${context.actor_id}`,
+    scope_profile: "actor_client_v1",
+    policy_epoch: CURRENT_POLICY_EPOCH,
+    tenant_context: context,
+    ttlSeconds: 300,
+  });
+}
+
+function tenantHeaders(
+  context: RuntimeTenantContextClaim,
+): Record<string, string> {
+  return {
+    "x-worklin-tenant-context-version": String(context.version),
+    "x-worklin-org-id": context.organization_id,
+    "x-worklin-user-id": context.user_id,
+    "x-worklin-assistant-id": context.assistant_id,
+    "x-worklin-actor-id": context.actor_id,
+    "x-worklin-request-id": context.request_id,
+  };
 }
 
 function mintServiceEdgeToken(): string {
@@ -147,9 +176,20 @@ describe("createLiveVoiceWebsocketHandler", () => {
     const call = (server.upgrade as ReturnType<typeof mock>).mock
       .calls[0] as unknown[];
     expect(call[0]).toBe(req);
-    expect((call[1] as { data: LiveVoiceSocketData }).data).toEqual({
+    const data = (call[1] as { data: LiveVoiceSocketData }).data;
+    expect(data).toMatchObject({
       wsType: "live-voice",
       config,
+    });
+    expect(data.upstreamActorToken).toBeTruthy();
+    expect(
+      verifyToken(data.upstreamActorToken!, "vellum-daemon"),
+    ).toMatchObject({
+      ok: true,
+      claims: {
+        sub: "actor:self:test-user",
+        scope_profile: "actor_client_v1",
+      },
     });
   });
 
@@ -207,6 +247,102 @@ describe("createLiveVoiceWebsocketHandler", () => {
 
     expect(res).toBeInstanceOf(Response);
     expect(res!.status).toBe(401);
+    expect(server.upgrade).not.toHaveBeenCalled();
+  });
+
+  test("isolated runtime rejects an actor websocket without tenant binding", () => {
+    const handler = createLiveVoiceWebsocketHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+    );
+    const req = new Request(
+      `http://localhost:7830/v1/live-voice?token=${TEST_TOKEN}`,
+      { headers: { upgrade: "websocket" } },
+    );
+    const server = makeFakeServer();
+    const res = handler(req, server);
+
+    expect(res).toBeInstanceOf(Response);
+    expect(res!.status).toBe(403);
+    expect(server.upgrade).not.toHaveBeenCalled();
+  });
+
+  test("isolated runtime binds an actor websocket to its signed tenant", () => {
+    const context: RuntimeTenantContextClaim = {
+      version: 1,
+      organization_id: "org-1",
+      user_id: "user-1",
+      assistant_id: "test-assistant",
+      actor_id: "test-user",
+      request_id: "request-1",
+    };
+    const token = mintTenantEdgeToken(context);
+    const handler = createLiveVoiceWebsocketHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: context.assistant_id,
+      }),
+    );
+    const req = new Request(
+      `http://localhost:7830/v1/live-voice?token=${token}`,
+      {
+        headers: {
+          upgrade: "websocket",
+        },
+      },
+    );
+    const server = makeFakeServer();
+    const res = handler(req, server);
+
+    expect(res).toBeUndefined();
+    const call = (server.upgrade as ReturnType<typeof mock>).mock
+      .calls[0] as unknown[];
+    expect(
+      (call[1] as { data: LiveVoiceSocketData }).data.callerTenantContext,
+    ).toEqual(context);
+    const upstreamToken = (call[1] as { data: LiveVoiceSocketData }).data
+      .upstreamActorToken;
+    expect(verifyToken(upstreamToken!, "vellum-daemon")).toMatchObject({
+      ok: true,
+      claims: {
+        sub: `actor:self:${context.actor_id}`,
+        tenant_context: context,
+      },
+    });
+  });
+
+  test("isolated runtime rejects a signed websocket for another assistant", () => {
+    const context: RuntimeTenantContextClaim = {
+      version: 1,
+      organization_id: "org-1",
+      user_id: "user-1",
+      assistant_id: "other-assistant",
+      actor_id: "test-user",
+      request_id: "request-1",
+    };
+    const token = mintTenantEdgeToken(context);
+    const handler = createLiveVoiceWebsocketHandler(
+      makeConfig({
+        runtimeAssistantScopeMode: "enforce",
+        platformAssistantId: "test-assistant",
+      }),
+    );
+    const req = new Request(
+      `http://localhost:7830/v1/live-voice?token=${token}`,
+      {
+        headers: {
+          upgrade: "websocket",
+          ...tenantHeaders(context),
+        },
+      },
+    );
+    const server = makeFakeServer();
+    const res = handler(req, server);
+
+    expect(res).toBeInstanceOf(Response);
+    expect(res!.status).toBe(403);
     expect(server.upgrade).not.toHaveBeenCalled();
   });
 
@@ -291,12 +427,42 @@ describe("createLiveVoiceWebsocketHandler — velay-attested managed auth", () =
 
   test("managed mode + valid X-Velay-* headers with bridge proof authorizes the upgrade", () => {
     setPlatform(true);
-    const handler = createLiveVoiceWebsocketHandler(makeConfig());
+    const handler = createLiveVoiceWebsocketHandler(
+      makeConfig({ platformAssistantId: "test-assistant" }),
+    );
     const server = makeFakeServer();
     const res = handler(makeVelayReq(), server);
 
     expect(res).toBeUndefined();
     expect(server.upgrade).toHaveBeenCalledTimes(1);
+    const call = (server.upgrade as ReturnType<typeof mock>).mock
+      .calls[0] as unknown[];
+    const data = (call[1] as { data: LiveVoiceSocketData }).data;
+    expect(data.callerTenantContext).toMatchObject({
+      organization_id: VELAY_ORG_ID,
+      user_id: VELAY_USER_ID,
+      actor_id: `vellum-principal-${VELAY_USER_ID}`,
+    });
+    expect(
+      verifyToken(data.upstreamActorToken!, "vellum-daemon"),
+    ).toMatchObject({
+      ok: true,
+      claims: {
+        sub: `actor:self:vellum-principal-${VELAY_USER_ID}`,
+        tenant_context: data.callerTenantContext,
+      },
+    });
+  });
+
+  test("managed mode fails closed when the runtime assistant binding is absent", () => {
+    setPlatform(true);
+    const handler = createLiveVoiceWebsocketHandler(makeConfig());
+    const server = makeFakeServer();
+    const res = handler(makeVelayReq(), server);
+
+    expect(res).toBeInstanceOf(Response);
+    expect(res!.status).toBe(503);
+    expect(server.upgrade).not.toHaveBeenCalled();
   });
 
   test("managed mode + spoofed X-Velay-* headers without bridge proof is rejected", () => {
@@ -407,7 +573,7 @@ describe("getLiveVoiceWebsocketHandlers", () => {
     globalThis.WebSocket = OriginalWebSocket;
   });
 
-  test("open targets the runtime live voice websocket with a service token", () => {
+  test("open targets the runtime live voice websocket with an internal token", () => {
     const ws = createFakeDownstreamWs({
       wsType: "live-voice",
       config: makeConfig({
@@ -424,6 +590,50 @@ describe("getLiveVoiceWebsocketHandlers", () => {
     expect(parsed.host).toBe("runtime.internal:7821");
     expect(parsed.pathname).toBe("/v1/live-voice");
     expect(parsed.searchParams.get("token")).toMatch(/^ey/);
+  });
+
+  test("forwards the signed caller tenant and actor capability to the runtime", () => {
+    const context: RuntimeTenantContextClaim = {
+      version: 1,
+      organization_id: "org-voice",
+      user_id: "user-voice",
+      assistant_id: "assistant-voice",
+      actor_id: "vellum-principal-user-voice",
+      request_id: "request-voice",
+    };
+    const actorToken = mintToken({
+      aud: "vellum-daemon",
+      sub: `actor:self:${context.actor_id}`,
+      scope_profile: "actor_client_v1",
+      policy_epoch: CURRENT_POLICY_EPOCH,
+      ttlSeconds: 60,
+      tenant_context: context,
+    });
+    const ws = createFakeDownstreamWs({
+      wsType: "live-voice",
+      config: makeConfig({
+        assistantRuntimeBaseUrl: "http://runtime.internal:7821",
+      }),
+      callerTenantContext: context,
+      upstreamActorToken: actorToken,
+    });
+
+    handlers.open(ws as never);
+
+    const MockWS = globalThis.WebSocket as unknown as ReturnType<typeof mock>;
+    const [calledUrl, options] = MockWS.mock.calls[0] as unknown as [
+      string,
+      { headers: Record<string, string> },
+    ];
+    expect(new URL(calledUrl).searchParams.get("token")).toBe(actorToken);
+    expect(options.headers).toEqual({
+      "X-Worklin-Tenant-Context-Version": "1",
+      "X-Worklin-Org-Id": context.organization_id,
+      "X-Worklin-User-Id": context.user_id,
+      "X-Worklin-Assistant-Id": context.assistant_id,
+      "X-Worklin-Actor-Id": context.actor_id,
+      "X-Worklin-Request-Id": context.request_id,
+    });
   });
 
   test("buffers downstream text and binary messages before upstream opens", () => {
@@ -503,6 +713,33 @@ describe("getLiveVoiceWebsocketHandlers", () => {
     handlers.message(ws as never, "overflow");
 
     expect(ws.closes).toEqual([{ code: 1008, reason: "Buffer overflow" }]);
+  });
+
+  test("closes oversized frames and byte-heavy pending buffers", () => {
+    const oversized = createFakeDownstreamWs({
+      wsType: "live-voice",
+      config: makeConfig(),
+    });
+    handlers.open(oversized as never);
+    handlers.message(oversized as never, new Uint8Array(1024 * 1024 + 1));
+    expect(oversized.closes).toEqual([
+      { code: 1009, reason: "Frame too large" },
+    ]);
+
+    const buffered = createFakeDownstreamWs({
+      wsType: "live-voice",
+      config: makeConfig(),
+    });
+    handlers.open(buffered as never);
+    const chunk = new Uint8Array(900 * 1024);
+    for (let index = 0; index < 4; index += 1) {
+      handlers.message(buffered as never, chunk);
+    }
+    expect(buffered.closes).toEqual([]);
+    handlers.message(buffered as never, chunk);
+    expect(buffered.closes).toEqual([
+      { code: 1008, reason: "Buffer overflow" },
+    ]);
   });
 
   test("downstream close clears pending messages and closes connecting upstream", () => {

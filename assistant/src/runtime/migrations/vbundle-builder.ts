@@ -100,7 +100,7 @@ export interface BuildVBundleResult {
   manifest: ManifestType;
 }
 
-interface FileMetadata {
+export interface FileMetadata {
   archivePath: string;
   diskPath: string;
   size: number;

@@ -13,6 +13,7 @@ import { updateConversationTitle } from "../memory/conversation-crud.js";
 import { getOrCreateConversation as getOrCreateConversationKey } from "../memory/conversation-key-store.js";
 import { buildAssistantEvent } from "../runtime/assistant-event.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { getLogger } from "../util/logger.js";
 import { getOrCreateConversation } from "./conversation-store.js";
 import { processMessageInBackground } from "./process-message.js";
@@ -55,6 +56,7 @@ export interface LaunchConversationParams {
 export async function launchConversation(
   params: LaunchConversationParams,
 ): Promise<{ conversationId: string }> {
+  assertPooledRuntimeAsyncOperationSupported("launched conversations");
   if (!params.title || !params.seedPrompt) {
     throw new Error("launchConversation: title and seedPrompt are required");
   }

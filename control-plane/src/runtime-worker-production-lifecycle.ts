@@ -1,9 +1,11 @@
 import {
   buildRuntimeWorkerStateObjectKey,
   RUNTIME_WORKER_STATE_CREDENTIAL_POLICY,
+  RUNTIME_WORKER_STATE_DEFAULT_PROVIDER,
   RUNTIME_WORKER_STATE_FORMAT,
-  RUNTIME_WORKER_STATE_PROVIDER,
+  isRuntimeWorkerStateProvider,
   type RuntimeWorkerStateObject,
+  type RuntimeWorkerStateProvider,
   type RuntimeWorkerStateTenant,
 } from "./runtime-worker-state-checkpoints.js";
 import type { RuntimeWorkerLifecycleAdapter } from "./runtime-worker-dispatcher.js";
@@ -13,6 +15,7 @@ type EnvLike = Record<string, string | undefined>;
 const STATE_CONTENT_TYPE = "application/octet-stream";
 
 export interface RuntimeWorkerProductionLifecycleConfig {
+  provider?: RuntimeWorkerStateProvider;
   bucket: string;
 }
 
@@ -27,14 +30,30 @@ export interface RuntimeWorkerVBundleEntry {
 export interface RuntimeWorkerVBundleReceipt {
   tenant: RuntimeWorkerStateTenant;
   workerStackId: string;
+  leaseGeneration: number;
+  stateGeneration: number;
   object: RuntimeWorkerStateObject;
+  workspaceByteSize: number;
   entries: readonly RuntimeWorkerVBundleEntry[];
   credentialsIncluded: number;
   secretsRedacted: boolean;
 }
 
+export interface RuntimeWorkerRestoreReceipt {
+  status: "restored";
+  tenant: RuntimeWorkerStateTenant;
+  workerStackId: string;
+  leaseGeneration: number;
+  stateGeneration: number;
+  object: RuntimeWorkerStateObject;
+  workspaceByteSize: number;
+  filesRestored: number;
+  credentialsImported: 0;
+  secretsMaterialized: false;
+}
+
 export interface RuntimeWorkerObjectHead {
-  provider: typeof RUNTIME_WORKER_STATE_PROVIDER;
+  provider: RuntimeWorkerStateProvider;
   bucket: string;
   objectKey: string;
   checksumSha256: string;
@@ -43,10 +62,18 @@ export interface RuntimeWorkerObjectHead {
 }
 
 export interface RuntimeWorkerSanitizeReceipt {
-  status: "sanitized" | "already_sanitized";
+  status: "prepared_empty" | "sanitized" | "already_sanitized";
+  tenant: RuntimeWorkerStateTenant;
   workerStackId: string;
+  leaseGeneration: number;
   remainingTenantPaths: number;
   credentialsTouched: false;
+}
+
+export interface RuntimeWorkerLeaseRevokeReceipt {
+  status: "revoked" | "already_revoked";
+  workerStackId: string;
+  leaseGeneration: number;
 }
 
 /**
@@ -60,7 +87,9 @@ export interface RuntimeWorkerProductionTransport {
   exportRedactedVBundle(input: {
     tenant: RuntimeWorkerStateTenant;
     workerStackId: string;
-    provider: typeof RUNTIME_WORKER_STATE_PROVIDER;
+    leaseGeneration: number;
+    stateGeneration: number;
+    provider: RuntimeWorkerStateProvider;
     bucket: string;
     objectKey: string;
     credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
@@ -68,43 +97,75 @@ export interface RuntimeWorkerProductionTransport {
   restoreRedactedVBundle(input: {
     tenant: RuntimeWorkerStateTenant;
     workerStackId: string;
+    leaseGeneration: number;
+    stateGeneration: number;
     object: RuntimeWorkerStateObject;
+    expectedWorkspaceByteSize: number | null;
     credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
-  }): Promise<RuntimeWorkerVBundleReceipt>;
+  }): Promise<RuntimeWorkerRestoreReceipt>;
   prepareEmptyWorkspace(input: {
     tenant: RuntimeWorkerStateTenant;
     workerStackId: string;
+    leaseGeneration: number;
     credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
   }): Promise<RuntimeWorkerSanitizeReceipt>;
   headObject(input: {
-    provider: typeof RUNTIME_WORKER_STATE_PROVIDER;
+    provider: RuntimeWorkerStateProvider;
     bucket: string;
     objectKey: string;
   }): Promise<RuntimeWorkerObjectHead | null>;
   sanitizeWorkspace(input: {
     tenant: RuntimeWorkerStateTenant;
     workerStackId: string;
+    leaseGeneration: number;
     credentialPolicy: typeof RUNTIME_WORKER_STATE_CREDENTIAL_POLICY;
   }): Promise<RuntimeWorkerSanitizeReceipt>;
+  revokeLeaseAuthority(input: {
+    tenant: RuntimeWorkerStateTenant;
+    workerStackId: string;
+    leaseGeneration: number;
+  }): Promise<RuntimeWorkerLeaseRevokeReceipt>;
 }
 
 export function runtimeWorkerProductionLifecycleConfigFromEnv(
   rawEnv: EnvLike,
 ): RuntimeWorkerProductionLifecycleConfig {
-  const bucket = rawEnv.WORKLIN_RUNTIME_WORKER_STATE_BUCKET?.trim() ?? "";
+  const provider =
+    rawEnv.WORKLIN_RUNTIME_WORKER_STATE_PROVIDER?.trim().toLowerCase() ??
+    (rawEnv.WORKLIN_RUNTIME_WORKER_STATE_GCS_SERVICE_ACCOUNT_JSON?.trim()
+      ? "gcs"
+      : (rawEnv.WORKLIN_RUNTIME_WORKER_STATE_S3_ENDPOINT?.trim() ||
+            rawEnv.ENDPOINT?.trim()) &&
+          (rawEnv.WORKLIN_RUNTIME_WORKER_STATE_S3_ACCESS_KEY_ID?.trim() ||
+            rawEnv.ACCESS_KEY_ID?.trim()) &&
+          (rawEnv.WORKLIN_RUNTIME_WORKER_STATE_S3_SECRET_ACCESS_KEY?.trim() ||
+            rawEnv.SECRET_ACCESS_KEY?.trim())
+        ? "s3"
+        : RUNTIME_WORKER_STATE_DEFAULT_PROVIDER);
+  if (!isRuntimeWorkerStateProvider(provider)) {
+    throw new Error("WORKLIN_RUNTIME_WORKER_STATE_PROVIDER is invalid.");
+  }
+  const bucket =
+    rawEnv.WORKLIN_RUNTIME_WORKER_STATE_BUCKET?.trim() ??
+    (provider === "s3" ? rawEnv.BUCKET?.trim() : undefined) ??
+    "";
   if (!bucket) {
     throw new Error(
       "WORKLIN_RUNTIME_WORKER_STATE_BUCKET is required for pooled worker state.",
     );
   }
   assertBucket(bucket);
-  return { bucket };
+  return { provider, bucket };
 }
 
 export function createRuntimeWorkerProductionLifecycleAdapter(
   config: RuntimeWorkerProductionLifecycleConfig,
   transport: RuntimeWorkerProductionTransport | null | undefined,
 ): RuntimeWorkerLifecycleAdapter {
+  const provider = config.provider ?? RUNTIME_WORKER_STATE_DEFAULT_PROVIDER;
+  if (!isRuntimeWorkerStateProvider(provider)) {
+    throw new Error("Pooled worker state provider is invalid.");
+  }
   const bucket = config.bucket.trim();
   assertBucket(bucket);
   if (!transport) {
@@ -118,17 +179,20 @@ export function createRuntimeWorkerProductionLifecycleAdapter(
       restore: async ({
         tenant,
         workerStackId,
-        generation,
+        leaseGeneration,
+        stateGeneration,
         object,
+        expectedWorkspaceByteSize,
         credentialPolicy,
       }) => {
         assertCredentialPolicy(credentialPolicy);
         assertTenant(tenant);
         assertWorkerStackId(workerStackId);
-        assertGeneration(generation, true);
+        assertGeneration(leaseGeneration, false);
+        assertGeneration(stateGeneration, true);
 
         if (object === null) {
-          if (generation !== 0) {
+          if (stateGeneration !== 0) {
             throw new Error(
               "A non-empty pooled state generation requires an object.",
             );
@@ -136,52 +200,79 @@ export function createRuntimeWorkerProductionLifecycleAdapter(
           const receipt = await transport.prepareEmptyWorkspace({
             tenant,
             workerStackId,
+            leaseGeneration,
             credentialPolicy,
           });
-          assertSanitizeReceipt(receipt, workerStackId);
-          return { checksumSha256: null };
+          assertSanitizeReceipt({
+            receipt,
+            tenant,
+            workerStackId,
+            leaseGeneration,
+            expectedStatuses: ["prepared_empty", "already_sanitized"],
+          });
+          if (
+            expectedWorkspaceByteSize !== null &&
+            expectedWorkspaceByteSize !== 0
+          ) {
+            throw new Error(
+              "An empty pooled state generation must have zero workspace bytes.",
+            );
+          }
+          return { checksumSha256: null, workspaceByteSize: 0 };
         }
 
         const expected = assertStateObject(
           tenant,
-          generation,
+          stateGeneration,
           object,
           bucket,
+          provider,
         );
         await assertRemoteObject(transport, expected);
         const receipt = await transport.restoreRedactedVBundle({
           tenant,
           workerStackId,
+          leaseGeneration,
+          stateGeneration,
           object: expected,
+          expectedWorkspaceByteSize,
           credentialPolicy,
         });
-        assertVBundleReceipt({
+        assertRestoreReceipt({
           receipt,
           tenant,
           workerStackId,
+          leaseGeneration,
+          stateGeneration,
           expectedObject: expected,
+          expectedWorkspaceByteSize,
         });
-        return { checksumSha256: expected.checksumSha256 };
+        return {
+          checksumSha256: expected.checksumSha256,
+          workspaceByteSize: receipt.workspaceByteSize,
+        };
       },
       export: async ({
         tenant,
         workerStackId,
-        currentGeneration,
-        nextGeneration,
+        leaseGeneration,
+        currentStateGeneration,
+        nextStateGeneration,
         objectKey,
         credentialPolicy,
       }) => {
         assertCredentialPolicy(credentialPolicy);
         assertTenant(tenant);
         assertWorkerStackId(workerStackId);
-        assertGeneration(currentGeneration, true);
-        assertGeneration(nextGeneration, false);
-        if (nextGeneration !== currentGeneration + 1) {
+        assertGeneration(leaseGeneration, false);
+        assertGeneration(currentStateGeneration, true);
+        assertGeneration(nextStateGeneration, false);
+        if (nextStateGeneration !== currentStateGeneration + 1) {
           throw new Error("Pooled state export generation is not monotonic.");
         }
         const expectedKey = buildRuntimeWorkerStateObjectKey(
           tenant,
-          nextGeneration,
+          nextStateGeneration,
         );
         if (objectKey !== expectedKey) {
           throw new Error(
@@ -192,30 +283,39 @@ export function createRuntimeWorkerProductionLifecycleAdapter(
         const receipt = await transport.exportRedactedVBundle({
           tenant,
           workerStackId,
-          provider: RUNTIME_WORKER_STATE_PROVIDER,
+          leaseGeneration,
+          stateGeneration: nextStateGeneration,
+          provider,
           bucket,
           objectKey: expectedKey,
           credentialPolicy,
         });
         const object = assertStateObject(
           tenant,
-          nextGeneration,
+          nextStateGeneration,
           receipt.object,
           bucket,
+          provider,
         );
         assertVBundleReceipt({
           receipt,
           tenant,
           workerStackId,
+          leaseGeneration,
+          stateGeneration: nextStateGeneration,
           expectedObject: object,
         });
         await assertRemoteObject(transport, object);
-        return object;
+        return {
+          object,
+          workspaceByteSize: receipt.workspaceByteSize,
+        };
       },
     },
     sanitize: async ({
       assistant,
       workerStackId,
+      leaseGeneration,
       credentialPolicy,
     }) => {
       assertCredentialPolicy(credentialPolicy);
@@ -225,12 +325,44 @@ export function createRuntimeWorkerProductionLifecycleAdapter(
       };
       assertTenant(tenant);
       assertWorkerStackId(workerStackId);
+      assertGeneration(leaseGeneration, false);
       const receipt = await transport.sanitizeWorkspace({
         tenant,
         workerStackId,
+        leaseGeneration,
         credentialPolicy,
       });
-      assertSanitizeReceipt(receipt, workerStackId);
+      assertSanitizeReceipt({
+        receipt,
+        tenant,
+        workerStackId,
+        leaseGeneration,
+        expectedStatuses: ["sanitized", "already_sanitized"],
+      });
+    },
+    revokeAuthority: async ({ assistant, workerStackId, leaseGeneration }) => {
+      const tenant = {
+        orgId: assistant.org_id,
+        assistantId: assistant.id,
+      };
+      assertTenant(tenant);
+      assertWorkerStackId(workerStackId);
+      assertGeneration(leaseGeneration, false);
+      const receipt = await transport.revokeLeaseAuthority({
+        tenant,
+        workerStackId,
+        leaseGeneration,
+      });
+      if (
+        (receipt.status !== "revoked" &&
+          receipt.status !== "already_revoked") ||
+        receipt.workerStackId !== workerStackId ||
+        receipt.leaseGeneration !== leaseGeneration
+      ) {
+        throw new Error(
+          "Pooled worker lease revocation could not be verified.",
+        );
+      }
     },
   };
 }
@@ -261,19 +393,25 @@ function assertVBundleReceipt(input: {
   receipt: RuntimeWorkerVBundleReceipt;
   tenant: RuntimeWorkerStateTenant;
   workerStackId: string;
+  leaseGeneration: number;
+  stateGeneration: number;
   expectedObject: RuntimeWorkerStateObject;
 }): void {
-  const { receipt, tenant, workerStackId, expectedObject } = input;
-  assertTenant(receipt.tenant);
-  if (
-    receipt.tenant.orgId !== tenant.orgId ||
-    receipt.tenant.assistantId !== tenant.assistantId
-  ) {
-    throw new Error("Pooled state receipt belongs to another tenant.");
-  }
-  if (receipt.workerStackId !== workerStackId) {
-    throw new Error("Pooled state receipt belongs to another worker.");
-  }
+  const {
+    receipt,
+    tenant,
+    workerStackId,
+    leaseGeneration,
+    stateGeneration,
+    expectedObject,
+  } = input;
+  assertReceiptIdentity({
+    receipt,
+    tenant,
+    workerStackId,
+    leaseGeneration,
+    stateGeneration,
+  });
   if (
     receipt.object.provider !== expectedObject.provider ||
     receipt.object.bucket !== expectedObject.bucket ||
@@ -289,7 +427,118 @@ function assertVBundleReceipt(input: {
       "Pooled state bundle must exclude credentials and report redaction.",
     );
   }
-  for (const entry of receipt.entries) assertSafeVBundleEntry(entry);
+  let workspaceByteSize = 0;
+  for (const entry of receipt.entries) {
+    assertSafeVBundleEntry(entry);
+    workspaceByteSize = safeByteSum(workspaceByteSize, entry.byteSize);
+  }
+  if (
+    !Number.isSafeInteger(receipt.workspaceByteSize) ||
+    receipt.workspaceByteSize < 0 ||
+    receipt.workspaceByteSize !== workspaceByteSize
+  ) {
+    throw new Error(
+      "Pooled state receipt workspace size does not match its entries.",
+    );
+  }
+}
+
+function assertRestoreReceipt(input: {
+  receipt: RuntimeWorkerRestoreReceipt;
+  tenant: RuntimeWorkerStateTenant;
+  workerStackId: string;
+  leaseGeneration: number;
+  stateGeneration: number;
+  expectedObject: RuntimeWorkerStateObject;
+  expectedWorkspaceByteSize: number | null;
+}): void {
+  const {
+    receipt,
+    tenant,
+    workerStackId,
+    leaseGeneration,
+    stateGeneration,
+    expectedObject,
+    expectedWorkspaceByteSize,
+  } = input;
+  if (receipt.status !== "restored") {
+    throw new Error("Pooled state restore receipt status is invalid.");
+  }
+  assertReceiptIdentity({
+    receipt,
+    tenant,
+    workerStackId,
+    leaseGeneration,
+    stateGeneration,
+  });
+  if (
+    receipt.object.provider !== expectedObject.provider ||
+    receipt.object.bucket !== expectedObject.bucket ||
+    receipt.object.objectKey !== expectedObject.objectKey ||
+    receipt.object.checksumSha256 !== expectedObject.checksumSha256 ||
+    receipt.object.byteSize !== expectedObject.byteSize ||
+    receipt.object.format !== expectedObject.format
+  ) {
+    throw new Error(
+      "Pooled state restore receipt object metadata does not match.",
+    );
+  }
+  if (
+    !Number.isSafeInteger(receipt.workspaceByteSize) ||
+    receipt.workspaceByteSize < 0 ||
+    (expectedWorkspaceByteSize !== null &&
+      receipt.workspaceByteSize !== expectedWorkspaceByteSize) ||
+    !Number.isSafeInteger(receipt.filesRestored) ||
+    receipt.filesRestored < 0 ||
+    receipt.credentialsImported !== 0 ||
+    receipt.secretsMaterialized !== false
+  ) {
+    throw new Error(
+      "Pooled state restore must exclude credentials and secret material.",
+    );
+  }
+}
+
+function safeByteSum(left: number, right: number): number {
+  const total = left + right;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error("Pooled state workspace size is invalid.");
+  }
+  return total;
+}
+
+function assertReceiptIdentity(input: {
+  receipt: {
+    tenant: RuntimeWorkerStateTenant;
+    workerStackId: string;
+    leaseGeneration: number;
+    stateGeneration: number;
+  };
+  tenant: RuntimeWorkerStateTenant;
+  workerStackId: string;
+  leaseGeneration: number;
+  stateGeneration: number;
+}): void {
+  const { receipt, tenant, workerStackId, leaseGeneration, stateGeneration } =
+    input;
+  assertTenant(receipt.tenant);
+  if (
+    receipt.tenant.orgId !== tenant.orgId ||
+    receipt.tenant.assistantId !== tenant.assistantId
+  ) {
+    throw new Error("Pooled state receipt belongs to another tenant.");
+  }
+  if (receipt.workerStackId !== workerStackId) {
+    throw new Error("Pooled state receipt belongs to another worker.");
+  }
+  if (
+    receipt.leaseGeneration !== leaseGeneration ||
+    receipt.stateGeneration !== stateGeneration
+  ) {
+    throw new Error(
+      "Pooled state receipt does not match its lease and state generations.",
+    );
+  }
 }
 
 function assertSafeVBundleEntry(entry: RuntimeWorkerVBundleEntry): void {
@@ -321,9 +570,7 @@ function assertSafeVBundleEntry(entry: RuntimeWorkerVBundleEntry): void {
         /[\u0000-\u001f]/u.test(segment),
     ) ||
     segments[0] !== "workspace" ||
-    segments.some(
-      (segment) => segment.toLowerCase() === "credentials",
-    )
+    segments.some((segment) => segment.toLowerCase() === "credentials")
   ) {
     throw new Error(
       "Pooled state bundle contains traversal or a forbidden namespace.",
@@ -367,13 +614,16 @@ function assertStateObject(
   generation: number,
   object: RuntimeWorkerStateObject,
   bucket: string,
+  provider: RuntimeWorkerStateProvider,
 ): RuntimeWorkerStateObject {
   if (
-    object.provider !== RUNTIME_WORKER_STATE_PROVIDER ||
+    object.provider !== provider ||
     object.format !== RUNTIME_WORKER_STATE_FORMAT ||
     object.bucket !== bucket
   ) {
-    throw new Error("Pooled state object provider, format, or bucket is invalid.");
+    throw new Error(
+      "Pooled state object provider, format, or bucket is invalid.",
+    );
   }
   const expectedKey = buildRuntimeWorkerStateObjectKey(tenant, generation);
   if (object.objectKey !== expectedKey) {
@@ -386,7 +636,7 @@ function assertStateObject(
     throw new Error("Pooled state object size is invalid.");
   }
   return {
-    provider: RUNTIME_WORKER_STATE_PROVIDER,
+    provider,
     bucket,
     objectKey: expectedKey,
     checksumSha256: object.checksumSha256.toLowerCase(),
@@ -397,7 +647,7 @@ function assertStateObject(
 
 function assertObjectHead(head: RuntimeWorkerObjectHead): void {
   if (
-    head.provider !== RUNTIME_WORKER_STATE_PROVIDER ||
+    !isRuntimeWorkerStateProvider(head.provider) ||
     head.contentType !== STATE_CONTENT_TYPE
   ) {
     throw new Error("Pooled state object content metadata is invalid.");
@@ -409,14 +659,22 @@ function assertObjectHead(head: RuntimeWorkerObjectHead): void {
   }
 }
 
-function assertSanitizeReceipt(
-  receipt: RuntimeWorkerSanitizeReceipt,
-  workerStackId: string,
-): void {
+function assertSanitizeReceipt(input: {
+  receipt: RuntimeWorkerSanitizeReceipt;
+  tenant: RuntimeWorkerStateTenant;
+  workerStackId: string;
+  leaseGeneration: number;
+  expectedStatuses: readonly RuntimeWorkerSanitizeReceipt["status"][];
+}): void {
+  const { receipt, tenant, workerStackId, leaseGeneration, expectedStatuses } =
+    input;
+  assertTenant(receipt.tenant);
   if (
-    (receipt.status !== "sanitized" &&
-      receipt.status !== "already_sanitized") ||
+    !expectedStatuses.includes(receipt.status) ||
+    receipt.tenant.orgId !== tenant.orgId ||
+    receipt.tenant.assistantId !== tenant.assistantId ||
     receipt.workerStackId !== workerStackId ||
+    receipt.leaseGeneration !== leaseGeneration ||
     receipt.remainingTenantPaths !== 0 ||
     receipt.credentialsTouched !== false
   ) {
@@ -453,10 +711,7 @@ function assertOpaqueId(value: string, label: string): void {
 }
 
 function assertGeneration(generation: number, allowZero: boolean): void {
-  if (
-    !Number.isSafeInteger(generation) ||
-    generation < (allowZero ? 0 : 1)
-  ) {
+  if (!Number.isSafeInteger(generation) || generation < (allowZero ? 0 : 1)) {
     throw new Error("Pooled state generation is invalid.");
   }
 }

@@ -180,6 +180,9 @@ const EXCLUDED_FROM_SCHEMA = new Set([
   "/v1/contacts/guardian/channel",
   // BFF token auth — loopback-only, not part of the public gateway API
   "/auth/token",
+  // Internal pooled-worker lease control — service-to-service only and never
+  // part of the public gateway API.
+  "/v1/internal/pooled-worker/lease/revoke",
   // Internal live-voice provider upgrade routes — handled before the HTTP
   // route table and intentionally not exposed as discrete OpenAPI endpoints.
   "/v1/live-voice/providers/elevenlabs/upstream",

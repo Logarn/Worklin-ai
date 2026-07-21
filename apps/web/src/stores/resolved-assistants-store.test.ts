@@ -2,13 +2,16 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 mock.module("@/lib/local-mode", () => ({
   getActiveAssistant: () => null,
-  isLocalAssistant: (assistant: { cloud?: string }) => assistant.cloud !== "vellum",
+  isLocalAssistant: (assistant: { cloud?: string }) =>
+    assistant.cloud !== "vellum",
   isLocalMode: () => false,
-  isPlatformAssistant: (assistant: { cloud?: string }) => assistant.cloud === "vellum",
+  isPlatformAssistant: (assistant: { cloud?: string }) =>
+    assistant.cloud === "vellum",
 }));
 
 import {
   assistantsValidForOrg,
+  usesPooledRequestPolling,
   useResolvedAssistantsStore,
   type ResolvedAssistant,
 } from "@/stores/resolved-assistants-store";
@@ -23,6 +26,7 @@ const platformAssistant: LockfileAssistant = {
   name: "Platform",
   cloud: "vellum",
   organizationId: "org-1",
+  runtimeProvider: "pooled_worker",
 };
 
 const localAssistant: LockfileAssistant = {
@@ -54,6 +58,8 @@ describe("setFromLockfile", () => {
     expect(entry.id).toBe("asst-platform");
     expect(entry.isPlatformHosted).toBe(true);
     expect(entry.organizationId).toBe("org-1");
+    expect(entry.runtimeProvider).toBe("pooled_worker");
+    expect(usesPooledRequestPolling(entry)).toBe(true);
   });
 
   it("leaves organizationId undefined for local entries", () => {
@@ -71,6 +77,22 @@ describe("setFromLockfile", () => {
 });
 
 describe("upsertFromApi", () => {
+  it("preserves the pooled runtime delivery contract", () => {
+    useResolvedAssistantsStore.getState().upsertFromApi({
+      id: "asst-pooled",
+      name: "Pooled",
+      created: "2026-01-01T00:00:00Z",
+      is_local: false,
+      runtime_provider: "pooled_worker",
+    } as Parameters<
+      ReturnType<typeof useResolvedAssistantsStore.getState>["upsertFromApi"]
+    >[0]);
+
+    const entry = useResolvedAssistantsStore.getState().assistants[0];
+    expect(entry.runtimeProvider).toBe("pooled_worker");
+    expect(usesPooledRequestPolling(entry)).toBe(true);
+  });
+
   it("preserves a lockfile-seeded organizationId on refresh (API has no org)", () => {
     useResolvedAssistantsStore.getState().setFromLockfile({
       assistants: [platformAssistant],
@@ -186,7 +208,9 @@ describe("setSelectedAssistant", () => {
     expect(localStorage.getItem(SELECTED_ASSISTANT_STORAGE_KEY)).toBe("asst-1");
 
     useResolvedAssistantsStore.getState().setSelectedAssistant(null);
-    expect(useResolvedAssistantsStore.getState().selectedAssistantId).toBeNull();
+    expect(
+      useResolvedAssistantsStore.getState().selectedAssistantId,
+    ).toBeNull();
     expect(localStorage.getItem(SELECTED_ASSISTANT_STORAGE_KEY)).toBeNull();
   });
 });
@@ -198,7 +222,9 @@ describe("selection reconcile on hydration", () => {
       assistants: [localAssistant],
       activeAssistant: null,
     });
-    expect(useResolvedAssistantsStore.getState().selectedAssistantId).toBeNull();
+    expect(
+      useResolvedAssistantsStore.getState().selectedAssistantId,
+    ).toBeNull();
     expect(localStorage.getItem(SELECTED_ASSISTANT_STORAGE_KEY)).toBeNull();
   });
 
@@ -222,9 +248,13 @@ describe("selection reconcile on hydration", () => {
     } as Parameters<
       ReturnType<typeof useResolvedAssistantsStore.getState>["upsertFromApi"]
     >[0];
-    useResolvedAssistantsStore.getState().setSelectedAssistant("asst-other-org");
+    useResolvedAssistantsStore
+      .getState()
+      .setSelectedAssistant("asst-other-org");
     useResolvedAssistantsStore.getState().setFromApi([apiEntry]);
-    expect(useResolvedAssistantsStore.getState().selectedAssistantId).toBeNull();
+    expect(
+      useResolvedAssistantsStore.getState().selectedAssistantId,
+    ).toBeNull();
     expect(localStorage.getItem(SELECTED_ASSISTANT_STORAGE_KEY)).toBeNull();
   });
 

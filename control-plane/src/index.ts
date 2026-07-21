@@ -39,7 +39,7 @@ import {
   runtimeStackConfigFromEnv,
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
-import { assistantIdFromManagedVoiceRoutingToken } from "./live-voice-provider-callback.js";
+import { managedVoiceRoutingHintFromToken } from "./live-voice-provider-callback.js";
 import {
   ensureAssistantStoreSchema,
   getActiveAssistant as getStoredActiveAssistant,
@@ -74,6 +74,64 @@ import {
   runtimeTenantContextClaim,
   type RuntimeTenantContext,
 } from "./runtime-tenant-context.js";
+import {
+  acquireTenantRuntimeAdmission,
+  classifyTenantRuntimeRequest,
+  ensureTenantRuntimeAdmissionSchema,
+  releaseTenantRuntimeAdmission,
+  renewTenantRuntimeAdmission,
+  tenantRuntimeAdmissionConfigFromEnv,
+  type TenantRuntimeAdmissionResult,
+} from "./tenant-runtime-admission.js";
+import {
+  ensureTenantRuntimeOperationsSchema,
+  guardTenantStorageOperation,
+  persistRuntimeCapacityAlert,
+  recordTrustedTenantStorageObservation,
+  recordTenantRuntimeUsage,
+  tenantRuntimeOperationsConfigFromEnv,
+  type TenantStorageGuardResult,
+  type TenantRuntimeUsageMetric,
+} from "./tenant-runtime-operations.js";
+import {
+  getRuntimeWorkerCapacityTelemetry,
+  runtimeWorkerPoolConfigFromEnv,
+} from "./runtime-worker-dispatcher.js";
+import { createRuntimeWorkerProductionCoordinatorFromEnv } from "./runtime-worker-production-coordinator.js";
+import { isRuntimeWorkerBootstrapInferenceProvider } from "./runtime-worker-production-transport.js";
+import {
+  classifyRuntimeWorkerProxyRoute,
+  type RuntimeWorkerProxyRouteDecision,
+} from "./runtime-worker-proxy-route-policy.js";
+import { selectRuntimeWorkerRoutingPolicy } from "./runtime-worker-routing-policy.js";
+import {
+  parseManagedPooledVoiceSessionBootstrap,
+  RuntimeWorkerSessionLeaseRegistry,
+} from "./runtime-worker-session-leases.js";
+import type { RuntimeWorkerLeaseServiceBinding } from "./runtime-worker-service-tokens.js";
+import { activatePooledRuntimeWorkersAtStartup } from "./runtime-worker-startup-gate.js";
+import {
+  POOLED_MODEL_KEY_CAPABILITY_HEADER,
+  POOLED_MODEL_KEY_RESOLVE_PATH,
+  PooledModelKeyVault,
+  pooledModelKeyVaultConfigFromEnv,
+} from "./pooled-model-key-vault.js";
+import {
+  createRuntimeProxyAbortLifecycle,
+  pipeRuntimeResponseBody,
+} from "./runtime-response-stream.js";
+import {
+  authorizeRuntimeWorkerOperatorRecovery,
+  parseRuntimeWorkerOperatorRecoveryRequest,
+  runtimeWorkerOperatorRecoveryConfigFromEnv,
+  RUNTIME_WORKER_OPERATOR_RECOVERY_PATH,
+} from "./runtime-worker-operator-recovery.js";
+import {
+  acquireRuntimeWorkerCoordinatorOwnership,
+  runtimeWorkerCoordinatorOwnershipConfigFromEnv,
+  RuntimeWorkerCoordinatorOwnershipGuard,
+  RuntimeWorkerCoordinatorRequestAbortRegistry,
+} from "./runtime-worker-coordinator-ownership.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -82,8 +140,26 @@ const AUTH0_SESSION_COOKIE = "worklin_auth0_session";
 const CANONICAL_VERCEL_WEB_ORIGIN = "https://worklin-ai.vercel.app";
 const LEGACY_VERCEL_WEB_ORIGIN = "https://ai-retention-marketer.vercel.app";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
-const ACTOR_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const ACTOR_TOKEN_TTL_SECONDS = 5 * 60;
 const POLICY_EPOCH = 1;
+const TENANT_MUTATION_RESERVATION_FLOOR_BYTES = 4 * 1024 * 1024;
+
+function runtimeWorkerSessionTimer() {
+  return {
+    schedule(callback: () => Promise<void>, delayMs: number) {
+      const handle = setTimeout(() => {
+        void callback().catch(() => {
+          console.error("pooled_runtime_held_session_timer_failed");
+        });
+      }, delayMs);
+      handle.unref?.();
+      return handle;
+    },
+    cancel(handle: unknown) {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    },
+  };
+}
 
 function canonicalHostedWebOrigin(origin: string): string | null {
   if (
@@ -144,6 +220,7 @@ const env = {
   gatewayUrl: trimTrailingSlash(
     process.env.WORKLIN_GATEWAY_URL ?? "http://gateway:7830",
   ),
+  runtimeMode: process.env.WORKLIN_RUNTIME_MODE?.trim() || "combined",
   dbPath: process.env.WORKLIN_CONTROL_DB ?? "/data/control-plane.sqlite",
   sessionSecret: process.env.WORKLIN_SESSION_SECRET ?? "",
   actorSigningKey: process.env.ACTOR_TOKEN_SIGNING_KEY ?? "",
@@ -169,6 +246,23 @@ const runtimeStackConfig = runtimeStackConfigFromEnv(
   canonicalHostedWebOrigin(env.webOrigin) ?? env.webOrigin,
 );
 const railwayProvisionerConfig = railwayProvisionerConfigFromEnv(process.env);
+const tenantRuntimeAdmissionConfig = tenantRuntimeAdmissionConfigFromEnv(
+  process.env,
+);
+const tenantRuntimeOperationsConfig = tenantRuntimeOperationsConfigFromEnv(
+  process.env,
+);
+const runtimeWorkerPoolConfig = runtimeWorkerPoolConfigFromEnv(process.env);
+const runtimeWorkerCoordinatorOwnershipConfig =
+  runtimeWorkerCoordinatorOwnershipConfigFromEnv(
+    process.env,
+    runtimeWorkerPoolConfig.enabled,
+  );
+const runtimeWorkerOperatorRecoveryConfig =
+  runtimeWorkerOperatorRecoveryConfigFromEnv(
+    process.env,
+    runtimeWorkerPoolConfig.enabled,
+  );
 
 if (!env.sessionSecret || env.sessionSecret.length < 32) {
   throw new Error(
@@ -223,6 +317,195 @@ db.exec(`
 ensureArtifactSharingSchema(db);
 ensureAssistantStoreSchema(db);
 ensureRuntimeStackSchema(db);
+ensureTenantRuntimeAdmissionSchema(db);
+ensureTenantRuntimeOperationsSchema(db);
+const pooledModelKeyVault = new PooledModelKeyVault(
+  db,
+  pooledModelKeyVaultConfigFromEnv(process.env),
+);
+const runtimeWorkerCoordinatorOwnership = (() => {
+  if (!runtimeWorkerCoordinatorOwnershipConfig.enabled) return null;
+  const acquired = acquireRuntimeWorkerCoordinatorOwnership(
+    db,
+    {
+      ownerId: randomUUID(),
+      deploymentId: runtimeWorkerCoordinatorOwnershipConfig.deploymentId,
+      replicaId: runtimeWorkerCoordinatorOwnershipConfig.replicaId,
+    },
+    Date.now(),
+    runtimeWorkerCoordinatorOwnershipConfig.ownershipTtlMs,
+    nowIso,
+  );
+  if (acquired.status !== "acquired") {
+    throw new Error(
+      "Pooled runtime singleton coordinator ownership is unavailable.",
+    );
+  }
+  return new RuntimeWorkerCoordinatorOwnershipGuard(
+    db,
+    acquired.binding,
+    Date.now,
+  );
+})();
+
+let runtimeWorkerStartup: Awaited<
+  ReturnType<typeof activatePooledRuntimeWorkersAtStartup>
+>;
+try {
+  runtimeWorkerStartup = await activatePooledRuntimeWorkersAtStartup(
+    db,
+    process.env,
+    {
+      nowIso,
+      ...(runtimeWorkerCoordinatorOwnership
+        ? { coordinatorOwnership: runtimeWorkerCoordinatorOwnership }
+        : {}),
+    },
+  );
+} catch (error) {
+  runtimeWorkerCoordinatorOwnership?.release(nowIso);
+  throw error;
+}
+
+let runtimeWorkerCoordinator: ReturnType<
+  typeof createRuntimeWorkerProductionCoordinatorFromEnv
+>;
+try {
+  runtimeWorkerCoordinator = createRuntimeWorkerProductionCoordinatorFromEnv(
+    db,
+    process.env,
+    {
+      ...(runtimeWorkerCoordinatorOwnership
+        ? { coordinatorOwnership: runtimeWorkerCoordinatorOwnership }
+        : {}),
+      resolveBootstrapInferenceProvider: ({ binding }) => {
+        if (!pooledModelKeyVault.enabled) return null;
+        // `list()` reads account identifiers only. Provider selection must never
+        // decrypt a tenant key during assignment/bootstrap.
+        const configuredProviders = pooledModelKeyVault.list({
+          organizationId: binding.organizationId,
+          userId: binding.userId,
+          assistantId: binding.assistantId,
+        });
+        const providers = configuredProviders.filter(
+          isRuntimeWorkerBootstrapInferenceProvider,
+        );
+        if (configuredProviders.length !== providers.length) {
+          throw new Error(
+            "Pooled runtime has a model provider that requires a dedicated runtime. Remove that API key or use a dedicated assistant runtime.",
+          );
+        }
+        if (providers.length > 1) {
+          throw new Error(
+            "Pooled runtime has multiple model providers configured. Remove all but one API key before starting the assistant.",
+          );
+        }
+        return providers.length === 1 ? providers[0]! : null;
+      },
+      onLeaseReady: (observation) => {
+        const result = recordTrustedTenantStorageObservation(
+          db,
+          tenantRuntimeOperationsConfig,
+          {
+            organizationId: observation.identity.organizationId,
+            userId: observation.identity.userId,
+            assistantId: observation.identity.assistantId,
+          },
+          {
+            observationId: [
+              "state-restore",
+              observation.workerStackId,
+              observation.leaseGeneration,
+              observation.stateGeneration,
+            ].join(":"),
+            workerStackId: observation.workerStackId,
+            leaseToken: observation.leaseToken,
+            source: "runtime_state_export",
+            observedBytes: observation.observedBytes,
+            observedAtMs: observation.observedAtMs,
+          },
+          observation.observedAtMs,
+          nowIso,
+        );
+        if (result.status === "rejected") {
+          throw new Error(
+            "Trusted pooled runtime storage observation was rejected.",
+          );
+        }
+      },
+    },
+  );
+} catch (error) {
+  runtimeWorkerCoordinatorOwnership?.release(nowIso);
+  throw error;
+}
+const runtimeWorkerRequestAbortRegistry =
+  new RuntimeWorkerCoordinatorRequestAbortRegistry();
+const runtimeWorkerSessionLeases = new RuntimeWorkerSessionLeaseRegistry({
+  coordinator: runtimeWorkerCoordinator,
+  timer: runtimeWorkerSessionTimer(),
+  onReleaseFailure: () => {
+    console.error("pooled_runtime_held_session_release_failed");
+  },
+});
+let runtimeWorkerCoordinatorHeartbeat: ReturnType<typeof setInterval> | null =
+  null;
+let runtimeWorkerCoordinatorFenced = false;
+
+class RuntimeWorkerCoordinatorOwnershipLostError extends Error {}
+
+function pooledCoordinatorOwnershipIsLive(): boolean {
+  return (
+    runtimeWorkerStartup.status === "active" &&
+    runtimeWorkerCoordinatorOwnership?.isLive() === true
+  );
+}
+
+function mintPooledModelKeyRequestCapability(
+  tenant: {
+    organizationId: string;
+    userId: string;
+    assistantId: string;
+  },
+  binding: RuntimeWorkerLeaseServiceBinding,
+  requestId: string,
+  nowMs: number,
+): string {
+  if (!pooledCoordinatorOwnershipIsLive()) {
+    throw new RuntimeWorkerCoordinatorOwnershipLostError();
+  }
+  const capability = pooledModelKeyVault.mintRequestCapability(
+    tenant,
+    binding,
+    requestId,
+    nowMs,
+  );
+  if (!pooledCoordinatorOwnershipIsLive()) {
+    pooledModelKeyVault.revokeRequestCapability(requestId);
+    throw new RuntimeWorkerCoordinatorOwnershipLostError();
+  }
+  return capability;
+}
+
+async function fencePooledRuntimeCoordinator(reason: Error): Promise<void> {
+  if (runtimeWorkerCoordinatorFenced) return;
+  runtimeWorkerCoordinatorFenced = true;
+  runtimeWorkerCoordinatorOwnership?.fence();
+  if (runtimeWorkerCoordinatorHeartbeat) {
+    clearInterval(runtimeWorkerCoordinatorHeartbeat);
+    runtimeWorkerCoordinatorHeartbeat = null;
+  }
+  const abortedRequestCount = runtimeWorkerRequestAbortRegistry.abortAll(reason);
+  const revokedCapabilityCount =
+    pooledModelKeyVault.revokeAllRequestCapabilities();
+  const fence = await runtimeWorkerCoordinator.fenceCoordinatorOwnership();
+  console.error("runtime_worker_coordinator_ownership_lost", {
+    abortedRequestCount,
+    revokedCapabilityCount,
+    quarantinedWorkerCount: fence.quarantinedWorkerCount,
+    revocationFailureCount: fence.revocationFailureCount,
+  });
+}
 
 const useSecureCookies =
   env.apiOrigin.startsWith("https://") &&
@@ -659,24 +942,38 @@ function runtimeStackForPayload(row: AssistantRow): RuntimeStackRow {
   return ensureRuntimeStackForAssistant(db, row, runtimeStackConfig, nowIso);
 }
 
+function pooledRuntimeEligible(runtimeStack: RuntimeStackRow): boolean {
+  return (
+    pooledCoordinatorOwnershipIsLive() &&
+    selectRuntimeWorkerRoutingPolicy(
+      runtimeStack,
+      runtimeWorkerCoordinator.config,
+      Date.now(),
+    ).mode === "pooled"
+  );
+}
+
 function assistantPayload(
   row: AssistantRow,
   user: UserRow,
   runtimeStack = runtimeStackForPayload(row),
 ) {
   const tenantContext = createRuntimeTenantContext(row, user.id, runtimeStack);
+  const pooled = pooledRuntimeEligible(runtimeStack);
   return {
     id: row.id,
     name: row.name,
     handle: "worklin",
     description: "Worklin autonomous retention marketing assistant",
     configuration: {},
-    status: assistantApiStatusForRuntimeStack(runtimeStack),
-    runtime_status: runtimeStack.status,
+    status: pooled ? "active" : assistantApiStatusForRuntimeStack(runtimeStack),
+    runtime_status: pooled ? "active" : runtimeStack.status,
     runtime_stack_id: runtimeStack.id,
-    runtime_provider: runtimeStack.provider,
-    runtime_last_health_status: runtimeStack.last_health_status,
-    runtime_last_error: runtimeStack.last_error,
+    runtime_provider: pooled ? "pooled_worker" : runtimeStack.provider,
+    runtime_last_health_status: pooled
+      ? "ready"
+      : runtimeStack.last_health_status,
+    runtime_last_error: pooled ? null : runtimeStack.last_error,
     created: row.created_at,
     modified: row.updated_at,
     release_channel: "stable",
@@ -687,8 +984,10 @@ function assistantPayload(
     provisioned_storage_gib: null,
     maintenance_mode: { enabled: false },
     is_local: false,
-    ingress_url: publicWebOrigin(),
-    platform_actor_token: mintActorToken(runtimeStack, tenantContext),
+    ingress_url: pooled ? null : publicWebOrigin(),
+    platform_actor_token: pooled
+      ? null
+      : mintActorToken(runtimeStack, tenantContext),
     access_consented: hasAcceptedAssistantConsent(user.consent_json),
   };
 }
@@ -707,6 +1006,20 @@ function runtimeProvisioningConfigurationError(): string | null {
     return `Unsupported runtime stack provider: ${runtimeStackConfig.runtimeStackProvider}.`;
   }
   return railwayProvisionerConfigurationError(railwayProvisionerConfig);
+}
+
+function controlPlaneOnlyConfigurationError(): string | null {
+  if (!pooledCoordinatorOwnershipIsLive()) {
+    const provisioningError = runtimeProvisioningConfigurationError();
+    if (provisioningError) return provisioningError;
+  }
+  if (!runtimeStackConfig.requireIsolatedRuntime) {
+    return "Control-plane-only mode requires isolated runtimes.";
+  }
+  if (runtimeStackConfig.allowLegacySharedRuntime) {
+    return "Control-plane-only mode cannot allow the legacy shared runtime.";
+  }
+  return null;
 }
 
 function scheduleRuntimeProvisioningLeaseRetry(
@@ -733,6 +1046,7 @@ function scheduleRuntimeProvisioning(
   stack: RuntimeStackRow,
 ): void {
   if (
+    pooledRuntimeEligible(stack) ||
     !assistantOwnerHasAcceptedConsent(assistant) ||
     stack.provider !== "railway" ||
     (stack.status !== "provisioning" && stack.status !== "failed") ||
@@ -908,10 +1222,13 @@ function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
 }
 
 function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
+  const current = runtimeStackForPayload(assistant);
+  if (pooledRuntimeEligible(current)) return current;
+
   const runtimeStack = claimPreprovisionedRuntimeStack(
     db,
     assistant,
-    runtimeStackForPayload(assistant),
+    current,
     runtimeStackConfig,
     nowIso,
   );
@@ -940,6 +1257,7 @@ function resumeRuntimeProvisioning(): void {
   for (const assistant of assistants) {
     if (!hasAcceptedAssistantConsent(assistant.owner_consent_json)) continue;
     const stack = runtimeStackForPayload(assistant);
+    if (pooledRuntimeEligible(stack)) continue;
     scheduleRuntimeProvisioning(assistant, stack);
   }
 }
@@ -949,18 +1267,23 @@ function operationalStatusPayload(
   runtimeStack = runtimeStackForPayload(row),
 ) {
   const updatedAt = nowIso();
-  const state = operationalStateForRuntimeStack(runtimeStack);
-  const runtimeReady = state === "active";
+  const pooled = pooledRuntimeEligible(runtimeStack);
+  const state = pooled
+    ? "active"
+    : operationalStateForRuntimeStack(runtimeStack);
+  const runtimeReady = pooled || state === "active";
   return {
     state,
-    detail_state: runtimeStack.status,
+    detail_state: pooled ? "active" : runtimeStack.status,
     poll_after_ms: runtimeReady ? 30_000 : 5_000,
     updated_at: updatedAt,
     active_operation: null,
     assistant: {
       id: row.id,
       name: row.name,
-      status: assistantApiStatusForRuntimeStack(runtimeStack),
+      status: pooled
+        ? "active"
+        : assistantApiStatusForRuntimeStack(runtimeStack),
     },
     pod: {
       phase: runtimeReady ? "running" : "pending",
@@ -1268,6 +1591,7 @@ async function handleAssistants(
     const runtimeStack = ensureAssistantRuntime(assistant);
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
+      !pooledRuntimeEligible(runtimeStack) &&
       (runtimeStack.status === "provisioning" ||
         runtimeStack.status === "failed") &&
       provisioningError
@@ -1521,7 +1845,8 @@ function copyProxyHeaders(req: Request): Headers {
       normalized === "host" ||
       normalized === "cookie" ||
       normalized === "content-length" ||
-      normalized === "authorization"
+      normalized === "authorization" ||
+      normalized === POOLED_MODEL_KEY_CAPABILITY_HEADER
     )
       continue;
     if (Array.isArray(value)) {
@@ -1537,7 +1862,17 @@ async function streamRuntimeResponse(
   req: Request,
   res: Response,
   response: globalThis.Response,
+  signal?: AbortSignal,
 ): Promise<void> {
+  applyRuntimeResponseHeaders(req, res, response);
+  await pipeRuntimeResponseBody(res, response, signal);
+}
+
+function applyRuntimeResponseHeaders(
+  req: Request,
+  res: Response,
+  response: globalThis.Response,
+): void {
   res.status(response.status);
   setCorsHeaders(req, res);
   for (const [key, value] of response.headers) {
@@ -1549,20 +1884,39 @@ async function streamRuntimeResponse(
       continue;
     res.setHeader(key, value);
   }
-  if (!response.body) {
-    res.end();
-    return;
+}
+
+async function readBoundedRuntimeResponse(
+  response: globalThis.Response,
+  maxBytes = 128 * 1024,
+): Promise<Buffer> {
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > maxBytes)
+  ) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Runtime response exceeded the bounded proxy limit.");
   }
+  if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(Buffer.from(value));
+      const result = await reader.read();
+      if (result.done) break;
+      total += result.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Runtime response exceeded the bounded proxy limit.");
+      }
+      chunks.push(Buffer.from(result.value));
     }
   } finally {
-    res.end();
+    reader.releaseLock();
   }
+  return Buffer.concat(chunks, total);
 }
 
 async function proxySharedArtifact(
@@ -1644,13 +1998,24 @@ async function proxySharedArtifact(
       : Buffer.isBuffer(req.body)
         ? req.body
         : Buffer.from(parseTextBody(req));
-  const response = await fetch(target, {
-    method: req.method,
-    headers,
-    body: bodyBuffer ? new Uint8Array(bodyBuffer) : undefined,
-    redirect: "manual",
-  });
-  await streamRuntimeResponse(req, res, response);
+  const abortLifecycle = createRuntimeProxyAbortLifecycle(req, res);
+  try {
+    const response = await fetch(target, {
+      method: req.method,
+      headers,
+      body: bodyBuffer ? new Uint8Array(bodyBuffer) : undefined,
+      redirect: "manual",
+      signal: abortLifecycle.controller.signal,
+    });
+    await streamRuntimeResponse(
+      req,
+      res,
+      response,
+      abortLifecycle.controller.signal,
+    );
+  } finally {
+    abortLifecycle.cleanup();
+  }
   return true;
 }
 
@@ -1665,27 +2030,27 @@ async function proxyLiveVoiceProviderCallback(
   url: URL,
 ): Promise<void> {
   const sessionToken = url.searchParams.get("custom_session_id") ?? "";
-  const assistantId = assistantIdFromManagedVoiceRoutingToken(sessionToken);
-  if (!assistantId) {
+  const routingHint = managedVoiceRoutingHintFromToken(sessionToken);
+  if (!routingHint) {
     sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
     return;
   }
 
   const assistant = db
     .query<AssistantRow, [string]>("SELECT * FROM assistants WHERE id = ?")
-    .get(assistantId);
+    .get(routingHint.assistantId);
   if (!assistant) {
     sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
     return;
   }
 
-  const runtimeStack = ensureRuntimeStackForAssistant(
-    db,
-    assistant,
-    runtimeStackConfig,
-    nowIso,
+  const runtimeStack = ensureAssistantRuntime(assistant);
+  const routingPolicy = selectRuntimeWorkerRoutingPolicy(
+    runtimeStack,
+    runtimeWorkerCoordinator.config,
+    Date.now(),
   );
-  if (!isRuntimeStackRoutable(runtimeStack)) {
+  if (routingPolicy.mode === "unavailable") {
     sendJson(
       req,
       res,
@@ -1695,7 +2060,57 @@ async function proxyLiveVoiceProviderCallback(
     return;
   }
 
-  const target = new URL(runtimeStack.gateway_url);
+  const tenantContext = createRuntimeTenantContext(
+    assistant,
+    assistant.user_id,
+    runtimeStack,
+  );
+  const pooledIdentity = {
+    organizationId: tenantContext.organizationId,
+    userId: tenantContext.userId,
+    assistantId: tenantContext.assistantId,
+    actorId: tenantContext.actorId,
+  };
+
+  let gatewayUrl: string;
+  let pooledRequestHandle: string | null = null;
+  let pooledGatewayIngressToken: string | null = null;
+  let pooledLeaseBinding: RuntimeWorkerLeaseServiceBinding | null = null;
+  if (routingPolicy.mode === "dedicated") {
+    gatewayUrl = routingPolicy.stack.gateway_url!;
+  } else {
+    if (
+      !runtimeWorkerSessionLeases.hasLiveVoiceSession(
+        routingHint.sessionId,
+        pooledIdentity,
+      )
+    ) {
+      sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
+      return;
+    }
+    const route = await runtimeWorkerCoordinator.routeRequest({
+      identity: pooledIdentity,
+      dedicatedRoute: {
+        gatewayUrl: "https://invalid.invalid",
+        actorToken: "invalid",
+      },
+    });
+    if (route.mode !== "pooled") {
+      sendJson(
+        req,
+        res,
+        { error: { message: "Worklin voice is temporarily unavailable" } },
+        503,
+      );
+      return;
+    }
+    gatewayUrl = route.gatewayUrl;
+    pooledRequestHandle = route.requestHandle;
+    pooledGatewayIngressToken = route.gatewayIngressToken;
+    pooledLeaseBinding = route.binding;
+  }
+
+  const target = new URL(gatewayUrl);
   target.pathname = "/v1/live-voice/providers/chat/completions";
   target.search = url.search;
 
@@ -1706,7 +2121,8 @@ async function proxyLiveVoiceProviderCallback(
     if (
       normalized === "host" ||
       normalized === "cookie" ||
-      normalized === "content-length"
+      normalized === "content-length" ||
+      normalized === POOLED_MODEL_KEY_CAPABILITY_HEADER
     )
       continue;
     if (Array.isArray(value)) {
@@ -1715,40 +2131,67 @@ async function proxyLiveVoiceProviderCallback(
       headers.set(key, value);
     }
   }
+  if (pooledGatewayIngressToken) {
+    headers.set(
+      "X-Worklin-Runtime-Authorization",
+      `Bearer ${pooledGatewayIngressToken}`,
+    );
+  }
 
   const body = Buffer.isBuffer(req.body)
     ? new Uint8Array(req.body)
     : new Uint8Array(Buffer.from(parseTextBody(req)));
-  const response = await fetch(target, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-  });
-
-  res.status(response.status);
-  setCorsHeaders(req, res);
-  for (const [key, value] of response.headers) {
-    const normalized = key.toLowerCase();
-    if (normalized.startsWith("access-control-allow-")) continue;
-    if (normalized === "content-length") continue;
-    res.setHeader(key, value);
-  }
-
-  if (!response.body) {
-    res.end();
-    return;
-  }
-
-  const reader = response.body.getReader();
+  const abortLifecycle = createRuntimeProxyAbortLifecycle(req, res);
+  let unregisterPooledAbort: (() => void) | null = null;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(Buffer.from(value));
+    if (pooledRequestHandle && pooledLeaseBinding) {
+      unregisterPooledAbort = runtimeWorkerRequestAbortRegistry.register(
+        abortLifecycle.controller,
+      );
+      headers.delete("x-vellum-proxy-server");
+      try {
+        headers.set(
+          POOLED_MODEL_KEY_CAPABILITY_HEADER,
+          mintPooledModelKeyRequestCapability(
+            pooledIdentity,
+            pooledLeaseBinding,
+            pooledRequestHandle,
+            Date.now(),
+          ),
+        );
+      } catch (error) {
+        if (!(error instanceof RuntimeWorkerCoordinatorOwnershipLostError)) {
+          throw error;
+        }
+        sendJson(
+          req,
+          res,
+          { error: { message: "Worklin voice is temporarily unavailable" } },
+          503,
+        );
+        return;
+      }
     }
+    const response = await fetch(target, {
+      method: "POST",
+      headers,
+      body,
+      redirect: "manual",
+      signal: abortLifecycle.controller.signal,
+    });
+    await streamRuntimeResponse(
+      req,
+      res,
+      response,
+      abortLifecycle.controller.signal,
+    );
   } finally {
-    res.end();
+    unregisterPooledAbort?.();
+    abortLifecycle.cleanup();
+    if (pooledRequestHandle) {
+      pooledModelKeyVault.revokeRequestCapability(pooledRequestHandle);
+      await finishPooledRuntimeRequest(pooledRequestHandle, pooledIdentity);
+    }
   }
 }
 
@@ -1770,21 +2213,35 @@ async function proxyToGateway(
     return;
   }
 
-  const runtimeStack = ensureRuntimeStackForAssistant(
-    db,
-    assistant,
-    runtimeStackConfig,
-    nowIso,
+  const runtimeStack = ensureAssistantRuntime(assistant);
+  const routingPolicy = selectRuntimeWorkerRoutingPolicy(
+    runtimeStack,
+    runtimeWorkerCoordinator.config,
+    Date.now(),
   );
-  if (!isRuntimeStackRoutable(runtimeStack)) {
+  if (routingPolicy.mode === "unavailable") {
     console.warn("proxy_missing_active_runtime_stack", {
       assistantId: assistant.id,
       userId: user.id,
       runtimeStackId: runtimeStack.id,
       runtimeStatus: runtimeStack.status,
+      routingReason: routingPolicy.reason,
     });
     sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
     return;
+  }
+
+  let pooledRouteDecision: RuntimeWorkerProxyRouteDecision | null = null;
+  if (routingPolicy.mode === "pooled") {
+    pooledRouteDecision = classifyRuntimeWorkerProxyRoute({
+      method: req.method,
+      pathname: url.pathname,
+      upgrade: req.headers.upgrade,
+    });
+    if (pooledRouteDecision.status === "rejected") {
+      sendPooledRuntimeRouteRejection(req, res, pooledRouteDecision.reason);
+      return;
+    }
   }
 
   let tenantContext: RuntimeTenantContext;
@@ -1814,32 +2271,126 @@ async function proxyToGateway(
     return;
   }
 
-  const target = new URL(runtimeStack.gateway_url);
-  target.pathname = url.pathname;
-  target.search = url.search;
-
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (!value) continue;
-    const normalized = key.toLowerCase();
-    if (
-      normalized === "host" ||
-      normalized === "cookie" ||
-      normalized === "content-length" ||
-      normalized === "authorization"
-    )
-      continue;
-    if (Array.isArray(value)) {
-      for (const item of value) headers.append(key, item);
-    } else {
-      headers.set(key, value);
+  const pooledIdentity = {
+    organizationId: tenantContext.organizationId,
+    userId: tenantContext.userId,
+    assistantId: tenantContext.assistantId,
+    actorId: tenantContext.actorId,
+  };
+  if (
+    pooledRouteDecision?.status === "allowed" &&
+    pooledRouteDecision.handling === "control_plane_model_key_vault"
+  ) {
+    if ((req.method === "POST" || req.method === "DELETE") && !checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return;
     }
+    const secretInput = {
+      method: req.method,
+      routeSegments: pooledRouteDecision.routeSegments,
+      tenant: pooledIdentity,
+      body: parseJsonBody<unknown>(req),
+    };
+    const isRootSecretMutation =
+      (req.method === "POST" || req.method === "DELETE") &&
+      pooledRouteDecision.routeSegments.length === 1 &&
+      pooledRouteDecision.routeSegments[0] === "secrets";
+    if (isRootSecretMutation) {
+      const mutation =
+        await runtimeWorkerCoordinator.runTenantConfigurationMutation({
+          identity: pooledIdentity,
+          mutation: () => pooledModelKeyVault.handleSecretRoute(secretInput),
+        });
+      if (mutation.status === "rejected") {
+        sendJson(
+          req,
+          res,
+          {
+            detail:
+              "Model provider settings cannot change while this assistant is handling a request.",
+            code: "pooled_runtime_model_provider_configuration_busy",
+          },
+          409,
+        );
+        return;
+      }
+      if (mutation.status === "unavailable") {
+        sendJson(
+          req,
+          res,
+          {
+            detail: "Model provider settings are temporarily unavailable.",
+            code: "pooled_runtime_model_provider_configuration_unavailable",
+          },
+          503,
+        );
+        return;
+      }
+      sendJson(req, res, mutation.value.body, mutation.value.status);
+      return;
+    }
+    const result = await pooledModelKeyVault.handleSecretRoute(secretInput);
+    sendJson(req, res, result.body, result.status);
+    return;
   }
-  headers.set(
-    "Authorization",
-    `Bearer ${mintActorToken(runtimeStack, tenantContext)}`,
+  if (
+    pooledRouteDecision?.status === "allowed" &&
+    (pooledRouteDecision.handling === "release_live_voice_session" ||
+      pooledRouteDecision.handling === "use_held_live_voice_session") &&
+    !runtimeWorkerSessionLeases.hasLiveVoiceSession(
+      pooledRouteDecision.sessionId,
+      pooledIdentity,
+    )
+  ) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "This voice session is no longer active.",
+        code: "pooled_voice_session_not_active",
+      },
+      409,
+    );
+    return;
+  }
+
+  const admissionIdentity = {
+    organizationId: assistant.org_id,
+    userId: user.id,
+    assistantId: assistant.id,
+  };
+  const requestKind = classifyTenantRuntimeRequest(req.method, url.pathname);
+  const usageEventPrefix = randomUUID();
+  const requestStartedAt = Date.now();
+  const admission = acquireTenantRuntimeAdmission(
+    db,
+    tenantRuntimeAdmissionConfig,
+    admissionIdentity,
+    requestKind,
+    randomUUID(),
+    requestStartedAt,
+    nowIso,
   );
-  applyRuntimeTenantHeaders(headers, tenantContext);
+  if (admission.status === "rejected") {
+    sendTenantRuntimeAdmissionRejection(req, res, admission);
+    return;
+  }
+  recordProxyRuntimeUsage(
+    admissionIdentity,
+    `${usageEventPrefix}:request`,
+    "request_count",
+    1,
+    requestStartedAt,
+  );
+  if (requestKind.requestClass === "turn") {
+    recordProxyRuntimeUsage(
+      admissionIdentity,
+      `${usageEventPrefix}:turn`,
+      "turn_count",
+      1,
+      requestStartedAt,
+    );
+  }
 
   const bodyBuffer =
     req.method === "GET" || req.method === "HEAD"
@@ -1849,37 +2400,392 @@ async function proxyToGateway(
         : Buffer.from(parseTextBody(req));
   const body = bodyBuffer ? new Uint8Array(bodyBuffer) : undefined;
 
-  const response = await fetch(target, {
-    method: req.method,
-    headers,
-    body,
-    redirect: "manual",
-  });
+  const abortLifecycle = createRuntimeProxyAbortLifecycle(req, res);
+  const { controller: abortController } = abortLifecycle;
+  let unregisterPooledAbort: (() => void) | null = null;
+  const heartbeat =
+    admission.status === "admitted"
+      ? setInterval(
+          () => {
+            const result = renewTenantRuntimeAdmission(
+              db,
+              tenantRuntimeAdmissionConfig,
+              admissionIdentity,
+              admission.token,
+              Date.now(),
+            );
+            if (result.status !== "updated") abortController.abort();
+          },
+          Math.max(
+            1_000,
+            Math.floor(tenantRuntimeAdmissionConfig.admissionTtlMs / 3),
+          ),
+        )
+      : null;
+  heartbeat?.unref();
 
-  res.status(response.status);
-  setCorsHeaders(req, res);
-  for (const [key, value] of response.headers) {
-    const normalized = key.toLowerCase();
-    if (normalized.startsWith("access-control-allow-")) continue;
-    if (normalized === "content-length") continue;
-    res.setHeader(key, value);
-  }
-
-  if (!response.body) {
-    res.end();
-    return;
-  }
-
-  const reader = response.body.getReader();
+  let pooledRequestHandle: string | null = null;
+  let pooledLeaseBinding: RuntimeWorkerLeaseServiceBinding | null = null;
+  let retainPooledRequest = false;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(Buffer.from(value));
+    let gatewayUrl: string;
+    let actorToken: string;
+    if (routingPolicy.mode === "dedicated") {
+      gatewayUrl = routingPolicy.stack.gateway_url!;
+      actorToken = mintActorToken(routingPolicy.stack, tenantContext);
+    } else {
+      const route = await runtimeWorkerCoordinator.routeRequest({
+        identity: pooledIdentity,
+        dedicatedRoute: {
+          gatewayUrl: "https://invalid.invalid",
+          actorToken: "invalid",
+        },
+      });
+      if (route.mode !== "pooled") {
+        if (route.mode === "unavailable" && route.retryAfterMs !== null) {
+          res.setHeader(
+            "Retry-After",
+            String(Math.max(1, Math.ceil(route.retryAfterMs / 1_000))),
+          );
+        }
+        sendJson(
+          req,
+          res,
+          {
+            detail: "All assistant workers are busy. Please retry shortly.",
+            code:
+              route.mode === "unavailable"
+                ? `pooled_runtime_${route.reason}`
+                : "pooled_runtime_route_mismatch",
+          },
+          route.mode === "unavailable" &&
+            (route.reason === "capacity_exhausted" ||
+              route.reason === "assistant_busy")
+            ? 429
+            : 503,
+        );
+        return;
+      }
+      gatewayUrl = route.gatewayUrl;
+      actorToken = route.actorToken;
+      pooledRequestHandle = route.requestHandle;
+      pooledLeaseBinding = route.binding;
+      unregisterPooledAbort = runtimeWorkerRequestAbortRegistry.register(
+        abortController,
+      );
     }
+
+    if (routingPolicy.mode === "pooled") {
+      const storageGuard = guardTenantStorageOperation(
+        db,
+        tenantRuntimeOperationsConfig,
+        admissionIdentity,
+        req.method === "DELETE"
+          ? { effect: "non_increasing" }
+          : req.method === "POST" ||
+              req.method === "PATCH" ||
+              req.method === "PUT"
+            ? {
+                effect: "may_increase",
+                reservationToken: randomUUID(),
+                requestedBytes: Math.max(
+                  bodyBuffer?.byteLength ?? 0,
+                  TENANT_MUTATION_RESERVATION_FLOOR_BYTES,
+                ),
+              }
+            : { effect: "non_increasing" },
+        Date.now(),
+      );
+      if (storageGuard.status === "rejected") {
+        sendTenantStorageGuardRejection(req, res, storageGuard);
+        return;
+      }
+    }
+
+    const target = new URL(gatewayUrl);
+    target.pathname = url.pathname;
+    target.search = url.search;
+
+    const headers = copyProxyHeaders(req);
+    headers.set("Authorization", `Bearer ${actorToken}`);
+    applyRuntimeTenantHeaders(headers, tenantContext);
+    if (pooledRequestHandle && pooledLeaseBinding) {
+      // The gateway IPC fast path forwards only public Vellum headers. Pooled
+      // model-key capabilities stay on the private HTTP hop and are never
+      // copied from a renderer request.
+      headers.delete("x-vellum-proxy-server");
+      try {
+        headers.set(
+          POOLED_MODEL_KEY_CAPABILITY_HEADER,
+          mintPooledModelKeyRequestCapability(
+            pooledIdentity,
+            pooledLeaseBinding,
+            pooledRequestHandle,
+            Date.now(),
+          ),
+        );
+      } catch (error) {
+        if (!(error instanceof RuntimeWorkerCoordinatorOwnershipLostError)) {
+          throw error;
+        }
+        sendJson(
+          req,
+          res,
+          {
+            detail: "Assistant workers are temporarily unavailable.",
+            code: "pooled_runtime_coordinator_ownership_lost",
+          },
+          503,
+        );
+        return;
+      }
+    }
+
+    const response = await fetch(target, {
+      method: req.method,
+      headers,
+      body,
+      redirect: "manual",
+      signal: abortController.signal,
+    });
+
+    if (
+      routingPolicy.mode === "pooled" &&
+      pooledRouteDecision?.status === "allowed" &&
+      pooledRouteDecision.handling === "hold_live_voice_session" &&
+      response.ok &&
+      pooledRequestHandle
+    ) {
+      const buffered = await readBoundedRuntimeResponse(response);
+      const bootstrap = parseManagedPooledVoiceBootstrap(buffered);
+      const held = bootstrap
+        ? runtimeWorkerSessionLeases.holdLiveVoiceSession({
+            sessionId: bootstrap.sessionId,
+            requestHandle: pooledRequestHandle,
+            identity: pooledIdentity,
+            expiresAtMs: bootstrap.expiresAtMs,
+          })
+        : null;
+      if (!bootstrap || held?.status !== "held") {
+        sendJson(
+          req,
+          res,
+          {
+            detail: "Managed voice could not retain a safe worker session.",
+            code: "pooled_voice_session_hold_failed",
+          },
+          503,
+        );
+        return;
+      }
+      retainPooledRequest = true;
+      applyRuntimeResponseHeaders(req, res, response);
+      res.end(buffered);
+      return;
+    }
+    await streamRuntimeResponse(req, res, response, abortController.signal);
   } finally {
-    res.end();
+    if (pooledRequestHandle) {
+      pooledModelKeyVault.revokeRequestCapability(pooledRequestHandle);
+      if (!retainPooledRequest) {
+        await finishPooledRuntimeRequest(pooledRequestHandle, pooledIdentity);
+      }
+    }
+    if (
+      pooledRouteDecision?.status === "allowed" &&
+      pooledRouteDecision.handling === "release_live_voice_session"
+    ) {
+      await runtimeWorkerSessionLeases.releaseLiveVoiceSession({
+        sessionId: pooledRouteDecision.sessionId,
+        identity: pooledIdentity,
+      });
+    }
+    const completedAt = Date.now();
+    const elapsedMs = Math.max(1, completedAt - requestStartedAt);
+    recordProxyRuntimeUsage(
+      admissionIdentity,
+      `${usageEventPrefix}:worker`,
+      "worker_ms",
+      elapsedMs,
+      completedAt,
+    );
+    if (requestKind.requestClass === "stream") {
+      recordProxyRuntimeUsage(
+        admissionIdentity,
+        `${usageEventPrefix}:stream`,
+        "stream_ms",
+        elapsedMs,
+        completedAt,
+      );
+    }
+    unregisterPooledAbort?.();
+    abortLifecycle.cleanup();
+    if (heartbeat) clearInterval(heartbeat);
+    if (admission.status === "admitted") {
+      releaseTenantRuntimeAdmission(
+        db,
+        tenantRuntimeAdmissionConfig,
+        admissionIdentity,
+        admission.token,
+        Date.now(),
+      );
+    }
+    if (!res.writableEnded && !res.destroyed) res.end();
   }
+}
+
+function parseManagedPooledVoiceBootstrap(buffered: Buffer): {
+  sessionId: string;
+  expiresAtMs: number;
+} | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(buffered.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  return parseManagedPooledVoiceSessionBootstrap(record);
+}
+
+async function finishPooledRuntimeRequest(
+  requestHandle: string,
+  identity: {
+    organizationId: string;
+    userId: string;
+    assistantId: string;
+    actorId: string;
+  },
+): Promise<void> {
+  try {
+    const result = await runtimeWorkerCoordinator.finishRequest({
+      requestHandle,
+      identity,
+    });
+    if (
+      result.status === "unknown_request" ||
+      result.status === "route_handle_mismatch" ||
+      result.status === "release_failed"
+    ) {
+      console.error("pooled_runtime_request_release_failed", {
+        status: result.status,
+      });
+    }
+  } catch {
+    console.error("pooled_runtime_request_release_failed", {
+      status: "exception",
+    });
+  }
+}
+
+function sendPooledRuntimeRouteRejection(
+  req: Request,
+  res: Response,
+  reason: Extract<
+    RuntimeWorkerProxyRouteDecision,
+    { status: "rejected" }
+  >["reason"],
+): void {
+  const malformed =
+    reason === "malformed_path" || reason === "unsupported_http_method";
+  sendJson(
+    req,
+    res,
+    {
+      detail: malformed
+        ? "This assistant request is invalid."
+        : "This feature currently requires a dedicated assistant runtime.",
+      code: `pooled_runtime_${reason}`,
+    },
+    malformed ? 400 : 409,
+  );
+}
+
+function recordProxyRuntimeUsage(
+  identity: {
+    organizationId: string;
+    userId: string;
+    assistantId: string;
+  },
+  eventId: string,
+  metric: TenantRuntimeUsageMetric,
+  value: number,
+  observedAtMs: number,
+): void {
+  try {
+    const result = recordTenantRuntimeUsage(
+      db,
+      tenantRuntimeOperationsConfig,
+      identity,
+      { eventId, metric, value, observedAtMs },
+      nowIso,
+    );
+    if (result.status === "rejected") {
+      console.error("tenant_runtime_usage_rejected", {
+        reason: result.reason,
+        metric,
+      });
+    }
+  } catch (error) {
+    console.error("tenant_runtime_usage_recording_failed", {
+      metric,
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+  }
+}
+
+function sendTenantStorageGuardRejection(
+  req: Request,
+  res: Response,
+  rejection: Extract<TenantStorageGuardResult, { status: "rejected" }>,
+): void {
+  const quotaExceeded = rejection.reason === "storage_quota_exceeded";
+  if (rejection.retryAfterMs !== null) {
+    res.setHeader(
+      "Retry-After",
+      String(Math.max(1, Math.ceil(rejection.retryAfterMs / 1_000))),
+    );
+  }
+  sendJson(
+    req,
+    res,
+    {
+      detail: quotaExceeded
+        ? "This assistant has reached its workspace storage limit."
+        : "Workspace storage is being verified. Please retry shortly.",
+      code: `tenant_runtime_${rejection.reason}`,
+    },
+    quotaExceeded ? 413 : rejection.reason === "invalid_tenant" ? 403 : 503,
+  );
+}
+
+function sendTenantRuntimeAdmissionRejection(
+  req: Request,
+  res: Response,
+  rejection: Extract<TenantRuntimeAdmissionResult, { status: "rejected" }>,
+): void {
+  const overloaded =
+    rejection.reason === "rate_limited" ||
+    rejection.reason === "request_concurrency_exhausted" ||
+    rejection.reason === "turn_concurrency_exhausted";
+  if (rejection.retryAfterMs !== null) {
+    res.setHeader(
+      "Retry-After",
+      String(Math.max(1, Math.ceil(rejection.retryAfterMs / 1_000))),
+    );
+  }
+  sendJson(
+    req,
+    res,
+    {
+      detail: overloaded
+        ? "This assistant is busy. Please retry shortly."
+        : "This assistant is temporarily unavailable.",
+      code: `tenant_runtime_${rejection.reason}`,
+    },
+    overloaded ? 429 : rejection.reason === "invalid_tenant" ? 403 : 503,
+  );
 }
 
 function asyncHandler(
@@ -1957,20 +2863,161 @@ app.post(
 
 app.use(express.raw({ type: "*/*", limit: "50mb" }));
 
+app.get(
+  RUNTIME_WORKER_OPERATOR_RECOVERY_PATH,
+  asyncHandler(async (req, res) => {
+    if (!runtimeWorkerOperatorRecoveryConfig.enabled) {
+      sendJson(req, res, { detail: "Not found." }, 404);
+      return;
+    }
+    if (
+      !authorizeRuntimeWorkerOperatorRecovery(
+        runtimeWorkerOperatorRecoveryConfig,
+        req.headers.authorization,
+      )
+    ) {
+      sendJson(req, res, { detail: "Invalid operator authorization." }, 401);
+      return;
+    }
+    sendJson(req, res, {
+      candidates: runtimeWorkerCoordinator.listOperatorRecoveryCandidates(),
+    });
+  }),
+);
+
+app.post(
+  RUNTIME_WORKER_OPERATOR_RECOVERY_PATH,
+  asyncHandler(async (req, res) => {
+    if (!runtimeWorkerOperatorRecoveryConfig.enabled) {
+      sendJson(req, res, { detail: "Not found." }, 404);
+      return;
+    }
+    if (
+      !authorizeRuntimeWorkerOperatorRecovery(
+        runtimeWorkerOperatorRecoveryConfig,
+        req.headers.authorization,
+      )
+    ) {
+      sendJson(req, res, { detail: "Invalid operator authorization." }, 401);
+      return;
+    }
+    const recovery = parseRuntimeWorkerOperatorRecoveryRequest(
+      parseJsonBody<unknown>(req),
+    );
+    if (!recovery) {
+      sendJson(req, res, { detail: "Invalid recovery request." }, 400);
+      return;
+    }
+
+    const result =
+      recovery.action === "release_restart_lease"
+        ? await runtimeWorkerCoordinator.recoverRestartQuarantine({
+            binding: recovery.binding,
+          })
+        : await runtimeWorkerCoordinator.discardQuarantinedState({
+            binding: recovery.binding,
+          });
+    const status =
+      result.status === "recovered" || result.status === "not_quarantined"
+        ? 200
+        : result.status === "recovery_failed"
+          ? 503
+          : 409;
+    sendJson(req, res, { result }, status);
+  }),
+);
+
+app.post(
+  POOLED_MODEL_KEY_RESOLVE_PATH,
+  asyncHandler(async (req, res) => {
+    if (!pooledCoordinatorOwnershipIsLive()) {
+      sendJson(req, res, { detail: "Model key service unavailable." }, 503);
+      return;
+    }
+    const authorization = req.headers.authorization ?? "";
+    const match =
+      /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u.exec(
+        authorization,
+      );
+    const body = parseJsonBody<{ provider?: unknown }>(req);
+    const result = pooledModelKeyVault.resolveWithCapability(
+      match?.[1] ?? "",
+      body?.provider,
+      Date.now(),
+    );
+    if (!result.ok) {
+      if (result.reason === "disabled") {
+        sendJson(req, res, { detail: "Model key service unavailable." }, 503);
+        return;
+      }
+      if (result.reason === "invalid_provider") {
+        sendJson(req, res, { detail: "Invalid model provider." }, 400);
+        return;
+      }
+      sendJson(req, res, { detail: "Invalid model key capability." }, 401);
+      return;
+    }
+    if (result.value === null) {
+      sendJson(req, res, { detail: "Model provider key not found." }, 404);
+      return;
+    }
+    if (!pooledCoordinatorOwnershipIsLive()) {
+      sendJson(req, res, { detail: "Model key service unavailable." }, 503);
+      return;
+    }
+    sendJson(req, res, { value: result.value });
+  }),
+);
+
 app.get("/healthz", (req, res) => sendJson(req, res, { ok: true }));
 app.get(
   "/readyz",
   asyncHandler(async (req, res) => {
+    if (env.runtimeMode === "control-plane") {
+      const configurationError = controlPlaneOnlyConfigurationError();
+      sendJson(
+        req,
+        res,
+        {
+          ok: configurationError === null,
+          gatewayStatus: null,
+          runtimeMode: env.runtimeMode,
+          provisionerReady: configurationError === null,
+          ...(pooledCoordinatorOwnershipIsLive()
+            ? { pooledRuntimeWorkers: runtimeWorkerStartup }
+            : {}),
+        },
+        configurationError === null ? 200 : 503,
+      );
+      return;
+    }
     try {
       const gateway = await fetch(`${env.gatewayUrl}/readyz`);
       sendJson(
         req,
         res,
-        { ok: gateway.ok, gatewayStatus: gateway.status },
+        {
+          ok: gateway.ok,
+          gatewayStatus: gateway.status,
+          ...(pooledCoordinatorOwnershipIsLive()
+            ? { pooledRuntimeWorkers: runtimeWorkerStartup }
+            : {}),
+        },
         gateway.ok ? 200 : 503,
       );
     } catch {
-      sendJson(req, res, { ok: false, gatewayStatus: null }, 503);
+      sendJson(
+        req,
+        res,
+        {
+          ok: false,
+          gatewayStatus: null,
+          ...(pooledCoordinatorOwnershipIsLive()
+            ? { pooledRuntimeWorkers: runtimeWorkerStartup }
+            : {}),
+        },
+        503,
+      );
     }
   }),
 );
@@ -2053,8 +3100,114 @@ if (runtimeProvisionerError) {
 }
 resumeRuntimeProvisioning();
 
+let runtimeWorkerHealthMonitor: ReturnType<typeof setInterval> | null = null;
+let runtimeWorkerHealthProbeInFlight = false;
+if (
+  runtimeWorkerStartup.status === "active" &&
+  runtimeWorkerCoordinatorOwnership
+) {
+  runtimeWorkerCoordinatorHeartbeat = setInterval(() => {
+    const renewed = runtimeWorkerCoordinatorOwnership.renew(
+      runtimeWorkerCoordinatorOwnershipConfig.ownershipTtlMs,
+      nowIso,
+    );
+    if (renewed.status === "lost") {
+      void fencePooledRuntimeCoordinator(
+        new RuntimeWorkerCoordinatorOwnershipLostError(
+          "Pooled runtime coordinator ownership was lost.",
+        ),
+      ).catch(() => {
+        console.error("runtime_worker_coordinator_fence_failed");
+      });
+    }
+  }, runtimeWorkerCoordinatorOwnershipConfig.heartbeatMs);
+  runtimeWorkerCoordinatorHeartbeat.unref();
+}
+if (runtimeWorkerStartup.status === "active") {
+  runtimeWorkerHealthMonitor = setInterval(() => {
+    if (runtimeWorkerHealthProbeInFlight) return;
+    runtimeWorkerHealthProbeInFlight = true;
+    void activatePooledRuntimeWorkersAtStartup(db, process.env, {
+      nowIso,
+      ...(runtimeWorkerCoordinatorOwnership
+        ? { coordinatorOwnership: runtimeWorkerCoordinatorOwnership }
+        : {}),
+    })
+      .catch(() => {
+        console.error("runtime_worker_health_probe_failed");
+      })
+      .finally(() => {
+        runtimeWorkerHealthProbeInFlight = false;
+      });
+  }, 30_000);
+  runtimeWorkerHealthMonitor.unref();
+}
+
+function observeRuntimeWorkerCapacity(): void {
+  try {
+    const result = persistRuntimeCapacityAlert(
+      db,
+      tenantRuntimeOperationsConfig,
+      getRuntimeWorkerCapacityTelemetry(
+        db,
+        runtimeWorkerPoolConfig,
+        Date.now(),
+      ),
+      Date.now(),
+      nowIso,
+    );
+    if (result.status === "alert" && result.persisted) {
+      console.warn("runtime_worker_capacity_alert", result.alert);
+    }
+  } catch (error) {
+    console.error("runtime_worker_capacity_observation_failed", {
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+  }
+}
+
+let runtimeCapacityMonitor: ReturnType<typeof setInterval> | null = null;
+if (
+  tenantRuntimeOperationsConfig.enabled &&
+  tenantRuntimeOperationsConfig.capacityAlertsEnabled
+) {
+  observeRuntimeWorkerCapacity();
+  runtimeCapacityMonitor = setInterval(
+    observeRuntimeWorkerCapacity,
+    Math.min(60_000, tenantRuntimeOperationsConfig.capacityAlertDedupWindowMs),
+  );
+  runtimeCapacityMonitor.unref();
+}
+
 // Bun's Node HTTP compatibility can let an Express-only process exit after
 // listen() unless another handle is active. Keep the control-plane alive in
 // local and container runtimes.
 const keepAlive = setInterval(() => {}, 2 ** 31 - 1);
-server.on("close", () => clearInterval(keepAlive));
+let shutdownStarted = false;
+const closeForShutdown = () => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  server.close();
+};
+process.once("SIGTERM", closeForShutdown);
+process.once("SIGINT", closeForShutdown);
+server.on("close", () => {
+  clearInterval(keepAlive);
+  if (runtimeWorkerHealthMonitor) clearInterval(runtimeWorkerHealthMonitor);
+  if (runtimeCapacityMonitor) clearInterval(runtimeCapacityMonitor);
+  if (runtimeWorkerCoordinatorHeartbeat) {
+    clearInterval(runtimeWorkerCoordinatorHeartbeat);
+    runtimeWorkerCoordinatorHeartbeat = null;
+  }
+  runtimeWorkerRequestAbortRegistry.abortAll(
+    new Error("Control plane is shutting down."),
+  );
+  pooledModelKeyVault.revokeAllRequestCapabilities();
+  void runtimeWorkerCoordinator.fenceCoordinatorOwnership().catch(() => {
+    console.error("runtime_worker_coordinator_fence_failed");
+  });
+  const released = runtimeWorkerCoordinatorOwnership?.release(nowIso);
+  if (released?.status === "lost" && !runtimeWorkerCoordinatorFenced) {
+    console.error("runtime_worker_coordinator_release_failed");
+  }
+});

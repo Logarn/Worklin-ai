@@ -298,6 +298,7 @@ describe("provisionRailwayRuntime", () => {
     expect(input.variables).toMatchObject({
       WORKLIN_RUNTIME_MODE: "isolated",
       WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
+      PLATFORM_ORGANIZATION_ID: assistant.org_id,
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
       WORKLIN_RUNTIME_ROOT: "/runtime/customer",

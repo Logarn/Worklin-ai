@@ -39,6 +39,31 @@ Safe storage limits protect the workspace volume from running out of disk. The d
 
 All HTTP API requests use a single `Authorization: Bearer <jwt>` header for authentication. The JWT carries identity, permissions, and policy versioning in a unified token.
 
+#### Pooled worker request boundary
+
+`WORKLIN_RUNTIME_MODE=pooled_worker` adds an immutable worker identity and
+active-lease generation to the normal JWT boundary. The assistant validates
+actor and gateway tokens against an atomic lease-authority file on every
+request. Ordinary work remains quarantined until the control plane restores or
+prepares an exact tenant assignment.
+
+Pooled mode is interactive-only. The daemon disables startup/background
+workers, fences conversations, tools, processes, timers, event subscribers,
+browser state, voice sessions, and assignment-bound caches, and exposes
+destructive state routes only to an authenticated gateway service token.
+Workspace export omits credentials and security state; sanitization must prove
+quiescence before the worker can be reassigned.
+
+Model-provider keys are resolved from the control plane through a short-lived
+request capability held in `AsyncLocalStorage`. The capability is removed from
+route headers, remains valid only while the response body is active, and aborts
+in-flight resolution on completion or cancellation. There is no pooled fallback
+to worker environment keys, CES credentials, managed inference, or a cached
+key-bearing provider adapter.
+
+See [`../docs/pooled-runtime-workers.md`](../docs/pooled-runtime-workers.md) for
+the cross-service lease, state, route, deployment, and canary contract.
+
 **Token schema (JWT claims):**
 
 | Claim           | Type                                    | Description                                                        |

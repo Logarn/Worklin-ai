@@ -297,6 +297,97 @@ describe("runtime proxy handler", () => {
     expect(capturedSignal).toBeInstanceOf(AbortSignal);
   });
 
+  test("connection timeout does not abort a response body after headers arrive", async () => {
+    fetchMock = mock(async () => {
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(" "));
+            setTimeout(() => {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({ accepted: true, messageId: "msg-1" }),
+                ),
+              );
+              controller.close();
+            }, 35);
+          },
+        }),
+        {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    });
+
+    const handler = createRuntimeProxyHandler(
+      makeConfig({ runtimeTimeoutMs: 10 }),
+    );
+    const response = await handler(
+      new Request("http://localhost:7830/v1/messages", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(JSON.parse((await response.text()).trim())).toEqual({
+      accepted: true,
+      messageId: "msg-1",
+    });
+  });
+
+  test("downstream cancellation remains attached after response headers", async () => {
+    const downstream = new AbortController();
+    let upstreamSignal: AbortSignal | null | undefined;
+    let observedUpstreamAbort = false;
+    fetchMock = mock(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        upstreamSignal = init?.signal;
+        upstreamSignal?.addEventListener(
+          "abort",
+          () => {
+            observedUpstreamAbort = true;
+          },
+          { once: true },
+        );
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(" "));
+            },
+          }),
+          {
+            status: 202,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      },
+    );
+
+    const handler = createRuntimeProxyHandler(
+      makeConfig({ runtimeTimeoutMs: 10 }),
+    );
+    const response = await handler(
+      new Request("http://localhost:7830/v1/messages", {
+        method: "POST",
+        body: "{}",
+        signal: downstream.signal,
+      }),
+    );
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+
+    // The connection-only timeout was cleared when headers arrived.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(upstreamSignal?.aborted).toBe(false);
+
+    downstream.abort("proxy client disconnected");
+    expect(upstreamSignal?.aborted).toBe(true);
+    expect(observedUpstreamAbort).toBe(true);
+    await reader.cancel();
+  });
+
   test("replaces client authorization with JWT service token when auth is not required", async () => {
     let capturedHeaders: Headers | undefined;
     fetchMock = mock(

@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { ensureRuntimeStackSchema } from "./runtime-stacks.js";
 import {
   claimRuntimeWorkerLease,
+  ensureRuntimeWorkerLeaseSchema,
   getActiveRuntimeWorkerLease,
   markRuntimeWorkerSanitized,
   releaseRuntimeWorkerLease,
@@ -120,10 +121,111 @@ describe("runtime worker leases", () => {
           assistant_id: "asst-1",
           org_id: "org-1",
           lease_token: "lease-1",
+          lease_generation: 1,
         },
       },
     });
     expect(repeated.assignment).toEqual(first.assignment);
+  });
+
+  test("increments a monotonic generation for every new lease", () => {
+    const db = setupDb();
+    const first = claimRuntimeWorkerLease(
+      db,
+      assistantOne,
+      ["worker-1"],
+      1,
+      "lease-1",
+      1_000,
+      1_000,
+      NOW_ISO,
+    );
+    expect(first.assignment?.lease.lease_generation).toBe(1);
+
+    releaseRuntimeWorkerLease(db, assistantOne, "lease-1", 1_100, NOW_ISO);
+    const second = claimRuntimeWorkerLease(
+      db,
+      assistantOne,
+      ["worker-1"],
+      1,
+      "lease-2",
+      1_101,
+      1_000,
+      NOW_ISO,
+    );
+    expect(second.assignment?.lease.lease_generation).toBe(2);
+
+    const repeated = claimRuntimeWorkerLease(
+      db,
+      assistantOne,
+      ["worker-1"],
+      1,
+      "lease-2",
+      1_102,
+      1_000,
+      NOW_ISO,
+    );
+    expect(repeated.assignment?.lease.lease_generation).toBe(2);
+  });
+
+  test("backfills lease generation without replacing existing rows", () => {
+    const db = setupDb();
+    db.exec("DROP TABLE runtime_worker_leases");
+    db.exec(`
+      CREATE TABLE runtime_worker_leases (
+        runtime_stack_id TEXT PRIMARY KEY,
+        assistant_id TEXT,
+        org_id TEXT,
+        lease_token TEXT UNIQUE,
+        lease_expires_at INTEGER,
+        acquired_at INTEGER,
+        released_at INTEGER,
+        sanitized_at INTEGER,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO runtime_worker_leases (
+        runtime_stack_id,
+        assistant_id,
+        org_id,
+        lease_token,
+        lease_expires_at,
+        acquired_at,
+        released_at,
+        sanitized_at,
+        updated_at
+      ) VALUES (
+        'worker-1',
+        'asst-1',
+        'org-1',
+        'lease-existing',
+        5000,
+        1000,
+        NULL,
+        NULL,
+        '2026-07-20T10:00:00.000Z'
+      );
+    `);
+
+    ensureRuntimeWorkerLeaseSchema(db);
+
+    expect(
+      db
+        .query<
+          {
+            lease_token: string | null;
+            lease_generation: number;
+          },
+          []
+        >(
+          `SELECT lease_token, lease_generation
+           FROM runtime_worker_leases
+           WHERE runtime_stack_id = 'worker-1'`,
+        )
+        .get(),
+    ).toEqual({
+      lease_token: "lease-existing",
+      lease_generation: 0,
+    });
   });
 
   test("enforces the configured concurrent lease capacity atomically", () => {

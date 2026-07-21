@@ -23,6 +23,7 @@ export interface RuntimeWorkerLeaseRow {
   assistant_id: string | null;
   org_id: string | null;
   lease_token: string | null;
+  lease_generation: number;
   lease_expires_at: number | null;
   acquired_at: number | null;
   released_at: number | null;
@@ -53,6 +54,7 @@ export function ensureRuntimeWorkerLeaseSchema(db: Database): void {
       assistant_id TEXT,
       org_id TEXT,
       lease_token TEXT UNIQUE,
+      lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation >= 0),
       lease_expires_at INTEGER,
       acquired_at INTEGER,
       released_at INTEGER,
@@ -70,6 +72,17 @@ export function ensureRuntimeWorkerLeaseSchema(db: Database): void {
       ON runtime_worker_leases(lease_expires_at)
       WHERE lease_token IS NOT NULL;
   `);
+  const columns = new Set(
+    db
+      .query<{ name: string }, []>("PRAGMA table_info(runtime_worker_leases)")
+      .all()
+      .map(({ name }) => name),
+  );
+  if (!columns.has("lease_generation")) {
+    db.exec(
+      "ALTER TABLE runtime_worker_leases ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation >= 0)",
+    );
+  }
 }
 
 function getWorkerStack(
@@ -284,16 +297,18 @@ export function claimRuntimeWorkerLease(
            assistant_id,
            org_id,
            lease_token,
+           lease_generation,
            lease_expires_at,
            acquired_at,
            released_at,
            sanitized_at,
            updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+         ) VALUES (?, ?, ?, ?, 1, ?, ?, NULL, NULL, ?)
          ON CONFLICT(runtime_stack_id) DO UPDATE SET
            assistant_id = excluded.assistant_id,
            org_id = excluded.org_id,
            lease_token = excluded.lease_token,
+           lease_generation = runtime_worker_leases.lease_generation + 1,
            lease_expires_at = excluded.lease_expires_at,
            acquired_at = excluded.acquired_at,
            released_at = NULL,

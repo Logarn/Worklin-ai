@@ -504,7 +504,7 @@ async function importBundle(
       },
     };
   } finally {
-    void unlink(tempPath);
+    await unlink(tempPath).catch(() => {});
   }
 }
 
@@ -712,10 +712,14 @@ async function handleBundle({ pathParams }: RouteHandlerArgs) {
 async function handleShareCloud({ pathParams }: RouteHandlerArgs) {
   const appId = pathParams?.id as string;
   const result = await packageApp(appId);
-  const bundleData = readFileSync(result.bundlePath);
-  const { shareToken } = createSharedAppLink(bundleData, result.manifest);
-  const shareUrl = `/v1/apps/shared/${shareToken}`;
-  return { success: true, shareToken, shareUrl };
+  try {
+    const bundleData = readFileSync(result.bundlePath);
+    const { shareToken } = createSharedAppLink(bundleData, result.manifest);
+    const shareUrl = `/v1/apps/shared/${shareToken}`;
+    return { success: true, shareToken, shareUrl };
+  } finally {
+    await unlink(result.bundlePath).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------

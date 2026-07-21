@@ -21,6 +21,7 @@ import type {
   TurnChannelContext,
   TurnInterfaceContext,
 } from "../channels/types.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import {
   contextWindowConfigFromEffective,
   type EffectiveContextWindow,
@@ -89,6 +90,7 @@ import {
   type EventHandlerDeps,
   finalizePendingToolResultRow,
   markHistoryStrippedBestEffort,
+  settlePendingPartialPersistOnExit,
 } from "./conversation-agent-loop-handlers.js";
 import {
   approveHostAttachmentRead,
@@ -1410,39 +1412,58 @@ export async function runAgentLoopImpl(
       publishLoopMessagesChanged();
     }
   } finally {
+    if (isPooledWorkerRuntime()) {
+      await settlePendingPartialPersistOnExit(state);
+    }
     if (turnStarted) {
       ctx.turnCount++;
       const config = getConfig();
       const maxWait = config.workspaceGit?.turnCommitMaxWaitMs ?? 4000;
-      const deadlineMs = Date.now() + maxWait;
       const commitTurnChangesFn = ctx.commitTurnChanges ?? commitTurnChanges;
-      const commitPromise = commitTurnChangesFn(
-        ctx.workingDir,
-        ctx.conversationId,
-        ctx.turnCount,
-        undefined,
-        deadlineMs,
-      );
-      const outcome = await raceWithTimeout(commitPromise, maxWait);
-      if (outcome === "timed_out") {
-        rlog.warn(
-          {
-            turnNumber: ctx.turnCount,
-            maxWaitMs: maxWait,
-            conversationId: ctx.conversationId,
-          },
-          "Turn-boundary commit timed out — continuing without waiting (commit still runs in background)",
+      if (isPooledWorkerRuntime()) {
+        // Pooled workers cannot release a tenant lease while turn-boundary
+        // filesystem work is still running. Keep all three promises inside
+        // the authoritative agent-loop registry; drain fails closed if they
+        // cannot settle.
+        await commitTurnChangesFn(
+          ctx.workingDir,
+          ctx.conversationId,
+          ctx.turnCount,
         );
+        await Promise.all([
+          commitAppTurnChanges(ctx.conversationId, ctx.turnCount),
+          writeRelationshipState(),
+        ]);
+      } else {
+        const deadlineMs = Date.now() + maxWait;
+        const commitPromise = commitTurnChangesFn(
+          ctx.workingDir,
+          ctx.conversationId,
+          ctx.turnCount,
+          undefined,
+          deadlineMs,
+        );
+        const outcome = await raceWithTimeout(commitPromise, maxWait);
+        if (outcome === "timed_out") {
+          rlog.warn(
+            {
+              turnNumber: ctx.turnCount,
+              maxWaitMs: maxWait,
+              conversationId: ctx.conversationId,
+            },
+            "Turn-boundary commit timed out — continuing without waiting (commit still runs in background)",
+          );
+        }
+
+        // Commit app changes (fire-and-forget — apps repo is separate from workspace)
+        void commitAppTurnChanges(ctx.conversationId, ctx.turnCount);
+
+        // Recompute relationship-state.json at turn boundary (fire-and-forget).
+        // The writer swallows its own errors, but we still guard with catch()
+        // here so a regression in the writer can never bubble out of the
+        // agent loop and reject an otherwise-complete turn.
+        void writeRelationshipState().catch(() => {});
       }
-
-      // Commit app changes (fire-and-forget — apps repo is separate from workspace)
-      void commitAppTurnChanges(ctx.conversationId, ctx.turnCount);
-
-      // Recompute relationship-state.json at turn boundary (fire-and-forget).
-      // The writer swallows its own errors, but we still guard with catch()
-      // here so a regression in the writer can never bubble out of the
-      // agent loop and reject an otherwise-complete turn.
-      void writeRelationshipState().catch(() => {});
     }
 
     ctx.profiler.emitSummary(ctx.traceEmitter, reqId);
@@ -1471,7 +1492,17 @@ export async function runAgentLoopImpl(
     // the API, enabling stable prefix caching across turns.  Compaction
     // consolidates when it summarizes old messages (cache miss is expected).
 
-    ctx.drainQueue(yieldedForHandoff ? "checkpoint_handoff" : "loop_complete");
+    const drainReason = yieldedForHandoff
+      ? "checkpoint_handoff"
+      : "loop_complete";
+    if (isPooledWorkerRuntime()) {
+      // The drain path can persist a queued message before it registers the
+      // next agent loop. Await that handoff so pooled quiescence can never
+      // observe a transient zero and reuse the process underneath it.
+      await ctx.drainQueue(drainReason);
+    } else {
+      ctx.drainQueue(drainReason);
+    }
 
     // Clear conversation tags so they don't leak into unrelated error captures
     // (e.g. unhandledRejection from a different async chain).

@@ -1,4 +1,5 @@
 import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import type { AssistantConfig } from "../config/schema.js";
 import { type LLMConfig } from "../config/schemas/llm.js";
@@ -170,6 +171,7 @@ export async function initializeProviders(
     "mainAgent",
     config.llm,
   ).provider;
+  const pooledWorker = isPooledWorkerRuntime();
 
   for (const entry of PROVIDER_CATALOG) {
     if (
@@ -180,6 +182,9 @@ export async function initializeProviders(
     }
 
     const isKeyless = entry.setupMode === "keyless";
+    // Tenant keys are request-scoped in pooled workers. Never place a
+    // key-bearing adapter in this process-global registry.
+    if (pooledWorker && !isKeyless) continue;
 
     // Credential resolution: user key first, managed proxy second. Keyless
     // providers (e.g. ollama) skip both — they only need to be configured as
@@ -259,7 +264,8 @@ export async function resolveProviderFromConnection(
 ): Promise<Provider | null> {
   const model = opts.model ?? resolveModel(config, connection.provider);
   const cacheKey = getConnectionProviderCacheKey(connection, model);
-  const cached = connectionProviders.get(cacheKey);
+  const cacheable = !isPooledWorkerRuntime();
+  const cached = cacheable ? connectionProviders.get(cacheKey) : undefined;
   if (cached) return cached;
 
   const authResult = await resolveAuth(connection.auth, connection.provider, {
@@ -305,7 +311,7 @@ export async function resolveProviderFromConnection(
     },
   );
 
-  if (provider) {
+  if (provider && cacheable) {
     connectionProviders.set(cacheKey, provider);
   }
 

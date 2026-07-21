@@ -351,6 +351,44 @@ describe("identity routes — health endpoint", () => {
       expect(res.status).toBe(200);
     });
 
+    test("pooled worker readyz remains unavailable until daemon startup completes", async () => {
+      process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+      const mockClient = {
+        isReady: () => true,
+        close: () => {},
+      } as unknown as import("../credential-execution/client.js").CesClient;
+      setCesClient(mockClient);
+      markDaemonNotReady("daemon_starting");
+
+      const res = handleReadyz();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        status: "starting",
+        reason: "daemon_starting",
+      });
+    });
+
+    test("pooled worker readyz does not require intentionally disabled CES", async () => {
+      process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+      setCesClient(undefined);
+
+      const res = handleReadyz();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "ok" });
+    });
+
+    test("pooled worker readyz ignores a dormant CES client after daemon startup", () => {
+      process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+      const mockClient = {
+        isReady: () => false,
+        close: () => {},
+      } as unknown as import("../credential-execution/client.js").CesClient;
+      setCesClient(mockClient);
+
+      const res = handleReadyz();
+      expect(res.status).toBe(200);
+    });
+
     test("/v1/health reports ces.connected=true when CES is ready", async () => {
       const mockClient = {
         isReady: () => true,
