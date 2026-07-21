@@ -422,8 +422,8 @@ describe("five-customer isolated runtime launch", () => {
       new Set(customers.map((customer) => customer.assistantId)).size,
     ).toBe(CUSTOMER_COUNT);
 
-    // Hatch only prepares the assistant. The first real assistant request is
-    // what claims capacity and starts each isolated runtime.
+    // Hatch starts each isolated runtime. A concurrent assistant request
+    // must reuse that same idempotent provisioning attempt.
     const preparingResponses = await Promise.all(
       customers.map((customer) =>
         fetch(

@@ -181,22 +181,153 @@ function seedAuthenticatedUser(
       id, email, username, first_name, last_name, consent_json, created_at,
       updated_at
     ) VALUES (?, ?, ?, '', '', NULL, ?, ?)`,
+  ).run(userId, `${userId}@example.com`, userId, timestamp, timestamp);
+  db.query(
+    "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+  ).run(sessionId, userId, Math.floor(Date.now() / 1000) + 3_600, timestamp);
+  db.close();
+}
+
+interface RuntimeWakeFixture {
+  assistantId: string;
+  orgId: string;
+  ownerConsent?: string | null;
+  ownerSessionId: string;
+  ownerUserId: string;
+  status?: RuntimeStackRow["status"];
+}
+
+function seedRuntimeWakeFixture(
+  db: Database,
+  fixture: RuntimeWakeFixture,
+): RuntimeStackRow {
+  const timestamp = new Date().toISOString();
+  const runtimeStackId = `rt-${fixture.assistantId}`;
+  const status = fixture.status ?? "provisioning";
+  const isActive = status === "active";
+  const ownerConsent =
+    fixture.ownerConsent === undefined
+      ? ACCEPTED_CONSENT
+      : fixture.ownerConsent;
+
+  db.query(
+    `INSERT INTO users (
+      id, email, username, first_name, last_name, consent_json, created_at,
+      updated_at
+    ) VALUES (?, ?, ?, '', '', ?, ?, ?)`,
   ).run(
-    userId,
-    `${userId}@example.com`,
-    userId,
+    fixture.ownerUserId,
+    `${fixture.ownerUserId}@example.com`,
+    fixture.ownerUserId,
+    ownerConsent,
+    timestamp,
+    timestamp,
+  );
+  db.query(
+    `INSERT INTO organizations (
+      id, user_id, name, is_default, created_at, updated_at
+    ) VALUES (?, ?, ?, 1, ?, ?)`,
+  ).run(
+    fixture.orgId,
+    fixture.ownerUserId,
+    fixture.orgId,
+    timestamp,
+    timestamp,
+  );
+  db.query(
+    `INSERT INTO organization_memberships (
+      org_id, user_id, role, status, created_at, updated_at
+    ) VALUES (?, ?, 'admin', 'active', ?, ?)`,
+  ).run(fixture.orgId, fixture.ownerUserId, timestamp, timestamp);
+  db.query(
+    `INSERT INTO assistants (
+      id, user_id, org_id, name, runtime_stack_id, isolation_version,
+      is_default, created_at, updated_at
+    ) VALUES (?, ?, ?, 'Worklin', ?, 2, 1, ?, ?)`,
+  ).run(
+    fixture.assistantId,
+    fixture.ownerUserId,
+    fixture.orgId,
+    runtimeStackId,
+    timestamp,
+    timestamp,
+  );
+  db.query(
+    `INSERT INTO runtime_stacks (
+      id, org_id, assistant_id, status, provider, gateway_url,
+      public_ingress_url, workspace_volume_ref, service_ref,
+      actor_signing_key_scope, last_health_status, last_error, created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, 'railway', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+  ).run(
+    runtimeStackId,
+    fixture.orgId,
+    fixture.assistantId,
+    status,
+    isActive ? `http://${fixture.assistantId}.railway.internal:3000` : null,
+    "https://worklin.example.com",
+    isActive ? `volume-${fixture.assistantId}` : null,
+    isActive ? `service-${fixture.assistantId}` : null,
+    `runtime_v1:${runtimeStackId}`,
+    isActive ? "200" : null,
     timestamp,
     timestamp,
   );
   db.query(
     "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
   ).run(
-    sessionId,
-    userId,
+    fixture.ownerSessionId,
+    fixture.ownerUserId,
     Math.floor(Date.now() / 1000) + 3_600,
     timestamp,
   );
-  db.close();
+
+  return db
+    .query<RuntimeStackRow, [string]>(
+      "SELECT * FROM runtime_stacks WHERE id = ?",
+    )
+    .get(runtimeStackId)!;
+}
+
+async function waitForRuntimeStack(
+  dbPath: string,
+  runtimeStackId: string,
+  predicate: (stack: RuntimeStackRow) => boolean,
+): Promise<RuntimeStackRow> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const db = new Database(dbPath, { readonly: true });
+    const stack = db
+      .query<RuntimeStackRow, [string]>(
+        "SELECT * FROM runtime_stacks WHERE id = ?",
+      )
+      .get(runtimeStackId);
+    db.close();
+    if (stack && predicate(stack)) return stack;
+    await Bun.sleep(10);
+  }
+  throw new Error(
+    `Runtime stack ${runtimeStackId} did not reach its target state.`,
+  );
+}
+
+function railwayProvisioningOverrides(
+  railwayApiEndpoint: string,
+  maxRuntimeServices = 10,
+): Record<string, string> {
+  return {
+    WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+    WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+    WORKLIN_RAILWAY_API_ENDPOINT: railwayApiEndpoint,
+    WORKLIN_RAILWAY_PROJECT_TOKEN: "project-token",
+    WORKLIN_RAILWAY_PROJECT_ID: "project-1",
+    WORKLIN_RAILWAY_ENVIRONMENT_ID: "environment-1",
+    WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: String(maxRuntimeServices),
+    WORKLIN_RAILWAY_PROVISIONING_CONCURRENCY: "5",
+    WORKLIN_RAILWAY_POLL_INTERVAL_MS: "1",
+    WORKLIN_RAILWAY_DEPLOY_TIMEOUT_MS: "100",
+    WORKLIN_RAILWAY_HEALTH_TIMEOUT_MS: "20",
+  };
 }
 
 describe("control-plane billing capability", () => {
@@ -502,7 +633,9 @@ describe("control-plane runtime provisioning guards", () => {
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toMatchObject({
       code: "platform_hosted_disabled",
-      runtime_status: "provisioning",
+      runtime_status: "failed",
+      runtime_last_error:
+        "Managed assistant runtime provisioning is unavailable.",
     });
 
     const assistant = db
@@ -1691,7 +1824,526 @@ describe("control-plane runtime provisioning guards", () => {
     expect(runtimeRequests).toBe(0);
   });
 
-  test("startup does not provision assistants before their first real request", async () => {
+  test("authenticated assistant reads schedule consented provisioning stacks exactly once", async () => {
+    const railwayOperations: Array<{
+      query: string;
+      variables: Record<string, unknown>;
+    }> = [];
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        railwayOperations.push(
+          (await request.json()) as {
+            query: string;
+            variables: Record<string, unknown>;
+          },
+        );
+        await Bun.sleep(100);
+        return Response.json({
+          errors: [
+            { message: "Stop after proving the runtime was scheduled." },
+          ],
+        });
+      },
+    });
+    servers.push(railway);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const fixtures = [
+      {
+        route: "/v1/assistants/active/",
+        assistantId: "asst-wake-active-read",
+        orgId: "org-wake-active-read",
+        ownerUserId: "user-wake-active-read",
+        ownerSessionId: "session-wake-active-read",
+      },
+      {
+        route: "/v1/assistants/?hosting=platform",
+        assistantId: "asst-wake-list-read",
+        orgId: "org-wake-list-read",
+        ownerUserId: "user-wake-list-read",
+        ownerSessionId: "session-wake-list-read",
+      },
+      {
+        route: "/v1/assistants/asst-wake-detail-read/",
+        assistantId: "asst-wake-detail-read",
+        orgId: "org-wake-detail-read",
+        ownerUserId: "user-wake-detail-read",
+        ownerSessionId: "session-wake-detail-read",
+      },
+      {
+        route: "/v1/assistants/asst-wake-operational-read/operational/status/",
+        assistantId: "asst-wake-operational-read",
+        orgId: "org-wake-operational-read",
+        ownerUserId: "user-wake-operational-read",
+        ownerSessionId: "session-wake-operational-read",
+      },
+    ].map((fixture) => ({
+      ...fixture,
+      requestSessionId: fixture.ownerSessionId,
+      runtimeStack: seedRuntimeWakeFixture(db, fixture),
+    }));
+    const listFixture = fixtures[1]!;
+    const secondaryListAssistantId = "asst-wake-list-secondary";
+    const secondaryListStackId = `rt-${secondaryListAssistantId}`;
+    const secondaryListTimestamp = new Date(Date.now() + 1_000).toISOString();
+    db.query(
+      `INSERT INTO assistants (
+        id, user_id, org_id, name, runtime_stack_id, isolation_version,
+        is_default, created_at, updated_at
+      ) VALUES (?, ?, ?, 'Worklin Secondary', ?, 2, 0, ?, ?)`,
+    ).run(
+      secondaryListAssistantId,
+      listFixture.ownerUserId,
+      listFixture.orgId,
+      secondaryListStackId,
+      secondaryListTimestamp,
+      secondaryListTimestamp,
+    );
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (
+        ?, ?, ?, 'provisioning', 'railway', NULL,
+        'https://worklin.example.com', NULL, NULL, ?, NULL, NULL, ?, ?
+      )`,
+    ).run(
+      secondaryListStackId,
+      listFixture.orgId,
+      secondaryListAssistantId,
+      `runtime_v1:${secondaryListStackId}`,
+      secondaryListTimestamp,
+      secondaryListTimestamp,
+    );
+    const memberFixture = fixtures[2]!;
+    const memberTimestamp = new Date().toISOString();
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES (?, ?, ?, '', '', ?, ?, ?)`,
+    ).run(
+      "user-wake-detail-member",
+      "wake-detail-member@example.com",
+      "wake-detail-member",
+      ACCEPTED_CONSENT,
+      memberTimestamp,
+      memberTimestamp,
+    );
+    db.query(
+      `INSERT INTO organization_memberships (
+        org_id, user_id, role, status, created_at, updated_at
+      ) VALUES (?, ?, 'admin', 'active', ?, ?)`,
+    ).run(
+      memberFixture.orgId,
+      "user-wake-detail-member",
+      memberTimestamp,
+      memberTimestamp,
+    );
+    db.query(
+      "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      "session-wake-detail-member",
+      "user-wake-detail-member",
+      Math.floor(Date.now() / 1000) + 3_600,
+      memberTimestamp,
+    );
+    memberFixture.requestSessionId = "session-wake-detail-member";
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(
+      port,
+      dbPath,
+      railwayProvisioningOverrides(`http://127.0.0.1:${railway.port}`),
+    );
+    await waitForHealth(origin);
+
+    const firstResponses = await Promise.all(
+      fixtures.map((fixture) =>
+        fetch(`${origin}${fixture.route}`, {
+          headers: authenticatedHeaders(fixture.requestSessionId),
+        }),
+      ),
+    );
+    expect(firstResponses.map((response) => response.status)).toEqual([
+      200, 200, 200, 200,
+    ]);
+
+    const repeatedResponses = await Promise.all(
+      fixtures.map((fixture) =>
+        fetch(`${origin}${fixture.route}`, {
+          headers: authenticatedHeaders(fixture.requestSessionId),
+        }),
+      ),
+    );
+    expect(repeatedResponses.map((response) => response.status)).toEqual([
+      200, 200, 200, 200,
+    ]);
+
+    await Promise.all(
+      fixtures.map((fixture) =>
+        waitForRuntimeStack(
+          dbPath,
+          fixture.runtimeStack.id,
+          (stack) => stack.status === "failed",
+        ),
+      ),
+    );
+    await Bun.sleep(50);
+    expect(railwayOperations).toHaveLength(fixtures.length);
+    const verificationDb = new Database(dbPath, { readonly: true });
+    expect(
+      verificationDb
+        .query<RuntimeStackRow, [string]>(
+          "SELECT * FROM runtime_stacks WHERE id = ?",
+        )
+        .get(secondaryListStackId),
+    ).toMatchObject({
+      status: "provisioning",
+      provisioning_lease_token: null,
+      service_create_attempted_at: null,
+      volume_create_attempted_at: null,
+    });
+    verificationDb.close();
+  });
+
+  test("hatch schedules a consented runtime and does not duplicate the attempt", async () => {
+    const railwayOperations: Array<{
+      query: string;
+      variables: Record<string, unknown>;
+    }> = [];
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        railwayOperations.push(
+          (await request.json()) as {
+            query: string;
+            variables: Record<string, unknown>;
+          },
+        );
+        return Response.json({
+          errors: [
+            { message: "Stop after proving hatch scheduled the runtime." },
+          ],
+        });
+      },
+    });
+    servers.push(railway);
+
+    const dbPath = createTempDbPath();
+    seedAuthenticatedUser(dbPath, {
+      userId: "user-wake-hatch",
+      sessionId: "session-wake-hatch",
+    });
+    const db = new Database(dbPath);
+    db.query("UPDATE users SET consent_json = ? WHERE id = ?").run(
+      ACCEPTED_CONSENT,
+      "user-wake-hatch",
+    );
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(
+      port,
+      dbPath,
+      railwayProvisioningOverrides(`http://127.0.0.1:${railway.port}`),
+    );
+    await waitForHealth(origin);
+
+    const firstHatch = await fetch(`${origin}/v1/assistants/hatch/`, {
+      method: "POST",
+      headers: authenticatedHeaders("session-wake-hatch"),
+      body: "{}",
+    });
+    expect(firstHatch.status).toBe(201);
+    const firstPayload = (await firstHatch.json()) as {
+      runtime_stack_id: string;
+    };
+    await waitForRuntimeStack(
+      dbPath,
+      firstPayload.runtime_stack_id,
+      (stack) => stack.status === "failed",
+    );
+    expect(railwayOperations).toHaveLength(1);
+
+    const repeatedHatch = await fetch(`${origin}/v1/assistants/hatch/`, {
+      method: "POST",
+      headers: authenticatedHeaders("session-wake-hatch"),
+      body: "{}",
+    });
+    expect(repeatedHatch.status).toBe(200);
+    await Bun.sleep(50);
+    expect(railwayOperations).toHaveLength(1);
+  });
+
+  test("unconsented owners and unrelated users cannot schedule a runtime", async () => {
+    let railwayRequestCount = 0;
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        railwayRequestCount += 1;
+        return Response.json({ errors: [{ message: "Unexpected request" }] });
+      },
+    });
+    servers.push(railway);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const fixture = {
+      assistantId: "asst-wake-unconsented-owner",
+      orgId: "org-wake-unconsented-owner",
+      ownerConsent: null,
+      ownerSessionId: "session-wake-unconsented-owner",
+      ownerUserId: "user-wake-unconsented-owner",
+    };
+    const runtimeStack = seedRuntimeWakeFixture(db, fixture);
+    const timestamp = new Date().toISOString();
+    db.query(
+      `INSERT INTO users (
+        id, email, username, first_name, last_name, consent_json, created_at,
+        updated_at
+      ) VALUES
+        ('user-wake-consented-member', 'wake-member@example.com', 'wake-member', '', '', ?, ?, ?),
+        ('user-wake-unrelated', 'wake-unrelated@example.com', 'wake-unrelated', '', '', ?, ?, ?)`,
+    ).run(
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+      ACCEPTED_CONSENT,
+      timestamp,
+      timestamp,
+    );
+    db.query(
+      `INSERT INTO organization_memberships (
+        org_id, user_id, role, status, created_at, updated_at
+      ) VALUES (?, 'user-wake-consented-member', 'admin', 'active', ?, ?)`,
+    ).run(fixture.orgId, timestamp, timestamp);
+    db.query(
+      `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES
+        ('session-wake-consented-member', 'user-wake-consented-member', ?, ?),
+        ('session-wake-unrelated', 'user-wake-unrelated', ?, ?)`,
+    ).run(
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+      Math.floor(Date.now() / 1000) + 3_600,
+      timestamp,
+    );
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(
+      port,
+      dbPath,
+      railwayProvisioningOverrides(`http://127.0.0.1:${railway.port}`),
+    );
+    await waitForHealth(origin);
+
+    const ownerResponse = await fetch(`${origin}/v1/assistants/active/`, {
+      headers: authenticatedHeaders(fixture.ownerSessionId),
+    });
+    expect(ownerResponse.status).toBe(200);
+
+    const memberResponse = await fetch(
+      `${origin}/v1/assistants/${fixture.assistantId}/`,
+      {
+        headers: {
+          ...authenticatedHeaders("session-wake-consented-member"),
+          "Vellum-Organization-Id": fixture.orgId,
+        },
+      },
+    );
+    expect(memberResponse.status).toBe(200);
+
+    const unrelatedResponse = await fetch(
+      `${origin}/v1/assistants/${fixture.assistantId}/`,
+      { headers: authenticatedHeaders("session-wake-unrelated") },
+    );
+    expect(unrelatedResponse.status).toBe(404);
+
+    await Bun.sleep(100);
+    expect(railwayRequestCount).toBe(0);
+    const unchanged = await waitForRuntimeStack(
+      dbPath,
+      runtimeStack.id,
+      (stack) => stack.status === "provisioning",
+    );
+    expect(unchanged.provisioning_lease_token).toBeNull();
+    expect(unchanged.service_create_attempted_at).toBeNull();
+    expect(unchanged.volume_create_attempted_at).toBeNull();
+  });
+
+  test("active runtimes are returned without another provisioning attempt", async () => {
+    let railwayRequestCount = 0;
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        railwayRequestCount += 1;
+        return Response.json({ errors: [{ message: "Unexpected request" }] });
+      },
+    });
+    servers.push(railway);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    const fixture = {
+      assistantId: "asst-wake-already-active",
+      orgId: "org-wake-already-active",
+      ownerSessionId: "session-wake-already-active",
+      ownerUserId: "user-wake-already-active",
+      status: "active" as const,
+    };
+    seedRuntimeWakeFixture(db, fixture);
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(
+      port,
+      dbPath,
+      railwayProvisioningOverrides(`http://127.0.0.1:${railway.port}`),
+    );
+    await waitForHealth(origin);
+
+    const responses = await Promise.all([
+      fetch(`${origin}/v1/assistants/`, {
+        headers: authenticatedHeaders(fixture.ownerSessionId),
+      }),
+      fetch(`${origin}/v1/assistants/active/`, {
+        headers: authenticatedHeaders(fixture.ownerSessionId),
+      }),
+      fetch(`${origin}/v1/assistants/${fixture.assistantId}/`, {
+        headers: authenticatedHeaders(fixture.ownerSessionId),
+      }),
+      fetch(
+        `${origin}/v1/assistants/${fixture.assistantId}/operational/status/`,
+        { headers: authenticatedHeaders(fixture.ownerSessionId) },
+      ),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([
+      200, 200, 200, 200,
+    ]);
+    await Bun.sleep(100);
+    expect(railwayRequestCount).toBe(0);
+  });
+
+  test("runtime capacity failures remain failed, useful, and fail closed", async () => {
+    const railwayOperations: Array<{
+      query: string;
+      variables: Record<string, unknown>;
+    }> = [];
+    const railway = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const operation = (await request.json()) as {
+          query: string;
+          variables: Record<string, unknown>;
+        };
+        railwayOperations.push(operation);
+        if (operation.query.includes("runtimeProjectServices")) {
+          return Response.json({
+            data: { project: { services: { edges: [] } } },
+          });
+        }
+        return Response.json({ errors: [{ message: "Unexpected operation" }] });
+      },
+    });
+    servers.push(railway);
+
+    const dbPath = createTempDbPath();
+    const db = new Database(dbPath);
+    createControlPlaneSchema(db);
+    seedRuntimeWakeFixture(db, {
+      assistantId: "asst-wake-capacity-holder",
+      orgId: "org-wake-capacity-holder",
+      ownerSessionId: "session-wake-capacity-holder",
+      ownerUserId: "user-wake-capacity-holder",
+      status: "active",
+    });
+    const pendingFixture = {
+      assistantId: "asst-wake-capacity-blocked",
+      orgId: "org-wake-capacity-blocked",
+      ownerSessionId: "session-wake-capacity-blocked",
+      ownerUserId: "user-wake-capacity-blocked",
+    };
+    const pendingStack = seedRuntimeWakeFixture(db, pendingFixture);
+    db.close();
+
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(
+      port,
+      dbPath,
+      railwayProvisioningOverrides(`http://127.0.0.1:${railway.port}`, 1),
+    );
+    await waitForHealth(origin);
+
+    const detailResponse = await fetch(
+      `${origin}/v1/assistants/${pendingFixture.assistantId}/`,
+      { headers: authenticatedHeaders(pendingFixture.ownerSessionId) },
+    );
+    expect(detailResponse.status).toBe(200);
+    const failedStack = await waitForRuntimeStack(
+      dbPath,
+      pendingStack.id,
+      (stack) => stack.status === "failed",
+    );
+    expect(failedStack.last_error).toBe(
+      "Railway runtime service limit (1) has been reached.",
+    );
+    expect(failedStack.service_ref).toBeNull();
+    expect(failedStack.workspace_volume_ref).toBeNull();
+    expect(failedStack.service_capacity_reserved).toBe(0);
+
+    const statusResponse = await fetch(
+      `${origin}/v1/assistants/${pendingFixture.assistantId}/operational/status/`,
+      { headers: authenticatedHeaders(pendingFixture.ownerSessionId) },
+    );
+    expect(statusResponse.status).toBe(200);
+    expect(await statusResponse.json()).toMatchObject({
+      state: "crash_loop",
+      detail_state: "failed",
+      detail: {
+        reason: "failed",
+        message: "Railway runtime service limit (1) has been reached.",
+      },
+    });
+
+    const proxyResponse = await fetch(
+      `${origin}/v1/assistants/${pendingFixture.assistantId}/conversations/`,
+      { headers: authenticatedHeaders(pendingFixture.ownerSessionId) },
+    );
+    expect(proxyResponse.status).toBe(503);
+    expect(await proxyResponse.json()).toMatchObject({
+      code: "runtime_not_ready",
+      runtime_status: "failed",
+      runtime_stack_id: pendingStack.id,
+    });
+    await Bun.sleep(50);
+    expect(railwayOperations).toHaveLength(1);
+    expect(
+      railwayOperations.filter((operation) =>
+        operation.query.includes("serviceCreate"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("startup does not schedule existing provisioning stacks", async () => {
     const dbPath = createTempDbPath();
     const db = new Database(dbPath);
     createControlPlaneSchema(db);
@@ -1716,9 +2368,21 @@ describe("control-plane runtime provisioning guards", () => {
         id, user_id, org_id, name, runtime_stack_id, isolation_version,
         is_default, created_at, updated_at
       ) VALUES
-        ('asst-accepted', 'user-accepted', 'org-accepted', 'Worklin', NULL, 2, 1, ?, ?),
+        ('asst-accepted', 'user-accepted', 'org-accepted', 'Worklin', 'rt-startup-accepted', 2, 1, ?, ?),
         ('asst-pending', 'user-pending', 'org-pending', 'Worklin', NULL, 2, 1, ?, ?)`,
     ).run(timestamp, timestamp, timestamp, timestamp);
+    db.query(
+      `INSERT INTO runtime_stacks (
+        id, org_id, assistant_id, status, provider, gateway_url,
+        public_ingress_url, workspace_volume_ref, service_ref,
+        actor_signing_key_scope, last_health_status, last_error, created_at,
+        updated_at
+      ) VALUES (
+        'rt-startup-accepted', 'org-accepted', 'asst-accepted',
+        'provisioning', 'railway', NULL, 'https://worklin.example.com', NULL,
+        NULL, 'runtime_v1:rt-startup-accepted', NULL, NULL, ?, ?
+      )`,
+    ).run(timestamp, timestamp);
     db.close();
 
     const railwayOperations: Array<{
@@ -1793,19 +2457,22 @@ describe("control-plane runtime provisioning guards", () => {
     await Bun.sleep(100);
     railway.stop(true);
 
-    expect(
-      railwayOperations.filter((operation) =>
-        operation.query.includes("serviceCreate"),
-      ),
-    ).toHaveLength(0);
+    expect(railwayOperations).toHaveLength(0);
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<{ count: number }, []>(
-          "SELECT COUNT(*) AS count FROM runtime_stacks",
+        .query<RuntimeStackRow, []>(
+          "SELECT * FROM runtime_stacks WHERE id = 'rt-startup-accepted'",
         )
-        .get()?.count,
-    ).toBe(0);
+        .get(),
+    ).toMatchObject({
+      status: "provisioning",
+      service_ref: null,
+      workspace_volume_ref: null,
+      provisioning_lease_token: null,
+      service_create_attempted_at: null,
+      volume_create_attempted_at: null,
+    });
     verificationDb.close();
   });
 });
