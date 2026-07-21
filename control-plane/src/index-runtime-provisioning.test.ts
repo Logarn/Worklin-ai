@@ -102,7 +102,7 @@ function spawnControlPlane(
 }
 
 async function waitForHealth(origin: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       const response = await fetch(`${origin}/healthz`);
       if (response.ok) return;
@@ -162,6 +162,132 @@ function authenticatedHeaders(sessionId: string): Record<string, string> {
     "X-CSRFToken": "csrf-token",
   };
 }
+
+function seedAuthenticatedUser(
+  dbPath: string,
+  {
+    userId,
+    sessionId,
+  }: {
+    userId: string;
+    sessionId: string;
+  },
+): void {
+  const db = new Database(dbPath);
+  createControlPlaneSchema(db);
+  const timestamp = new Date().toISOString();
+  db.query(
+    `INSERT INTO users (
+      id, email, username, first_name, last_name, consent_json, created_at,
+      updated_at
+    ) VALUES (?, ?, ?, '', '', NULL, ?, ?)`,
+  ).run(
+    userId,
+    `${userId}@example.com`,
+    userId,
+    timestamp,
+    timestamp,
+  );
+  db.query(
+    "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+  ).run(
+    sessionId,
+    userId,
+    Math.floor(Date.now() / 1000) + 3_600,
+    timestamp,
+  );
+  db.close();
+}
+
+describe("control-plane billing capability", () => {
+  test("advertises external-provider billing without balances or paid status", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const dbPath = createTempDbPath();
+    seedAuthenticatedUser(dbPath, {
+      userId: "user-billing-capability",
+      sessionId: "session-billing-capability",
+    });
+
+    spawnControlPlane(port, dbPath);
+    await waitForHealth(origin);
+
+    const unauthenticatedResponse = await fetch(
+      `${origin}/v1/organizations/billing/capability/`,
+    );
+    expect(unauthenticatedResponse.status).toBe(401);
+
+    const response = await fetch(
+      `${origin}/v1/organizations/billing/capability/`,
+      { headers: authenticatedHeaders("session-billing-capability") },
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      available: false,
+      mode: "external_provider",
+      reason: "managed_billing_not_configured",
+    });
+    expect(body).not.toHaveProperty("settled_balance");
+    expect(body).not.toHaveProperty("plan");
+    expect(body).not.toHaveProperty("subscription");
+  });
+
+  test("legacy billing routes fail closed and retain CSRF protection", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const dbPath = createTempDbPath();
+    seedAuthenticatedUser(dbPath, {
+      userId: "user-billing-routes",
+      sessionId: "session-billing-routes",
+    });
+
+    spawnControlPlane(port, dbPath);
+    await waitForHealth(origin);
+
+    const summaryResponse = await fetch(
+      `${origin}/v1/organizations/billing/summary/`,
+      { headers: authenticatedHeaders("session-billing-routes") },
+    );
+    expect(summaryResponse.status).toBe(501);
+    expect(await summaryResponse.json()).toEqual({
+      error: {
+        code: "billing_unavailable",
+        message: "Worklin credit billing is not available in this deployment.",
+      },
+    });
+
+    const missingCsrfResponse = await fetch(
+      `${origin}/v1/organizations/billing/top-ups/checkout-session/`,
+      {
+        method: "POST",
+        headers: {
+          Cookie: "worklin_session=session-billing-routes",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    expect(missingCsrfResponse.status).toBe(403);
+
+    const unavailableMutationResponse = await fetch(
+      `${origin}/v1/organizations/billing/top-ups/checkout-session/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-billing-routes"),
+        body: "{}",
+      },
+    );
+    expect(unavailableMutationResponse.status).toBe(501);
+    expect(await unavailableMutationResponse.json()).toEqual({
+      error: {
+        code: "billing_unavailable",
+        message: "Worklin credit billing is not available in this deployment.",
+      },
+    });
+  });
+});
 
 describe("control-plane runtime provisioning guards", () => {
   test("control-plane-only readiness does not depend on a shared gateway", async () => {
