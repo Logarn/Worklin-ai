@@ -77,7 +77,11 @@ import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
 import {
   authInfoGetOptions,
+  configGetOptions,
   configGetQueryKey,
+  conversationsByIdGetOptions,
+  inferenceProviderconnectionsGetOptions,
+  secretsGetOptions,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { Conversation } from "@/types/conversation-types";
 import {
@@ -103,12 +107,14 @@ import {
   fetchConversationDetail,
 } from "@/utils/fetch-conversation-detail";
 import {
-  canSendAfterManagedProfileRepair,
   ensureRunnableProfileFromStoredConnection,
   repairUnavailableManagedProfile,
 } from "@/assistant/provider-profile-repair";
 import { shouldAttemptProviderProfileRepair } from "@/domains/chat/utils/provider-profile-repair-trigger";
-import type { AuthInfoGetResponse } from "@/generated/daemon/types.gen";
+import {
+  checkProviderReadyForSend,
+  type ProviderSendSelection,
+} from "@/domains/chat/utils/provider-send-guard";
 
 // ---------------------------------------------------------------------------
 // Stream send result
@@ -271,52 +277,117 @@ export function useSendMessage({
       }
     }, [assistantId, queryClient]);
 
-  const ensureProviderReadyForSend = useCallback(async (): Promise<boolean> => {
-    if (!assistantId) return false;
-    let authInfo: AuthInfoGetResponse;
-    try {
-      authInfo = await queryClient.fetchQuery({
-        ...authInfoGetOptions({
-          path: { assistant_id: assistantId },
-        }),
-        staleTime: 0,
-      });
-    } catch (error) {
-      captureError(error, {
-        context: "check_managed_provider_before_send",
-      });
-      setError({
-        message:
-          "Worklin could not verify your AI provider. Check your connection and try again.",
-        code: "PROVIDER_NOT_CONFIGURED",
-      });
-      return false;
-    }
-    if (authInfo?.authenticated !== false) return true;
+  const resolveProviderSendSelection = useCallback(
+    async (): Promise<ProviderSendSelection> => {
+      if (!assistantId || !activeConversationId) {
+        return { kind: "unverified" };
+      }
 
-    try {
-      const repair = await repairUnavailableManagedProfile(assistantId);
-      if (repair.repaired) {
+      const pendingProfile = useConversationStore
+        .getState()
+        .pendingDraftProfiles.get(activeConversationId);
+      if (pendingProfile) {
+        return {
+          kind: "conversation-override",
+          profileName: pendingProfile,
+        };
+      }
+
+      if (isDraftConversationId(activeConversationId)) {
+        return { kind: "workspace-active" };
+      }
+
+      try {
+        const data = await queryClient.fetchQuery({
+          ...conversationsByIdGetOptions({
+            path: {
+              assistant_id: assistantId,
+              id: activeConversationId,
+            },
+          }),
+          staleTime: 0,
+        });
+        const storedProfile = data.conversation.inferenceProfile;
+        return storedProfile
+          ? { kind: "conversation-override", profileName: storedProfile }
+          : { kind: "workspace-active" };
+      } catch (error) {
+        return { kind: "unverified", error };
+      }
+    },
+    [activeConversationId, assistantId, queryClient],
+  );
+
+  const ensureProviderReadyForSend = useCallback(
+    async (selection: ProviderSendSelection): Promise<boolean> => {
+      if (!assistantId) return false;
+
+      const result = await checkProviderReadyForSend({
+        selection,
+        loadConfig: () =>
+          queryClient.fetchQuery({
+            ...configGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          }),
+        loadConnections: async () => {
+          const data = await queryClient.fetchQuery({
+            ...inferenceProviderconnectionsGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          });
+          return data.connections;
+        },
+        loadSecrets: async () => {
+          const data = await queryClient.fetchQuery({
+            ...secretsGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          });
+          return data.secrets;
+        },
+        loadManagedStatus: () =>
+          queryClient.fetchQuery({
+            ...authInfoGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          }),
+        repairActiveSelection: (expectedActiveProfile) =>
+          repairUnavailableManagedProfile(assistantId, expectedActiveProfile),
+      });
+
+      if (!result.allowed && result.error) {
+        captureError(result.error, {
+          context:
+            result.reason === "managed-status-unverified"
+              ? "check_managed_provider_before_send"
+              : "guard_unavailable_managed_provider_send",
+        });
+      }
+      if (
+        result.reason === "managed-repaired" ||
+        result.reason === "personal-repaired"
+      ) {
         void queryClient.invalidateQueries({
           queryKey: configGetQueryKey({ path: { assistant_id: assistantId } }),
         });
       }
-      if (canSendAfterManagedProfileRepair(repair)) {
+      if (result.allowed) {
         return true;
       }
-    } catch (error) {
-      captureError(error, {
-        context: "guard_unavailable_managed_provider_send",
-      });
-    }
 
-    setError({
-      message:
-        "Worklin needs a personal AI provider before it can answer. Connect ChatGPT or add an API key in Models & Services.",
-      code: "PROVIDER_NOT_CONFIGURED",
-    });
-    return false;
-  }, [assistantId, queryClient, setError]);
+      setError({
+        message: result.message,
+        code: "PROVIDER_NOT_CONFIGURED",
+      });
+      return false;
+    },
+    [assistantId, queryClient, setError],
+  );
 
   const surfaceConversationAfterUserSend = useCallback(
     async (conversationId: string) => {
@@ -373,6 +444,7 @@ export function useSendMessage({
       attachmentIds: string[] = [],
       isDraft = false,
       clientMessageId?: string,
+      inferenceProfileForSend?: string,
     ): Promise<SendStreamResult> => {
       if (!activeConversationId || !assistantId) {
         return {
@@ -605,7 +677,10 @@ export function useSendMessage({
       if (inferenceProfileForSend) {
         useConversationStore
           .getState()
-          .clearPendingDraftProfile(requestConversationId);
+          .clearPendingDraftProfile(
+            requestConversationId,
+            inferenceProfileForSend,
+          );
       }
       if (onboardingDraftConversationIdRef.current === activeConversationId) {
         onboardingDraftConversationIdRef.current = null;
@@ -833,7 +908,12 @@ export function useSendMessage({
         });
         return;
       }
-      if (!(await ensureProviderReadyForSend())) return;
+      const providerSelection = await resolveProviderSendSelection();
+      if (!(await ensureProviderReadyForSend(providerSelection))) return;
+      const inferenceProfileForSend =
+        providerSelection.kind === "conversation-override"
+          ? providerSelection.profileName
+          : undefined;
       setError(null);
       useInteractionStore.getState().resetSecretAndConfirmation();
       useChatSessionStore.getState().clearConfirmationToolCallMap();
@@ -895,6 +975,7 @@ export function useSendMessage({
             attachmentIds,
             undefined,
             clientMessageId,
+            inferenceProfileForSend,
           );
           if (!postResult.ok) {
             revertQueuedMessage(userMessage.id);
@@ -923,6 +1004,14 @@ export function useSendMessage({
               status: postResult.status,
             });
             return;
+          }
+          if (inferenceProfileForSend) {
+            useConversationStore
+              .getState()
+              .clearPendingDraftProfile(
+                activeConversationId,
+                inferenceProfileForSend,
+              );
           }
           void surfaceConversationAfterUserSend(
             postResult.conversationId,
@@ -1010,6 +1099,7 @@ export function useSendMessage({
           attachments.map((att) => att.id),
           isDraft,
           clientMessageId,
+          inferenceProfileForSend,
         );
 
         if (result.status === "failed") {
@@ -1146,6 +1236,7 @@ export function useSendMessage({
       persistDismissedSurfaces,
       repairMissingProviderProfile,
       ensureProviderReadyForSend,
+      resolveProviderSendSelection,
       queryClient,
       surfaceConversationAfterUserSend,
     ],

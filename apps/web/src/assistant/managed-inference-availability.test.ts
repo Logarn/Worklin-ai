@@ -67,6 +67,32 @@ describe("managed inference availability filters", () => {
     ).toBe(false);
   });
 
+  test("fails closed when a pinned profile's connection row is unresolved", () => {
+    expect(
+      isManagedInferenceProfile(
+        {
+          source: "user",
+          provider_connection: "missing-personal-row",
+        },
+        [],
+      ),
+    ).toBe(true);
+
+    expect(
+      profilesAvailableForManagedInference(
+        [
+          {
+            name: "unresolved",
+            source: "user" as const,
+            provider_connection: "missing-personal-row",
+          },
+        ],
+        [],
+        false,
+      ),
+    ).toEqual([]);
+  });
+
   test("preserves managed profiles when the daemon confirms platform auth", () => {
     const profiles = [
       { name: "balanced", source: "managed" as const },

@@ -50,7 +50,7 @@ export interface ProviderCreateSeed extends ProviderEditorCreateSeed {
 interface ManageProvidersModalProps {
   isOpen: boolean;
   assistantId: string;
-  managedInferenceAvailable?: boolean;
+  managedInferenceConfigured?: boolean;
   createSeed?: ProviderCreateSeed | null;
   onClose: () => void;
 }
@@ -58,7 +58,7 @@ interface ManageProvidersModalProps {
 export function ManageProvidersModal({
   isOpen,
   assistantId,
-  managedInferenceAvailable = false,
+  managedInferenceConfigured = false,
   createSeed,
   onClose,
 }: ManageProvidersModalProps) {
@@ -84,9 +84,9 @@ export function ManageProvidersModal({
     () =>
       connectionsAvailableForManagedInference(
         allConnections,
-        managedInferenceAvailable,
+        managedInferenceConfigured,
       ),
-    [allConnections, managedInferenceAvailable],
+    [allConnections, managedInferenceConfigured],
   );
 
   function handleEditorSave(_saved: ProviderConnection) {
@@ -160,7 +160,7 @@ export function ManageProvidersModal({
             createSeed={activeCreateSeed ?? undefined}
             assistantId={assistantId}
             existingNames={existingNames}
-            managedInferenceAvailable={managedInferenceAvailable}
+            managedInferenceConfigured={managedInferenceConfigured}
             onSave={handleEditorSave}
             onCancel={cancelEditor}
           />

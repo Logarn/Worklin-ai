@@ -40,9 +40,7 @@ import {
 
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { connectionsAvailableForManagedInference } from "@/assistant/managed-inference";
-import {
-  useManagedInferenceAvailability,
-} from "@/assistant/managed-inference-availability";
+import { useManagedInferenceCapability } from "@/assistant/managed-inference-availability";
 import type { ProfilePatchEntry } from "@/generated/daemon/types.gen";
 import { ProfileEditorModal } from "@/domains/settings/ai/profile-editor-modal";
 import { configGet, configPatch } from "@/generated/daemon/sdk.gen";
@@ -80,8 +78,8 @@ export function ProfileQuickAddProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = useState(false);
   const [existingNames, setExistingNames] = useState<string[]>([]);
-  const { available: managedInferenceAvailable } =
-    useManagedInferenceAvailability(assistantId, isOpen);
+  const { configured: managedInferenceConfigured } =
+    useManagedInferenceCapability(assistantId, isOpen);
   // Held in a ref so the modal's onSave closure always sees the latest caller
   // callback without re-creating handlers on every open.
   const onCreatedRef = useRef<
@@ -107,9 +105,9 @@ export function ProfileQuickAddProvider({ children }: { children: ReactNode }) {
     () =>
       connectionsAvailableForManagedInference(
         connectionsData?.connections ?? [],
-        managedInferenceAvailable,
+        managedInferenceConfigured,
       ),
-    [connectionsData?.connections, managedInferenceAvailable],
+    [connectionsData?.connections, managedInferenceConfigured],
   );
 
   // Persist a freshly-created profile, then hand the name back to the caller.
@@ -201,7 +199,7 @@ export function ProfileQuickAddProvider({ children }: { children: ReactNode }) {
           mode="create"
           existingNames={existingNames}
           connections={connections}
-          managedInferenceAvailable={managedInferenceAvailable}
+          managedInferenceConfigured={managedInferenceConfigured}
           assistantId={assistantId}
           onSave={handleSave}
           onCancel={() => setIsOpen(false)}

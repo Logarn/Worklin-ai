@@ -713,6 +713,72 @@ describe("resolveCallSiteConfig", () => {
     expect(resolved.effort).toBe("max");
   });
 
+  test("interactive personal-profile overrides avoid managed defaults without changing scheduled defaults", () => {
+    const llm = LLMSchema.parse({
+      default: {
+        ...fullDefault,
+        provider_connection: "anthropic-managed",
+      },
+      profiles: {
+        balanced: {
+          source: "managed",
+          provider: "anthropic",
+          model: "claude-opus-4-8",
+          provider_connection: "anthropic-managed",
+        },
+        "cost-optimized": {
+          source: "managed",
+          provider: "anthropic",
+          model: "claude-haiku-4-5-20251001",
+          provider_connection: "anthropic-managed",
+        },
+        personal: {
+          source: "user",
+          provider: "openai",
+          model: "gpt-5.4",
+          provider_connection: "openai-personal",
+        },
+      },
+      activeProfile: "personal",
+      callSites: {
+        callAgent: { profile: "personal" },
+        conversationTitle: { profile: "personal", maxTokens: 120 },
+        homeSuggestedPrompts: { profile: "personal" },
+        memoryExtraction: { profile: "personal" },
+        skillCategoryInference: { profile: "personal" },
+        subagentSpawn: { profile: "personal" },
+        inference: { profile: "personal" },
+        workflowLeaf: { profile: "personal" },
+      },
+    });
+
+    for (const callSite of [
+      "conversationTitle",
+      "callAgent",
+      "homeSuggestedPrompts",
+      "memoryExtraction",
+      "skillCategoryInference",
+      "subagentSpawn",
+      "inference",
+      "workflowLeaf",
+    ] as const) {
+      const resolved = resolveCallSiteConfig(callSite, llm);
+      expect(resolved.provider).toBe("openai");
+      expect(resolved.provider_connection).toBe("openai-personal");
+    }
+    expect(resolveCallSiteConfig("conversationTitle", llm).maxTokens).toBe(120);
+
+    for (const callSite of [
+      "heartbeatAgent",
+      "memoryRetrospective",
+      "notificationDecision",
+    ] as const) {
+      const resolved = resolveCallSiteConfig(callSite, llm);
+      expect(resolved.provider).toBe("anthropic");
+      expect(resolved.provider_connection).toBe("anthropic-managed");
+    }
+  });
+
   test("BYOK: disabled managed profile falls back to custom-* user profile", () => {
     const llm = LLMSchema.parse({
       default: {
@@ -947,6 +1013,40 @@ describe("resolveCallSiteConfig", () => {
     expect(resolved.provider).toBe("fireworks");
     // The merge inherits the stale connection — the dispatch layer handles this.
     expect(resolved.provider_connection).toBe("anthropic-managed");
+  });
+
+  test("source:user profile without a connection clears managed default transport", () => {
+    const llm = LLMSchema.parse({
+      default: {
+        ...fullDefault,
+        provider_connection: "openai-managed",
+      },
+      profiles: {
+        personal: {
+          source: "user",
+          provider: "openai",
+          model: "gpt-5.4",
+        },
+        balanced: {
+          source: "managed",
+          provider: "anthropic",
+          model: "claude-opus-4-8",
+          provider_connection: "anthropic-managed",
+        },
+      },
+      activeProfile: "personal",
+      callSites: {
+        heartbeatAgent: { profile: "balanced" },
+      },
+    });
+
+    const resolved = resolveCallSiteConfig("mainAgent", llm);
+    const scheduled = resolveCallSiteConfig("heartbeatAgent", llm);
+
+    expect(resolved.provider).toBe("openai");
+    expect(resolved.provider_connection).toBeUndefined();
+    expect(scheduled.provider).toBe("anthropic");
+    expect(scheduled.provider_connection).toBe("anthropic-managed");
   });
 });
 

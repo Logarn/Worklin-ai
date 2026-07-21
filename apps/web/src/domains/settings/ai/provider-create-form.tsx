@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@vellumai/design-library/components/button";
@@ -12,6 +12,7 @@ import { providerSupportsPlatformAuth, PROVIDER_DISPLAY_NAMES } from "@/assistan
 import { credentialPresenceQueryKey, useStoredCredentialPresence } from "@/domains/settings/ai/use-stored-credential-presence";
 import { configGetQueryKey, secretsGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
+    inferenceProviderconnectionsGet,
     inferenceProviderconnectionsPost,
     secretsPost,
 } from "@/generated/daemon/sdk.gen";
@@ -58,11 +59,11 @@ export interface ProviderCreateFormProps {
   defaultProviderType?: ConnectionProvider;
   /**
    * Pre-selected auth type. A platform value is honored only when managed
-   * inference is confirmed available for this assistant.
+   * inference routing is configured for this assistant.
    */
   defaultAuthType?: AuthType;
-  /** Whether this assistant can actually dispatch through Worklin credits. */
-  managedInferenceAvailable?: boolean;
+  /** Whether local managed-inference routing is configured for this assistant. */
+  managedInferenceConfigured?: boolean;
   /** Branded defaults for a first-class OpenAI-compatible service. */
   preset?: ProviderConnectionPreset;
   onCreated: (connection: ProviderConnection) => void;
@@ -76,7 +77,7 @@ export function ProviderCreateForm({
   existingNames,
   defaultProviderType,
   defaultAuthType,
-  managedInferenceAvailable = false,
+  managedInferenceConfigured = false,
   preset,
   onCreated,
   onCancel,
@@ -108,12 +109,12 @@ export function ProviderCreateForm({
   const [provider, setProvider] = useState<ConnectionProvider>(initialProvider);
   const [authType, setAuthType] = useState<AuthType>(
     () =>
-      (defaultAuthType === "platform" && !managedInferenceAvailable
+      (defaultAuthType === "platform" && !managedInferenceConfigured
         ? "api_key"
         : defaultAuthType) ??
       (initialProvider === "ollama"
         ? "none"
-        : managedInferenceAvailable &&
+        : managedInferenceConfigured &&
             providerSupportsPlatformAuth(initialProvider)
           ? "platform"
           : "api_key"),
@@ -129,6 +130,13 @@ export function ProviderCreateForm({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const platformAuthAvailable =
+    managedInferenceConfigured && providerSupportsPlatformAuth(provider);
+
+  useEffect(() => {
+    if (authType !== "platform" || platformAuthAvailable) return;
+    setAuthType(provider === "ollama" ? "none" : "api_key");
+  }, [authType, platformAuthAvailable, provider]);
 
   const isOpenAICompatible = provider === "openai-compatible";
   const connectionProviderOptions = useMemo(() => {
@@ -184,6 +192,13 @@ export function ProviderCreateForm({
 
   async function handleSave() {
     if (!canSave) return;
+    if (authType === "platform" && !platformAuthAvailable) {
+      setAuthType(provider === "ollama" ? "none" : "api_key");
+      setError(
+        "Worklin credits are not available for this provider. Connect your API key instead.",
+      );
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -281,10 +296,24 @@ export function ProviderCreateForm({
       }
       let selectedAsDefault = false;
       try {
+        const { data: inventoryData } = await inferenceProviderconnectionsGet({
+          path: { assistant_id: assistantId },
+          throwOnError: true,
+        });
+        const inventory = inventoryData?.connections ?? [];
+        const completeInventory = inventory.some(
+          (candidate) => candidate.name === created.name,
+        )
+          ? inventory
+          : [...inventory, created];
         const profileResult = await ensureRunnableProfileForConnection(
           assistantId,
           created,
-          { activateConnection: true },
+          {
+            activateConnection: true,
+            connections: completeInventory,
+            routeInteractiveCallSites: !managedInferenceConfigured,
+          },
         );
         selectedAsDefault = profileResult.repaired;
         if (selectedAsDefault) {
@@ -409,7 +438,7 @@ export function ProviderCreateForm({
                 }
                 if (
                   prev === "platform" &&
-                  (!managedInferenceAvailable ||
+                  (!managedInferenceConfigured ||
                     !providerSupportsPlatformAuth(newProvider))
                 ) {
                   return "api_key";
@@ -492,8 +521,7 @@ export function ProviderCreateForm({
             if (provider === "ollama") {
               types = ["none"];
             } else if (
-              managedInferenceAvailable &&
-              providerSupportsPlatformAuth(provider)
+              platformAuthAvailable
             ) {
               types = ["api_key", "platform"];
             } else {
@@ -502,9 +530,6 @@ export function ProviderCreateForm({
             // Add oauth_subscription when ChatGPT flag is enabled for OpenAI.
             if (provider === "openai") {
               types.push("oauth_subscription");
-            }
-            if (authType && !types.includes(authType)) {
-              types.push(authType);
             }
             return types.map((t) => ({
               value: t,
@@ -535,6 +560,7 @@ export function ProviderCreateForm({
       {authType === "oauth_subscription" && (
         <ChatgptOAuthSection
           assistantId={assistantId}
+          managedInferenceConfigured={managedInferenceConfigured}
           onConnected={onCreated}
         />
       )}

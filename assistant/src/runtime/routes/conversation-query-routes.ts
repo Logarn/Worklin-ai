@@ -76,6 +76,7 @@ import { getMemoryRecallLogByMessageIds } from "../../memory/memory-recall-log-s
 import { getMemoryV2ActivationLogByMessageIds } from "../../memory/memory-v2-activation-log-store.js";
 import { MEMORY_V2_CONSOLIDATION_SOURCE } from "../../memory/v2/constants.js";
 import { getMemoryV3SelectionForInspectorByMessageIds } from "../../plugins/defaults/memory-v3-shadow/selection-log-store.js";
+import { isConnectionCompatibleWithModel } from "../../providers/connection-model-compat.js";
 import {
   createConnection,
   listConnections,
@@ -86,7 +87,12 @@ import { initializeProviders } from "../../providers/registry.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { validateAllowlistFile } from "../../security/secret-allowlist.js";
 import { resolvePricingForUsage } from "../../util/pricing.js";
-import { BadRequestError, InternalError, NotFoundError } from "./errors.js";
+import {
+  BadRequestError,
+  ConflictError,
+  InternalError,
+  NotFoundError,
+} from "./errors.js";
 import {
   type LlmContextSummary,
   normalizeLlmContextPayloads,
@@ -583,6 +589,15 @@ const CallSiteOverrideDraftSchema = nullablePartial(
   .passthrough()
   .meta({ id: "CallSiteOverrideDraft" });
 
+const ActiveProfileDecisionSchema = z
+  .object({
+    profile: z.string().nullable(),
+    provider: z.string().nullable(),
+    model: z.string().nullable(),
+    provider_connection: z.string().nullable(),
+  })
+  .meta({ id: "ActiveProfileDecision" });
+
 /**
  * Request body schema for `PATCH /v1/config`.
  *
@@ -594,6 +609,8 @@ const CallSiteOverrideDraftSchema = nullablePartial(
  */
 const ConfigPatchRequestSchema = z
   .object({
+    expectedActiveProfile: z.string().nullable().optional(),
+    expectedActiveProfileDecision: ActiveProfileDecisionSchema.optional(),
     llm: z
       .object({
         default: nullablePartial(
@@ -798,10 +815,112 @@ async function handlePatchConfig({ body }: RouteHandlerArgs) {
   ) {
     throw new BadRequestError("Body must be a non-empty JSON object");
   }
-  rejectManagedProfileDeletion(body as Record<string, unknown>);
+  const request = body as Record<string, unknown>;
+  const hasExpectedActiveProfile = Object.prototype.hasOwnProperty.call(
+    request,
+    "expectedActiveProfile",
+  );
+  const expectedActiveProfile = request.expectedActiveProfile;
+  if (
+    hasExpectedActiveProfile &&
+    expectedActiveProfile !== null &&
+    typeof expectedActiveProfile !== "string"
+  ) {
+    throw new BadRequestError(
+      "`expectedActiveProfile` must be a string or null",
+    );
+  }
+  const hasExpectedActiveProfileDecision = Object.prototype.hasOwnProperty.call(
+    request,
+    "expectedActiveProfileDecision",
+  );
+  const expectedActiveProfileDecisionResult =
+    ActiveProfileDecisionSchema.safeParse(
+      request.expectedActiveProfileDecision,
+    );
+  if (
+    hasExpectedActiveProfileDecision &&
+    !expectedActiveProfileDecisionResult.success
+  ) {
+    throw new BadRequestError(
+      "`expectedActiveProfileDecision` must include profile, provider, model, and provider_connection as strings or null",
+    );
+  }
+  const expectedActiveProfileDecision = hasExpectedActiveProfileDecision
+    ? expectedActiveProfileDecisionResult.data
+    : undefined;
+  const {
+    expectedActiveProfile: _expectedActiveProfile,
+    expectedActiveProfileDecision: _expectedActiveProfileDecision,
+    ...patch
+  } = request;
+  if (Object.keys(patch).length === 0) {
+    throw new BadRequestError("Body must include a config patch");
+  }
+  rejectManagedProfileDeletion(patch);
 
   const raw = loadRawConfig();
-  const patch = body as Record<string, unknown>;
+  const rawLlm =
+    raw.llm && typeof raw.llm === "object" && !Array.isArray(raw.llm)
+      ? (raw.llm as Record<string, unknown>)
+      : undefined;
+  const actualActiveProfile =
+    typeof rawLlm?.activeProfile === "string" ? rawLlm.activeProfile : null;
+  if (
+    hasExpectedActiveProfile &&
+    actualActiveProfile !== expectedActiveProfile
+  ) {
+    throw new ConflictError("The active model selection changed", {
+      expectedActiveProfile,
+      actualActiveProfile,
+    });
+  }
+  if (expectedActiveProfileDecision) {
+    const rawProfiles =
+      rawLlm?.profiles &&
+      typeof rawLlm.profiles === "object" &&
+      !Array.isArray(rawLlm.profiles)
+        ? (rawLlm.profiles as Record<string, unknown>)
+        : {};
+    const rawActiveProfile =
+      actualActiveProfile !== null &&
+      rawProfiles[actualActiveProfile] &&
+      typeof rawProfiles[actualActiveProfile] === "object" &&
+      !Array.isArray(rawProfiles[actualActiveProfile])
+        ? (rawProfiles[actualActiveProfile] as Record<string, unknown>)
+        : undefined;
+    const actualActiveProfileDecision = {
+      profile: actualActiveProfile,
+      provider:
+        typeof rawActiveProfile?.provider === "string"
+          ? rawActiveProfile.provider
+          : null,
+      model:
+        typeof rawActiveProfile?.model === "string"
+          ? rawActiveProfile.model
+          : null,
+      provider_connection:
+        typeof rawActiveProfile?.provider_connection === "string"
+          ? rawActiveProfile.provider_connection
+          : null,
+    };
+    if (
+      actualActiveProfileDecision.profile !==
+        expectedActiveProfileDecision.profile ||
+      actualActiveProfileDecision.provider !==
+        expectedActiveProfileDecision.provider ||
+      actualActiveProfileDecision.model !==
+        expectedActiveProfileDecision.model ||
+      actualActiveProfileDecision.provider_connection !==
+        expectedActiveProfileDecision.provider_connection
+    ) {
+      throw new ConflictError("The active model configuration changed", {
+        expectedActiveProfileDecision,
+        actualActiveProfileDecision,
+      });
+    }
+  }
+
   deepMergeOverwrite(raw, patch);
 
   await commitConfigWrite(raw, "patch");
@@ -971,8 +1090,15 @@ async function handleReplaceInferenceProfile({
   const fragment = parsed.data as Record<string, unknown>;
   if (!isManaged && fragment.provider && !fragment.provider_connection) {
     const provider = fragment.provider as string;
+    const model =
+      typeof fragment.model === "string" ? fragment.model : undefined;
     const db = getDb();
-    const [active] = listConnections(db, { provider });
+    const active = listConnections(db, { provider }).find(
+      (connection) =>
+        connection.auth.type !== "platform" &&
+        !connection.isManaged &&
+        isConnectionCompatibleWithModel(connection, model),
+    );
     if (active) {
       fragment.provider_connection = active.name;
     } else if (!PROVIDERS_REQUIRING_BASE_URL_AND_MODELS.has(provider)) {
@@ -1402,6 +1528,12 @@ export const ROUTES: RouteDefinition[] = [
     tags: ["config"],
     requestBody: ConfigPatchRequestSchema,
     responseBody: ConfigGetResponseSchema,
+    additionalResponses: {
+      "409": {
+        description:
+          "The active profile did not match expectedActiveProfile, so no config changes were written.",
+      },
+    },
     handler: handlePatchConfig,
   },
   {

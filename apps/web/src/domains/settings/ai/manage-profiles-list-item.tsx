@@ -1,4 +1,4 @@
-import { GripVertical, Trash2 } from "lucide-react";
+import { Check, GripVertical, Trash2 } from "lucide-react";
 
 import { Button } from "@vellumai/design-library/components/button";
 import { Tag } from "@vellumai/design-library/components/tag";
@@ -23,6 +23,8 @@ interface ProfileListItemProps {
   dropTarget: DropTarget | null;
   isDeleting: boolean;
   deleteError: string | undefined;
+  isSelected: boolean;
+  isSelecting: boolean;
   isToggling: boolean;
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd: () => void;
@@ -31,6 +33,7 @@ interface ProfileListItemProps {
   onDrop: (e: React.DragEvent) => void;
   onEditClick: () => void;
   onDeleteClick: () => void;
+  onSelectClick: () => void;
   onStatusToggle: (active: boolean) => void;
 }
 
@@ -44,6 +47,8 @@ export function ProfileListItem({
   dropTarget,
   isDeleting,
   deleteError,
+  isSelected,
+  isSelecting,
   isToggling,
   onDragStart,
   onDragEnd,
@@ -52,10 +57,11 @@ export function ProfileListItem({
   onDrop,
   onEditClick,
   onDeleteClick,
+  onSelectClick,
   onStatusToggle,
 }: ProfileListItemProps) {
   const isManaged = profile.source === "managed";
-  const isActive = profile.status !== "disabled";
+  const isEnabled = profile.status !== "disabled";
   const isAutoProfile = profile.name === AUTO_PROFILE_NAME;
 
   return (
@@ -79,7 +85,7 @@ export function ProfileListItem({
 
         {/* Label — dimmed when disabled */}
         <div
-          className={`min-w-0 flex-1${isActive ? "" : " opacity-55"}`}
+          className={`min-w-0 flex-1${isEnabled ? "" : " opacity-55"}`}
         >
           <div className="flex items-center gap-2">
             <Typography
@@ -120,19 +126,37 @@ export function ProfileListItem({
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-2">
+          {isSelected ? (
+            <Tag tone="positive">
+              <span className="inline-flex items-center gap-1">
+                <Check className="h-3.5 w-3.5" />
+                In use
+              </span>
+            </Tag>
+          ) : (
+            <Button
+              variant="outlined"
+              size="compact"
+              aria-label={`Use ${profile.label ?? profile.name}`}
+              disabled={!isEnabled || isSelecting}
+              onClick={onSelectClick}
+            >
+              Use
+            </Button>
+          )}
           <div
             className="flex shrink-0 items-center"
             title={
-              isActive
+              isEnabled
                 ? "Active — toggle to hide from pickers"
                 : "Disabled — toggle to show in pickers"
             }
           >
             <Toggle
-              checked={isActive}
+              checked={isEnabled}
               onChange={(next) => onStatusToggle(next)}
               disabled={isToggling}
-              aria-label={`${isActive ? "Disable" : "Enable"} ${profile.label ?? profile.name}`}
+              aria-label={`${isEnabled ? "Disable" : "Enable"} ${profile.label ?? profile.name}`}
             />
           </div>
           <div

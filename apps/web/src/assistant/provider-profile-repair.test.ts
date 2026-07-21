@@ -29,6 +29,7 @@ let secrets: Array<{
 let configGetCalls: ConfigGetCall[] = [];
 let configPatchCalls: ConfigPatchCall[] = [];
 let connectionsGetCalls: ConnectionsGetCall[] = [];
+let configPatchError: unknown = null;
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
   ...sdkGen,
@@ -41,6 +42,7 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
   },
   configPatch: (opts: ConfigPatchCall) => {
     configPatchCalls.push(opts);
+    if (configPatchError) return Promise.reject(configPatchError);
     return Promise.resolve({ data: configGetData, response: { ok: true } });
   },
   inferenceProviderconnectionsGet: (opts: ConnectionsGetCall) => {
@@ -58,7 +60,10 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
 }));
 
 const {
+  buildInteractivePersonalCallSitePatch,
+  buildInteractiveProfileSelectionPatch,
   canSendAfterManagedProfileRepair,
+  ensureRunnableProfileForConnection,
   ensureRunnableProfileFromStoredConnection,
   repairUnavailableManagedProfile,
 } = await import("@/assistant/provider-profile-repair");
@@ -137,6 +142,7 @@ beforeEach(() => {
   configGetResponses = [];
   configPatchCalls = [];
   connectionsGetCalls = [];
+  configPatchError = null;
   connections = [];
   secrets = [];
   configGetData = {
@@ -361,8 +367,24 @@ describe("repairUnavailableManagedProfile", () => {
     expect(result.repaired).toBe(true);
     expect(configPatchCalls).toHaveLength(1);
     expect(configPatchCalls[0].body).toMatchObject({
+      expectedActiveProfile: "balanced",
+      expectedActiveProfileDecision: {
+        profile: "balanced",
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        provider_connection: null,
+      },
       llm: {
         activeProfile: "custom-balanced",
+        callSites: {
+          callAgent: { profile: "custom-balanced" },
+          conversationTitle: { profile: "custom-balanced" },
+          homeGreeting: { profile: "custom-balanced" },
+          inference: { profile: "custom-balanced" },
+          memoryExtraction: { profile: "custom-balanced" },
+          subagentSpawn: { profile: "custom-balanced" },
+          workflowLeaf: { profile: "custom-balanced" },
+        },
         profiles: {
           "custom-balanced": {
             source: "user",
@@ -371,6 +393,14 @@ describe("repairUnavailableManagedProfile", () => {
         },
       },
     });
+    const callSites = (
+      configPatchCalls[0].body.llm as {
+        callSites: Record<string, unknown>;
+      }
+    ).callSites;
+    expect(callSites).not.toHaveProperty("heartbeatAgent");
+    expect(callSites).not.toHaveProperty("memoryRetrospective");
+    expect(callSites).not.toHaveProperty("notificationDecision");
   });
 
   test("replaces a user profile that still points at a platform connection", async () => {
@@ -402,7 +432,7 @@ describe("repairUnavailableManagedProfile", () => {
     });
   });
 
-  test("leaves an already runnable personal selection unchanged", async () => {
+  test("keeps an already runnable personal selection and repairs interactive call sites", async () => {
     configGetData = {
       llm: {
         activeProfile: "personal",
@@ -423,8 +453,90 @@ describe("repairUnavailableManagedProfile", () => {
     const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
 
     expect(result).toEqual({
+      repaired: true,
+      providerLabel: "Anthropic",
+    });
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      expectedActiveProfile: "personal",
+      llm: {
+        callSites: {
+          conversationTitle: { profile: "personal" },
+          memoryRouter: { profile: "personal" },
+          subagentSpawn: { profile: "personal" },
+        },
+      },
+    });
+    expect(configPatchCalls[0].body).not.toMatchObject({
+      llm: { activeProfile: expect.anything() },
+    });
+  });
+
+  test("pins a legacy unpinned personal profile to a ready connection even when an unready managed row comes first", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "legacy-openai",
+        profileOrder: ["legacy-openai"],
+        profiles: {
+          "legacy-openai": {
+            source: "user",
+            provider: "openai",
+            model: "gpt-5.4",
+          },
+        },
+      },
+    };
+    secrets = [{ type: "api_key", name: "openai" }];
+    connections = [
+      platformConnection("openai-managed", "openai"),
+      apiKeyConnection("openai-personal", "openai"),
+    ];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toEqual({
+      repaired: true,
+      providerLabel: "OpenAI",
+    });
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      expectedActiveProfile: "legacy-openai",
+      llm: {
+        profiles: {
+          "legacy-openai": {
+            provider_connection: "openai-personal",
+          },
+        },
+        callSites: {
+          conversationTitle: { profile: "legacy-openai" },
+          subagentSpawn: { profile: "legacy-openai" },
+        },
+      },
+    });
+  });
+
+  test("does not call an incompatible unpinned ChatGPT subscription profile runnable", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "legacy-openai",
+        profileOrder: ["legacy-openai"],
+        profiles: {
+          "legacy-openai": {
+            source: "user",
+            provider: "openai",
+            model: "gpt-5.4-nano",
+          },
+        },
+      },
+    };
+    secrets = [{ type: "credential", name: "chatgpt:access_token" }];
+    connections = [oauthSubscriptionConnection()];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toEqual({
       repaired: false,
-      reason: "already-runnable",
+      reason: "selection-changed",
     });
     expect(configPatchCalls).toHaveLength(0);
   });
@@ -505,6 +617,54 @@ describe("repairUnavailableManagedProfile", () => {
     expect(configPatchCalls).toHaveLength(0);
   });
 
+  test("does not repair a different active profile than the caller checked", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "newer-choice",
+        profiles: {
+          "newer-choice": {
+            source: "managed",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+          },
+        },
+      },
+    };
+
+    const result = await repairUnavailableManagedProfile(
+      ASSISTANT_ID,
+      "older-choice",
+    );
+
+    expect(result).toEqual({ repaired: false, reason: "selection-changed" });
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("maps a server compare-and-swap conflict to selection-changed", async () => {
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal", "anthropic"),
+    ];
+    configPatchError = {
+      error: {
+        code: "CONFLICT",
+        message: "The active model selection changed",
+      },
+    };
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toMatchObject({
+      repaired: false,
+      reason: "selection-changed",
+    });
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      expectedActiveProfile: "balanced",
+    });
+  });
+
   test("shares an in-flight repair for the same assistant", async () => {
     secrets = [{ type: "api_key", name: "anthropic" }];
     connections = [apiKeyConnection("anthropic-personal", "anthropic")];
@@ -517,6 +677,215 @@ describe("repairUnavailableManagedProfile", () => {
     expect(first.repaired).toBe(true);
     expect(second.repaired).toBe(true);
     expect(configPatchCalls).toHaveLength(1);
+  });
+
+  test("returns ambiguous for an unpinned profile with multiple ready personal candidates", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "personal-any",
+        profileOrder: ["personal-any"],
+        profiles: {
+          "personal-any": {
+            source: "user",
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      },
+    };
+    secrets = [{ type: "api_key", name: "anthropic" }];
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      apiKeyConnection("anthropic-personal-a", "anthropic"),
+      apiKeyConnection("anthropic-personal-b", "anthropic"),
+    ];
+
+    const result = await repairUnavailableManagedProfile(
+      ASSISTANT_ID,
+      "personal-any",
+    );
+
+    expect(result).toEqual({ repaired: false, reason: "ambiguous" });
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("CAS snapshots provider, model, and connection when activating a key", async () => {
+    const created = apiKeyConnection("anthropic-personal", "anthropic");
+    connections = [
+      platformConnection("anthropic-managed", "anthropic"),
+      created,
+    ];
+
+    const result = await ensureRunnableProfileForConnection(
+      ASSISTANT_ID,
+      created,
+      {
+        activateConnection: true,
+        connections,
+        routeInteractiveCallSites: true,
+      },
+    );
+
+    expect(result.repaired).toBe(true);
+    expect(configPatchCalls[0].body).toMatchObject({
+      expectedActiveProfile: "balanced",
+      expectedActiveProfileDecision: {
+        profile: "balanced",
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        provider_connection: null,
+      },
+    });
+  });
+});
+
+describe("buildInteractivePersonalCallSitePatch", () => {
+  test("replaces the old main profile without overwriting explicit specialist routes", () => {
+    const config: ConfigGetResponse = {
+      llm: {
+        activeProfile: "openai",
+        profileOrder: ["openai", "anthropic", "specialist", "balanced"],
+        profiles: {
+          openai: {
+            source: "user",
+            provider: "openai",
+            model: "gpt-5.4",
+          },
+          anthropic: {
+            source: "user",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+          },
+          specialist: {
+            source: "user",
+            provider: "gemini",
+            model: "gemini-3.1-pro-preview",
+          },
+          balanced: {
+            source: "managed",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+          },
+        },
+        callSites: {
+          conversationTitle: { profile: "openai" },
+          memoryExtraction: { profile: "specialist" },
+          subagentSpawn: { profile: "balanced" },
+          replySuggestion: {
+            provider: "openai",
+            model: "gpt-5.4-mini",
+          },
+          heartbeatAgent: { profile: "balanced" },
+        },
+      },
+    };
+
+    const patch = buildInteractivePersonalCallSitePatch(
+      config.llm,
+      "anthropic",
+      [],
+      { replaceProfileName: "openai" },
+    );
+
+    expect(patch).toMatchObject({
+      conversationTitle: { profile: "anthropic" },
+      subagentSpawn: { profile: "anthropic" },
+    });
+    expect(patch).not.toHaveProperty("memoryExtraction");
+    expect(patch).not.toHaveProperty("replySuggestion");
+    expect(patch).not.toHaveProperty("heartbeatAgent");
+  });
+
+  test("builds one CAS-aware active-profile and interactive-routing patch", () => {
+    const config: ConfigGetResponse = {
+      llm: {
+        activeProfile: "balanced",
+        profiles: {
+          balanced: {
+            source: "managed",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+          },
+          personal: {
+            source: "user",
+            provider: "openai",
+            model: "gpt-5.4",
+            provider_connection: "openai-personal",
+          },
+        },
+        callSites: {
+          conversationTitle: { profile: "balanced" },
+          heartbeatAgent: { profile: "balanced" },
+        },
+      },
+    };
+
+    const patch = buildInteractiveProfileSelectionPatch(
+      config.llm,
+      "personal",
+      "balanced",
+      [],
+      true,
+    );
+
+    expect(patch).toMatchObject({
+      expectedActiveProfile: "balanced",
+      expectedActiveProfileDecision: {
+        profile: "balanced",
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        provider_connection: null,
+      },
+      llm: {
+        activeProfile: "personal",
+        callSites: {
+          conversationTitle: { profile: "personal" },
+          subagentSpawn: { profile: "personal" },
+        },
+      },
+    });
+    expect(patch.llm?.callSites).not.toHaveProperty("heartbeatAgent");
+  });
+
+  test("clears direct provider/model overrides that inherit managed transport", () => {
+    const managed = platformConnection("anthropic-managed", "anthropic");
+    const config: ConfigGetResponse = {
+      llm: {
+        activeProfile: "balanced",
+        profiles: {
+          balanced: {
+            source: "managed",
+            provider: "anthropic",
+            model: "claude-opus-4-8",
+            provider_connection: "anthropic-managed",
+          },
+          personal: {
+            source: "user",
+            provider: "openai",
+            model: "gpt-5.4",
+            provider_connection: "openai-personal",
+          },
+        },
+        callSites: {
+          replySuggestion: {
+            provider: "openai",
+            model: "gpt-5.4-mini",
+          },
+        },
+      },
+    };
+
+    const patch = buildInteractivePersonalCallSitePatch(
+      config.llm,
+      "personal",
+      [managed],
+    );
+
+    expect(patch.replySuggestion).toEqual({
+      profile: "personal",
+      provider: null,
+      model: null,
+    });
   });
 });
 

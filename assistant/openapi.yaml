@@ -4528,6 +4528,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConfigGetResponse"
+        "409":
+          description: The active profile did not match expectedActiveProfile, so no config changes were written.
   /v1/config/allowlist/validate:
     get:
       operationId: config_allowlist_validate_get
@@ -29577,6 +29579,12 @@ components:
     ConfigPatchRequest:
       type: object
       properties:
+        expectedActiveProfile:
+          anyOf:
+            - type: string
+            - type: "null"
+        expectedActiveProfileDecision:
+          $ref: "#/components/schemas/ActiveProfileDecision"
         llm:
           type: object
           properties:
@@ -29792,6 +29800,30 @@ components:
                 - type: "null"
           additionalProperties: {}
       additionalProperties: {}
+    ActiveProfileDecision:
+      type: object
+      properties:
+        profile:
+          anyOf:
+            - type: string
+            - type: "null"
+        provider:
+          anyOf:
+            - type: string
+            - type: "null"
+        model:
+          anyOf:
+            - type: string
+            - type: "null"
+        provider_connection:
+          anyOf:
+            - type: string
+            - type: "null"
+      required:
+        - profile
+        - provider
+        - model
+        - provider_connection
     LLMProvider:
       type: string
       enum:

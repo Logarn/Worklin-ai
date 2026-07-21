@@ -8,6 +8,7 @@ import type { ProviderConnection } from "@/generated/daemon/types.gen";
 
 interface AssistantPathCall {
   path: { assistant_id: string };
+  throwOnError?: boolean;
 }
 
 interface ExchangeCall extends AssistantPathCall {
@@ -211,7 +212,7 @@ afterEach(() => {
 });
 
 describe("ChatgptOAuthSection", () => {
-  test("selects the ChatGPT subscription profile after a successful OAuth exchange", async () => {
+  test("activating ChatGPT OAuth reroutes interactive calls immediately", async () => {
     render(
       <Wrapper>
         <ChatgptOAuthSection
@@ -259,6 +260,11 @@ describe("ChatgptOAuthSection", () => {
     expect(configPatchCalls[0].body).toMatchObject({
       llm: {
         activeProfile: "custom-balanced",
+        callSites: {
+          conversationTitle: { profile: "custom-balanced" },
+          memoryExtraction: { profile: "custom-balanced" },
+          subagentSpawn: { profile: "custom-balanced" },
+        },
         profiles: {
           "custom-balanced": {
             provider: "openai",
@@ -274,9 +280,10 @@ describe("ChatgptOAuthSection", () => {
       },
     ]);
     expect(connectedConnection?.name).toBe("chatgpt-subscription");
-    expect(providerConnectionsGetCalls[0].path.assistant_id).toBe(
-      ASSISTANT_ID,
-    );
+    expect(providerConnectionsGetCalls[0]).toEqual({
+      path: { assistant_id: ASSISTANT_ID },
+      throwOnError: true,
+    });
     expect(document.body.textContent).toContain(
       "ChatGPT subscription connected successfully.",
     );

@@ -1,7 +1,7 @@
 import { ExternalLink, Info } from "lucide-react";
 import { useEffect } from "react";
 
-import { useManagedInferenceAvailability } from "@/assistant/managed-inference-availability";
+import { useManagedInferenceCapability } from "@/assistant/managed-inference-availability";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { LanguageModelCard } from "@/domains/settings/ai/language-model-card";
 import { WebSearchCard } from "@/domains/settings/ai/web-search-card";
@@ -17,8 +17,8 @@ import { LiveVoiceCard } from "@/domains/settings/ai/live-voice-card";
 
 export function AiPage() {
   const assistantId = useActiveAssistantId();
-  const { available: managedInferenceAvailable } =
-    useManagedInferenceAvailability(assistantId);
+  const { configured: managedInferenceConfigured } =
+    useManagedInferenceCapability(assistantId);
 
   // Scroll to hash target on mount (e.g. deep links to #email).
   useEffect(() => {
@@ -31,7 +31,7 @@ export function AiPage() {
 
   return (
     <div className="space-y-5">
-      {managedInferenceAvailable ? (
+      {managedInferenceConfigured ? (
         <div className="flex items-start gap-2 rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] px-4 py-2.5">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-[var(--content-tertiary)]" />
           <p className="text-body-medium-lighter text-[var(--content-secondary)]">

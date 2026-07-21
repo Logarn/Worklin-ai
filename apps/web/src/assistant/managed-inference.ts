@@ -24,7 +24,10 @@ export function isManagedInferenceProfile(
   const connection = connections.find(
     (candidate) => candidate.name === profile.provider_connection,
   );
-  return connection ? isManagedInferenceConnection(connection) : false;
+  // A pinned profile whose connection row is unavailable is not proven
+  // personal. Treat it as unavailable/managed so pickers fail closed while
+  // connection inventory is loading or stale.
+  return connection ? isManagedInferenceConnection(connection) : true;
 }
 
 export function profilesAvailableForManagedInference<
@@ -32,9 +35,9 @@ export function profilesAvailableForManagedInference<
 >(
   profiles: readonly T[],
   connections: readonly ProviderConnection[],
-  managedInferenceAvailable: boolean,
+  managedInferenceConfigured: boolean,
 ): T[] {
-  if (managedInferenceAvailable) return [...profiles];
+  if (managedInferenceConfigured) return [...profiles];
   return profiles.filter(
     (profile) => !isManagedInferenceProfile(profile, connections),
   );
@@ -42,9 +45,9 @@ export function profilesAvailableForManagedInference<
 
 export function connectionsAvailableForManagedInference(
   connections: readonly ProviderConnection[],
-  managedInferenceAvailable: boolean,
+  managedInferenceConfigured: boolean,
 ): ProviderConnection[] {
-  if (managedInferenceAvailable) return [...connections];
+  if (managedInferenceConfigured) return [...connections];
   return connections.filter(
     (connection) => !isManagedInferenceConnection(connection),
   );

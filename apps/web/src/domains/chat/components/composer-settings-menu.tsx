@@ -9,7 +9,7 @@ import {
     type ProfilePickerEntry,
 } from "@/assistant/profile-pickers";
 import {
-    useManagedInferenceAvailability,
+    useManagedInferenceCapability,
 } from "@/assistant/managed-inference-availability";
 import { profilesAvailableForManagedInference } from "@/assistant/managed-inference";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
@@ -52,8 +52,8 @@ export function ComposerSettingsMenu({ assistantId, conversationId }: Props) {
   const isMobile = useIsMobile();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const { available: managedInferenceAvailable } =
-    useManagedInferenceAvailability(assistantId);
+  const { configured: managedInferenceConfigured } =
+    useManagedInferenceCapability(assistantId);
   const hasServerConversation =
     !!conversationId && !isDraftConversationId(conversationId);
 
@@ -384,13 +384,13 @@ export function ComposerSettingsMenu({ assistantId, conversationId }: Props) {
     return profilesAvailableForManagedInference(
       [...ordered, ...extras],
       connectionsQuery.data?.connections ?? [],
-      managedInferenceAvailable,
+      managedInferenceConfigured,
     );
   }, [
     profiles,
     profileOrder,
     connectionsQuery.data?.connections,
-    managedInferenceAvailable,
+    managedInferenceConfigured,
   ]);
 
   const queryComplexityRoutingEnabled =

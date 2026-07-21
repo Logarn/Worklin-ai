@@ -8,7 +8,15 @@ import { Modal } from "@vellumai/design-library/components/modal";
 import { toast } from "@vellumai/design-library/components/toast";
 import { Typography } from "@vellumai/design-library/components/typography";
 
-import type { CallSiteOverrideDraft, ConfigPatchRequest, ProfileEntry, ProfilePatchEntry, ProfileStatus } from "@/generated/daemon/types.gen";
+import type {
+  CallSiteOverrideDraft,
+  ConfigGetResponse,
+  ConfigPatchRequest,
+  ProfileEntry,
+  ProfilePatchEntry,
+  ProfileStatus,
+  ProviderConnection,
+} from "@/generated/daemon/types.gen";
 
 import { type ProfileWithName, buildOrderedProfiles } from "@/domains/settings/ai/utils";
 import type { BlockedDeleteState } from "@/domains/settings/ai/manage-profiles-blocked-delete-modal";
@@ -20,6 +28,10 @@ import {
   connectionsAvailableForManagedInference,
   profilesAvailableForManagedInference,
 } from "@/assistant/managed-inference";
+import {
+  buildInteractiveProfileSelectionPatch,
+  isConfigSelectionConflict,
+} from "@/assistant/provider-profile-repair";
 import { configGetOptions, configGetSetQueryData, inferenceProviderconnectionsGetOptions, useConfigPatchMutation } from "@/generated/daemon/@tanstack/react-query.gen";
 
 // ---------------------------------------------------------------------------
@@ -29,7 +41,7 @@ import { configGetOptions, configGetSetQueryData, inferenceProviderconnectionsGe
 interface ManageProfilesModalProps {
   isOpen: boolean;
   assistantId: string;
-  managedInferenceAvailable?: boolean;
+  managedInferenceConfigured?: boolean;
   onClose: () => void;
 }
 
@@ -40,7 +52,7 @@ interface ManageProfilesModalProps {
 export function ManageProfilesModal({
   isOpen,
   assistantId,
-  managedInferenceAvailable = false,
+  managedInferenceConfigured = false,
   onClose,
 }: ManageProfilesModalProps) {
   const queryClient = useQueryClient();
@@ -78,18 +90,18 @@ export function ManageProfilesModal({
     () =>
       connectionsAvailableForManagedInference(
         allConnections,
-        managedInferenceAvailable,
+        managedInferenceConfigured,
       ),
-    [allConnections, managedInferenceAvailable],
+    [allConnections, managedInferenceConfigured],
   );
   const orderedProfiles = useMemo(
     () =>
       profilesAvailableForManagedInference(
         buildOrderedProfiles(profiles, profileOrder),
         allConnections,
-        managedInferenceAvailable,
+        managedInferenceConfigured,
       ),
-    [profiles, profileOrder, allConnections, managedInferenceAvailable],
+    [profiles, profileOrder, allConnections, managedInferenceConfigured],
   );
 
   const existingNames = Object.keys(profiles);
@@ -175,6 +187,8 @@ export function ManageProfilesModal({
             orderedProfiles={orderedProfiles}
             activeProfile={activeProfile}
             callSiteOverrides={callSites}
+            connections={allConnections}
+            managedInferenceConfigured={managedInferenceConfigured}
             onClose={onClose}
             onEditClick={(profile) => {
               setEditingProfile(profile);
@@ -200,7 +214,7 @@ export function ManageProfilesModal({
         initialValues={editingProfile ?? undefined}
         existingNames={existingNames}
         connections={connections}
-        managedInferenceAvailable={managedInferenceAvailable}
+        managedInferenceConfigured={managedInferenceConfigured}
         assistantId={assistantId}
         onSave={handleEditorSave}
         onCancel={() => {
@@ -222,7 +236,11 @@ interface ManageProfilesModalInnerProps {
   profileOrder: string[];
   orderedProfiles: ProfileWithName[];
   activeProfile: string | null;
-  callSiteOverrides: Record<string, { profile?: string | null } | null | undefined>;
+  callSiteOverrides: NonNullable<
+    NonNullable<ConfigGetResponse["llm"]>["callSites"]
+  >;
+  connections: ProviderConnection[];
+  managedInferenceConfigured: boolean;
   onClose: () => void;
   onEditClick: (profile: ProfileWithName) => void;
   onNewClick: () => void;
@@ -235,6 +253,8 @@ function ManageProfilesModalInner({
   orderedProfiles,
   activeProfile,
   callSiteOverrides,
+  connections,
+  managedInferenceConfigured,
   onClose,
   onEditClick,
   onNewClick,
@@ -248,6 +268,8 @@ function ManageProfilesModalInner({
 
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
   const [deleting, setDeleting] = useState<Record<string, boolean>>({});
+  const [selectingName, setSelectingName] = useState<string | null>(null);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
   const [togglingNames, setTogglingNames] = useState<Set<string>>(new Set());
   const [toggleError, setToggleError] = useState<string | null>(null);
 
@@ -270,6 +292,34 @@ function ManageProfilesModalInner({
   const allOrderedProfiles: ProfileWithName[] = useMemo(() => {
     return gateAutoProfile(orderedProfiles, queryComplexityRouting);
   }, [orderedProfiles, queryComplexityRouting]);
+
+  async function handleSelectProfile(profile: ProfileWithName) {
+    if (profile.name === activeProfile || selectingName) return;
+    setSelectingName(profile.name);
+    setSelectionError(null);
+    try {
+      await configMutation.mutateAsync({
+        path: { assistant_id: assistantId },
+        body: buildInteractiveProfileSelectionPatch(
+          { profiles, callSites: callSiteOverrides },
+          profile.name,
+          activeProfile,
+          connections,
+          !managedInferenceConfigured,
+        ),
+      });
+      toast.success(`Using "${profile.label ?? profile.name}"`);
+    } catch (error) {
+      captureError(error, { context: "settings-ai-profile-select" });
+      setSelectionError(
+        isConfigSelectionConflict(error)
+          ? "The model choice changed before this selection was saved. Try again."
+          : `Couldn't use "${profile.label ?? profile.name}". Check your connection and try again.`,
+      );
+    } finally {
+      setSelectingName(null);
+    }
+  }
 
   async function handleStatusToggle(
     profile: ProfileWithName,
@@ -455,6 +505,8 @@ function ManageProfilesModalInner({
                   dropTarget={dropTarget}
                   isDeleting={deleting[profile.name] ?? false}
                   deleteError={deleteErrors[profile.name]}
+                  isSelected={profile.name === activeProfile}
+                  isSelecting={selectingName === profile.name}
                   isToggling={togglingNames.has(profile.name)}
                   onDragStart={(e) => {
                     draggingNameRef.current = profile.name;
@@ -499,6 +551,7 @@ function ManageProfilesModalInner({
                   }}
                   onEditClick={() => onEditClick(profile)}
                   onDeleteClick={() => handleDeleteClick(profile.name)}
+                  onSelectClick={() => void handleSelectProfile(profile)}
                   onStatusToggle={(next) => void handleStatusToggle(profile, next)}
                 />
               ))}
@@ -511,6 +564,15 @@ function ManageProfilesModalInner({
               className="mt-2 text-(--system-negative-strong)"
             >
               {reorderError}
+            </Typography>
+          )}
+          {selectionError && (
+            <Typography
+              variant="body-small-default"
+              as="p"
+              className="mt-2 text-(--system-negative-strong)"
+            >
+              {selectionError}
             </Typography>
           )}
           {toggleError && (

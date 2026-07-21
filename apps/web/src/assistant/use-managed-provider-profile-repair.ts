@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { useManagedInferenceAvailability } from "@/assistant/managed-inference-availability";
+import { useManagedInferenceCapability } from "@/assistant/managed-inference-availability";
 import { repairUnavailableManagedProfile } from "@/assistant/provider-profile-repair";
 import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 import { captureError } from "@/lib/sentry/capture-error";
@@ -15,20 +15,21 @@ import { captureError } from "@/lib/sentry/capture-error";
 export function useManagedProviderProfileRepair(
   assistantId: string | null,
   enabled: boolean,
+  repairProfile = repairUnavailableManagedProfile,
 ): void {
   const queryClient = useQueryClient();
-  const { unavailable } = useManagedInferenceAvailability(
+  const { notConfigured } = useManagedInferenceCapability(
     assistantId,
     enabled,
   );
   const attemptedAssistantIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
-    if (!enabled || !assistantId || !unavailable) return;
+    if (!enabled || !assistantId || !notConfigured) return;
     if (attemptedAssistantIdsRef.current.has(assistantId)) return;
     attemptedAssistantIdsRef.current.add(assistantId);
 
-    void repairUnavailableManagedProfile(assistantId)
+    void repairProfile(assistantId)
       .then((result) => {
         if (!result.repaired) return;
         void queryClient.invalidateQueries({
@@ -42,5 +43,5 @@ export function useManagedProviderProfileRepair(
           context: "repair_unavailable_managed_profile",
         });
       });
-  }, [assistantId, enabled, queryClient, unavailable]);
+  }, [assistantId, enabled, notConfigured, queryClient, repairProfile]);
 }

@@ -44,6 +44,7 @@ type ChatgptOAuthState =
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
+  managedInferenceConfigured?: boolean;
   onConnected: (connection: ProviderConnection) => void | Promise<void>;
 }
 
@@ -134,6 +135,7 @@ function formatChatgptAuthError(message: string): string {
 
 export function ChatgptOAuthSection({
   assistantId,
+  managedInferenceConfigured = false,
   onConnected,
 }: ChatgptOAuthSectionProps) {
   const [oauthState, setOauthState] = useState<ChatgptOAuthState>("idle");
@@ -159,7 +161,6 @@ export function ChatgptOAuthSection({
   const notifyConnectedConnection = useCallback(async () => {
     const { data } = await inferenceProviderconnectionsGet({
       path: { assistant_id: assistantId },
-      query: { provider: "openai" },
       throwOnError: true,
     });
     const conns = data.connections;
@@ -186,7 +187,11 @@ export function ChatgptOAuthSection({
     const repair = await ensureRunnableProfileForConnection(
       assistantId,
       connection,
-      { activateConnection: true },
+      {
+        activateConnection: true,
+        connections: conns,
+        routeInteractiveCallSites: !managedInferenceConfigured,
+      },
     );
     if (repair.repaired) {
       void queryClient.invalidateQueries({
@@ -197,7 +202,12 @@ export function ChatgptOAuthSection({
     }
 
     await onConnected(connection);
-  }, [assistantId, onConnected, queryClient]);
+  }, [
+    assistantId,
+    managedInferenceConfigured,
+    onConnected,
+    queryClient,
+  ]);
 
   const finishConnectionSetup = useCallback(async () => {
     setOauthState("activating");

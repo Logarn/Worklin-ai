@@ -43,7 +43,7 @@ export interface CallSiteOverridesModalProps {
   isOpen: boolean;
   onClose: () => void;
   assistantId: string;
-  managedInferenceAvailable?: boolean;
+  managedInferenceConfigured?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ export function CallSiteOverridesModal({
   isOpen,
   onClose,
   assistantId,
-  managedInferenceAvailable = false,
+  managedInferenceConfigured = false,
 }: CallSiteOverridesModalProps) {
   const savingRef = useRef(false);
   return (
@@ -67,7 +67,7 @@ export function CallSiteOverridesModal({
       {isOpen ? (
         <CallSiteOverridesModalInner
           assistantId={assistantId}
-          managedInferenceAvailable={managedInferenceAvailable}
+          managedInferenceConfigured={managedInferenceConfigured}
           onClose={onClose}
           onSavingChange={(s) => {
             savingRef.current = s;
@@ -84,14 +84,14 @@ export function CallSiteOverridesModal({
 
 interface InnerProps {
   assistantId: string;
-  managedInferenceAvailable: boolean;
+  managedInferenceConfigured: boolean;
   onClose: () => void;
   onSavingChange?: (isSaving: boolean) => void;
 }
 
 function CallSiteOverridesModalInner({
   assistantId,
-  managedInferenceAvailable,
+  managedInferenceConfigured,
   onClose,
   onSavingChange,
 }: InnerProps) {
@@ -116,13 +116,13 @@ function CallSiteOverridesModalInner({
       profilesAvailableForManagedInference(
         buildOrderedProfiles(profiles, profileOrder),
         connectionsData?.connections ?? [],
-        managedInferenceAvailable,
+        managedInferenceConfigured,
       ),
     [
       profiles,
       profileOrder,
       connectionsData?.connections,
-      managedInferenceAvailable,
+      managedInferenceConfigured,
     ],
   );
 

@@ -3,25 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { authInfoGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
+
 let unavailable = false;
 const repairUnavailableManagedProfile = mock(async () => ({
   repaired: true,
-}));
-
-mock.module("@/assistant/managed-inference-availability", () => ({
-  useManagedInferenceAvailability: () => ({
-    available: !unavailable,
-    unavailable,
-    isLoading: false,
-  }),
-}));
-
-mock.module("@/assistant/provider-profile-repair", () => ({
-  repairUnavailableManagedProfile,
-}));
-
-mock.module("@/lib/sentry/capture-error", () => ({
-  captureError: () => {},
 }));
 
 const { useManagedProviderProfileRepair } = await import(
@@ -32,6 +18,16 @@ function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  queryClient.setQueryData(
+    authInfoGetQueryKey({ path: { assistant_id: "asst-1" } }),
+    {
+      platformUrl: unavailable ? null : "https://platform.example.com",
+      assistantId: "asst-1",
+      organizationId: null,
+      userId: null,
+      authenticated: !unavailable,
+    },
+  );
   return createElement(QueryClientProvider, { client: queryClient }, children);
 }
 
@@ -41,13 +37,19 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  unavailable = false;
   cleanup();
 });
 
 describe("useManagedProviderProfileRepair", () => {
   test("does not change profiles when managed platform auth is available", async () => {
     renderHook(
-      () => useManagedProviderProfileRepair("asst-1", true),
+      () =>
+        useManagedProviderProfileRepair(
+          "asst-1",
+          true,
+          repairUnavailableManagedProfile,
+        ),
       { wrapper },
     );
 
@@ -58,7 +60,12 @@ describe("useManagedProviderProfileRepair", () => {
   test("attempts one conservative repair after explicit unavailability", async () => {
     unavailable = true;
     const { rerender } = renderHook(
-      () => useManagedProviderProfileRepair("asst-1", true),
+      () =>
+        useManagedProviderProfileRepair(
+          "asst-1",
+          true,
+          repairUnavailableManagedProfile,
+        ),
       { wrapper },
     );
 

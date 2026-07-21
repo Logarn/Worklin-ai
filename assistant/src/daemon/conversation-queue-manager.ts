@@ -37,6 +37,8 @@ export interface QueuedMessage {
   authContext?: AuthContext;
   /** Transport metadata snapshot captured at enqueue time, applied when this message becomes active. */
   transport?: ConversationTransportMetadata;
+  /** Guarded inference profile captured for this exact queued turn. */
+  inferenceProfile?: string;
   /** Original user message text to persist to DB when recording intent stripping produced a different `content`. */
   displayContent?: string;
   /** Wall-clock time (ms since epoch) when the message was enqueued, used as the display timestamp. */
@@ -211,6 +213,9 @@ function estimateItemBytes(item: QueuedMessage): number {
   }
   if (item.sourceActorPrincipalId) {
     bytes += item.sourceActorPrincipalId.length * 2;
+  }
+  if (item.inferenceProfile) {
+    bytes += item.inferenceProfile.length * 2;
   }
   // Small fixed overhead for metadata, pointers, etc. (not worth
   // measuring precisely — the content/attachment data dominates).

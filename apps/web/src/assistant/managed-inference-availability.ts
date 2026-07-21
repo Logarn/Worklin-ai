@@ -2,24 +2,25 @@ import { useQuery } from "@tanstack/react-query";
 
 import { authInfoGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
 
-export interface ManagedInferenceAvailability {
-  available: boolean;
-  unavailable: boolean;
+export interface ManagedInferenceCapabilityStatus {
+  configured: boolean;
+  notConfigured: boolean;
   isLoading: boolean;
 }
 
 /**
- * The daemon's auth-info response is backed by `resolveManagedProxyContext`,
- * which requires both a platform URL and an assistant API key.
+ * The daemon's auth-info response confirms that managed-proxy routing has the
+ * required platform URL and assistant API key. It does not probe the platform
+ * or validate that the configured key can complete inference.
  *
- * `available` fails closed for UI rendering. `unavailable` becomes true only
- * after an explicit daemon response, so transient request failures cannot
- * trigger a configuration repair.
+ * `configured` fails closed for UI rendering. `notConfigured` becomes true
+ * only after an explicit assistant response, so transient request failures
+ * cannot trigger a configuration repair.
  */
-export function useManagedInferenceAvailability(
+export function useManagedInferenceCapability(
   assistantId: string | null,
   enabled = true,
-): ManagedInferenceAvailability {
+): ManagedInferenceCapabilityStatus {
   const query = useQuery({
     ...authInfoGetOptions({
       path: { assistant_id: assistantId ?? "" },
@@ -29,8 +30,8 @@ export function useManagedInferenceAvailability(
   });
 
   return {
-    available: query.data?.authenticated === true,
-    unavailable: query.isSuccess && query.data?.authenticated === false,
+    configured: query.data?.authenticated === true,
+    notConfigured: query.isSuccess && query.data?.authenticated === false,
     isLoading: query.isLoading,
   };
 }

@@ -35,6 +35,7 @@ import {
   describeSubscriptionModelIncompatibility,
   isConnectionCompatibleWithModel,
 } from "./connection-model-compat.js";
+import type { ProviderConnection } from "./inference/auth.js";
 import { getConnection, listConnections } from "./inference/connections.js";
 import type { ProvidersConfig } from "./registry.js";
 import { resolveProviderFromConnection } from "./registry.js";
@@ -98,6 +99,12 @@ export class ConnectionResolutionError extends Error {
     super(message);
     this.name = "ConnectionResolutionError";
   }
+}
+
+export function isPersonalProviderConnection(
+  connection: Pick<ProviderConnection, "auth" | "isManaged">,
+): boolean {
+  return connection.auth.type !== "platform" && connection.isManaged !== true;
 }
 
 /**
@@ -238,8 +245,9 @@ export async function resolveDefaultProvider(
   if (!connectionName) {
     // The merged config has no provider_connection — the profile likely set
     // provider without a connection ("Any active" selection), and the merge
-    // cleared or failed to inherit one. Try to find an active connection
-    // for the provider before giving up.
+    // cleared or failed to inherit one. Try to find a personal connection for
+    // the provider before giving up; managed transport requires an explicit
+    // profile binding.
     let autoResolveCandidates:
       | import("./inference/auth.js").ProviderConnection[]
       | undefined;
@@ -248,8 +256,10 @@ export async function resolveDefaultProvider(
         autoResolveCandidates = listConnections(getDb(), {
           provider: resolved.provider,
         });
-        const active = autoResolveCandidates.find((c) =>
-          isConnectionCompatibleWithModel(c, resolved.model),
+        const active = autoResolveCandidates.find(
+          (candidate) =>
+            isPersonalProviderConnection(candidate) &&
+            isConnectionCompatibleWithModel(candidate, resolved.model),
         );
         if (active) {
           log.info(
