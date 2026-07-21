@@ -257,6 +257,68 @@ describe("conversation-title-service", () => {
     );
   });
 
+  test("retries another configured BYOK profile when the first title provider fails", async () => {
+    const speedProvider = makeProvider("openai-speed");
+    const activeProvider = makeProvider("openai-active");
+    mockGetConfig.mockImplementation(() => ({
+      llm: {
+        default: {},
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-cost-optimized": {
+            source: "user",
+            model: "gpt-speed-test",
+          },
+          "custom-balanced": {
+            source: "user",
+            model: "gpt-balanced-test",
+          },
+        },
+      },
+    }));
+    mockGetConfiguredProvider.mockImplementation(
+      async (_callSite, options: { overrideProfile?: string } = {}) =>
+        options.overrideProfile === "custom-cost-optimized"
+          ? speedProvider
+          : activeProvider,
+    );
+    mockRunBtwSidechain.mockImplementationOnce(async () => {
+      throw new Error("model unavailable");
+    });
+    mockRunBtwSidechain.mockImplementationOnce(async () => ({
+      text: "Launch Planning",
+      hadTextDeltas: true,
+      response: {
+        content: [{ type: "text", text: "Launch Planning" }],
+        model: "gpt-balanced-test",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: "end_turn",
+      },
+    }));
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      userMessage: "Plan the product launch",
+    });
+
+    expect(result).toEqual({ title: "Launch Planning", updated: true });
+    expect(mockRunBtwSidechain).toHaveBeenCalledTimes(2);
+    expect(mockGetConfiguredProvider.mock.calls.map((call) => call[1])).toEqual(
+      [
+        {
+          overrideProfile: "custom-cost-optimized",
+          forceOverrideProfile: true,
+          selectionSeed: "conv-1",
+        },
+        {
+          overrideProfile: "custom-balanced",
+          forceOverrideProfile: true,
+          selectionSeed: "conv-1",
+        },
+      ],
+    );
+  });
+
   test("keeps a standard-row manual schedule on configured title routing", async () => {
     const provider = makeProvider("anthropic");
     mockGetConversation.mockReturnValue({
@@ -637,6 +699,30 @@ describe("conversation-title-service", () => {
     );
   });
 
+  test("request-bound regeneration derives a title from in-memory context when no provider resolves", async () => {
+    mockGetConfiguredProvider.mockResolvedValue(null);
+
+    const result = await regenerateConversationTitleRequestBound({
+      conversationId: "conv-1",
+      recentMessages: [
+        { role: "assistant", text: "We narrowed the launch to Nairobi" },
+        { role: "user", text: "Build the investor demo checklist" },
+      ],
+    });
+
+    expect(result).toEqual({
+      title: "Build the investor demo checklist",
+      updated: true,
+    });
+    expect(mockGetMessages).not.toHaveBeenCalled();
+    expect(mockRunBtwSidechain).not.toHaveBeenCalled();
+    expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
+      "conv-1",
+      "Build the investor demo checklist",
+      AUTO_TITLE_DETERMINISTIC,
+    );
+  });
+
   test("rejects meta-failure outputs like 'Missing Context' and uses fallback", async () => {
     mockRunBtwSidechain.mockImplementationOnce(async () => ({
       text: "Missing Context",
@@ -662,10 +748,10 @@ describe("conversation-title-service", () => {
       userMessage: "so about that t-shirt...",
     });
 
-    expect(result.title).toBe("Untitled Conversation");
+    expect(result.title).toBe("so about that t-shirt");
     expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
       "conv-1",
-      "Untitled Conversation",
+      "so about that t-shirt",
       AUTO_TITLE_DETERMINISTIC,
     );
   });
@@ -702,7 +788,7 @@ describe("conversation-title-service", () => {
       userMessage: "something",
     });
 
-    expect(result.title).toBe("Untitled Conversation");
+    expect(result.title).toBe("something");
   });
 
   test("regeneration skips LLM call when recent messages have no extractable text", async () => {
@@ -935,7 +1021,7 @@ describe("conversation-title-service", () => {
       userMessage: "Plan the product launch",
     });
 
-    expect(result.title).toBe("Untitled Conversation");
+    expect(result.title).toBe("Plan the product launch");
     expect(mockGetConfiguredProvider).toHaveBeenCalledTimes(1);
     expect(mockGetConfiguredProvider).toHaveBeenCalledWith(
       "conversationTitle",

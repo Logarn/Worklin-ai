@@ -154,28 +154,10 @@ function resolveConversationTitleContext(
   return context ?? persistedContext;
 }
 
-function isEnabledProfile(
-  profile: ReturnType<typeof getConfig>["llm"]["profiles"][string] | undefined,
-): boolean {
-  return profile != null && profile.status !== "disabled";
-}
-
-function isUserProfile(
-  profile: ReturnType<typeof getConfig>["llm"]["profiles"][string] | undefined,
-): boolean {
-  return isEnabledProfile(profile) && profile?.source !== "managed";
-}
-
-/**
- * Resolve the chat-profile candidates for an interactive title. `undefined`
- * means the conversation is system/background work and must stay on the
- * configured `conversationTitle` route. An empty array means no usable chat
- * profile exists, so that configured route is also the only fallback.
- */
-function resolveConversationTitleProfiles(
+function resolveConversationTitleProfile(
   conversation: ReturnType<typeof getConversation>,
   context?: TitleContext,
-): string[] | undefined {
+): string | undefined {
   if (conversation && conversation.conversationType !== "standard") {
     return undefined;
   }
@@ -184,83 +166,148 @@ function resolveConversationTitleProfiles(
     return undefined;
   }
 
-  const { llm } = getConfig();
   const conversationProfile = resolveOverrideProfile(conversation);
-  const costProfile = "custom-cost-optimized";
-  const defaultChatProfile =
-    llm.activeProfile ?? resolveDefaultProfileKey("mainAgent", llm);
-  const ordered = [
-    conversationProfile,
-    isUserProfile(llm.profiles[costProfile]) ? costProfile : undefined,
-    defaultChatProfile,
-  ].filter((profile): profile is string => profile != null);
-  const unique = [...new Set(ordered)];
+  if (conversationProfile) return conversationProfile;
 
-  // When the workspace has a BYOK route, never silently spill title traffic
-  // onto a managed profile. A pinned profile absent from the loaded config is
-  // retained only when there is no known BYOK alternative; this preserves the
-  // resolver's normal missing-profile fallback for legacy rows.
-  const hasUserProfile = unique.some((profile) =>
-    isUserProfile(llm.profiles[profile]),
-  );
-  return hasUserProfile
-    ? unique.filter((profile) => isUserProfile(llm.profiles[profile]))
-    : unique.filter(
-        (profile) =>
-          llm.profiles[profile] == null ||
-          isEnabledProfile(llm.profiles[profile]),
-      );
+  const { llm } = getConfig();
+  return llm.activeProfile ?? resolveDefaultProfileKey("mainAgent", llm);
 }
 
+async function resolveConversationTitleProvider(
+  conversationId: string,
+  conversation: ReturnType<typeof getConversation>,
+  provider?: Provider,
+  context?: TitleContext,
+): Promise<Provider | null> {
+  if (provider) return provider;
+
+  const titleProfile = resolveConversationTitleProfile(conversation, context);
+  return getConfiguredProvider("conversationTitle", {
+    ...(titleProfile
+      ? { forceOverrideProfile: true, overrideProfile: titleProfile }
+      : {}),
+    selectionSeed: conversationId,
+  });
+}
+
+function isUsableProfile(
+  profile: ReturnType<typeof getConfig>["llm"]["profiles"][string] | undefined,
+): boolean {
+  return (
+    profile != null &&
+    profile.status !== "disabled" &&
+    (typeof profile.model === "string" ||
+      typeof profile.provider === "string" ||
+      typeof profile.provider_connection === "string" ||
+      profile.mix != null)
+  );
+}
+
+function isUserProfile(
+  profile: ReturnType<typeof getConfig>["llm"]["profiles"][string] | undefined,
+): boolean {
+  return isUsableProfile(profile) && profile?.source !== "managed";
+}
+
+/**
+ * Resolve more than one user-owned profile for interactive titles. A title is
+ * a best-effort side effect, so a stale model, expired credential, or provider
+ * outage must not leave the conversation permanently untitled when another
+ * configured BYOK profile can serve the request.
+ */
 async function resolveTitleProviderAttempts(
   conversationId: string,
   conversation: ReturnType<typeof getConversation>,
-  explicitProvider?: Provider,
+  explicitProvider: Provider | undefined,
   context?: TitleContext,
 ): Promise<TitleProviderAttempt[]> {
   if (explicitProvider) return [{ provider: explicitProvider }];
 
-  const profileKeys = resolveConversationTitleProfiles(conversation, context);
-  if (profileKeys === undefined) {
+  const isInteractive =
+    !context || INTERACTIVE_TITLE_ORIGINS.has(context.origin);
+
+  // Background and scheduled work stays on the configured title route. Only
+  // interactive chat is allowed to prefer the user's active/BYOK profiles.
+  if (
+    !isInteractive ||
+    (conversation != null && conversation.conversationType !== "standard")
+  ) {
+    try {
+      const provider = await resolveConversationTitleProvider(
+        conversationId,
+        conversation,
+        undefined,
+        context,
+      );
+      return provider ? [{ provider }] : [];
+    } catch (err) {
+      log.warn(
+        { err, conversationId },
+        "Unable to resolve configured conversation title provider",
+      );
+      return [];
+    }
+  }
+
+  const config = getConfig();
+  const profileKeys: string[] = [];
+  const customCostProfile = "custom-cost-optimized";
+  const activeProfile = config.llm.activeProfile;
+  const conversationProfile = resolveOverrideProfile(conversation);
+  const conversationProfileConfig = conversationProfile
+    ? config.llm.profiles[conversationProfile]
+    : undefined;
+  const hasUserFallback =
+    isUserProfile(config.llm.profiles[customCostProfile]) ||
+    (activeProfile != null &&
+      isUserProfile(config.llm.profiles[activeProfile]));
+
+  if (
+    conversationProfile &&
+    (!hasUserFallback || isUserProfile(conversationProfileConfig))
+  ) {
+    profileKeys.push(conversationProfile);
+  }
+  if (isUserProfile(config.llm.profiles[customCostProfile])) {
+    profileKeys.push(customCostProfile);
+  }
+  if (activeProfile && isUserProfile(config.llm.profiles[activeProfile])) {
+    profileKeys.push(activeProfile);
+  }
+
+  const attempts: TitleProviderAttempt[] = [];
+  for (const profile of [...new Set(profileKeys)]) {
+    try {
+      const provider = await getConfiguredProvider("conversationTitle", {
+        overrideProfile: profile,
+        forceOverrideProfile: true,
+        selectionSeed: conversationId,
+      });
+      if (provider) attempts.push({ provider, profile });
+    } catch (err) {
+      log.warn(
+        { err, conversationId, profile },
+        "Unable to resolve conversation title BYOK profile",
+      );
+    }
+  }
+
+  // Do not silently switch an interactive user to a managed title provider
+  // after a BYOK profile was configured but could not be resolved.
+  if (attempts.length > 0 || profileKeys.length > 0) return attempts;
+
+  try {
     const provider = await getConfiguredProvider("conversationTitle", {
       selectionSeed: conversationId,
     });
     return provider ? [{ provider }] : [];
+  } catch (err) {
+    log.warn(
+      { err, conversationId },
+      "Unable to resolve fallback conversation title provider",
+    );
+    return [];
   }
-
-  const attempts: TitleProviderAttempt[] = [];
-  for (const profile of profileKeys) {
-    const provider = await getConfiguredProvider("conversationTitle", {
-      overrideProfile: profile,
-      forceOverrideProfile: true,
-      selectionSeed: conversationId,
-    });
-    if (provider) attempts.push({ provider, profile });
-  }
-
-  if (profileKeys.length > 0) {
-    return attempts;
-  }
-
-  const provider = await getConfiguredProvider("conversationTitle", {
-    selectionSeed: conversationId,
-  });
-  return provider ? [{ provider }] : [];
-}
-
-function persistFallbackTitle(
-  conversationId: string,
-  context?: TitleContext,
-): { title: string; updated: boolean } {
-  const current = getConversation(conversationId);
-  if (current && !canReplaceTitle(current)) {
-    return { title: current.title!, updated: false };
-  }
-
-  const fallback = deriveFallbackTitle(context) ?? UNTITLED_FALLBACK;
-  updateConversationTitle(conversationId, fallback, AUTO_TITLE_DETERMINISTIC);
-  publishConversationTitleChanged(conversationId, fallback);
-  return { title: fallback, updated: true };
 }
 
 /**
@@ -291,9 +338,7 @@ export async function generateAndPersistConversationTitle(
     effectiveContext,
   );
   if (providerAttempts.length === 0) {
-    // No provider available — fall back to context-derived title or untitled.
-    // Deterministic, so keep it upgradeable by a later generation pass.
-    return persistFallbackTitle(conversationId, effectiveContext);
+    return persistFallbackTitle(conversationId, effectiveContext, userMessage);
   }
 
   const prompt = buildTitlePrompt(
@@ -319,11 +364,7 @@ export async function generateAndPersistConversationTitle(
     } catch (err) {
       lastError = err;
       log.warn(
-        {
-          err,
-          conversationId,
-          profile: attempt.profile,
-        },
+        { err, conversationId, profile: attempt.profile },
         "Conversation title provider attempt failed",
       );
     }
@@ -357,7 +398,7 @@ export async function generateAndPersistConversationTitle(
       "All conversation title provider attempts failed",
     );
   }
-  return persistFallbackTitle(conversationId, effectiveContext);
+  return persistFallbackTitle(conversationId, effectiveContext, userMessage);
 }
 
 // ── Serial title-generation queue ────────────────────────────────────
@@ -409,18 +450,16 @@ export function queueGenerateConversationTitle(
       { err, conversationId: params.conversationId },
       "Failed to generate conversation title (non-fatal)",
     );
-    // Replace legacy loading placeholder with stable fallback.
+    // Replace a loading or deterministic fallback title with the best
+    // request-local title available.
     try {
       const conversation = getConversation(params.conversationId);
-      if (conversation && conversation.title === GENERATING_TITLE) {
-        const fallback =
-          deriveFallbackTitle(params.context) ?? UNTITLED_FALLBACK;
-        updateConversationTitle(
+      if (conversation && canReplaceTitle(conversation)) {
+        persistFallbackTitle(
           params.conversationId,
-          fallback,
-          AUTO_TITLE_DETERMINISTIC,
+          params.context,
+          params.userMessage,
         );
-        publishConversationTitleChanged(params.conversationId, fallback);
       }
     } catch {
       // Best-effort
@@ -475,9 +514,6 @@ export async function regenerateConversationTitle(
     params.provider,
     effectiveContext,
   );
-  if (providerAttempts.length === 0) {
-    return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
-  }
 
   const recentMessages =
     params.recentMessages?.slice(-3) ??
@@ -500,6 +536,7 @@ export async function regenerateConversationTitle(
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
   }
   let title = "";
+  let lastError: unknown;
   for (const attempt of providerAttempts) {
     try {
       const result = await runBtwSidechain({
@@ -514,12 +551,9 @@ export async function regenerateConversationTitle(
       title = normalizeTitle(result.text);
       if (title) break;
     } catch (err) {
+      lastError = err;
       log.warn(
-        {
-          err,
-          conversationId,
-          profile: attempt.profile,
-        },
+        { err, conversationId, profile: attempt.profile },
         "Conversation title regeneration provider attempt failed",
       );
     }
@@ -540,6 +574,25 @@ export async function regenerateConversationTitle(
     return { title, updated: true };
   }
 
+  if (lastError) {
+    log.warn(
+      { err: lastError, conversationId },
+      "All conversation title regeneration provider attempts failed",
+    );
+  }
+
+  const fallbackMessage = recentMessages
+    .filter((message) => message.role === "user")
+    .map((message) => message.text)
+    .filter(Boolean)
+    .at(-1);
+  if (fallbackMessage) {
+    return persistFallbackTitle(
+      conversationId,
+      effectiveContext,
+      fallbackMessage,
+    );
+  }
   return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
 }
 
@@ -761,6 +814,41 @@ function deriveFallbackTitle(context?: TitleContext): string | null {
   if (context.systemHint) return context.systemHint;
   if (context.uxBrief) return context.uxBrief;
   return null;
+}
+
+function deriveMessageTitle(userMessage?: string): string | null {
+  if (!userMessage) return null;
+
+  const cleaned = stripMarkdown(stripThinkingTags(userMessage))
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+
+  // Keep the first sentence when the prompt contains a long explanation. The
+  // title remains useful even when the provider is unavailable.
+  const firstSentence = cleaned.split(/(?<=[.!?])\s+/u)[0] ?? cleaned;
+  const title = firstSentence.replace(/[.!?]+$/u, "").trim();
+  if (!title) return null;
+  return truncateTitle(title);
+}
+
+function persistFallbackTitle(
+  conversationId: string,
+  context?: TitleContext,
+  userMessage?: string,
+): { title: string; updated: boolean } {
+  const current = getConversation(conversationId);
+  if (current && !canReplaceTitle(current)) {
+    return { title: current.title!, updated: false };
+  }
+
+  const fallback =
+    deriveFallbackTitle(context) ??
+    deriveMessageTitle(userMessage) ??
+    UNTITLED_FALLBACK;
+  updateConversationTitle(conversationId, fallback, AUTO_TITLE_DETERMINISTIC);
+  publishConversationTitleChanged(conversationId, fallback);
+  return { title: fallback, updated: true };
 }
 
 /**
