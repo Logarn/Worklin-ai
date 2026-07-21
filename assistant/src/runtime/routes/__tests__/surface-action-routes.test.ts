@@ -155,6 +155,23 @@ describe("triggerSurfaceAction handler", () => {
         "x-vellum-actor-principal-id": "vellum-principal-user-a",
         "x-vellum-platform-owner": "true",
       },
+      authContext: {
+        subject: "actor:self:vellum-principal-user-a",
+        principalType: "actor",
+        assistantId: "self",
+        actorPrincipalId: "vellum-principal-user-a",
+        scopeProfile: "actor_client_v1",
+        scopes: new Set(["chat.write"]),
+        policyEpoch: 1,
+        tenantContext: {
+          version: 1,
+          organizationId: "org-a",
+          userId: "user-a",
+          assistantId: "assistant-a",
+          actorId: "vellum-principal-user-a",
+          requestId: "request-a",
+        },
+      },
     });
 
     expect(ownerA.trustContexts).toEqual([

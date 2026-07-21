@@ -43,7 +43,10 @@ function isToolResultMessage(message: Message): boolean {
   return (
     message.role === "user" &&
     message.content.length > 0 &&
-    message.content.every((block) => block.type === "tool_result")
+    message.content.every(
+      (block) =>
+        block.type === "tool_result" || block.type === "web_search_tool_result",
+    )
   );
 }
 
@@ -62,10 +65,17 @@ function extractTitleText(message: Message): string {
   for (const block of message.content) {
     if (block.type === "text") {
       text.push(block.text);
-    } else if (block.type === "tool_result") {
-      if (block.content) text.push(block.content);
-      for (const nested of block.contentBlocks ?? []) {
-        if (nested.type === "text") text.push(nested.text);
+    } else if (
+      block.type === "tool_result" ||
+      block.type === "web_search_tool_result"
+    ) {
+      if (typeof block.content === "string" && block.content) {
+        text.push(block.content);
+      }
+      if ("contentBlocks" in block) {
+        for (const nested of block.contentBlocks ?? []) {
+          if (nested.type === "text") text.push(nested.text);
+        }
       }
     }
   }

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
+import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { parseSub } from "./subject.js";
 import type { RuntimeWorkerLeaseClaim, TokenClaims } from "./types.js";
 
@@ -184,7 +185,7 @@ function hasConsistentTokenEnvelope(
     if (subject.principalType === "svc_gateway") {
       const service = claims.service_tenant_context;
       return (
-        subject.assistantId === "self" &&
+        subject.assistantId === DAEMON_INTERNAL_ASSISTANT_ID &&
         (claims.scope_profile === "gateway_service_v1" ||
           claims.scope_profile === "gateway_ingress_v1") &&
         service?.version === 1 &&
@@ -197,7 +198,7 @@ function hasConsistentTokenEnvelope(
     if (subject.principalType === "actor") {
       const tenant = claims.tenant_context;
       return (
-        subject.assistantId === "self" &&
+        subject.assistantId === DAEMON_INTERNAL_ASSISTANT_ID &&
         !!tenant &&
         tenant.organization_id === lease.organization_id &&
         tenant.user_id === lease.user_id &&
