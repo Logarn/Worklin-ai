@@ -374,7 +374,11 @@ describe("identity routes — health endpoint", () => {
 
       const res = handleReadyz();
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ status: "ok" });
+      expect(await res.json()).toEqual({
+        status: "ok",
+        version: expect.any(String),
+        release_sha: "unknown",
+      });
     });
 
     test("pooled worker readyz ignores a dormant CES client after daemon startup", () => {

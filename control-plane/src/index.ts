@@ -3690,6 +3690,42 @@ async function proxyToGateway(
       signal: abortController.signal,
     });
 
+    // A dedicated runtime can stay reachable at the network layer while its
+    // SQLite volume is unreadable. Treat an application 5xx followed by a
+    // failed readiness probe as a runtime failure so normal provisioning can
+    // restart and revalidate it. Pooled workers have separate quarantine and
+    // recovery handling and must never mutate the assistant's dedicated row.
+    if (
+      response.status >= 500 &&
+      routingPolicy.mode === "dedicated" &&
+      runtimeStack.provider === "railway"
+    ) {
+      let runtimeReady = false;
+      try {
+        const readiness = await fetch(new URL("/readyz", gatewayUrl), {
+          signal: AbortSignal.timeout(3_000),
+        });
+        runtimeReady = readiness.ok;
+        await readiness.body?.cancel();
+      } catch {
+        runtimeReady = false;
+      }
+
+      if (!runtimeReady) {
+        markRuntimeStackFailed(
+          db,
+          runtimeStack.id,
+          "Runtime readiness failed after an application error.",
+          nowIso,
+        );
+        const latest = getRuntimeStackById(db, runtimeStack.id);
+        if (latest) scheduleRuntimeProvisioning(assistant, latest);
+        await response.body?.cancel();
+        sendJson(req, res, runtimeNotReadyPayload(latest), 503);
+        return;
+      }
+    }
+
     if (
       routingPolicy.mode === "pooled" &&
       pooledRouteDecision?.status === "allowed" &&

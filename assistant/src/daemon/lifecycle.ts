@@ -56,6 +56,7 @@ import { expireAllPendingCanonicalRequests } from "../memory/canonical-guardian-
 import { deleteMessageById, getMessages } from "../memory/conversation-crud.js";
 import { getDb } from "../memory/db-connection.js";
 import { initializeDb } from "../memory/db-init.js";
+import { protectDatabaseOnStartup } from "../memory/db-protection.js";
 import { selectEmbeddingBackend } from "../memory/embedding-backend.js";
 import { enqueueMemoryJob, isMemoryEnabled } from "../memory/jobs-store.js";
 import { startMemoryJobsWorker } from "../memory/jobs-worker.js";
@@ -493,6 +494,7 @@ export async function runDaemon(): Promise<void> {
         initializeDb();
         dbReady = true;
         log.info("Daemon startup: DB initialized");
+        await protectDatabaseOnStartup();
       } catch (err) {
         log.error(
           { err },
