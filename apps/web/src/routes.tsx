@@ -366,6 +366,15 @@ export const routeTree = [
             },
           },
           {
+            path: "workspace/invitations/:token",
+            lazy: {
+              Component: () =>
+                import("@/domains/settings/pages/accept-workspace-invitation-page").then(
+                  (m) => m.AcceptWorkspaceInvitationPage,
+                ),
+            },
+          },
+          {
             path: "shared/:artifactId",
             lazy: {
               Component: () =>

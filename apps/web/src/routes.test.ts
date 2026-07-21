@@ -75,3 +75,19 @@ describe("Work routes", () => {
     expect(route?.lazy).toBeUndefined();
   });
 });
+
+test("workspace invitation links match the authenticated acceptance route", () => {
+  const matches =
+    matchRoutes(
+      routeTree as never,
+      "/assistant/workspace/invitations/invite-token",
+    ) ?? [];
+
+  expect(
+    matches.some(
+      (match) =>
+        (match.route as { path?: string }).path ===
+        "workspace/invitations/:token",
+    ),
+  ).toBe(true);
+});

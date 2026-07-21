@@ -83,9 +83,12 @@ import {
   createWorkspaceInvitation,
   deactivateWorkspaceMember,
   ensureWorkspaceManagementSchema,
+  getWorkspaceOrganizationContext,
   listAccessibleAssistantIds,
   listAssistantAssignments,
+  listPendingWorkspaceInvitations,
   listWorkspaceMembers,
+  listWorkspaceOrganizationsForUser,
   revokeWorkspaceInvitation,
   setWorkspaceMemberRole,
   unassignAssistant,
@@ -1237,38 +1240,50 @@ async function handleUserMe(
 }
 
 function handleOrganizations(req: Request, res: Response, user: UserRow): void {
-  const { org } = workspaceContext(user);
+  let organizations = listWorkspaceOrganizationsForUser(db, user.id);
+  if (organizations.length === 0) {
+    getOrCreateOrganization(user);
+    organizations = listWorkspaceOrganizationsForUser(db, user.id);
+  }
+  const results = organizations.map(({ id, name }) => ({ id, name }));
   sendJson(req, res, {
-    count: 1,
+    count: results.length,
     next: null,
     previous: null,
-    results: [{ id: org.id, name: org.name }],
+    results,
   });
 }
 
 class WorkspaceAccessError extends Error {
-  constructor() {
-    super("This workspace membership is inactive.");
+  constructor(message = "This workspace membership is inactive.") {
+    super(message);
     this.name = "WorkspaceAccessError";
   }
 }
 
-function workspaceContext(user: UserRow) {
-  const activeMembership = db
-    .query<OrganizationMembershipRow, [string]>(
-      `SELECT * FROM organization_memberships
-       WHERE user_id = ? AND status = 'active'
-       ORDER BY created_at LIMIT 1`,
-    )
-    .get(user.id);
-  if (activeMembership) {
-    const org = db
-      .query<
-        OrganizationRow,
-        [string]
-      >("SELECT * FROM organizations WHERE id = ?")
-      .get(activeMembership.org_id);
-    if (org) return { org, membership: activeMembership };
+function requestedWorkspaceId(req: Request): string | null {
+  return req.get("Vellum-Organization-Id")?.trim() || null;
+}
+
+function workspaceContext(req: Request, user: UserRow) {
+  const requestedOrgId = requestedWorkspaceId(req);
+  const selected = getWorkspaceOrganizationContext(
+    db,
+    user.id,
+    requestedOrgId,
+  );
+  if (selected) {
+    if (selected.membership.status !== "active") {
+      throw new WorkspaceAccessError();
+    }
+    return {
+      org: selected.organization,
+      membership: selected.membership,
+    };
+  }
+
+  if (requestedOrgId) {
+    throw new WorkspaceAccessError("You do not have access to this workspace.");
   }
 
   const inactiveMembership = db
@@ -1316,7 +1331,39 @@ async function handleWorkspace(
   user: UserRow,
 ): Promise<boolean> {
   if (!pathIsOrStartsWith(url.pathname, "/v1/workspace")) return false;
-  const context = workspaceContext(user);
+
+  const inviteAcceptMatch =
+    /^\/v1\/workspace\/invitations\/([^/]+)\/accept\/?$/.exec(url.pathname);
+  if (inviteAcceptMatch && req.method === "POST") {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    try {
+      const membership = acceptWorkspaceInvitationForUser(
+        db,
+        decodeURIComponent(inviteAcceptMatch[1]!),
+        { id: user.id, email: user.email },
+        new Date(),
+      );
+      sendJson(req, res, membership);
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Invitation could not be accepted.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  const context = workspaceContext(req, user);
 
   if (pathEquals(url.pathname, "/v1/workspace/") && req.method === "GET") {
     const assignments = listAssistantAssignments(db, context.org.id);
@@ -1358,6 +1405,10 @@ async function handleWorkspace(
       assistants,
       assignments: visibleAssignments,
       research_providers: listWorkspaceResearchProviders(db, context.org.id),
+      invitations:
+        context.membership.role === "admin"
+          ? listPendingWorkspaceInvitations(db, context.org.id, new Date())
+          : [],
     });
     return true;
   }
@@ -1418,37 +1469,6 @@ async function handleWorkspace(
             error instanceof Error
               ? error.message
               : "Provider could not be connected.",
-        },
-        400,
-      );
-    }
-    return true;
-  }
-
-  const inviteAcceptMatch =
-    /^\/v1\/workspace\/invitations\/([^/]+)\/accept\/?$/.exec(url.pathname);
-  if (inviteAcceptMatch && req.method === "POST") {
-    if (!checkCsrf(req)) {
-      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
-      return true;
-    }
-    try {
-      const membership = acceptWorkspaceInvitationForUser(
-        db,
-        inviteAcceptMatch[1]!,
-        { id: user.id, email: user.email },
-        new Date(),
-      );
-      sendJson(req, res, membership);
-    } catch (error) {
-      sendJson(
-        req,
-        res,
-        {
-          detail:
-            error instanceof Error
-              ? error.message
-              : "Invitation could not be accepted.",
         },
         400,
       );
@@ -1753,10 +1773,10 @@ async function handleBrandResearchRuns(
         websiteUrl?: string;
       }>(req) ?? {};
     const assistant = body.assistantId
-      ? accessibleAssistantsForUser(user).find(
+      ? accessibleAssistantsForUser(req, user).find(
           (candidate) => candidate.id === body.assistantId,
         )
-      : accessibleAssistantsForUser(user)[0];
+      : accessibleAssistantsForUser(req, user)[0];
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
       return true;
@@ -1823,8 +1843,11 @@ async function handleBrandResearchRuns(
   return false;
 }
 
-function accessibleAssistantsForUser(user: UserRow): AssistantRow[] {
-  const workspace = workspaceContext(user);
+function accessibleAssistantsForUser(
+  req: Request,
+  user: UserRow,
+): AssistantRow[] {
+  const workspace = workspaceContext(req, user);
   if (workspace.org.user_id === user.id) {
     const existing = db
       .query<
@@ -1857,7 +1880,7 @@ async function handleAssistants(
   user: UserRow,
 ): Promise<boolean> {
   if (pathEquals(url.pathname, "/v1/assistants/") && req.method === "GET") {
-    const assistants = accessibleAssistantsForUser(user);
+    const assistants = accessibleAssistantsForUser(req, user);
     const hosting = url.searchParams.get("hosting");
     const includeAssistant =
       hosting === null || hosting === "platform" || hosting === "all";
@@ -1881,7 +1904,7 @@ async function handleAssistants(
     pathEquals(url.pathname, "/v1/assistants/active/") &&
     req.method === "GET"
   ) {
-    const assistant = accessibleAssistantsForUser(user)[0];
+    const assistant = accessibleAssistantsForUser(req, user)[0];
     if (!assistant) {
       sendJson(
         req,
@@ -1917,7 +1940,7 @@ async function handleAssistants(
       );
       return true;
     }
-    const workspace = workspaceContext(user);
+    const workspace = workspaceContext(req, user);
     const existing =
       workspace.org.user_id === user.id
         ? db
@@ -1926,7 +1949,7 @@ async function handleAssistants(
               [string]
             >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
             .get(workspace.org.id)
-        : accessibleAssistantsForUser(user)[0];
+        : accessibleAssistantsForUser(req, user)[0];
     const assistant =
       existing ??
       (workspace.org.user_id === user.id ? getOrCreateAssistant(user) : null);
@@ -1978,7 +2001,7 @@ async function handleAssistants(
   const restartMatch =
     /^\/v1\/assistants\/([^/]+)\/restart\/?$/.exec(url.pathname);
   if (restartMatch && req.method === "POST") {
-    const assistant = accessibleAssistantsForUser(user).find(
+    const assistant = accessibleAssistantsForUser(req, user).find(
       (candidate) => candidate.id === restartMatch[1],
     );
     if (!assistant) {
@@ -2082,7 +2105,7 @@ async function handleAssistants(
   const operationalStatusMatch =
     /^\/v1\/assistants\/([^/]+)\/operational\/status\/?$/.exec(url.pathname);
   if (operationalStatusMatch && req.method === "GET") {
-    const assistant = accessibleAssistantsForUser(user).find(
+    const assistant = accessibleAssistantsForUser(req, user).find(
       (candidate) => candidate.id === operationalStatusMatch[1],
     );
     if (!assistant) {
@@ -2095,7 +2118,7 @@ async function handleAssistants(
 
   const assistantMatch = /^\/v1\/assistants\/([^/]+)\/?$/.exec(url.pathname);
   if (assistantMatch) {
-    const assistant = accessibleAssistantsForUser(user).find(
+    const assistant = accessibleAssistantsForUser(req, user).find(
       (candidate) => candidate.id === assistantMatch[1],
     );
     if (!assistant) {
@@ -2103,7 +2126,7 @@ async function handleAssistants(
       return true;
     }
     if (req.method === "PATCH") {
-      const workspace = workspaceContext(user);
+      const workspace = workspaceContext(req, user);
       if (
         assistant.user_id !== user.id &&
         workspace.membership.role !== "admin"
@@ -2553,7 +2576,7 @@ async function proxyToGateway(
     return;
   }
 
-  const assistant = accessibleAssistantsForUser(user).find(
+  const assistant = accessibleAssistantsForUser(req, user).find(
     (candidate) => candidate.id === assistantId,
   );
   if (!assistant) {

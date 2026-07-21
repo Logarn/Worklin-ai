@@ -8,7 +8,11 @@ import {
   createWorkspaceInvitation,
   deactivateWorkspaceMember,
   ensureWorkspaceManagementSchema,
+  getWorkspaceOrganizationContext,
   listAssistantAssignments,
+  listPendingWorkspaceInvitations,
+  listWorkspaceOrganizationsForUser,
+  revokeWorkspaceInvitation,
   setWorkspaceMemberRole,
 } from "./workspace-management-store.js";
 
@@ -105,6 +109,122 @@ describe("workspace management", () => {
         now,
       ),
     ).toThrow("already been used");
+  });
+
+  test("does not consume an invitation for the wrong signed-in email", () => {
+    const db = makeDb();
+    const invite = createWorkspaceInvitation(
+      db,
+      {
+        orgId: "org-1",
+        invitedByUserId: "owner",
+        email: "member@example.com",
+        role: "collaborator",
+      },
+      now,
+    );
+
+    expect(() =>
+      acceptWorkspaceInvitationForUser(
+        db,
+        invite.token,
+        { id: "member", email: "someone-else@example.com" },
+        now,
+      ),
+    ).toThrow("does not match");
+    expect(listPendingWorkspaceInvitations(db, "org-1", now)).toHaveLength(1);
+  });
+
+  test("lists and revokes only pending invitations", () => {
+    const db = makeDb();
+    const invite = createWorkspaceInvitation(
+      db,
+      {
+        orgId: "org-1",
+        invitedByUserId: "owner",
+        email: "member@example.com",
+        role: "manager",
+      },
+      now,
+    );
+
+    expect(listPendingWorkspaceInvitations(db, "org-1", now)).toEqual([
+      expect.objectContaining({
+        id: invite.id,
+        email: "member@example.com",
+        role: "manager",
+      }),
+    ]);
+    expect(revokeWorkspaceInvitation(db, "org-1", invite.id)).toBe(true);
+    expect(listPendingWorkspaceInvitations(db, "org-1", now)).toEqual([]);
+    expect(() =>
+      acceptWorkspaceInvitationForUser(
+        db,
+        invite.token,
+        { id: "member", email: "member@example.com" },
+        now,
+      ),
+    ).toThrow("revoked");
+  });
+
+  test("reactivates a returning member with the invited role", () => {
+    const db = makeDb();
+    db.query(
+      "INSERT INTO organization_memberships (org_id, user_id, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("org-1", "member", "collaborator", "deactivated", nowIso(), nowIso());
+    const invite = createWorkspaceInvitation(
+      db,
+      {
+        orgId: "org-1",
+        invitedByUserId: "owner",
+        email: "member@example.com",
+        role: "manager",
+      },
+      now,
+    );
+
+    const membership = acceptWorkspaceInvitationForUser(
+      db,
+      invite.token,
+      { id: "member", email: "member@example.com" },
+      now,
+    );
+
+    expect(membership.status).toBe("active");
+    expect(membership.role).toBe("manager");
+  });
+
+  test("selects an invited workspace and honors an explicit workspace choice", () => {
+    const db = makeDb();
+    db.query("INSERT INTO organizations VALUES (?, ?, ?, ?, ?)").run(
+      "org-member",
+      "member",
+      "Member workspace",
+      nowIso(),
+      nowIso(),
+    );
+    db.query(
+      "INSERT INTO organization_memberships (org_id, user_id, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("org-member", "member", "admin", "active", nowIso(), nowIso());
+    db.query(
+      "INSERT INTO organization_memberships (org_id, user_id, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("org-1", "member", "manager", "active", nowIso(), nowIso());
+
+    expect(
+      listWorkspaceOrganizationsForUser(db, "member").map(
+        (organization) => organization.id,
+      ),
+    ).toEqual(["org-1", "org-member"]);
+    expect(getWorkspaceOrganizationContext(db, "member")?.organization.id).toBe(
+      "org-1",
+    );
+    expect(
+      getWorkspaceOrganizationContext(db, "member", "org-member")?.organization
+        .id,
+    ).toBe("org-member");
+    expect(
+      getWorkspaceOrganizationContext(db, "member", "org-unrelated"),
+    ).toBeNull();
   });
 
   test("keeps the creator an admin and cannot deactivate the owner", () => {
