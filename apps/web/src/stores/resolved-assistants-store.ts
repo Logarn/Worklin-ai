@@ -37,10 +37,12 @@ import {
   writeSelectedAssistantId,
 } from "@/assistant/selected-assistant-storage";
 import { isPlatformManagedAssistant } from "@/assistant/hosting";
-import type { RuntimeActionCapabilities } from "@/domains/settings/runtime-action-capabilities";
 import { useLockfileStore } from "@/stores/lockfile-store";
 import type { Lockfile } from "@/runtime/local-mode-host";
-import type { Assistant } from "@/generated/api/types.gen";
+import type {
+  Assistant,
+  RuntimeActionCapabilities,
+} from "@/generated/api/types.gen";
 
 export interface ResolvedAssistant {
   id: string;
