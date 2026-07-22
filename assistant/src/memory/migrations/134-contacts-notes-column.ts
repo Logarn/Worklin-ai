@@ -16,11 +16,29 @@ export function downContactsNotesColumn(_database: DrizzleDb): void {
 }
 
 const log = getLogger("migration-134");
+const CHECKPOINT_KEY = "migration_contacts_notes_column_v1";
+
+function contactColumns(database: DrizzleDb): Set<string> {
+  const raw = getSqliteFrom(database);
+  return new Set(
+    (
+      raw.query(`PRAGMA table_info(contacts)`).all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name),
+  );
+}
 
 export function migrateContactsNotesColumn(database: DrizzleDb): void {
-  withCrashRecovery(database, "migration_contacts_notes_column_v1", () => {
-    const raw = getSqliteFrom(database);
+  const raw = getSqliteFrom(database);
 
+  if (!contactColumns(database).has("notes")) {
+    raw
+      .query(`DELETE FROM memory_checkpoints WHERE key = ?`)
+      .run(CHECKPOINT_KEY);
+  }
+
+  withCrashRecovery(database, CHECKPOINT_KEY, () => {
     try {
       raw.exec(/*sql*/ `ALTER TABLE contacts ADD COLUMN notes TEXT`);
     } catch {
@@ -29,13 +47,7 @@ export function migrateContactsNotesColumn(database: DrizzleDb): void {
 
     // Check which legacy columns still exist — handles partial completion
     // if a previous run crashed after dropping some columns but not all.
-    const cols = new Set(
-      (
-        raw.query(`PRAGMA table_info(contacts)`).all() as Array<{
-          name: string;
-        }>
-      ).map((c) => c.name),
-    );
+    const cols = contactColumns(database);
 
     const legacyCols = [
       "relationship",
@@ -97,4 +109,8 @@ export function migrateContactsNotesColumn(database: DrizzleDb): void {
       raw.exec(/*sql*/ `ALTER TABLE contacts DROP COLUMN ${col}`);
     }
   });
+
+  if (!contactColumns(database).has("notes")) {
+    throw new Error("contacts notes column migration postcondition failed");
+  }
 }
