@@ -1,6 +1,16 @@
 import { type DrizzleDb, getSqliteFrom } from "../db-connection.js";
 import { withCrashRecovery } from "./validate-migration-state.js";
 
+const CHECKPOINT_KEY = "migration_rename_verification_table_v1";
+
+function tableExists(raw: ReturnType<typeof getSqliteFrom>, name: string) {
+  return Boolean(
+    raw
+      .query(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(name),
+  );
+}
+
 /**
  * Reverse v21: rename channel_verification_sessions back to
  * channel_guardian_verification_challenges and recreate old indexes.
@@ -61,23 +71,27 @@ export function downRenameVerificationTable(database: DrizzleDb): void {
  * old table name.
  */
 export function migrateRenameVerificationTable(database: DrizzleDb): void {
-  withCrashRecovery(database, "migration_rename_verification_table_v1", () => {
-    const raw = getSqliteFrom(database);
+  const raw = getSqliteFrom(database);
 
+  if (
+    !tableExists(raw, "channel_verification_sessions") &&
+    tableExists(raw, "channel_guardian_verification_challenges")
+  ) {
+    raw
+      .query(`DELETE FROM memory_checkpoints WHERE key = ?`)
+      .run(CHECKPOINT_KEY);
+  }
+
+  withCrashRecovery(database, CHECKPOINT_KEY, () => {
     // Check the old table exists before attempting anything
-    const oldTableExists = raw
-      .query(
-        `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'channel_guardian_verification_challenges'`,
-      )
-      .get();
+    const oldTableExists = tableExists(
+      raw,
+      "channel_guardian_verification_challenges",
+    );
     if (!oldTableExists) return;
 
     // If the new table already exists, the rename would collide — skip
-    const newTableExists = raw
-      .query(
-        `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'channel_verification_sessions'`,
-      )
-      .get();
+    const newTableExists = tableExists(raw, "channel_verification_sessions");
     if (newTableExists) return;
 
     // Rename the physical table
@@ -114,4 +128,11 @@ export function migrateRenameVerificationTable(database: DrizzleDb): void {
       /*sql*/ `CREATE INDEX IF NOT EXISTS idx_verification_sessions_bootstrap ON channel_verification_sessions(channel, bootstrap_token_hash, status)`,
     );
   });
+
+  if (
+    tableExists(raw, "channel_guardian_verification_challenges") &&
+    !tableExists(raw, "channel_verification_sessions")
+  ) {
+    throw new Error("channel verification table rename postcondition failed");
+  }
 }
