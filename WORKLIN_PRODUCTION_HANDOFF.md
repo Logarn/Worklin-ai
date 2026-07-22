@@ -7,7 +7,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 ## Start Here
 
 - Repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current `origin/main`: `0d037e9` (`Repair stale assistant schema checkpoints`), merged through PR `#149` after every mandatory check passed.
+- Current production runtime source: `0d037e9` (`Repair stale assistant schema checkpoints`), merged through PR `#149` after every mandatory check passed. Later handoff-only commits do not change the runtime source reported by production `/healthz`.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; final schema-checkpoint PR `#149` merged as `0d037e9`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
