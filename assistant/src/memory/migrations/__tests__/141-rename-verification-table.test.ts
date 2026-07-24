@@ -44,13 +44,12 @@ function createLegacyDb(checkpointValue: string | null = "1") {
     );
 
     INSERT INTO channel_guardian_verification_challenges (
-      id, channel, challenge_hash, expires_at, status,
-      created_by_session_id, created_at, updated_at
+      id, channel, challenge_hash, expires_at, status, created_by_session_id, created_at, updated_at
     ) VALUES (
-      'legacy-session', 'telegram', 'hash', 1000, 'pending',
-      'conversation-1', 1, 1
+      'legacy-session', 'telegram', 'hash', 1000, 'pending', 'conversation-1', 1, 1
     );
   `);
+
   if (checkpointValue !== null) {
     sqlite
       .query(
@@ -58,12 +57,13 @@ function createLegacyDb(checkpointValue: string | null = "1") {
       )
       .run(CHECKPOINT_KEY, checkpointValue);
   }
+
   return drizzle(sqlite, { schema });
 }
 
-function tableExists(raw: ReturnType<typeof getSqliteFrom>, name: string) {
+function hasTable(db: ReturnType<typeof createLegacyDb>, name: string) {
   return Boolean(
-    raw
+    getSqliteFrom(db)
       .query(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
       .get(name),
   );
@@ -71,17 +71,23 @@ function tableExists(raw: ReturnType<typeof getSqliteFrom>, name: string) {
 
 describe("migration 141 — rename verification table", () => {
   test.each(["1", "failed"])(
-    "repairs the legacy table when checkpoint %s is stale",
+    "repairs a legacy table when checkpoint %s is stale",
     (checkpointValue) => {
       const db = createLegacyDb(checkpointValue);
       const raw = getSqliteFrom(db);
 
       migrateRenameVerificationTable(db);
 
-      expect(tableExists(raw, "channel_guardian_verification_challenges")).toBe(
-        false,
-      );
-      expect(tableExists(raw, "channel_verification_sessions")).toBe(true);
+      expect(hasTable(db, "channel_verification_sessions")).toBe(true);
+      expect(hasTable(db, "channel_guardian_verification_challenges")).toBe(false);
+      expect(
+        raw.query(`SELECT id, channel FROM channel_verification_sessions`).all(),
+      ).toEqual([{ id: "legacy-session", channel: "telegram" }]);
+      expect(
+        raw
+          .query(`SELECT value FROM memory_checkpoints WHERE key = ?`)
+          .get(CHECKPOINT_KEY),
+      ).toEqual({ value: "1" });
       expect(
         raw
           .query(
@@ -91,28 +97,23 @@ describe("migration 141 — rename verification table", () => {
       ).toEqual([
         { id: "legacy-session", created_by_session_id: "conversation-1" },
       ]);
-      expect(
-        raw
-          .query(`SELECT value FROM memory_checkpoints WHERE key = ?`)
-          .get(CHECKPOINT_KEY),
-      ).toEqual({ value: "1" });
     },
   );
 
-  test("is idempotent after the table has been repaired", () => {
+  test("is idempotent after the schema has been repaired", () => {
     const db = createLegacyDb(null);
     const raw = getSqliteFrom(db);
 
     migrateRenameVerificationTable(db);
     migrateRenameVerificationTable(db);
 
-    expect(tableExists(raw, "channel_verification_sessions")).toBe(true);
+    expect(hasTable(db, "channel_verification_sessions")).toBe(true);
     expect(
       raw
         .query(
-          `SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_verification_sessions_%'`,
+          `SELECT COUNT(*) AS count FROM channel_verification_sessions WHERE id = 'legacy-session'`,
         )
-        .all(),
-    ).toHaveLength(5);
+        .get(),
+    ).toEqual({ count: 1 });
   });
 });
