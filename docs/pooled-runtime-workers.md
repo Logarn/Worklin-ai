@@ -230,6 +230,15 @@ WORKLIN_RUNTIME_WORKER_POOL_MAX_CONCURRENCY
 WORKLIN_RUNTIME_WORKER_POOL_LEASE_TTL_MS
 WORKLIN_POOLED_RUNTIME_CANARY_ASSISTANT_IDS
 WORKLIN_POOLED_RUNTIME_CANARY_USER_EMAIL_HASHES
+
+For the canary allowlist, provide lowercase SHA-256 hashes of canonicalized emails:
+
+```text
+echo -n "user@example.com" | tr '[:upper:]' '[:lower:]' | tr -d '\n' | shasum -a 256 | awk '{print $1}'
+```
+
+The runtime applies the same canonicalization (`trim` + `lowercase`) before hashing.
+
 WORKLIN_CONTROL_PLANE_EXPECTED_REPLICA_COUNT=1
 RAILWAY_DEPLOYMENT_ID=<injected by Railway>
 RAILWAY_REPLICA_ID=<injected by Railway>

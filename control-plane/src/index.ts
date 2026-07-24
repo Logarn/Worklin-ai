@@ -2516,14 +2516,16 @@ async function handleAssistants(
       );
       return true;
     }
-    const runtimeStack = claimPreprovisionedRuntimeStack(
-      db,
-      assistant,
-      runtimeStackForPayload(assistant),
-      runtimeStackConfig,
-      nowIso,
-    );
     const provisioningError = runtimeProvisioningConfigurationError();
+    const runtimeStack = provisioningError
+      ? claimPreprovisionedRuntimeStack(
+          db,
+          assistant,
+          runtimeStackForPayload(assistant),
+          runtimeStackConfig,
+          nowIso,
+        )
+      : ensureAssistantRuntime(assistant, user);
     if (
       !pooledRuntimeEligible(runtimeStack, user) &&
       (runtimeStack.status === "provisioning" ||
