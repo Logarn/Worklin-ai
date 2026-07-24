@@ -22,6 +22,13 @@
  * - https://web.dev/articles/sign-out-best-practices
  */
 
+import { useChatSessionStore } from "@/domains/chat/chat-session-store";
+import { useComposerStore } from "@/domains/chat/composer-store";
+import { useInteractionStore } from "@/domains/chat/interaction-store";
+import { useConversationStore } from "@/stores/conversation-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import { useTurnStore } from "@/domains/chat/turn-store";
+
 const USER_PREFIX = "vellum:";
 
 /**
@@ -83,4 +90,13 @@ export function clearUserScopedStorage(): void {
   } catch {
     // Storage unavailable.
   }
+}
+
+export function clearUserScopedFrontendState(): void {
+  useConversationStore.getState().reset();
+  useResolvedAssistantsStore.getState().clear();
+  useChatSessionStore.getState().reset();
+  useInteractionStore.getState().resetAll();
+  useTurnStore.getState().resetTurn();
+  useComposerStore.getState().reset();
 }

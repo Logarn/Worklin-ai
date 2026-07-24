@@ -191,6 +191,10 @@ export interface ComposerActions {
   resetAttachments: () => void;
   /** Clear all attachments AND revoke preview URLs (e.g. on assistant switch). */
   fullReset: () => void;
+  /**
+   * Full frontend reset used on account switch / logout.
+   */
+  reset: () => void;
   dismissAttachmentError: () => void;
 }
 
@@ -467,8 +471,22 @@ const useComposerStoreBase = create<ComposerStore>()((set, get) => ({
       }
       return { attachments: [], attachmentLastError: null };
     });
-    previewUrls.forEach((url) => URL.revokeObjectURL(url));
-    previewUrls.clear();
+    previewsCleanup();
+  },
+
+  reset: () => {
+    set({
+      input: "",
+      restoredDraftConversationId: null,
+      attachments: [],
+      attachmentLastError: null,
+    });
+
+    previewsCleanup();
+
+    draftsMap = new Map();
+    currentAssistantId = null;
+    cancelledUploads.clear();
   },
 
   dismissAttachmentError: () => {
@@ -479,6 +497,11 @@ const useComposerStoreBase = create<ComposerStore>()((set, get) => ({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function previewsCleanup(): void {
+  previewUrls.forEach((url) => URL.revokeObjectURL(url));
+  previewUrls.clear();
+}
 
 function markFailed(
   set: (fn: (s: ComposerState) => Partial<ComposerState>) => void,

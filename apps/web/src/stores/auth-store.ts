@@ -60,7 +60,10 @@ import { fetchMe, patchConsent } from "@/domains/account/profile";
 import { restoreConsentForUser, persistConsentForUser, resolveServerConsent, CONSENT_VERSION } from "@/utils/onboarding-cleanup";
 import { useOnboardingStore } from "@/domains/onboarding/onboarding-store";
 import { clearOrganization, useOrganizationStore } from "@/stores/organization-store";
-import { clearUserScopedStorage } from "@/lib/auth/session-cleanup";
+import {
+  clearUserScopedFrontendState,
+  clearUserScopedStorage,
+} from "@/lib/auth/session-cleanup";
 import { clearPendingProviderSecretUnlessOwnedBy } from "@/lib/auth/pending-provider-secret";
 import { subscribe } from "@/lib/event-bus";
 import { isElectron } from "@/runtime/is-electron";
@@ -220,6 +223,7 @@ async function restoreOfflineSession(set: AuthSet): Promise<boolean> {
 function syncOrganizationState(nextUserId: string | null): void {
   if (!nextUserId || (previousUserId && previousUserId !== nextUserId)) {
     clearOrganization();
+    clearUserScopedFrontendState();
   }
   previousUserId = nextUserId;
 }
@@ -723,6 +727,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
       }
       void deleteBiometricToken();
       clearOrganization();
+      clearUserScopedFrontendState();
       clearUserScopedStorage();
       if (!gatewayAuthMode) {
         lifecycleService.resetForLogout();
@@ -785,6 +790,7 @@ export function setupAuthListeners(): () => void {
   if (typeof BroadcastChannel !== "undefined") {
     broadcastChannel = new BroadcastChannel("auth");
     broadcastChannel.onmessage = () => {
+      clearUserScopedFrontendState();
       clearUserScopedStorage();
       window.location.reload();
     };

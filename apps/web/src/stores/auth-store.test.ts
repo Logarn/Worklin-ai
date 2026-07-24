@@ -139,6 +139,7 @@ mock.module("@/runtime/native-biometric", () => ({
 }));
 
 const clearUserScopedStorageMock = mock(() => {});
+const clearUserScopedFrontendStateMock = mock(() => {});
 
 const patchConsentMock = mock(async (_consent: unknown) => {});
 
@@ -167,6 +168,7 @@ mock.module("@/domains/onboarding/onboarding-store", () => ({
 
 mock.module("@/lib/auth/session-cleanup", () => ({
   clearUserScopedStorage: clearUserScopedStorageMock,
+  clearUserScopedFrontendState: clearUserScopedFrontendStateMock,
 }));
 
 mock.module("@/stores/resolved-assistants-store", () => ({
@@ -259,6 +261,7 @@ beforeEach(() => {
   mockFetchMeError = null;
   clearOrganizationMock.mockClear();
   clearUserScopedStorageMock.mockClear();
+  clearUserScopedFrontendStateMock.mockClear();
   logoutMock.mockClear();
   deleteBiometricTokenMock.mockClear();
   clearGatewayTokenMock.mockClear();
@@ -364,6 +367,17 @@ describe("auth store onboarding flag reconciliation", () => {
     expect(useAuthStore.getState().user?.id).toBe("user-2");
   });
 
+  test("changing users clears user-scoped frontend state", async () => {
+    sessionUser = { id: "user-1", email: "user@example.com" };
+    await useAuthStore.getState().refreshSession();
+    clearUserScopedFrontendStateMock.mockClear();
+
+    sessionUser = { id: "user-2", email: "user-two@example.com" };
+    await useAuthStore.getState().refreshSession();
+
+    expect(clearUserScopedFrontendStateMock).toHaveBeenCalledTimes(1);
+  });
+
   test("refreshSession reconciles the lockfile mirror in local mode", async () => {
     // Regression: a session refresh (app resume, profile save, provider
     // callback) must re-sync managed assistants into the lockfile — not only
@@ -418,12 +432,14 @@ describe("session cleanup on logout", () => {
     await useAuthStore.getState().logout();
 
     expect(clearOrganizationMock).toHaveBeenCalled();
+    expect(clearUserScopedFrontendStateMock).toHaveBeenCalled();
   });
 
   test("logout clears user-scoped browser storage", async () => {
     await useAuthStore.getState().logout();
 
     expect(clearUserScopedStorageMock).toHaveBeenCalled();
+    expect(clearUserScopedFrontendStateMock).toHaveBeenCalled();
   });
 
   test("logout clears assistant lifecycle synchronously, before leaving authenticated", async () => {
@@ -480,6 +496,7 @@ describe("session cleanup on logout", () => {
 
     expect(clearGatewayTokenMock).toHaveBeenCalledTimes(1);
     expect(clearOrganizationMock).toHaveBeenCalledTimes(1);
+    expect(clearUserScopedFrontendStateMock).toHaveBeenCalledTimes(1);
     expect(clearUserScopedStorageMock).toHaveBeenCalledTimes(1);
     expect(useAuthStore.getState().sessionStatus).toBe("unauthenticated");
   });
@@ -498,6 +515,7 @@ describe("session cleanup on logout", () => {
 
     expect(clearGatewayTokenMock).toHaveBeenCalledTimes(1);
     expect(clearOrganizationMock).toHaveBeenCalledTimes(1);
+    expect(clearUserScopedFrontendStateMock).toHaveBeenCalledTimes(1);
     expect(clearUserScopedStorageMock).toHaveBeenCalledTimes(1);
     expect(useAuthStore.getState().sessionStatus).toBe("unauthenticated");
   });

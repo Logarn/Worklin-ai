@@ -235,6 +235,28 @@ describe("upsertFromApi", () => {
   });
 });
 
+describe("clear", () => {
+  it("resets assistants, selection, and hydration state", () => {
+    localStorage.setItem(SELECTED_ASSISTANT_STORAGE_KEY, "asst-platform");
+    useResolvedAssistantsStore.setState({
+      assistants: [{ id: "asst-platform", isLocal: true, isPlatformHosted: false }],
+      selectedAssistantId: "asst-platform",
+      activeAssistantId: "asst-platform",
+      assistantsHydrated: true,
+    });
+
+    useResolvedAssistantsStore.getState().clear();
+
+    expect(useResolvedAssistantsStore.getState()).toMatchObject({
+      assistants: [],
+      selectedAssistantId: null,
+      activeAssistantId: null,
+      assistantsHydrated: false,
+    });
+    expect(localStorage.getItem(SELECTED_ASSISTANT_STORAGE_KEY)).toBeNull();
+  });
+});
+
 describe("assistantsValidForOrg", () => {
   const local: ResolvedAssistant = {
     id: "local",
