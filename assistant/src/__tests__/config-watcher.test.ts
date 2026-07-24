@@ -28,6 +28,13 @@ mock.module("../util/logger.js", () => ({
   truncateForLog: (v: string) => v,
 }));
 
+let freshnessReconcileCount = 0;
+mock.module("../workspace/identity-change-invalidation.js", () => ({
+  reconcileObservedIdentityChange: () => {
+    freshnessReconcileCount += 1;
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Capture fs.watch and fs.watchFile calls so we can simulate file system
 // events deterministically. Bun's libuv-based fs.watchFile is too unreliable
@@ -216,6 +223,7 @@ beforeEach(() => {
   capturedFileWatches.length = 0;
   inoMap.clear();
   evictCallCount = 0;
+  freshnessReconcileCount = 0;
   watcher = new ConfigWatcher(undefined, TEST_DEBOUNCE_MS);
 });
 
@@ -247,6 +255,7 @@ describe("ConfigWatcher workspace file handlers", () => {
     simulateFileChange(WORKSPACE_DIR, "SOUL.md");
     await new Promise((r) => setTimeout(r, WAIT_MS));
     expect(introCallCount).toBe(1);
+    expect(freshnessReconcileCount).toBe(1);
   });
 
   test("IDENTITY.md change triggers onConversationEvict", async () => {
@@ -264,6 +273,7 @@ describe("ConfigWatcher workspace file handlers", () => {
     simulateFileChange(WORKSPACE_DIR, "IDENTITY.md");
     await new Promise((r) => setTimeout(r, WAIT_MS));
     expect(identityCallCount).toBe(1);
+    expect(freshnessReconcileCount).toBe(1);
   });
 
   test("unregistered workspace files are not subscribed (only the registered handler set is)", () => {

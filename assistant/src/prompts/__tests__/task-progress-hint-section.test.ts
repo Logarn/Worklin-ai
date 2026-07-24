@@ -54,13 +54,12 @@ mock.module("../../config/loader.js", () => ({
   setNestedValue: () => {},
 }));
 
-const { buildSystemPrompt, ensurePromptFiles } = await import(
-  "../system-prompt.js"
-);
+const { buildSystemPrompt, ensurePromptFiles } =
+  await import("../system-prompt.js");
 
 describe("task_progress hint in parallel-tool-calls section", () => {
-  beforeEach(() => {
-    ensurePromptFiles();
+  beforeEach(async () => {
+    await ensurePromptFiles();
   });
 
   test("buildSystemPrompt() includes task_progress guidance", () => {
@@ -85,5 +84,4 @@ describe("task_progress hint in parallel-tool-calls section", () => {
     expect(withoutClientFlag).toContain("task_progress");
     expect(withExcludePrefix).toContain("task_progress");
   });
-
 });

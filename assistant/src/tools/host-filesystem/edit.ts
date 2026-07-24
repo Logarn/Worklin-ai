@@ -168,7 +168,7 @@ export const hostFileEditTool = {
 
     const ops = new FileSystemOps(hostPolicy);
 
-    const result = ops.editFileSafe({
+    const result = await ops.editFileSafeCoordinated({
       path: rawPath,
       oldString,
       newString,
@@ -193,6 +193,8 @@ export const hostFileEditTool = {
             content: `Error editing file: ${error.message}`,
             isError: true,
           };
+        case "CONFLICT":
+          return { content: `Error: ${error.message}`, isError: true };
         default:
           return { content: `Error: ${error.message}`, isError: true };
       }

@@ -1,10 +1,13 @@
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,6 +55,11 @@ function setWorkspaceDir(dir: string): void {
 import { PKB_WORKSPACE_SCOPE } from "../memory/pkb/types.js";
 import { getTool } from "../tools/registry.js";
 import type { Tool, ToolContext } from "../tools/types.js";
+import { getIdentityChangeEpoch } from "../workspace/identity-change-invalidation.js";
+import {
+  _setIdentityFileBeforeCommitHookForTests,
+  _setOrdinaryFileBeforeWriteHookForTests,
+} from "../workspace/identity-file-write.js";
 
 let fileWriteTool: Tool;
 const testDirs: string[] = [];
@@ -69,7 +77,17 @@ function makeContext(workingDir: string): ToolContext {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 afterEach(() => {
+  _setIdentityFileBeforeCommitHookForTests(null);
+  _setOrdinaryFileBeforeWriteHookForTests(null);
   for (const dir of testDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -133,6 +151,87 @@ describe("file_write tool (sandbox)", () => {
       newContent: "new content",
       isNewFile: false,
     });
+  });
+
+  test("serializes concurrent coordinated identity writes", async () => {
+    const dir = makeTempDir();
+    setWorkspaceDir(dir);
+    const identityPath = join(dir, "IDENTITY.md");
+    writeFileSync(identityPath, "# Identity\n\n- **Name:** Original\n");
+
+    const compared = createDeferred<void>();
+    const resumeCommit = createDeferred<void>();
+    let paused = false;
+    _setIdentityFileBeforeCommitHookForTests(async () => {
+      if (paused) return;
+      paused = true;
+      compared.resolve();
+      await resumeCommit.promise;
+    });
+
+    const firstWrite = fileWriteTool.execute(
+      { path: "IDENTITY.md", content: "# Identity\n\n- **Name:** First\n" },
+      makeContext(dir),
+    );
+    await compared.promise;
+
+    const competingWrite = fileWriteTool.execute(
+      {
+        path: "IDENTITY.md",
+        content: "# Identity\n\n- **Name:** Competing\n",
+      },
+      makeContext(dir),
+    );
+    resumeCommit.resolve();
+
+    expect((await firstWrite).isError).toBe(false);
+    const competingResult = await competingWrite;
+    expect(competingResult.isError).toBe(false);
+    expect(readFileSync(identityPath, "utf-8")).toContain("Name:** Competing");
+  });
+
+  test("rejects a hard-link identity write without splitting the inode", async () => {
+    const dir = makeTempDir();
+    setWorkspaceDir(dir);
+    const identityPath = join(dir, "IDENTITY.md");
+    const hardLinkPath = join(dir, "identity-hard-link.md");
+    writeFileSync(identityPath, "original identity");
+    linkSync(identityPath, hardLinkPath);
+    const beforeEpoch = getIdentityChangeEpoch();
+
+    const result = await fileWriteTool.execute(
+      { path: hardLinkPath, content: "updated identity" },
+      makeContext(dir),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("safely resolve identity write target");
+    expect(readFileSync(identityPath, "utf-8")).toBe("original identity");
+    expect(readFileSync(hardLinkPath, "utf-8")).toBe("original identity");
+    expect(getIdentityChangeEpoch()).toBe(beforeEpoch);
+  });
+
+  test("fails closed when the destination becomes an identity alias", async () => {
+    const dir = makeTempDir();
+    setWorkspaceDir(dir);
+    const identityPath = join(dir, "IDENTITY.md");
+    const notesPath = join(dir, "notes.md");
+    writeFileSync(identityPath, "identity");
+    writeFileSync(notesPath, "notes");
+
+    _setOrdinaryFileBeforeWriteHookForTests(() => {
+      unlinkSync(notesPath);
+      symlinkSync(identityPath, notesPath);
+    });
+
+    const result = await fileWriteTool.execute(
+      { path: notesPath, content: "replacement" },
+      makeContext(dir),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Destination changed during write");
+    expect(readFileSync(identityPath, "utf-8")).toBe("identity");
   });
 
   test("creates nested directories", async () => {
@@ -267,7 +366,7 @@ describe("file_write artifact-HTML guard", () => {
     const html =
       "<!doctype html><html><head><title>Food Market</title></head>" +
       "<body><canvas id='c'></canvas><script>" +
-      ("const data=[{x:1,y:2}];").padEnd(4000, "/") +
+      "const data=[{x:1,y:2}];".padEnd(4000, "/") +
       "new Chart(document.getElementById('c'), {data});</script></body></html>";
 
     const result = await fileWriteTool.execute(

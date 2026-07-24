@@ -10,6 +10,11 @@ import { dirname, join } from "node:path";
 import { minimatch } from "minimatch";
 
 import { ensureDir, pathExists } from "../../../util/fs.js";
+import {
+  IdentityFileConflictError,
+  updateFileWithIdentityCoordination,
+  writeFileWithIdentityCoordination,
+} from "../../../workspace/identity-file-write.js";
 import { applyEdit } from "./edit-engine.js";
 import * as Err from "./errors.js";
 import type { PathFailureReason, PathResult } from "./path-policy.js";
@@ -172,6 +177,47 @@ export class FileSystemOps {
     }
   }
 
+  async writeFileSafeCoordinated(input: WriteInput): Promise<WriteResult> {
+    const pathCheck = this.policy(input.path, { mustExist: false });
+    if (!pathCheck.ok) {
+      return {
+        ok: false,
+        error: pathError(input.path, pathCheck.reason, pathCheck.error),
+      };
+    }
+    const filePath = pathCheck.resolved;
+
+    const sizeErr = checkContentSize(input.content, filePath, this.sizeLimit);
+    if (sizeErr) {
+      return { ok: false, error: Err.sizeLimitExceeded(filePath, sizeErr) };
+    }
+
+    try {
+      ensureDir(dirname(filePath));
+      const result = await writeFileWithIdentityCoordination(
+        filePath,
+        input.content,
+      );
+      const oldContent = result.oldContent?.toString("utf-8") ?? "";
+
+      return {
+        ok: true,
+        value: {
+          filePath,
+          isNewFile: result.oldContent === null,
+          oldContent,
+          newContent: input.content,
+        },
+      };
+    } catch (err) {
+      if (err instanceof IdentityFileConflictError) {
+        return { ok: false, error: Err.conflict(filePath, err.message) };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Edit
   // -------------------------------------------------------------------------
@@ -241,6 +287,88 @@ export class FileSystemOps {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+
+    return {
+      ok: true,
+      value: {
+        filePath,
+        matchCount: result.matchCount,
+        oldContent: content,
+        newContent: result.updatedContent,
+        matchMethod: result.matchMethod,
+        similarity: result.similarity,
+        actualOld: result.actualOld,
+        actualNew: result.actualNew,
+      },
+    };
+  }
+
+  async editFileSafeCoordinated(input: EditInput): Promise<EditResult> {
+    const pathCheck = this.policy(input.path, { mustExist: true });
+    if (!pathCheck.ok) {
+      return {
+        ok: false,
+        error: pathError(input.path, pathCheck.reason, pathCheck.error),
+      };
+    }
+    const filePath = pathCheck.resolved;
+
+    try {
+      const sizeErr = checkFileSizeOnDisk(filePath, this.sizeLimit);
+      if (sizeErr) {
+        return { ok: false, error: Err.sizeLimitExceeded(filePath, sizeErr) };
+      }
+    } catch {
+      // The read below returns the more specific missing-file error.
+    }
+
+    if (input.oldString.length === 0) {
+      return { ok: false, error: Err.matchNotFound(filePath) };
+    }
+
+    let result: ReturnType<typeof applyEdit> | undefined;
+    let content = "";
+    try {
+      await updateFileWithIdentityCoordination(filePath, (currentContent) => {
+        content = currentContent;
+        result = applyEdit(
+          currentContent,
+          input.oldString,
+          input.newString,
+          input.replaceAll,
+        );
+        if (!result.ok) return undefined;
+        return result.updatedContent === currentContent
+          ? undefined
+          : result.updatedContent;
+      });
+    } catch (err) {
+      if (err instanceof IdentityFileConflictError) {
+        return { ok: false, error: Err.conflict(filePath, err.message) };
+      }
+      const code =
+        err instanceof Error && "code" in err
+          ? (err as NodeJS.ErrnoException).code
+          : undefined;
+      if (code === "EISDIR") {
+        return { ok: false, error: Err.notAFile(filePath) };
+      }
+      if (code === "ENOENT") {
+        return { ok: false, error: Err.notFound(filePath) };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: Err.ioError(filePath, msg) };
+    }
+
+    if (!result?.ok) {
+      if (result?.reason === "not_found") {
+        return { ok: false, error: Err.matchNotFound(filePath) };
+      }
+      return {
+        ok: false,
+        error: Err.matchAmbiguous(filePath, result?.matchCount ?? 0),
+      };
     }
 
     return {

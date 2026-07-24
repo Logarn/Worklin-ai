@@ -14052,6 +14052,116 @@ paths:
                   - home
                   - version
                 additionalProperties: false
+    patch:
+      operationId: identity_patch
+      summary: Update assistant identity
+      description: Persist name, role, or personality in IDENTITY.md and return the saved identity.
+      tags:
+        - identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - type: object
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                      maxLength: 100
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                    role:
+                      type: string
+                      minLength: 1
+                      maxLength: 500
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                    personality:
+                      type: string
+                      minLength: 1
+                      maxLength: 1000
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                  required:
+                    - name
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                      maxLength: 100
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                    role:
+                      type: string
+                      minLength: 1
+                      maxLength: 500
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                    personality:
+                      type: string
+                      minLength: 1
+                      maxLength: 1000
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                  required:
+                    - role
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                      maxLength: 100
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                    role:
+                      type: string
+                      minLength: 1
+                      maxLength: 500
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                    personality:
+                      type: string
+                      minLength: 1
+                      maxLength: 1000
+                      pattern: ^(?=[^\r\n]*\S)[^\r\n]+$
+                  required:
+                    - personality
+                  additionalProperties: false
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  role:
+                    type: string
+                  personality:
+                    type: string
+                  emoji:
+                    type: string
+                  home:
+                    type: string
+                  version:
+                    type: string
+                  createdAt:
+                    type: string
+                required:
+                  - name
+                  - role
+                  - personality
+                  - emoji
+                  - home
+                  - version
+                additionalProperties: false
+        "400":
+          description: Invalid identity update
+        "404":
+          description: Assistant identity not found
+        "409":
+          description: Assistant identity changed during the update
+        "500":
+          description: Assistant identity could not be saved
   /v1/identity/intro:
     get:
       operationId: identity_intro_get

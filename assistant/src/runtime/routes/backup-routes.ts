@@ -46,6 +46,7 @@ import type { BackupConfig, BackupDestination } from "../../config/schema.js";
 import { getMemoryCheckpoint } from "../../memory/checkpoints.js";
 import { getLogger } from "../../util/logger.js";
 import { getWorkspaceDir, getWorkspaceHooksDir } from "../../util/platform.js";
+import { withCoordinatedIdentityPublication } from "../../workspace/identity-publication.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { DefaultPathResolver } from "../migrations/vbundle-import-analyzer.js";
 import { BadRequestError, RouteError } from "./errors.js";
@@ -201,10 +202,12 @@ export async function handleBackupRestore({ body }: RouteHandlerArgs) {
       getWorkspaceHooksDir(),
     );
 
-    const result = await restoreFromSnapshot(snapshotPath, {
-      pathResolver,
-      workspaceDir: getWorkspaceDir(),
-    });
+    const result = await withCoordinatedIdentityPublication(() =>
+      restoreFromSnapshot(snapshotPath, {
+        pathResolver,
+        workspaceDir: getWorkspaceDir(),
+      }),
+    );
 
     invalidateConfigCache();
 

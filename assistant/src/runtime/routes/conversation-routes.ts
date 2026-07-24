@@ -1,7 +1,6 @@
 /**
  * Route handlers for conversation messages and suggestions.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { z } from "zod";
 
@@ -46,6 +45,7 @@ import {
   buildSelfIntroMessage,
   isWakeUpGreeting,
 } from "../../daemon/first-greeting.js";
+import { updateIdentityFields } from "../../daemon/handlers/identity.js";
 import {
   collectAttachmentRefs,
   type HistoryAttachmentRef,
@@ -115,6 +115,7 @@ import {
   getWorkspacePromptPath,
 } from "../../util/platform.js";
 import { silentlyWithLog } from "../../util/silently.js";
+import { updateIdentityFileAtomically } from "../../workspace/identity-file-write.js";
 import { assistantEventHub, broadcastMessage } from "../assistant-event-hub.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { getPersistedSeq } from "../assistant-stream-state.js";
@@ -1024,11 +1025,11 @@ export function handleListMessages({
  *      the pure-recomputation write cycle (every turn boundary rebuilds
  *      facts from markdown; the sidecar is the durable source for the
  *      tool/task/tone chips).
- *   2. `IDENTITY.md` — assistant persona seed file, only written when
- *      missing so we never clobber existing content. Feeds the system
- *      prompt and the relationship-state writer's `parseIdentity`
- *      helper after a daemon restart when the in-memory onboarding
- *      context is gone.
+ *   2. `IDENTITY.md` — assistant persona seed file. The canonical Name
+ *      metadata is updated without replacing unrelated identity content.
+ *      Feeds the system prompt and the relationship-state writer's
+ *      `parseIdentity` helper after a daemon restart when the in-memory
+ *      onboarding context is gone.
  *   3. Onboarding section in the guardian persona file — written via
  *      `writeOnboardingSection`, which handles the user's preferred
  *      name (with fallback to root `USER.md`).
@@ -1040,7 +1041,7 @@ export function handleListMessages({
  * failure. The route handler path must never reject because of a
  * best-effort persistence step.
  */
-export function persistOnboardingArtifacts(onboarding: {
+export async function persistOnboardingArtifacts(onboarding: {
   tools: string[];
   tasks: string[];
   tone: string;
@@ -1052,34 +1053,24 @@ export function persistOnboardingArtifacts(onboarding: {
   cohort?: string;
   websiteUrl?: string;
   contentSourceUrl?: string;
-}): void {
+}): Promise<void> {
   writeOnboardingSidecar(onboarding);
 
   const assistantName = onboarding.assistantName?.trim();
   if (assistantName) {
     const identityPath = getWorkspacePromptPath("IDENTITY.md");
     try {
-      if (existsSync(identityPath)) {
-        const content = readFileSync(identityPath, "utf-8");
-        const updated = content.replace(
-          /^- (?:\*\*)?Name:(?:\*\*)?\s*.*$/m,
-          () => `- **Name:** ${assistantName}`,
-        );
-        if (updated !== content) {
-          writeFileSync(identityPath, updated, "utf-8");
-        }
-      } else {
-        writeFileSync(
-          identityPath,
-          `# Identity\n\n- **Name:** ${assistantName}\n`,
-          "utf-8",
-        );
-      }
+      await updateIdentityFileAtomically(identityPath, (content) =>
+        content === null
+          ? `# Identity\n\n- **Name:** ${assistantName}\n`
+          : updateIdentityFields(content, { name: assistantName }),
+      );
     } catch (err) {
       log.warn(
         { err, identityPath },
         "Failed to seed IDENTITY.md from onboarding",
       );
+      throw err;
     }
   }
 
@@ -1579,7 +1570,7 @@ export async function handleSendMessage(
   }
 
   if (isFirstOnboarding) {
-    persistOnboardingArtifacts(body.onboarding!);
+    await persistOnboardingArtifacts(body.onboarding!);
     if (isPooledWorkerRuntime()) {
       await writeRelationshipState();
     }
