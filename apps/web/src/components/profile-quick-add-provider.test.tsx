@@ -52,6 +52,10 @@ mock.module("@/domains/settings/ai/profile-editor-modal", () => ({
 
 const configGetSetQueryDataMock = mock((_client: unknown, _opts: unknown, _data: unknown) => {});
 mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
+  authInfoGetOptions: () => ({
+    queryKey: [{ _id: "authInfoGet" }],
+    queryFn: async () => ({ authenticated: false }),
+  }),
   inferenceProviderconnectionsGetOptions: () => ({
     queryKey: [{ _id: "inferenceProviderconnectionsGet" }],
     queryFn: async () => ({ connections: [] }),

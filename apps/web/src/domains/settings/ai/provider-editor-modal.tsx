@@ -11,6 +11,7 @@ import { credentialPresenceQueryKey, useStoredCredentialPresence } from "@/domai
 import { secretsGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
     inferenceProviderconnectionsByNamePatch,
+    inferenceProviderconnectionsGet,
     secretsPost,
 } from "@/generated/daemon/sdk.gen";
 import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
@@ -69,6 +70,7 @@ export interface ProviderEditorContentProps {
   createSeed?: ProviderEditorCreateSeed;
   assistantId: string;
   existingNames: string[];
+  managedInferenceConfigured?: boolean;
   onSave: (connection: ProviderConnection) => void;
   onCancel: () => void;
 }
@@ -79,6 +81,7 @@ export function ProviderEditorContent({
   createSeed,
   assistantId,
   existingNames,
+  managedInferenceConfigured = false,
   onSave,
   onCancel,
 }: ProviderEditorContentProps) {
@@ -92,7 +95,7 @@ export function ProviderEditorContent({
 
   // Auth type to seed the create form with when entering create mode via the
   // Save as New clone flow. `undefined` for a genuine "create" open so the
-  // form keeps its own default (platform for managed-capable providers).
+  // form keeps its own capability-aware default.
   const [createAuthTypeSeed, setCreateAuthTypeSeed] = useState<
     AuthType | undefined
   >(undefined);
@@ -127,6 +130,8 @@ export function ProviderEditorContent({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const platformAuthAvailable =
+    managedInferenceConfigured && providerSupportsPlatformAuth(provider);
 
   const isOpenAICompatible = provider === "openai-compatible";
   const connectionProviderOptions = useMemo(() => {
@@ -215,6 +220,17 @@ export function ProviderEditorContent({
     setIsSavingKey(false);
   }, [connection, createSeed, resetDirty]);
 
+  useEffect(() => {
+    if (
+      isAuthLocked ||
+      authType !== "platform" ||
+      platformAuthAvailable
+    ) {
+      return;
+    }
+    setAuthType(provider === "ollama" ? "none" : "api_key");
+  }, [authType, isAuthLocked, platformAuthAvailable, provider]);
+
   // Save as New: clone the currently-displayed connection into a fresh
   // "create" mode session. The user keeps the provider + label as a
   // starting point (so they don't have to re-enter the easy bits) but
@@ -234,6 +250,17 @@ export function ProviderEditorContent({
 
   async function handleSave() {
     if (!canSave) return;
+    if (
+      authType === "platform" &&
+      !platformAuthAvailable &&
+      !isAuthLocked
+    ) {
+      setAuthType(provider === "ollama" ? "none" : "api_key");
+      setError(
+        "Worklin credits are not available for this provider. Connect your API key instead.",
+      );
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -335,10 +362,25 @@ export function ProviderEditorContent({
       }
       if (updated.auth.type !== "platform" && !updated.isManaged) {
         try {
+          const { data: inventoryData } =
+            await inferenceProviderconnectionsGet({
+              path: { assistant_id: assistantId },
+              throwOnError: true,
+            });
+          const inventory = inventoryData?.connections ?? [];
+          const completeInventory = inventory.some(
+            (candidate) => candidate.name === updated.name,
+          )
+            ? inventory
+            : [...inventory, updated];
           const profileResult = await ensureRunnableProfileForConnection(
             assistantId,
             updated,
-            { activateConnection: true },
+            {
+              activateConnection: true,
+              connections: completeInventory,
+              routeInteractiveCallSites: !managedInferenceConfigured,
+            },
           );
           if (profileResult.repaired) {
             void queryClient.invalidateQueries({
@@ -403,6 +445,7 @@ export function ProviderEditorContent({
         existingNames={existingNames}
         defaultProviderType={provider}
         defaultAuthType={createAuthTypeSeed ?? createSeed?.authType}
+        managedInferenceConfigured={managedInferenceConfigured}
         preset={createSeed?.preset}
         onCreated={onSave}
         onCancel={onCancel}
@@ -518,7 +561,7 @@ export function ProviderEditorContent({
               let types: AuthType[];
               if (provider === "ollama") {
                 types = ["none"];
-              } else if (providerSupportsPlatformAuth(provider)) {
+              } else if (platformAuthAvailable) {
                 types = ["api_key", "platform"];
               } else {
                 types = ["api_key"];
@@ -526,7 +569,11 @@ export function ProviderEditorContent({
               // Preserve the current auth type in edit mode so existing
               // connections display their saved value even if the type is
               // no longer offered for new connections.
-              if (authType && !types.includes(authType)) {
+              if (
+                authType &&
+                !types.includes(authType) &&
+                (authType !== "platform" || isAuthLocked)
+              ) {
                 types.push(authType);
               }
               return types.map((t) => ({
@@ -558,6 +605,7 @@ export function ProviderEditorContent({
         {authType === "oauth_subscription" && (
           <ChatgptOAuthSection
             assistantId={assistantId}
+            managedInferenceConfigured={managedInferenceConfigured}
             onConnected={onSave}
           />
         )}

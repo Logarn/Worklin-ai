@@ -92,6 +92,7 @@ type Connection = {
   name: string;
   provider: string;
   auth: { type: string; credential?: string };
+  isManaged?: boolean;
 };
 
 // Ordered list the mocked `listConnections` returns. `.find()` walks it in
@@ -151,6 +152,12 @@ const OPENAI_CODEX: Connection = {
     credential: "credential/openai-codex/access_token",
   },
 };
+const OPENAI_MANAGED: Connection = {
+  name: "openai-managed",
+  provider: "openai",
+  auth: { type: "platform" },
+  isManaged: true,
+};
 
 describe("auto-resolution skips oauth_subscription connections for non-Codex models", () => {
   beforeEach(reset);
@@ -181,6 +188,19 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
     expect(result).not.toBeNull();
     expect(resolveProviderCalls.length).toBe(1);
     expect(resolveProviderCalls[0].name).toBe("openai-codex");
+  });
+
+  test("source:user Any connection skips managed transport", async () => {
+    registerConnections([OPENAI_MANAGED, OPENAI_KEY]);
+    setOpenAiProfile("gpt-5.4");
+
+    const result = await getConfiguredProvider("mainAgent", {
+      overrideProfile: "openai-any",
+    });
+
+    expect(result).not.toBeNull();
+    expect(resolveProviderCalls).toHaveLength(1);
+    expect(resolveProviderCalls[0].name).toBe("openai-key");
   });
 
   test("non-Codex model with only an oauth_subscription connection resolves to null (no misroute)", async () => {
@@ -227,7 +247,7 @@ function setOpenAiProfile(model: string): void {
     default: { provider: "anthropic", model: "claude-opus-4-7" },
     profiles: {
       // "Any active OpenAI connection" — provider set, no provider_connection.
-      "openai-any": { provider: "openai", model },
+      "openai-any": { source: "user", provider: "openai", model },
     },
   };
 }

@@ -25,12 +25,21 @@ import {
   PROVIDER_DISPLAY_NAMES,
 } from "@/assistant/llm-model-catalog";
 import {
+  connectionsAvailableForManagedInference,
+  profilesAvailableForManagedInference,
+} from "@/assistant/managed-inference";
+import { useManagedInferenceCapability } from "@/assistant/managed-inference-availability";
+import {
   connectionMatchesPreset,
   XAI_PROVIDER_PRESET,
   type ProviderConnectionPreset,
 } from "@/assistant/provider-connection-presets";
 import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
 import { isPooledRuntimeProvider } from "@/assistant/pooled-model-provider";
+import {
+  buildInteractiveProfileSelectionPatch,
+  isConfigSelectionConflict,
+} from "@/assistant/provider-profile-repair";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
 import { CallSiteOverridesModal } from "@/domains/settings/ai/call-site-overrides-modal";
@@ -190,7 +199,7 @@ function resolvePowerSource(
   profile: ProfileWithName | null,
   connection: ProviderConnection | null,
 ): PowerSource {
-  if (!profile) return "worklin-credits";
+  if (!profile) return "api-key";
   if (
     profile.source === "managed" ||
     connection?.isManaged ||
@@ -212,13 +221,19 @@ function getConnectionStatus(
   return "Key connected";
 }
 
-function getMethodOptions(provider: ConnectionProvider): AuthType[] {
+function getMethodOptions(
+  provider: ConnectionProvider,
+  managedInferenceConfigured: boolean,
+): AuthType[] {
   if (provider === "ollama") return ["none"];
   const options: AuthType[] = ["api_key"];
   if (provider === "openai") {
     options.push("oauth_subscription");
   }
-  if (providerSupportsPlatformAuth(provider)) {
+  if (
+    managedInferenceConfigured &&
+    providerSupportsPlatformAuth(provider)
+  ) {
     options.push("platform");
   }
   return options;
@@ -307,6 +322,8 @@ export function LanguageModelCard() {
 
 function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   const queryClient = useQueryClient();
+  const { configured: managedInferenceConfigured } =
+    useManagedInferenceCapability(assistantId);
 
   const { data: config } = useQuery({
     ...configGetOptions({ path: { assistant_id: assistantId } }),
@@ -318,9 +335,17 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
     }),
     staleTime: 30_000,
   });
-  const connections = useMemo(
+  const allConnections = useMemo(
     () => connectionsData?.connections ?? [],
     [connectionsData?.connections],
+  );
+  const connections = useMemo(
+    () =>
+      connectionsAvailableForManagedInference(
+        allConnections,
+        managedInferenceConfigured,
+      ),
+    [allConnections, managedInferenceConfigured],
   );
   const { data: secretsData } = useQuery({
     ...secretsGetOptions({ path: { assistant_id: assistantId } }),
@@ -332,13 +357,21 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   );
 
   const activeProfile = config?.llm?.activeProfile ?? null;
-  const callSites = config?.llm?.callSites ?? {};
+  const callSites = useMemo(
+    () => config?.llm?.callSites ?? {},
+    [config?.llm?.callSites],
+  );
   // Retain the last non-empty profile list so a transient empty config payload
   // can't blank the main model surface until the next good fetch.
   const { profiles, profileOrder } = useStickyProfiles(config?.llm, assistantId);
   const orderedProfiles = useMemo(
-    () => buildOrderedProfiles(profiles, profileOrder),
-    [profiles, profileOrder],
+    () =>
+      profilesAvailableForManagedInference(
+        buildOrderedProfiles(profiles, profileOrder),
+        allConnections,
+        managedInferenceConfigured,
+      ),
+    [profiles, profileOrder, allConnections, managedInferenceConfigured],
   );
 
   const configMutation = useConfigPatchMutation({
@@ -393,7 +426,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   const managedProfile = orderedProfiles.find(
     (profile) => profile.source === "managed",
   );
-  const userProfile = orderedProfiles.find(
+  const userProfiles = orderedProfiles.filter(
     (profile) => profile.source !== "managed",
   );
   const selectedProvider = selectedProfile?.provider ?? null;
@@ -416,28 +449,54 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
   );
 
   const handleProfileSave = useCallback(async () => {
+    if (!effectiveActiveProfile) return;
     try {
       await configMutation.mutateAsync({
         path: { assistant_id: assistantId },
-        body: { llm: { activeProfile: effectiveActiveProfile } },
+        body: buildInteractiveProfileSelectionPatch(
+          { profiles, callSites },
+          effectiveActiveProfile,
+          activeProfile,
+          allConnections,
+          !managedInferenceConfigured,
+        ),
       });
       toast.success("Model choice saved.");
     } catch (error) {
-      toast.error("Failed to save model choice. Please try again.");
+      toast.error(
+        isConfigSelectionConflict(error)
+          ? "The model choice changed before this selection was saved. Try again."
+          : "Failed to save model choice. Please try again.",
+      );
       captureError(error, { context: "settings-ai-language-model-save" });
     }
-  }, [effectiveActiveProfile, configMutation, assistantId]);
+  }, [
+    activeProfile,
+    allConnections,
+    assistantId,
+    callSites,
+    configMutation,
+    effectiveActiveProfile,
+    managedInferenceConfigured,
+    profiles,
+  ]);
 
   const handlePowerSourceSelect = useCallback(
     (source: PowerSource) => {
-      if (source === selectedPowerSource) return;
-      const nextProfile =
-        source === "worklin-credits" ? managedProfile : userProfile;
-      if (nextProfile) {
-        setDraftActiveProfile(nextProfile.name);
+      if (source === selectedPowerSource && selectedProfile) return;
+      if (source === "worklin-credits" && managedProfile) {
+        setDraftActiveProfile(managedProfile.name);
         return;
       }
       if (source === "api-key") {
+        if (userProfiles.length === 1) {
+          setDraftActiveProfile(userProfiles[0].name);
+          return;
+        }
+        if (userProfiles.length > 1) {
+          setManageProfilesOpen(true);
+          return;
+        }
         setProviderCreateSeed(null);
         setManageProvidersOpen(true);
       } else {
@@ -446,9 +505,10 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
     },
     [
       managedProfile,
+      selectedProfile,
       selectedPowerSource,
       setDraftActiveProfile,
-      userProfile,
+      userProfiles,
     ],
   );
 
@@ -490,14 +550,16 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
         subtitle="Choose how Worklin should power replies, then pick the provider and model."
       >
         <div className="space-y-4">
-          <div className="grid gap-3 lg:grid-cols-2">
-            <PowerSourceTile
-              selected={selectedPowerSource === "worklin-credits"}
-              icon={<CreditCard className="h-5 w-5" />}
-              title="Use Worklin credits"
-              description="No API key needed. Usage comes from your Worklin balance."
-              onClick={() => handlePowerSourceSelect("worklin-credits")}
-            />
+          <div className={cn("grid gap-3", managedInferenceConfigured && "lg:grid-cols-2")}>
+            {managedInferenceConfigured ? (
+              <PowerSourceTile
+                selected={selectedPowerSource === "worklin-credits"}
+                icon={<CreditCard className="h-5 w-5" />}
+                title="Use Worklin credits"
+                description="No API key needed. Usage comes from your Worklin balance."
+                onClick={() => handlePowerSourceSelect("worklin-credits")}
+              />
+            ) : null}
             <PowerSourceTile
               selected={selectedPowerSource === "api-key"}
               icon={<KeyRound className="h-5 w-5" />}
@@ -533,7 +595,14 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
                     {getProfileSubtitle(selectedProfile)}
                   </p>
                   <p className="mt-2 flex items-center gap-2 text-body-small-default text-[var(--content-secondary)]">
-                    <span className="h-2 w-2 rounded-full bg-[var(--system-positive-strong)]" />
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full",
+                        selectedStatus === "Key required"
+                          ? "bg-[var(--content-disabled)]"
+                          : "bg-[var(--system-positive-strong)]",
+                      )}
+                    />
                     {selectedStatus}
                   </p>
                 </div>
@@ -616,7 +685,10 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
                     providerSupportsPlatformAuth(provider)
                       ? "platform"
                       : "api_key");
-                  const methodOptions = getMethodOptions(provider);
+                  const methodOptions = getMethodOptions(
+                    provider,
+                    managedInferenceConfigured,
+                  );
                   const fallbackMethod = methodOptions[0] ?? "api_key";
                   const effectiveMethod = methodOptions.includes(method)
                     ? method
@@ -769,6 +841,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
         <ManageProfilesModal
           isOpen={manageProfilesOpen}
           assistantId={assistantId}
+          managedInferenceConfigured={managedInferenceConfigured}
           onClose={() => setManageProfilesOpen(false)}
         />
       )}
@@ -778,6 +851,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
           isOpen={overridesOpen}
           onClose={() => setOverridesOpen(false)}
           assistantId={assistantId}
+          managedInferenceConfigured={managedInferenceConfigured}
         />
       )}
 
@@ -785,6 +859,7 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
         <ManageProvidersModal
           isOpen={manageProvidersOpen}
           assistantId={assistantId}
+          managedInferenceConfigured={managedInferenceConfigured}
           createSeed={providerCreateSeed}
           onClose={() => setManageProvidersOpen(false)}
         />

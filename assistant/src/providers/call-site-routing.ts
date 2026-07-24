@@ -30,6 +30,8 @@ import {
 } from "./connection-model-compat.js";
 import {
   ConnectionResolutionError,
+  type ConnectionResolutionRequirements,
+  isPersonalProviderConnection,
   tryResolveProviderForConnectionName,
 } from "./connection-resolution.js";
 import { listConnections } from "./inference/connections.js";
@@ -40,6 +42,57 @@ import type {
   ProviderResponse,
   SendMessageOptions,
 } from "./types.js";
+
+type LlmConfig = ReturnType<typeof getConfig>["llm"];
+
+function profileRequiresPersonalConnection(
+  llm: LlmConfig,
+  profileName: string | undefined,
+): boolean | undefined {
+  if (!profileName) return undefined;
+  const profile = llm.profiles?.[profileName];
+  return profile ? profile.source !== "managed" : undefined;
+}
+
+function callSiteRequiresPersonalConnection(
+  callSite: NonNullable<NonNullable<SendMessageOptions["config"]>["callSite"]>,
+  llm: LlmConfig,
+  options: SendMessageOptions,
+): boolean {
+  const site = llm.callSites?.[callSite];
+  const overrideProfile = profileRequiresPersonalConnection(
+    llm,
+    options.config?.overrideProfile,
+  );
+  const activeProfile = profileRequiresPersonalConnection(
+    llm,
+    llm.activeProfile,
+  );
+  const siteProfile = profileRequiresPersonalConnection(llm, site?.profile);
+  const hasDirectSelection = site?.provider != null || site?.model != null;
+
+  if (callSite === "mainAgent") {
+    return (
+      overrideProfile ??
+      activeProfile ??
+      (hasDirectSelection ? true : siteProfile) ??
+      false
+    );
+  }
+
+  if (
+    options.config?.forceOverrideProfile === true &&
+    overrideProfile !== undefined
+  ) {
+    return overrideProfile;
+  }
+  return (
+    (hasDirectSelection ? true : siteProfile) ??
+    overrideProfile ??
+    activeProfile ??
+    false
+  );
+}
 
 export class CallSiteRoutingProvider implements Provider {
   public readonly tokenEstimationProvider?: string;
@@ -80,11 +133,15 @@ export class CallSiteRoutingProvider implements Provider {
      * `model` is the resolved call-site model, threaded through so the
      * connection lookup can gate `oauth_subscription` (Codex) connections
      * by model compatibility.
+     *
+     * `requirements.requirePersonal` prevents direct/user routing from
+     * resolving through platform auth or another fallback transport.
      */
     private readonly resolveByConnection: (
       connectionName: string,
       expectedProvider: string,
       model: string | undefined,
+      requirements: ConnectionResolutionRequirements,
     ) => Promise<Provider | null>,
   ) {
     this.tokenEstimationProvider = defaultProvider.tokenEstimationProvider;
@@ -148,35 +205,74 @@ export class CallSiteRoutingProvider implements Provider {
     // request params.
     const forceOverrideProfile = options?.config?.forceOverrideProfile;
     const selectionSeed = options?.config?.selectionSeed;
-    const resolved = resolveCallSiteConfig(callSite, getConfig().llm, {
+    const llm = getConfig().llm;
+    const resolved = resolveCallSiteConfig(callSite, llm, {
       overrideProfile,
       forceOverrideProfile,
       selectionSeed,
     });
+    const requirePersonal = callSiteRequiresPersonalConnection(
+      callSite,
+      llm,
+      options,
+    );
 
-    let connectionName = resolved.provider_connection;
+    const connectionName = resolved.provider_connection;
 
-    // When no connection is set and the provider differs from the default,
-    // auto-resolve a connection for the provider (handles the case where the
-    // profile set provider but not provider_connection, and the merge didn't
-    // inherit one).
-    let autoResolveCandidates:
-      | import("./inference/auth.js").ProviderConnection[]
-      | undefined;
-    if (!connectionName && resolved.provider !== this.defaultProvider.name) {
+    // An unpinned direct/user selection may resolve only through a matching
+    // personal connection. Try each compatible candidate until one proves
+    // runnable; inventory order is never permission to use platform auth.
+    if (!connectionName && requirePersonal) {
+      let autoResolveCandidates:
+        | import("./inference/auth.js").ProviderConnection[]
+        | undefined;
       try {
         autoResolveCandidates = listConnections(getDb(), {
           provider: resolved.provider,
         });
-        const active = autoResolveCandidates.find((c) =>
-          isConnectionCompatibleWithModel(c, resolved.model),
+        const personalCandidates = autoResolveCandidates.filter(
+          isPersonalProviderConnection,
         );
-        if (active) {
-          connectionName = active.name;
+        const compatibleCandidates = personalCandidates.filter((candidate) =>
+          isConnectionCompatibleWithModel(candidate, resolved.model),
+        );
+        for (const candidate of compatibleCandidates) {
+          const provider = await this.resolveByConnection(
+            candidate.name,
+            resolved.provider,
+            resolved.model,
+            { requirePersonal: true },
+          );
+          if (provider) return provider;
         }
-      } catch {
-        // DB not available — fall through to the original error path.
+        const incompatMsg = describeSubscriptionModelIncompatibility(
+          personalCandidates,
+          resolved.model,
+        );
+        if (incompatMsg) {
+          throw new ConnectionResolutionError(
+            "<resolved-callsite>",
+            "model_incompatible",
+            incompatMsg,
+          );
+        }
+        if (compatibleCandidates.length > 0) {
+          throw new ConnectionResolutionError(
+            "<resolved-callsite>",
+            "unavailable",
+            `call-site "${callSite}" has no runnable personal connection for provider "${resolved.provider}"`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof ConnectionResolutionError) throw error;
+        // DB not available — fall through to the fail-closed error below.
       }
+
+      throw new ConnectionResolutionError(
+        "<resolved-callsite>",
+        "personal_connection_required",
+        `call-site "${callSite}" requires a matching runnable personal connection for provider "${resolved.provider}"`,
+      );
     }
 
     if (connectionName) {
@@ -184,27 +280,21 @@ export class CallSiteRoutingProvider implements Provider {
         connectionName,
         resolved.provider,
         resolved.model,
+        { requirePersonal },
       );
       if (connectionProvider) return connectionProvider;
+      if (requirePersonal) {
+        throw new ConnectionResolutionError(
+          connectionName,
+          "unavailable",
+          `call-site "${callSite}" selected personal connection "${connectionName}", but its credentials are unavailable`,
+        );
+      }
       return this.defaultProvider;
     }
 
     if (resolved.provider === this.defaultProvider.name) {
       return this.defaultProvider;
-    }
-
-    if (autoResolveCandidates) {
-      const incompatMsg = describeSubscriptionModelIncompatibility(
-        autoResolveCandidates,
-        resolved.model,
-      );
-      if (incompatMsg) {
-        throw new ConnectionResolutionError(
-          "<resolved-callsite>",
-          "model_incompatible",
-          incompatMsg,
-        );
-      }
     }
 
     throw new ConnectionResolutionError(
@@ -230,12 +320,13 @@ export function wrapWithCallSiteRouting(
 ): Provider {
   return new CallSiteRoutingProvider(
     base,
-    (connectionName, expectedProvider, model) =>
+    (connectionName, expectedProvider, model, requirements) =>
       tryResolveProviderForConnectionName(
         connectionName,
         config,
         expectedProvider,
         model,
+        requirements,
       ),
   );
 }

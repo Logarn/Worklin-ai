@@ -23,6 +23,7 @@ import {
 import { ProfileEditorProviderSection } from "@/domains/settings/ai/profile-editor-provider-section";
 import { type GeminiThinkingLevel, isGeminiThinkingLevel, resolveProfileParamVisibility } from "@/domains/settings/ai/profile-param-visibility";
 import { AUTO_PROFILE_NAME } from "@/assistant/profile-pickers";
+import { canSafelyUseAnyProviderConnection } from "@/assistant/provider-connection-readiness";
 import { deriveProfileDefaults } from "@/domains/settings/ai/profile-prefill";
 import type { ConnectionProvider, ProviderConnection } from "@/generated/daemon/types.gen";
 import { ProviderCreateForm } from "@/domains/settings/ai/provider-create-form";
@@ -55,6 +56,7 @@ export interface ProfileEditorModalProps {
    *   the daemon can't dispatch through.
    */
   connections?: ProviderConnection[];
+  managedInferenceConfigured?: boolean;
   /**
    * Assistant whose provider connections the inline "+ Create new provider"
    * sub-form writes to. Required for the create-mode quick-add flow.
@@ -90,6 +92,7 @@ export function ProfileEditorModal({
   initialValues,
   existingNames,
   connections,
+  managedInferenceConfigured = false,
   assistantId,
   onSave,
   onCancel,
@@ -108,6 +111,7 @@ export function ProfileEditorModal({
           initialValues={initialValues}
           existingNames={existingNames}
           connections={connections}
+          managedInferenceConfigured={managedInferenceConfigured}
           assistantId={assistantId}
           onSave={onSave}
           onCancel={onCancel}
@@ -128,6 +132,7 @@ interface ProfileEditorModalInnerProps {
   existingNames: string[];
   // See `ProfileEditorModalProps.connections` for nil-vs-empty semantics.
   connections: ProviderConnection[] | undefined;
+  managedInferenceConfigured: boolean;
   assistantId: string;
   onSave: (
     name: string,
@@ -143,6 +148,7 @@ function ProfileEditorModalInner({
   initialValues,
   existingNames,
   connections,
+  managedInferenceConfigured,
   assistantId,
   onSave,
   onCancel,
@@ -170,9 +176,9 @@ function ProfileEditorModalInner({
   );
   const [provider, setProvider] = useState<NonNullable<ProfileEntry["provider"]> | "">(initialValues?.provider ?? "");
   const [model, setModel] = useState(initialValues?.model ?? "");
-  // Per-profile provider-connection binding. Empty string means no explicit
-  // binding — daemon falls back to its first-connection dispatch. Snake_case
-  // `provider_connection` matches the wire schema.
+  // Per-profile provider-connection binding. Empty string means "Any
+  // connection" and is saved only when every available choice is personal.
+  // Snake_case `provider_connection` matches the wire schema.
   const [providerConnection, setProviderConnection] = useState(
     initialValues?.provider_connection ?? "",
   );
@@ -284,6 +290,13 @@ function ProfileEditorModalInner({
   const connectionNotFound =
     providerConnection !== "" &&
     !availableConnectionsForProvider.some((c) => c.name === providerConnection);
+  const allowAnyConnection = canSafelyUseAnyProviderConnection(
+    availableConnectionsForProvider,
+  );
+  const specificConnectionRequired =
+    availableConnectionsForProvider.length > 1 &&
+    !allowAnyConnection &&
+    (providerConnection === "" || connectionNotFound);
 
   const { handleLabelChange, handleKeyChange, resetDirty, getDirty } =
     useLabelKeySync(effectiveMode, setLabel, setKey);
@@ -426,7 +439,8 @@ function ProfileEditorModalInner({
     keyHasWhitespace ||
     keyNotUnique ||
     providerMissing ||
-    providerWithoutModel;
+    providerWithoutModel ||
+    specificConnectionRequired;
 
   const keyError = keyEmpty
     ? "Key is required"
@@ -742,6 +756,7 @@ function ProfileEditorModalInner({
           existingNames={effectiveConnections.map((c) => c.name)}
           defaultProviderType={provider || undefined}
           defaultAuthType="api_key"
+          managedInferenceConfigured={managedInferenceConfigured}
           onCreated={handleProviderCreated}
           onCancel={() => setCreatingProvider(false)}
         />
@@ -757,6 +772,8 @@ function ProfileEditorModalInner({
           isReadOnly={isReadOnly}
           availableConnectionsForProvider={availableConnectionsForProvider}
           connectionNotFound={connectionNotFound}
+          allowAnyConnection={allowAnyConnection}
+          specificConnectionRequired={specificConnectionRequired}
           hideProviderField
         />
       )}
@@ -861,6 +878,8 @@ function ProfileEditorModalInner({
                 isReadOnly={isReadOnly}
                 availableConnectionsForProvider={availableConnectionsForProvider}
                 connectionNotFound={connectionNotFound}
+                allowAnyConnection={allowAnyConnection}
+                specificConnectionRequired={specificConnectionRequired}
               />
             )}
 

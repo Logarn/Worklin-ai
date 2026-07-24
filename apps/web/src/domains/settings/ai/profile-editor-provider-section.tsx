@@ -66,6 +66,10 @@ interface ProfileEditorProviderSectionProps {
   availableConnectionsForProvider: ProviderConnection[];
   /** True when the saved binding no longer points at any known connection. */
   connectionNotFound: boolean;
+  /** Whether an unpinned profile can only resolve to personal connections. */
+  allowAnyConnection: boolean;
+  /** True when a mixed managed/personal set requires an explicit choice. */
+  specificConnectionRequired: boolean;
   /**
    * Hide the Provider dropdown (and its empty-state hint). The create-mode
    * profile editor renders its own provider picker — with a "+ Create new
@@ -98,6 +102,8 @@ export function ProfileEditorProviderSection({
   isReadOnly,
   availableConnectionsForProvider,
   connectionNotFound,
+  allowAnyConnection,
+  specificConnectionRequired,
   hideProviderField = false,
 }: ProfileEditorProviderSectionProps) {
   const providerMissing = provider.length === 0;
@@ -269,7 +275,7 @@ export function ProfileEditorProviderSection({
             onChange={onConnectionChange}
             disabled={isReadOnly}
             options={[
-              ...(availableConnectionsForProvider.length > 1
+              ...(allowAnyConnection
                 ? [
                     {
                       value: "",
@@ -305,6 +311,15 @@ export function ProfileEditorProviderSection({
             >
               Connection &ldquo;{providerConnection}&rdquo; not found.
               Will be cleared on save unless you pick another.
+            </Typography>
+          ) : null}
+          {specificConnectionRequired && !connectionNotFound && !isReadOnly ? (
+            <Typography
+              variant="body-small-default"
+              as="p"
+              className="text-(--system-negative-strong)"
+            >
+              Choose a specific connection.
             </Typography>
           ) : null}
         </div>

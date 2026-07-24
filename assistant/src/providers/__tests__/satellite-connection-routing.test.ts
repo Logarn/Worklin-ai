@@ -61,6 +61,7 @@ type Connection = {
   name: string;
   provider: string;
   auth: { type: string; credential?: string };
+  isManaged?: boolean;
 };
 
 // Provider-conforming stub. The `tag` field on the returned response lets
@@ -102,6 +103,11 @@ function makeFakeProvider(tag: string, providerName: string): FakeProviderStub {
 mock.module("../inference/connections.js", () => ({
   getConnection: (_db: unknown, name: string) =>
     fakeConnections.get(name) ?? null,
+  listConnections: (_db: unknown, filter?: { provider?: string }) =>
+    Array.from(fakeConnections.values()).filter(
+      (connection) =>
+        filter?.provider == null || connection.provider === filter.provider,
+    ),
 }));
 
 // Connection names that should make `resolveProviderFromConnection` throw —
@@ -200,6 +206,7 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         "managed-profile": {
+          source: "managed",
           provider: "anthropic",
           provider_connection: "anthropic-managed",
         },
@@ -243,6 +250,7 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         "anthropic-bare": {
+          source: "managed",
           provider: "anthropic",
           // no provider_connection — but provider matches default's name
         },
@@ -279,6 +287,7 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         "openai-profile": {
+          source: "managed",
           provider: "openai",
           // No provider_connection — alternate-provider routing demands
           // one; this profile is expected to throw
@@ -322,6 +331,7 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         broken: {
+          source: "managed",
           provider: "anthropic",
           provider_connection: "does-not-exist",
         },
@@ -378,6 +388,7 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         mismatched: {
+          source: "managed",
           provider: "openai",
           // ↑ profile says openai
           provider_connection: "anthropic-managed",
@@ -416,6 +427,240 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
     expect(sendMessageCalls.length).toBe(0);
   });
 
+  test("a managed route mismatch never borrows a matching personal connection", async () => {
+    const defaultProvider = makeFakeProvider("default-anthropic", "anthropic");
+
+    registerConnection(
+      {
+        name: "anthropic-managed",
+        provider: "anthropic",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-anthropic", "anthropic"),
+    );
+    registerConnection(
+      {
+        name: "openai-personal",
+        provider: "openai",
+        auth: {
+          type: "api_key",
+          credential: "credential/openai/api_key",
+        },
+      },
+      makeFakeProvider("openai-personal", "openai"),
+    );
+
+    setLlmConfig({
+      default: { provider: "anthropic", model: "claude-opus-4-7" },
+      profiles: {
+        managed: {
+          source: "managed",
+          provider: "openai",
+          provider_connection: "anthropic-managed",
+          model: "gpt-5.4",
+        },
+      },
+      callSites: {
+        replySuggestion: { profile: "managed" },
+      },
+    });
+
+    const wrapped = wrapWithCallSiteRouting(
+      defaultProvider,
+      providersConfigStub,
+    );
+    await expect(
+      wrapped.sendMessage(
+        [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        { tools: [], config: { callSite: "replySuggestion" } },
+      ),
+    ).rejects.toMatchObject({
+      name: "ConnectionResolutionError",
+      reason: "provider_mismatch",
+    });
+
+    expect(resolveProviderCalls).toHaveLength(0);
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
+  test("a direct call-site override skips an inherited managed connection", async () => {
+    const defaultProvider = makeFakeProvider("default-anthropic", "anthropic");
+
+    registerConnection(
+      {
+        name: "anthropic-managed",
+        provider: "anthropic",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-anthropic", "anthropic"),
+    );
+    registerConnection(
+      {
+        name: "openai-managed",
+        provider: "openai",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-openai-platform", "openai"),
+    );
+    registerConnection(
+      {
+        name: "openai-personal",
+        provider: "openai",
+        auth: {
+          type: "api_key",
+          credential: "credential/openai/api_key",
+        },
+      },
+      makeFakeProvider("openai-personal", "openai"),
+    );
+
+    setLlmConfig({
+      default: {
+        provider: "anthropic",
+        provider_connection: "anthropic-managed",
+        model: "claude-opus-4-7",
+      },
+      callSites: {
+        replySuggestion: { provider: "openai", model: "gpt-5.4" },
+      },
+    });
+
+    const wrapped = wrapWithCallSiteRouting(
+      defaultProvider,
+      providersConfigStub,
+    );
+    await wrapped.sendMessage(
+      [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      { tools: [], config: { callSite: "replySuggestion" } },
+    );
+
+    expect(resolveProviderCalls.map((connection) => connection.name)).toEqual([
+      "openai-personal",
+    ]);
+    expect(sendMessageCalls).toEqual([{ tag: "openai-personal" }]);
+  });
+
+  test("a user-route mismatch skips platform auth and recovers only through a runnable personal connection", async () => {
+    const defaultProvider = makeFakeProvider("default-anthropic", "anthropic");
+
+    registerConnection(
+      {
+        name: "anthropic-managed",
+        provider: "anthropic",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-anthropic", "anthropic"),
+    );
+    registerConnection(
+      {
+        name: "openai-managed",
+        provider: "openai",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-openai-platform", "openai"),
+    );
+    registerConnection(
+      {
+        name: "openai-personal",
+        provider: "openai",
+        auth: {
+          type: "api_key",
+          credential: "credential/openai/api_key",
+        },
+      },
+      makeFakeProvider("openai-personal", "openai"),
+    );
+
+    setLlmConfig({
+      default: { provider: "anthropic", model: "claude-opus-4-7" },
+      profiles: {
+        personal: {
+          source: "user",
+          provider: "openai",
+          provider_connection: "anthropic-managed",
+          model: "gpt-5.4",
+        },
+      },
+      callSites: {
+        replySuggestion: { profile: "personal" },
+      },
+    });
+
+    const wrapped = wrapWithCallSiteRouting(
+      defaultProvider,
+      providersConfigStub,
+    );
+    await wrapped.sendMessage(
+      [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      { tools: [], config: { callSite: "replySuggestion" } },
+    );
+
+    expect(resolveProviderCalls.map((connection) => connection.name)).toEqual([
+      "openai-personal",
+    ]);
+    expect(sendMessageCalls).toEqual([{ tag: "openai-personal" }]);
+  });
+
+  test("a user-route mismatch fails closed when only a matching platform connection exists", async () => {
+    const defaultProvider = makeFakeProvider("default-anthropic", "anthropic");
+
+    registerConnection(
+      {
+        name: "anthropic-managed",
+        provider: "anthropic",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-anthropic", "anthropic"),
+    );
+    registerConnection(
+      {
+        name: "openai-managed",
+        provider: "openai",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      makeFakeProvider("wrong-openai-platform", "openai"),
+    );
+
+    setLlmConfig({
+      default: { provider: "anthropic", model: "claude-opus-4-7" },
+      profiles: {
+        personal: {
+          source: "user",
+          provider: "openai",
+          provider_connection: "anthropic-managed",
+          model: "gpt-5.4",
+        },
+      },
+      callSites: {
+        replySuggestion: { profile: "personal" },
+      },
+    });
+
+    const wrapped = wrapWithCallSiteRouting(
+      defaultProvider,
+      providersConfigStub,
+    );
+    await expect(
+      wrapped.sendMessage(
+        [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        { tools: [], config: { callSite: "replySuggestion" } },
+      ),
+    ).rejects.toMatchObject({
+      name: "ConnectionResolutionError",
+      reason: "personal_connection_required",
+    });
+
+    expect(resolveProviderCalls).toHaveLength(0);
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
   test("transient auth-resolution failure → falls back to default (graceful per-call degradation)", async () => {
     // Simulates a transient error inside `resolveProviderFromConnection`
     // (e.g. a credential read fails, or managed-proxy context lookup
@@ -440,6 +685,7 @@ describe("CallSiteRoutingProvider honors provider_connection (satellite gate)", 
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         flaky: {
+          source: "managed",
           provider: "anthropic",
           provider_connection: "flaky-managed",
         },

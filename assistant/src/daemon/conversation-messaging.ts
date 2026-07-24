@@ -306,6 +306,8 @@ export interface EnqueueMessageOptions {
   isInteractive?: boolean;
   displayContent?: string;
   transport?: ConversationTransportMetadata;
+  /** Guarded inference profile to apply only when this queued turn runs. */
+  inferenceProfile?: string;
   clientMessageId?: string;
   /** JWT-verified requester principal captured for queued host-proxy routing. */
   sourceActorPrincipalId?: string;
@@ -330,6 +332,7 @@ export function enqueueMessage(
     isInteractive,
     displayContent,
     transport,
+    inferenceProfile,
     clientMessageId,
     authContext,
   } = options;
@@ -366,6 +369,7 @@ export function enqueueMessage(
     sourceActorPrincipalId,
     authContext: queuedAuthContext,
     transport,
+    inferenceProfile,
     displayContent,
     sentAt: Date.now(),
     clientMessageId,

@@ -555,11 +555,11 @@ export async function postChatMessage(
   if (clientMessageId) {
     body.clientMessageId = clientMessageId;
   }
-  // Per-conversation model profile for the conversation this message mints — a
-  // brand-new draft chat where the user picked a model in the composer before
-  // sending. The daemon persists it as the conversation's `inferenceProfile`
-  // override (see `conversation-routes.ts` `requestedInferenceProfile`). Omitted
-  // otherwise so the conversation inherits the global default profile.
+  // Per-conversation model profile captured by the caller before its provider
+  // readiness check. For a draft, the daemon persists the new override; for an
+  // existing conversation, re-sending its stored override keeps the checked
+  // selection and the actual send aligned. Omitted when the conversation
+  // inherits the workspace active profile.
   if (inferenceProfile) {
     body.inferenceProfile = inferenceProfile;
   }

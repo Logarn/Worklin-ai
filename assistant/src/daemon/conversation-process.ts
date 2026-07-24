@@ -29,6 +29,7 @@ import { listPendingRequestsByConversationScope } from "../memory/canonical-guar
 import {
   addMessage,
   provenanceFromTrustContext,
+  setConversationInferenceProfile,
   setConversationOriginChannelIfUnset,
   setConversationOriginInterfaceIfUnset,
   updateConversationTitle,
@@ -1727,6 +1728,7 @@ async function buildPassthroughBatch(
     if (candIf?.userMessageInterface !== headInterface?.userMessageInterface)
       break;
     if (candidate.sourceActorPrincipalId !== head.sourceActorPrincipalId) break;
+    if (candidate.inferenceProfile !== head.inferenceProfile) break;
     if (classifySlash(candidate.content) !== "passthrough") break;
     if (
       resolveVerificationSessionIntent(candidate.content).kind ===
@@ -1967,6 +1969,18 @@ async function drainSingleMessage(
 
   conversation.currentTurnAuthContext = next.authContext;
   conversation.currentTurnSourceActorPrincipalId = next.sourceActorPrincipalId;
+
+  if (next.inferenceProfile !== undefined) {
+    setConversationInferenceProfile(
+      conversation.conversationId,
+      next.inferenceProfile,
+    );
+    conversation.applyInferenceProfileState({
+      profile: next.inferenceProfile,
+      sessionId: null,
+      expiresAt: null,
+    });
+  }
 
   // Re-attach and re-preactivate host-proxy skills for interactive turns.
   // The dequeue path reset `preactivatedSkillIds` above; without these
@@ -2423,11 +2437,14 @@ async function drainSingleMessage(
     isInteractive?: boolean;
     isUserMessage?: boolean;
     titleText?: string;
+    overrideProfile?: string;
   } = { isUserMessage: true };
   if (next.isInteractive !== undefined)
     drainLoopOptions.isInteractive = next.isInteractive;
   if (agentLoopContent !== resolvedContent)
     drainLoopOptions.titleText = resolvedContent;
+  if (next.inferenceProfile !== undefined)
+    drainLoopOptions.overrideProfile = next.inferenceProfile;
 
   conversation
     .runAgentLoop(agentLoopContent, userMessageId, {
@@ -2506,6 +2523,18 @@ async function drainBatch(
 
   conversation.currentTurnAuthContext = head.authContext;
   conversation.currentTurnSourceActorPrincipalId = head.sourceActorPrincipalId;
+
+  if (head.inferenceProfile !== undefined) {
+    setConversationInferenceProfile(
+      conversation.conversationId,
+      head.inferenceProfile,
+    );
+    conversation.applyInferenceProfileState({
+      profile: head.inferenceProfile,
+      sessionId: null,
+      expiresAt: null,
+    });
+  }
 
   // Re-attach and re-preactivate host-proxy skills for interactive turns.
   // Mirrors the single-message path exactly — sourced from `head`.
@@ -2810,6 +2839,7 @@ async function drainBatch(
     isInteractive?: boolean;
     isUserMessage?: boolean;
     titleText?: string;
+    overrideProfile?: string;
   } = { isUserMessage: true };
   // Source interactive flag from the last successfully-persisted sibling so
   // a trailing failed tail doesn't flip the agent loop's interactivity.
@@ -2819,6 +2849,8 @@ async function drainBatch(
       : undefined;
   if (lastSuccessfulBatchEntry?.isInteractive !== undefined)
     drainLoopOptions.isInteractive = lastSuccessfulBatchEntry.isInteractive;
+  if (head.inferenceProfile !== undefined)
+    drainLoopOptions.overrideProfile = head.inferenceProfile;
 
   // Fire-and-forget: runAgentLoop's finally block recursively calls drainQueue
   // when this run completes. Mirrors drainSingleMessage.

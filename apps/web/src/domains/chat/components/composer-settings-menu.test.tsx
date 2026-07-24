@@ -136,7 +136,13 @@ const inferenceprofilePut = mock(
 );
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
+  authInfoGet: async () => ({
+    data: { authenticated: false },
+  }),
   configGet: configGetMock,
+  inferenceProviderconnectionsGet: async () => ({
+    data: { connections: [] },
+  }),
   conversationsByIdGet: conversationsByIdGetMock,
   configPatch: configPatchMock,
   conversationsByIdInferenceprofilePut: inferenceprofilePut,

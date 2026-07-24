@@ -70,7 +70,10 @@ mock.module("../config/loader.js", () => ({
           },
         },
       },
-      profiles: {},
+      profiles: {
+        "profile-a": { provider: "mock-provider", model: "mock-model" },
+        "profile-b": { provider: "mock-provider", model: "mock-model" },
+      },
       callSites: {},
       pricingOverrides: [],
     },
@@ -115,6 +118,7 @@ const capturedAddMessages: Array<{
   content: string;
   metadata?: Record<string, unknown>;
 }> = [];
+const capturedInferenceProfileWrites: string[] = [];
 
 /**
  * Content substrings that should cause `addMessage` to throw — used to
@@ -151,6 +155,12 @@ mock.module("../security/secret-allowlist.js", () => ({
 mock.module("../memory/conversation-crud.js", () => ({
   setConversationOriginChannelIfUnset: () => {},
   setConversationOriginInterfaceIfUnset: () => {},
+  setConversationInferenceProfile: (
+    _conversationId: string,
+    profile: string,
+  ) => {
+    capturedInferenceProfileWrites.push(profile);
+  },
   updateConversationContextWindow: () => {},
   deleteMessageById: () => {},
   provenanceFromTrustContext: () => ({
@@ -532,6 +542,7 @@ beforeEach(() => {
   turnCommitHangForever = false;
   linkAttachmentShouldThrow = false;
   addMessageShouldThrowForContent.clear();
+  capturedInferenceProfileWrites.length = 0;
 });
 
 afterAll(() => {
@@ -594,6 +605,49 @@ describe("Conversation message queue", () => {
     // Complete the second run
     await resolveRun(1);
     await new Promise((r) => setTimeout(r, 10));
+  });
+
+  test("queued messages keep distinct guarded profiles through dequeue", async () => {
+    const conversation = makeConversation();
+    await conversation.loadFromDb();
+    conversation.lastNotifiedInferenceProfile = "profile-a";
+
+    const first = conversation.processMessage({
+      content: "msg-1",
+      attachments: [],
+      requestId: "req-1",
+    });
+    await waitForPendingRun(1);
+
+    conversation.enqueueMessage({
+      content: "msg-2",
+      requestId: "req-2",
+      inferenceProfile: "profile-a",
+    });
+    conversation.enqueueMessage({
+      content: "msg-3",
+      requestId: "req-3",
+      inferenceProfile: "profile-b",
+    });
+
+    await resolveRun(0);
+    await first;
+    await waitForPendingRun(2);
+
+    expect(conversation.currentTurnOverrideProfile).toBe("profile-a");
+    expect(conversation.getQueueDepth()).toBe(1);
+    expect(capturedInferenceProfileWrites).toEqual(["profile-a"]);
+
+    await resolveRun(1);
+    await waitForPendingRun(3);
+
+    expect(conversation.currentTurnOverrideProfile).toBe("profile-b");
+    expect(capturedInferenceProfileWrites).toEqual(["profile-a", "profile-b"]);
+
+    const finalRun = pendingRuns[2];
+    if (!finalRun) throw new Error("No pending run at index 2");
+    finalRun.resolve(finalRun.messages);
+    await new Promise((resolve) => setTimeout(resolve, 10));
   });
 
   test("[experimental] queued passthrough siblings drain as a single batched run", async () => {

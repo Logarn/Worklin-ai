@@ -6,7 +6,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     getDefaultModelForProvider,
 } from "@/assistant/llm-model-catalog";
-import { configLlmCallsitesGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
+import { profilesAvailableForManagedInference } from "@/assistant/managed-inference";
+import { configLlmCallsitesGetOptions, inferenceProviderconnectionsGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
 import type { ConfigLlmCallsitesGetResponse } from "@/generated/daemon/types.gen";
 import { captureError } from "@/lib/sentry/capture-error";
 import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
@@ -42,6 +43,7 @@ export interface CallSiteOverridesModalProps {
   isOpen: boolean;
   onClose: () => void;
   assistantId: string;
+  managedInferenceConfigured?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +54,7 @@ export function CallSiteOverridesModal({
   isOpen,
   onClose,
   assistantId,
+  managedInferenceConfigured = false,
 }: CallSiteOverridesModalProps) {
   const savingRef = useRef(false);
   return (
@@ -64,6 +67,7 @@ export function CallSiteOverridesModal({
       {isOpen ? (
         <CallSiteOverridesModalInner
           assistantId={assistantId}
+          managedInferenceConfigured={managedInferenceConfigured}
           onClose={onClose}
           onSavingChange={(s) => {
             savingRef.current = s;
@@ -80,12 +84,14 @@ export function CallSiteOverridesModal({
 
 interface InnerProps {
   assistantId: string;
+  managedInferenceConfigured: boolean;
   onClose: () => void;
   onSavingChange?: (isSaving: boolean) => void;
 }
 
 function CallSiteOverridesModalInner({
   assistantId,
+  managedInferenceConfigured,
   onClose,
   onSavingChange,
 }: InnerProps) {
@@ -99,9 +105,25 @@ function CallSiteOverridesModalInner({
   const profiles = useMemo(() => daemonConfig?.llm?.profiles ?? {}, [daemonConfig?.llm?.profiles]);
   const profileOrder = useMemo(() => daemonConfig?.llm?.profileOrder ?? [], [daemonConfig?.llm?.profileOrder]);
   const persistedOverrides = useMemo(() => daemonConfig?.llm?.callSites ?? {}, [daemonConfig?.llm?.callSites]);
+  const { data: connectionsData } = useQuery({
+    ...inferenceProviderconnectionsGetOptions({
+      path: { assistant_id: assistantId },
+    }),
+    staleTime: 30_000,
+  });
   const orderedProfiles = useMemo(
-    () => buildOrderedProfiles(profiles, profileOrder),
-    [profiles, profileOrder],
+    () =>
+      profilesAvailableForManagedInference(
+        buildOrderedProfiles(profiles, profileOrder),
+        connectionsData?.connections ?? [],
+        managedInferenceConfigured,
+      ),
+    [
+      profiles,
+      profileOrder,
+      connectionsData?.connections,
+      managedInferenceConfigured,
+    ],
   );
 
   const configMutation = useConfigPatchMutation({
@@ -420,10 +442,13 @@ function CallSiteOverridesModalInner({
                         if (d.provider || d.model) return CUSTOM_SENTINEL;
                         return d.profile ?? "";
                       })();
-                      const defaultProfileLabel = cs.defaultProfile
-                        ? (orderedProfiles.find(
-                            (op) => op.name === cs.defaultProfile,
-                          )?.label ?? cs.defaultProfile)
+                      const defaultProfile = cs.defaultProfile
+                        ? orderedProfiles.find(
+                            (profile) => profile.name === cs.defaultProfile,
+                          )
+                        : null;
+                      const defaultProfileLabel = defaultProfile
+                        ? defaultProfile.label ?? defaultProfile.name
                         : null;
 
                       return (

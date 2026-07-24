@@ -20,6 +20,7 @@ let configPatchCalls: Array<{
 let savedConnection: ProviderConnection | null = null;
 let updatedConnection: ProviderConnection;
 let apiKeySectionProps: Record<string, unknown> | null = null;
+let connectionInventory: ProviderConnection[] = [];
 
 mock.module("@vellumai/design-library/components/modal", () => {
   const passthrough = ({ children }: { children?: ReactNode }) =>
@@ -142,7 +143,7 @@ mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
 mock.module("@/generated/daemon/sdk.gen", () => ({
   inferenceProviderconnectionsGet: () =>
     Promise.resolve({
-      data: { connections: [] },
+      data: { connections: connectionInventory },
       response: { ok: true, status: 200 },
     }),
   secretsGet: () =>
@@ -238,6 +239,7 @@ beforeEach(() => {
   savedConnection = null;
   updatedConnection = makeConnection();
   apiKeySectionProps = null;
+  connectionInventory = [];
 });
 
 afterEach(() => {
@@ -275,7 +277,7 @@ describe("ProviderEditorContent", () => {
     expect(apiKeySectionProps?.credentialService).toBe("xai");
   });
 
-  test("editing a user-owned connection selects a runnable provider profile", async () => {
+  test("editing a user-owned connection reroutes interactive calls immediately", async () => {
     render(
       <Wrapper>
         <ProviderEditorContent
@@ -314,6 +316,11 @@ describe("ProviderEditorContent", () => {
     expect(configPatchCalls[0].body).toMatchObject({
       llm: {
         activeProfile: "custom-balanced",
+        callSites: {
+          conversationTitle: { profile: "custom-balanced" },
+          memoryExtraction: { profile: "custom-balanced" },
+          subagentSpawn: { profile: "custom-balanced" },
+        },
         profiles: {
           "custom-balanced": {
             provider: "anthropic",
@@ -324,5 +331,57 @@ describe("ProviderEditorContent", () => {
       },
     });
     expect(savedConnection?.name).toBe("anthropic-personal");
+  });
+
+  test("cannot keep platform auth selected after managed availability disappears", async () => {
+    const platformConnection: ProviderConnection = {
+      ...makeConnection(),
+      auth: { type: "platform" },
+    };
+    const props = {
+      mode: "edit" as const,
+      connection: platformConnection,
+      assistantId: ASSISTANT_ID,
+      existingNames: [platformConnection.name],
+      onSave: () => {},
+      onCancel: () => {},
+    };
+    const { rerender } = render(
+      <Wrapper>
+        <ProviderEditorContent {...props} managedInferenceConfigured />
+      </Wrapper>,
+    );
+
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        'button[role="combobox"][aria-label="Auth type"]',
+      )?.textContent,
+    ).toBe("Worklin credits");
+
+    rerender(
+      <Wrapper>
+        <ProviderEditorContent
+          {...props}
+          managedInferenceConfigured={false}
+        />
+      </Wrapper>,
+    );
+
+    await waitFor(() => {
+      expect(
+        document.querySelector<HTMLButtonElement>(
+          'button[role="combobox"][aria-label="Auth type"]',
+        )?.textContent,
+      ).toBe("API key");
+    });
+
+    fireEvent.click(getButton("Save"));
+    await waitFor(() => expect(patchConnectionCalls).toHaveLength(1));
+    expect(patchConnectionCalls[0].body).toMatchObject({
+      auth: {
+        type: "api_key",
+        credential: "credential/anthropic/api_key",
+      },
+    });
   });
 });
