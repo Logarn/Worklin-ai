@@ -132,6 +132,13 @@ export interface ChatSessionActions {
   }) => void;
 
   /**
+   * Full reset used when an authenticated user context changes (account
+   * switch/log out) so stale conversation state from another user cannot
+   * surface in the next session.
+   */
+  reset: () => void;
+
+  /**
    * Mark a draft→server ID resolution so the next activeConversationId
    * change is not treated as a real conversation switch.
    */
@@ -335,6 +342,10 @@ const useChatSessionStoreBase = create<ChatSessionStore>()((set, get) => ({
       switchResetPending: true,
       lastAppliedDataTimestamp: 0,
     });
+  },
+
+  reset: () => {
+    set(initialState());
   },
 
   markDraftResolution: () =>

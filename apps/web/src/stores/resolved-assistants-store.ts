@@ -191,7 +191,15 @@ const useResolvedAssistantsStoreBase = create<ResolvedAssistantsStore>(
         assistants: state.assistants.filter((a) => a.id !== assistantId),
       })),
 
-    clear: () => set({ assistants: [] }),
+    clear: () => {
+      clearSelectedAssistantId();
+      set({
+        assistants: [],
+        activeAssistantId: null,
+        selectedAssistantId: null,
+        assistantsHydrated: false,
+      });
+    },
 
     setActiveAssistantId: (assistantId) =>
       set({ activeAssistantId: assistantId }),
