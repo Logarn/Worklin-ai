@@ -678,18 +678,29 @@ export function claimPreprovisionedRuntimeStack(
       return current ?? stack;
     }
 
-    const allocated = new Set(
-      db
-        .query<{ service_ref: string }, []>(
-          `SELECT service_ref
-           FROM runtime_stacks
-           WHERE service_ref IS NOT NULL AND status != 'deleted'`,
-        )
-        .all()
-        .map((row) => row.service_ref),
+    const allocatedRows = db
+      .query<
+        { service_ref: string | null; workspace_volume_ref: string | null },
+        []
+      >(
+        `SELECT service_ref, workspace_volume_ref
+         FROM runtime_stacks
+         WHERE service_ref IS NOT NULL OR workspace_volume_ref IS NOT NULL`,
+      )
+      .all();
+    const allocatedServices = new Set(
+      allocatedRows.flatMap((row) => (row.service_ref ? [row.service_ref] : [])),
+    );
+    const allocatedVolumes = new Set(
+      allocatedRows.flatMap((row) =>
+        row.workspace_volume_ref ? [row.workspace_volume_ref] : [],
+      ),
     );
     const slot = config.preprovisionedRuntimeSlots.find(
-      (candidate) => !allocated.has(candidate.serviceRef),
+      (candidate) =>
+        !allocatedServices.has(candidate.serviceRef) &&
+        (candidate.workspaceVolumeRef === null ||
+          !allocatedVolumes.has(candidate.workspaceVolumeRef)),
     );
     if (!slot) return current;
 
@@ -817,7 +828,11 @@ export function claimRuntimeServiceProvisioningLease(
   return db
     .transaction(() => {
       const current = getRuntimeStackById(db, stackId);
-      if (!current || current.provider !== "railway") {
+      if (
+        !current ||
+        current.provider !== "railway" ||
+        (current.status !== "provisioning" && current.status !== "failed")
+      ) {
         return {
           stack: current,
           leaseAcquired: false,
@@ -874,6 +889,7 @@ export function claimRuntimeServiceProvisioningLease(
             updated_at = ?
         WHERE id = ?
           AND provider = 'railway'
+          AND status IN ('provisioning', 'failed')
           AND (
             provisioning_lease_token IS NULL
             OR provisioning_lease_token = ?
@@ -916,10 +932,13 @@ export function renewRuntimeServiceProvisioningLease(
       `
       UPDATE runtime_stacks
       SET provisioning_lease_expires_at = ?, updated_at = ?
-      WHERE id = ? AND provisioning_lease_token = ?
+      WHERE id = ?
+        AND provisioning_lease_token = ?
+        AND provisioning_lease_expires_at > ?
+        AND status IN ('provisioning', 'failed')
     `,
     )
-    .run(nowMs + leaseTtlMs, nowIso(), stackId, leaseToken);
+    .run(nowMs + leaseTtlMs, nowIso(), stackId, leaseToken, nowMs);
   if (result.changes !== 1) {
     throw new Error("Runtime provisioning lease was lost.");
   }
@@ -961,6 +980,7 @@ export function markRuntimeStackProvisioning(
     UPDATE runtime_stacks
     SET status = 'provisioning', last_error = NULL, updated_at = ?
     WHERE id = ?
+      AND status IN ('provisioning', 'failed')
       AND (? IS NULL OR provisioning_lease_token = ?)
   `,
     )
@@ -983,9 +1003,11 @@ export function recordRuntimeServiceCreateAttempt(
       WHERE id = ?
         AND service_ref IS NULL
         AND provisioning_lease_token = ?
+        AND provisioning_lease_expires_at > ?
+        AND status IN ('provisioning', 'failed')
     `,
     )
-    .run(attemptedAt, nowIso(), stackId, leaseToken);
+    .run(attemptedAt, nowIso(), stackId, leaseToken, attemptedAt);
   assertLeaseMutation(result.changes, leaseToken);
 }
 
@@ -1022,9 +1044,11 @@ export function recordRuntimeVolumeCreateAttempt(
       WHERE id = ?
         AND workspace_volume_ref IS NULL
         AND provisioning_lease_token = ?
+        AND provisioning_lease_expires_at > ?
+        AND status IN ('provisioning', 'failed')
     `,
     )
-    .run(attemptedAt, nowIso(), stackId, leaseToken);
+    .run(attemptedAt, nowIso(), stackId, leaseToken, attemptedAt);
   assertLeaseMutation(result.changes, leaseToken);
 }
 
@@ -1063,7 +1087,10 @@ export function recordRuntimeStackService(
         service_create_attempted_at = NULL,
         updated_at = ?
     WHERE id = ?
-      AND (? IS NULL OR provisioning_lease_token = ?)
+      AND (
+        (? IS NULL AND status IN ('provisioning', 'failed'))
+        OR provisioning_lease_token = ?
+      )
   `,
     )
     .run(serviceRef, nowIso(), stackId, lease, lease);
@@ -1086,7 +1113,10 @@ export function recordRuntimeStackVolume(
         volume_create_attempted_at = NULL,
         updated_at = ?
     WHERE id = ?
-      AND (? IS NULL OR provisioning_lease_token = ?)
+      AND (
+        (? IS NULL AND status IN ('provisioning', 'failed'))
+        OR provisioning_lease_token = ?
+      )
   `,
     )
     .run(volumeRef, nowIso(), stackId, lease, lease);
@@ -1115,6 +1145,7 @@ export function markRuntimeStackActive(
         last_error = NULL,
         updated_at = ?
     WHERE id = ?
+      AND status IN ('provisioning', 'failed')
       AND (? IS NULL OR provisioning_lease_token = ?)
   `,
     )
@@ -1136,6 +1167,7 @@ export function markRuntimeStackFailed(
     UPDATE runtime_stacks
     SET status = 'failed', last_error = ?, updated_at = ?
     WHERE id = ?
+      AND status IN ('provisioning', 'failed')
       AND (? IS NULL OR provisioning_lease_token = ?)
   `,
     )
@@ -1152,7 +1184,12 @@ export function markRuntimeStackSuspended(
   db.query(
     `
     UPDATE runtime_stacks
-    SET status = 'suspended', last_error = ?, updated_at = ?
+    SET status = 'suspended',
+        gateway_url = NULL,
+        public_ingress_url = NULL,
+        last_health_status = NULL,
+        last_error = ?,
+        updated_at = ?
     WHERE id = ? AND status != 'deleted'
   `,
   ).run(reason.slice(0, 2_000), nowIso(), stackId);
@@ -1167,7 +1204,17 @@ export function markRuntimeStackDeleted(
   db.query(
     `
     UPDATE runtime_stacks
-    SET status = 'deleted', last_error = ?, updated_at = ?
+    SET status = 'deleted',
+        gateway_url = NULL,
+        public_ingress_url = NULL,
+        service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
+        provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
+        last_health_status = NULL,
+        last_error = ?,
+        updated_at = ?
     WHERE id = ?
   `,
   ).run(reason.slice(0, 2_000), nowIso(), stackId);
