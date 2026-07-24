@@ -28,7 +28,7 @@
  * back to a shorter deterministic path so CLI commands can still connect.
  */
 
-import { existsSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 
 import { ensureSocketDir, SocketWatchdog } from "@vellumai/ipc-server-utils";
@@ -333,6 +333,21 @@ export class AssistantIpcServer {
         log.warn({ err }, "IPC client socket error");
         this.clients.delete(socket);
       });
+    });
+
+    server.once("listening", () => {
+      try {
+        // The combined runtime runs the gateway and assistant under separate
+        // UIDs in the shared `vellum` group. The workspace directory is
+        // setgid, so the socket inherits that group; make both the initial
+        // listener and watchdog replacements connectable by the gateway.
+        chmodSync(this.socketPath, 0o660);
+      } catch (err) {
+        log.error(
+          { err, path: this.socketPath },
+          "Failed to set assistant IPC socket permissions",
+        );
+      }
     });
 
     server.on("error", (err) => {

@@ -634,7 +634,6 @@ Run the three Bun test files in separate processes. Bun's global `mock.module` s
 
 ### P0. Enable the pooled beta only after infrastructure approval
 
-0. Add identity gating before worker launch: set both pooled canary lists via environment (`WORKLIN_POOLED_RUNTIME_CANARY_ASSISTANT_IDS` and `WORKLIN_POOLED_RUNTIME_CANARY_USER_EMAIL_HASHES`) so pooled routing is invite-only during the first run.
 1. Completed: merge PR `#139`, deploy it with every `WORKLIN_TENANT_*`, worker-catalog, worker-pool, production-transport, state-transport, and pooled-key-vault gate disabled, then repair and verify the existing dedicated route through PR `#149`.
 2. Before enabling the pool, complete the newly provisioned user flow for signup/sign-in boundary behavior, consent, default-assistant creation, BYOK setup, typed multi-turn chat, refresh persistence, conversation naming, static skill load, read-only tool behavior, approval pause, and task handling. Keep the known task CLI and voice-profile failures as separate blockers.
 3. Stop before creating infrastructure. With explicit approval, create a fresh private pooled worker and tenant-state bucket, configure stable server-only vault/recovery/signing secrets, and enable one worker with global concurrency `1`.

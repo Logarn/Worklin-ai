@@ -8,6 +8,9 @@ describe("Railway runtime port wiring", () => {
     const dockerfile = await Bun.file(
       new URL("../../../runtime/Dockerfile", import.meta.url),
     ).text();
+    const gatewayIndex = await Bun.file(
+      new URL("../index.ts", import.meta.url),
+    ).text();
 
     expect(entrypoint).toContain(': "${PORT:=8080}"');
     expect(entrypoint).toContain(': "${WORKLIN_PUBLIC_EDGE_PORT:=${PORT}}"');
@@ -20,6 +23,11 @@ describe("Railway runtime port wiring", () => {
     expect(entrypoint).toContain(': "${WORKLIN_RUNTIME_MODE:=combined}"');
     expect(entrypoint).toContain(': "${GATEWAY_PORT:=${PORT}}"');
     expect(entrypoint).toContain(': "${GATEWAY_PORT:=7830}"');
+    expect(entrypoint).toContain(': "${GATEWAY_HOST:=::}"');
+    expect(entrypoint).toContain("export GATEWAY_HOST");
+    expect(gatewayIndex).toContain(
+      "hostname: process.env.GATEWAY_HOST?.trim() || undefined",
+    );
     expect(entrypoint).toContain(
       'if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ||',
     );
