@@ -997,8 +997,38 @@ function runtimeStackForPayload(row: AssistantRow): RuntimeStackRow {
   return ensureRuntimeStackForAssistant(db, row, runtimeStackConfig, nowIso);
 }
 
-function pooledRuntimeEligible(runtimeStack: RuntimeStackRow): boolean {
+function pooledRuntimeMember(
+  runtimeStack: RuntimeStackRow,
+  user: UserRow | null,
+): boolean {
+  if (!user) {
+    return false;
+  }
+  if (
+    runtimeStackConfig.pooledRuntimeCanaryAssistantIds.length > 0 &&
+    runtimeStackConfig.pooledRuntimeCanaryAssistantIds.includes(runtimeStack.assistant_id)
+  ) {
+    return true;
+  }
+  if (runtimeStackConfig.pooledRuntimeCanaryUserEmailHashes.length === 0) {
+    return (
+      runtimeStackConfig.pooledRuntimeCanaryAssistantIds.length === 0
+    );
+  }
+  if (!user) {
+    return false;
+  }
+  const normalizedEmail = user.email.trim().toLowerCase();
+  const emailHash = createHash("sha256").update(normalizedEmail).digest("hex");
+  return runtimeStackConfig.pooledRuntimeCanaryUserEmailHashes.includes(emailHash);
+}
+
+function pooledRuntimeEligible(
+  runtimeStack: RuntimeStackRow,
+  user: UserRow | null,
+): boolean {
   return (
+    pooledRuntimeMember(runtimeStack, user) &&
     pooledCoordinatorOwnershipIsLive() &&
     selectRuntimeWorkerRoutingPolicy(
       runtimeStack,
@@ -1020,7 +1050,7 @@ function assistantPayload(
   runtimeStack = runtimeStackForPayload(row),
 ) {
   const tenantContext = createRuntimeTenantContext(row, user.id, runtimeStack);
-  const pooled = pooledRuntimeEligible(runtimeStack);
+  const pooled = pooledRuntimeEligible(runtimeStack, user);
   const runtimeActionCapabilities = runtimeActionCapabilitiesForStack(
     runtimeStack,
     !pooled && runtimeProvisioningConfigurationError() === null,
@@ -1120,7 +1150,7 @@ function scheduleRuntimeProvisioning(
   stack: RuntimeStackRow,
 ): void {
   if (
-    pooledRuntimeEligible(stack) ||
+    pooledRuntimeEligible(stack, null) ||
     !assistantOwnerHasAcceptedConsent(assistant) ||
     stack.provider !== "railway" ||
     (stack.status !== "provisioning" && stack.status !== "failed") ||
@@ -1300,9 +1330,12 @@ function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
   return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
 }
 
-function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
+function ensureAssistantRuntime(
+  assistant: AssistantRow,
+  user: UserRow | null,
+): RuntimeStackRow {
   const current = runtimeStackForPayload(assistant);
-  if (pooledRuntimeEligible(current)) return current;
+  if (pooledRuntimeEligible(current, user)) return current;
 
   const runtimeStack = claimPreprovisionedRuntimeStack(
     db,
@@ -1335,10 +1368,11 @@ function resumeRuntimeProvisioning(): void {
 
 function operationalStatusPayload(
   row: AssistantRow,
+  user: UserRow,
   runtimeStack = runtimeStackForPayload(row),
 ) {
   const updatedAt = nowIso();
-  const pooled = pooledRuntimeEligible(runtimeStack);
+  const pooled = pooledRuntimeEligible(runtimeStack, user);
   const state = pooled
     ? "active"
     : operationalStateForRuntimeStack(runtimeStack);
@@ -2491,7 +2525,7 @@ async function handleAssistants(
     );
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
-      !pooledRuntimeEligible(runtimeStack) &&
+      !pooledRuntimeEligible(runtimeStack, user) &&
       (runtimeStack.status === "provisioning" ||
         runtimeStack.status === "failed") &&
       provisioningError
@@ -2553,7 +2587,7 @@ async function handleAssistants(
       return true;
     }
     const currentRuntimeStack = runtimeStackForPayload(assistant);
-    if (pooledRuntimeEligible(currentRuntimeStack)) {
+    if (pooledRuntimeEligible(currentRuntimeStack, user)) {
       sendJson(
         req,
         res,
@@ -2621,7 +2655,7 @@ async function handleAssistants(
       return true;
     }
 
-    const runtimeStack = ensureAssistantRuntime(assistant);
+    const runtimeStack = ensureAssistantRuntime(assistant, user);
     if (isRuntimeStackRoutable(runtimeStack)) {
       sendJson(req, res, {
         detail: "Assistant runtime is active.",
@@ -2727,7 +2761,7 @@ async function handleAssistants(
       sendJson(req, res, { detail: "Assistant not found." }, 404);
       return true;
     }
-    sendJson(req, res, operationalStatusPayload(assistant));
+    sendJson(req, res, operationalStatusPayload(assistant, user));
     return true;
   }
 
@@ -3108,7 +3142,7 @@ async function proxySharedArtifact(
     );
     return true;
   }
-  const runtimeStack = ensureAssistantRuntime(assistant);
+  const runtimeStack = ensureAssistantRuntime(assistant, user);
   if (!isRuntimeStackRoutable(runtimeStack)) {
     sendJson(req, res, runtimeNotReadyPayload(runtimeStack), 503);
     return true;
@@ -3181,8 +3215,15 @@ async function proxyLiveVoiceProviderCallback(
     sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
     return;
   }
+  const user = db
+    .query<UserRow, [string]>("SELECT * FROM users WHERE id = ?")
+    .get(assistant.user_id);
+  if (!user) {
+    sendJson(req, res, { error: { message: "Invalid voice session" } }, 401);
+    return;
+  }
 
-  const runtimeStack = ensureAssistantRuntime(assistant);
+  const runtimeStack = ensureAssistantRuntime(assistant, user);
   const routingPolicy = selectRuntimeWorkerRoutingPolicy(
     runtimeStack,
     runtimeWorkerCoordinator.config,
@@ -3366,7 +3407,7 @@ async function proxyToGateway(
   // This is the first real assistant request. Only here do we claim the
   // stack and start lazy provisioning; list, consent, and hatch calls remain
   // read-only with respect to Railway capacity.
-  const runtimeStack = ensureAssistantRuntime(assistant);
+  const runtimeStack = ensureAssistantRuntime(assistant, user);
   const routingPolicy = selectRuntimeWorkerRoutingPolicy(
     runtimeStack,
     runtimeWorkerCoordinator.config,
