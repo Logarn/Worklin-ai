@@ -21,6 +21,7 @@ import { readHatchedAtSidecar } from "./hatched-date.js";
 import { getIdentityChangeEpoch } from "./identity-change-invalidation.js";
 import {
   _setIdentityFileBeforeCommitHookForTests,
+  _setIdentityFilePublicationHookForTests,
   _setOrdinaryFileBeforeWriteHookForTests,
   IdentityFileConflictError,
   resolveWorkspaceIdentityWriteTarget,
@@ -52,6 +53,7 @@ beforeEach(() => {
 
 afterEach(() => {
   _setIdentityFileBeforeCommitHookForTests(null);
+  _setIdentityFilePublicationHookForTests(null);
   _setOrdinaryFileBeforeWriteHookForTests(null);
   rmSync(workspaceDir, { recursive: true, force: true });
   if (originalWorkspaceDir === undefined) {
@@ -174,6 +176,29 @@ describe("identity writer coordination", () => {
 
     expect(statSync(identityPath).mode & 0o7777).toBe(0o666);
     expect(readHatchedAtSidecar()).toBe(originalHatchedAt);
+  });
+
+  test("publishes replacement atomically to uncoordinated readers", async () => {
+    const identityPath = join(workspaceDir, "IDENTITY.md");
+    const oldContent = "old identity\n".repeat(4_096);
+    const newContent = "new identity\n".repeat(4_096);
+    writeFileSync(identityPath, oldContent);
+    const observations: string[] = [];
+
+    _setIdentityFilePublicationHookForTests(() => {
+      // This reader deliberately bypasses identity write coordination and
+      // observes both sides of the single filesystem publication step.
+      observations.push(readFileSync(identityPath, "utf-8"));
+    });
+
+    await writeIdentityFileAtomically(identityPath, newContent);
+
+    expect(observations).toEqual([oldContent, newContent]);
+    expect(
+      observations.every(
+        (content) => content === oldContent || content === newContent,
+      ),
+    ).toBe(true);
   });
 
   test("fails when the target inode changes after comparison even with equal bytes", async () => {

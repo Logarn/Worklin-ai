@@ -40,6 +40,10 @@ interface IdentityCommitHookContext {
   identityPath: string;
 }
 
+interface IdentityPublicationHookContext extends IdentityCommitHookContext {
+  phase: "before" | "after";
+}
+
 interface OrdinaryWriteHookContext {
   filePath: string;
   stablePath: string;
@@ -54,12 +58,16 @@ interface ComparablePath {
 type IdentityCommitHook = (
   context: IdentityCommitHookContext,
 ) => Promise<void> | void;
+type IdentityPublicationHook = (
+  context: IdentityPublicationHookContext,
+) => void;
 
 type OrdinaryWriteHook = (
   context: OrdinaryWriteHookContext,
 ) => Promise<void> | void;
 
 let beforeCommitHookForTests: IdentityCommitHook | null = null;
+let publicationHookForTests: IdentityPublicationHook | null = null;
 let beforeOrdinaryWriteHookForTests: OrdinaryWriteHook | null = null;
 
 export class IdentityFileConflictError extends Error {
@@ -386,32 +394,6 @@ function createVerifiedTempFile(
   }
 }
 
-function restoreClaimedPath(backupPath: string, identityPath: string): void {
-  try {
-    linkSync(backupPath, identityPath);
-    unlinkSync(backupPath);
-  } catch (error) {
-    throw new IdentityFileConflictError(
-      `The assistant identity changed during commit. Recovery copy: ${backupPath}. ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
-
-function removeClaimedSnapshotIfUnchanged(
-  backupPath: string,
-  expected: IdentitySnapshot,
-): boolean {
-  try {
-    if (!snapshotsMatch(readSnapshot(backupPath), expected)) return false;
-    unlinkSync(backupPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function commitLocked(
   identityPath: string,
   expectedContent: Buffer | null,
@@ -425,9 +407,7 @@ async function commitLocked(
   ensureHatchedAtPersisted(identityPath);
 
   const tempPath = `${identityPath}.${randomUUID()}.tmp`;
-  const backupPath = `${identityPath}.${randomUUID()}.claim`;
   let tempExists = false;
-  let backupExists = false;
 
   try {
     createVerifiedTempFile(tempPath, content, snapshot.mode);
@@ -447,60 +427,15 @@ async function commitLocked(
       unlinkSync(tempPath);
       tempExists = false;
     } else {
-      try {
-        renameSync(identityPath, backupPath);
-        backupExists = true;
-      } catch (error) {
-        if (isMissingPathError(error)) {
-          throw new IdentityFileConflictError();
-        }
-        throw error;
-      }
-
-      let claimed: IdentitySnapshot;
-      try {
-        claimed = readSnapshot(backupPath);
-      } catch (error) {
-        restoreClaimedPath(backupPath, identityPath);
-        backupExists = false;
-        throw error instanceof IdentityFileConflictError
-          ? error
-          : new IdentityFileConflictError();
-      }
-
-      if (!snapshotsMatch(claimed, snapshot)) {
-        restoreClaimedPath(backupPath, identityPath);
-        backupExists = false;
+      // Validate as late as possible, then publish with one replace-over-target
+      // rename. The directory entry always names a complete old or new file.
+      if (!snapshotsMatch(readSnapshot(identityPath), snapshot)) {
         throw new IdentityFileConflictError();
       }
-
-      try {
-        linkSync(tempPath, identityPath);
-      } catch (error) {
-        if (isAlreadyExistsError(error)) {
-          removeClaimedSnapshotIfUnchanged(backupPath, snapshot);
-          backupExists = false;
-          throw new IdentityFileConflictError();
-        }
-        restoreClaimedPath(backupPath, identityPath);
-        backupExists = false;
-        throw error;
-      }
-
-      unlinkSync(tempPath);
+      publicationHookForTests?.({ identityPath, phase: "before" });
+      renameSync(tempPath, identityPath);
       tempExists = false;
-
-      const installed = readSnapshot(identityPath);
-      if (!contentsMatch(installed.content, content)) {
-        throw new IdentityFileConflictError();
-      }
-
-      if (!removeClaimedSnapshotIfUnchanged(backupPath, snapshot)) {
-        throw new IdentityFileConflictError(
-          `The previous assistant identity changed during commit. Recovery copy: ${backupPath}`,
-        );
-      }
-      backupExists = false;
+      publicationHookForTests?.({ identityPath, phase: "after" });
     }
 
     const committed = readSnapshot(identityPath);
@@ -517,10 +452,6 @@ async function commitLocked(
     advanceIdentityChangeEpoch();
   } finally {
     if (tempExists) rmSync(tempPath, { force: true });
-    if (backupExists) {
-      // A changed claim may contain an external writer's data. Never delete it.
-      removeClaimedSnapshotIfUnchanged(backupPath, snapshot);
-    }
   }
 }
 
@@ -920,6 +851,12 @@ export function _setIdentityFileBeforeCommitHookForTests(
   hook: IdentityCommitHook | null,
 ): void {
   beforeCommitHookForTests = hook;
+}
+
+export function _setIdentityFilePublicationHookForTests(
+  hook: IdentityPublicationHook | null,
+): void {
+  publicationHookForTests = hook;
 }
 
 export function _setOrdinaryFileBeforeWriteHookForTests(
