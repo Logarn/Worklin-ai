@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 interface SdkCall {
   path: { assistant_id: string };
   body?: Record<string, unknown>;
+  throwOnError?: boolean;
 }
 
 let secretsPostCalls: SdkCall[] = [];
@@ -50,6 +51,7 @@ const {
   pendingProviderAuthType,
   pendingProviderRequiresOAuth,
   peekPendingProviderKey,
+  PooledProviderSetupError,
   providerApiKeySecretBody,
   setPendingProviderKey,
 } = await import("@/domains/onboarding/provider-key");
@@ -89,6 +91,28 @@ describe("pending provider key", () => {
   test("setting null clears any pending key", () => {
     setPendingProviderKey({ provider: "gemini", key: "AIza-test" });
     setPendingProviderKey(null);
+    expect(peekPendingProviderKey()).toBeNull();
+  });
+
+  test("scoped pending keys are readable only by their authenticated owner", () => {
+    setPendingProviderKey(
+      { provider: "anthropic", key: "owner-a-secret" },
+      { userId: "user-a" },
+    );
+
+    expect(peekPendingProviderKey({ userId: "user-a" })).toMatchObject({
+      ownerUserId: "user-a",
+      provider: "anthropic",
+      key: "owner-a-secret",
+    });
+    expect(peekPendingProviderKey({ userId: "user-b" })).toBeNull();
+    expect(peekPendingProviderKey()).toBeNull();
+  });
+
+  test("scoped reads reject legacy unbound keys fail-closed", () => {
+    setPendingProviderKey({ provider: "openai", key: "legacy-secret" });
+
+    expect(peekPendingProviderKey({ userId: "user-a" })).toBeNull();
     expect(peekPendingProviderKey()).toBeNull();
   });
 
@@ -232,6 +256,104 @@ describe("pending provider key", () => {
       },
     });
   });
+
+  test.each([
+    "anthropic",
+    "fireworks",
+    "gemini",
+    "kimi",
+    "minimax",
+    "openai",
+    "openrouter",
+  ] as const)(
+    "pooled provider apply stores only the first-class $provider key",
+    async (provider) => {
+      setPendingProviderKey({
+        provider,
+        authType: "api_key",
+        key: `  ${provider}-pooled-key  `,
+      });
+
+      await applyPendingProviderKey("asst-pool", "pooled_worker");
+
+      expect(peekPendingProviderKey()).toBeNull();
+      expect(secretsPostCalls).toEqual([
+        {
+          path: { assistant_id: "asst-pool" },
+          body: {
+            type: "api_key",
+            name: provider,
+            value: `${provider}-pooled-key`,
+          },
+          throwOnError: false,
+        },
+      ]);
+      expect(connectionPostCalls).toHaveLength(0);
+      expect(configPatchCalls).toHaveLength(0);
+    },
+  );
+
+  test.each([
+    {
+      label: "xAI/OpenAI-compatible",
+      pending: {
+        provider: "openai-compatible" as const,
+        providerOptionId: "xai" as const,
+        authType: "api_key" as const,
+        key: "xai-key",
+        credentialName: "xai",
+      },
+      code: "pooled_provider_unsupported",
+    },
+    {
+      label: "ChatGPT subscription OAuth",
+      pending: {
+        provider: "openai" as const,
+        authType: "oauth_subscription" as const,
+        key: "",
+      },
+      code: "pooled_provider_api_key_required",
+    },
+    {
+      label: "Ollama",
+      pending: {
+        provider: "ollama" as const,
+        authType: "none" as const,
+        key: "",
+      },
+      code: "pooled_provider_unsupported",
+    },
+    {
+      label: "credential alias",
+      pending: {
+        provider: "anthropic" as const,
+        authType: "api_key" as const,
+        key: "anthropic-key",
+        credentialName: "team-anthropic",
+      },
+      code: "pooled_provider_credential_alias_unsupported",
+    },
+  ])(
+    "pooled provider apply rejects $label before any write",
+    async ({ pending, code }) => {
+      setPendingProviderKey(pending);
+
+      let thrown: unknown = null;
+      try {
+        await applyPendingProviderKey("asst-pool", "pooled_worker");
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(PooledProviderSetupError);
+      expect((thrown as { code?: string }).code).toBe(code);
+      expect((thrown as { status?: number }).status).toBe(409);
+      expect(secretsPostCalls).toHaveLength(0);
+      expect(connectionPostCalls).toHaveLength(0);
+      expect(configPatchCalls).toHaveLength(0);
+      expect(peekPendingProviderKey()).toMatchObject(pending);
+    },
+  );
 
   test.each([
     {

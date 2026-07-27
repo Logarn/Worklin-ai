@@ -20,13 +20,19 @@
 
 import type { PluginHookFn, StopContext } from "@vellumai/plugin-api";
 
+import { isPooledWorkerRuntime } from "../../../../config/env.js";
 import { getConfig } from "../../../../config/loader.js";
 import { getConversation } from "../../../../memory/conversation-crud.js";
 import {
   resolvePersistedTitleContext,
   type TitleContext,
 } from "../../../../memory/conversation-title-context.js";
-import { queueRegenerateConversationTitle } from "../../../../memory/conversation-title-service.js";
+import {
+  generateConversationTitleRequestBound,
+  queueRegenerateConversationTitle,
+  regenerateConversationTitleRequestBound,
+  type TitleTranscriptMessage,
+} from "../../../../memory/conversation-title-service.js";
 import type { Message } from "../../../../providers/types.js";
 
 /**
@@ -41,7 +47,10 @@ function isToolResultMessage(message: Message): boolean {
   return (
     message.role === "user" &&
     message.content.length > 0 &&
-    message.content.every((block) => block.type === "tool_result")
+    message.content.every(
+      (block) =>
+        block.type === "tool_result" || block.type === "web_search_tool_result",
+    )
   );
 }
 
@@ -54,15 +63,109 @@ function countUserTurns(messages: ReadonlyArray<Message>): number {
   return turns;
 }
 
+/** Human-readable text only; tool metadata and thinking stay out of titles. */
+function extractTitleText(message: Message): string {
+  const text: string[] = [];
+  for (const block of message.content) {
+    if (block.type === "text") {
+      text.push(block.text);
+    } else if (
+      block.type === "tool_result" ||
+      block.type === "web_search_tool_result"
+    ) {
+      if (typeof block.content === "string" && block.content) {
+        text.push(block.content);
+      }
+      if ("contentBlocks" in block) {
+        for (const nested of block.contentBlocks ?? []) {
+          if (nested.type === "text") text.push(nested.text);
+        }
+      }
+    }
+  }
+  return text.join("\n").trim();
+}
+
+function titleTranscript(
+  messages: ReadonlyArray<Message>,
+): TitleTranscriptMessage[] {
+  const transcript: TitleTranscriptMessage[] = [];
+  for (const message of messages) {
+    const text = extractTitleText(message);
+    if (!text) continue;
+    transcript.push({ role: message.role, text });
+  }
+  return transcript;
+}
+
+function isStandardConversation(conversationId: string): boolean {
+  try {
+    const conversation = getConversation(conversationId);
+    return !conversation || conversation.conversationType === "standard";
+  } catch {
+    // Preserve the existing fail-open behavior. The title service performs its
+    // own replaceability check before any provider call or persistence.
+    return true;
+  }
+}
+
 const stop: PluginHookFn<StopContext> = async (ctx) => {
   // Re-title only at a genuine successful turn end (the model returned a reply
   // with no tool calls). Any other terminal — a provider rejection, abort, or
   // an output-limit cutoff — produced no new topic to re-title from.
   if (ctx.exitReason !== "no_tool_calls") return;
 
+  const userTurnCount = countUserTurns(ctx.messages);
+  const pooledRuntime = isPooledWorkerRuntime();
+
+  if (pooledRuntime) {
+    const isFirstPass = userTurnCount === 1;
+    const isSecondPass = userTurnCount === SECOND_PASS_USER_TURN;
+    if (!isFirstPass && !isSecondPass) return;
+    if (isSecondPass && getConfig().conversations.skipAutoRetitling) return;
+    if (!isStandardConversation(ctx.conversationId)) return;
+
+    // Keep pooled title work attached to the successful conversation POST.
+    // The main response has already completed before this stop hook runs, and
+    // awaiting here keeps the tenant lease active through title persistence.
+    try {
+      const transcript = titleTranscript(ctx.messages);
+      if (isFirstPass) {
+        const userMessage = transcript.find(
+          (message) => message.role === "user",
+        )?.text;
+        const assistantResponse = [...transcript]
+          .reverse()
+          .find((message) => message.role === "assistant")?.text;
+        if (!userMessage) return;
+        await generateConversationTitleRequestBound({
+          conversationId: ctx.conversationId,
+          userMessage,
+          assistantResponse,
+        });
+        return;
+      }
+
+      await regenerateConversationTitleRequestBound({
+        conversationId: ctx.conversationId,
+        recentMessages: transcript.slice(-3),
+      });
+    } catch (err) {
+      ctx.logger.warn(
+        {
+          plugin: "title-generate",
+          conversationId: ctx.conversationId,
+          err,
+        },
+        "Request-bound conversation title generation failed (non-fatal)",
+      );
+    }
+    return;
+  }
+
   if (getConfig().conversations.skipAutoRetitling) return;
 
-  if (countUserTurns(ctx.messages) !== SECOND_PASS_USER_TURN) return;
+  if (userTurnCount !== SECOND_PASS_USER_TURN) return;
 
   // Explicit background/scheduled rows keep their deterministic bootstrap
   // title. Standard compatibility rows still queue the second pass, but carry

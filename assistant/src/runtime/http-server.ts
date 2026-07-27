@@ -21,7 +21,13 @@ import {
   handleStatusCallback,
   handleVoiceWebhook,
 } from "../calls/twilio-routes.js";
-import { isHttpAuthDisabled } from "../config/env.js";
+import {
+  getRuntimeWorkerLeaseAuthorityFile,
+  getRuntimeWorkerStackId,
+  isHttpAuthDisabled,
+  isPlatformIsolatedRuntime,
+  isPooledWorkerRuntime,
+} from "../config/env.js";
 import { getIsPlatform } from "../config/env-registry.js";
 import { getConfig } from "../config/loader.js";
 import { createApprovalCopyGenerator } from "../daemon/approval-generators.js";
@@ -44,13 +50,21 @@ import { resolveStreamingTranscriber } from "../providers/speech-to-text/resolve
 import { credentialKey } from "../security/credential-key.js";
 import { getSecureKeyAsync } from "../security/secure-keys.js";
 import {
+  captureCurrentPooledVoiceLease,
+  installInternalPooledVoiceLeaseAuthority,
+  isCurrentPooledVoiceLease,
+  type PooledVoiceLeaseIdentity,
+  registerActivePooledVoiceSession,
+  unregisterActivePooledVoiceSession,
+} from "../services/pooled-voice-lease-fence.js";
+import {
   activeSttStreamSessions,
   SttStreamSession,
 } from "../stt/stt-stream-session.js";
 import { getLogger } from "../util/logger.js";
 import { authenticateRequest } from "./auth/middleware.js";
-import { parseSub } from "./auth/subject.js";
-import { verifyToken } from "./auth/token-service.js";
+import { createPooledWorkerLeaseFileAuthority } from "./auth/pooled-worker-service-auth.js";
+import type { AuthContext } from "./auth/types.js";
 import { sweepFailedEvents } from "./channel-retry-sweep.js";
 import { httpError, type HttpErrorCode } from "./http-errors.js";
 import { HttpRouter } from "./http-router.js";
@@ -77,6 +91,8 @@ import {
   TWILIO_WEBHOOK_RE,
   validateTwilioWebhook,
 } from "./middleware/twilio-validation.js";
+import { resolveAuthenticatedOwnerTrustContext } from "./platform-owner-trust.js";
+import { acquirePooledRuntimeWebSocketSession } from "./pooled-runtime-drain-fence.js";
 import { ROUTES as APP_ROUTES } from "./routes/app-routes.js";
 import { ROUTES as AUDIO_ROUTES } from "./routes/audio-routes.js";
 import {
@@ -122,6 +138,7 @@ interface MediaStreamWebSocketData {
   /** Bound at open time so the close handler tears down the exact session
    *  that owns *this* socket, avoiding races with reconnects. */
   session?: MediaStreamCallSession;
+  pooledDrainRelease?: () => void;
 }
 
 /**
@@ -143,6 +160,7 @@ interface SttStreamWebSocketData {
   sessionId: string;
   /** Bound at open time so the close handler tears down the exact session. */
   session?: SttStreamSession;
+  pooledDrainRelease?: () => void;
 }
 
 /**
@@ -154,11 +172,14 @@ interface LiveVoiceWebSocketData {
   wsType: "live-voice";
   sessionId?: string;
   lastSeq: number;
+  authContext?: AuthContext;
+  pooledDrainRelease?: () => void;
 }
 
 interface ElevenLabsSpeechEngineWebSocketData {
   wsType: "elevenlabs-speech-engine";
   session?: ElevenLabsSpeechEngineSession;
+  pooledDrainRelease?: () => void;
 }
 
 export class RuntimeHttpServer {
@@ -171,6 +192,11 @@ export class RuntimeHttpServer {
   private sweepInProgress = false;
 
   private readonly liveVoiceSessionManager: LiveVoiceSessionManager;
+  private pooledVoiceLeaseAuthorityCleanup: (() => void) | null = null;
+  private readonly nativeLiveVoiceLeases = new Map<
+    string,
+    PooledVoiceLeaseIdentity | null
+  >();
   private router: HttpRouter;
 
   constructor(options: RuntimeHttpServerOptions = {}) {
@@ -178,8 +204,59 @@ export class RuntimeHttpServer {
     this.hostname = options.hostname ?? DEFAULT_HOSTNAME;
 
     this.approvalCopyGenerator = createApprovalCopyGenerator();
+    if (isPooledWorkerRuntime()) {
+      const workerStackId = getRuntimeWorkerStackId();
+      const authority = createPooledWorkerLeaseFileAuthority(
+        getRuntimeWorkerLeaseAuthorityFile(),
+        workerStackId,
+      );
+      this.pooledVoiceLeaseAuthorityCleanup =
+        installInternalPooledVoiceLeaseAuthority(() => {
+          const active = authority.resolveActiveLease(workerStackId);
+          if (!active || active.leaseExpiresAtMs <= Date.now()) return null;
+          return {
+            tenant: {
+              orgId: active.organizationId,
+              assistantId: active.assistantId,
+            },
+            workerStackId: active.workerStackId,
+            generation: active.leaseGeneration,
+          };
+        });
+    }
     this.liveVoiceSessionManager = new LiveVoiceSessionManager({
       createSession: (context) => createLiveVoiceSession(context),
+      lifecycle: {
+        registerSession: ({ sessionId, identity }) => {
+          const tenant = identity.tenantContext
+            ? {
+                orgId: identity.tenantContext.organizationId,
+                assistantId: identity.tenantContext.assistantId,
+              }
+            : null;
+          const lease = captureCurrentPooledVoiceLease(
+            tenant,
+            identity.pooledWorkerLease,
+          );
+          registerActivePooledVoiceSession({
+            sessionId,
+            tenant,
+            lease,
+            expiresAtMs: Number.MAX_SAFE_INTEGER,
+          });
+          this.nativeLiveVoiceLeases.set(sessionId, lease);
+        },
+        isSessionCurrent: (sessionId) => {
+          if (!this.nativeLiveVoiceLeases.has(sessionId)) return false;
+          return isCurrentPooledVoiceLease(
+            this.nativeLiveVoiceLeases.get(sessionId),
+          );
+        },
+        unregisterSession: (sessionId) => {
+          this.nativeLiveVoiceLeases.delete(sessionId);
+          unregisterActivePooledVoiceSession(sessionId);
+        },
+      },
     });
     this.router = new HttpRouter();
   }
@@ -190,12 +267,13 @@ export class RuntimeHttpServer {
   }
 
   async start(): Promise<void> {
-    type AllWebSocketData =
+    type AllWebSocketData = (
       | RelayWebSocketData
       | MediaStreamWebSocketData
       | SttStreamWebSocketData
       | LiveVoiceWebSocketData
-      | ElevenLabsSpeechEngineWebSocketData;
+      | ElevenLabsSpeechEngineWebSocketData
+    ) & { pooledDrainRelease?: () => void };
     this.server = Bun.serve<AllWebSocketData>({
       port: this.port,
       hostname: this.hostname,
@@ -371,6 +449,8 @@ export class RuntimeHttpServer {
         },
         close: (ws, code, reason) => {
           const data = ws.data as AllWebSocketData;
+          data.pooledDrainRelease?.();
+          data.pooledDrainRelease = undefined;
           if ("wsType" in data && data.wsType === "media-stream") {
             const msData = data as MediaStreamWebSocketData;
             log.info(
@@ -453,7 +533,7 @@ export class RuntimeHttpServer {
       },
     });
 
-    this.startBackgroundSweeps();
+    if (!isPooledWorkerRuntime()) this.startBackgroundSweeps();
 
     log.info(
       "Running in gateway-only ingress mode. Direct webhook routes disabled.",
@@ -535,6 +615,8 @@ export class RuntimeHttpServer {
         "manager_shutdown",
       );
     }
+    this.pooledVoiceLeaseAuthorityCleanup?.();
+    this.pooledVoiceLeaseAuthorityCleanup = null;
 
     if (this.server) {
       this.server.stop(true);
@@ -768,26 +850,54 @@ export class RuntimeHttpServer {
     return routerResponse ?? httpError("NOT_FOUND", "Not found", 404);
   }
 
-  private verifyGatewayServiceToken(req: Request): Response | null {
+  private authenticateWebSocketToken(
+    req: Request,
+  ): AuthContext | Response | null {
     if (isHttpAuthDisabled()) return null;
-
     const wsUrl = new URL(req.url);
     const token = wsUrl.searchParams.get("token");
     if (!token) {
       return httpError("UNAUTHORIZED", "Unauthorized", 401);
     }
 
-    const jwtResult = verifyToken(token, "vellum-daemon");
-    if (!jwtResult.ok) {
+    const headers = new Headers(req.headers);
+    headers.set("authorization", `Bearer ${token}`);
+    const authResult = authenticateRequest(
+      new Request(req.url, { method: "GET", headers }),
+    );
+    if (!authResult.ok) {
       return httpError("UNAUTHORIZED", "Unauthorized", 401);
     }
+    return authResult.context;
+  }
 
-    const subResult = parseSub(jwtResult.claims.sub);
-    if (!subResult.ok || subResult.principalType !== "svc_gateway") {
+  private authenticateGatewayServiceToken(
+    req: Request,
+  ): AuthContext | Response | null {
+    const result = this.authenticateWebSocketToken(req);
+    if (result instanceof Response) return result;
+    if (result && result.principalType !== "svc_gateway") {
       return httpError("UNAUTHORIZED", "Unauthorized", 401);
     }
+    return result;
+  }
 
-    return null;
+  private acquirePooledWebSocketActivity(
+    authContext: AuthContext | null,
+  ): (() => void) | Response {
+    try {
+      return acquirePooledRuntimeWebSocketSession(authContext ?? undefined);
+    } catch (error) {
+      if (error instanceof RouteError) {
+        return httpError(
+          error.code as HttpErrorCode,
+          error.message,
+          error.statusCode,
+          error.details,
+        );
+      }
+      throw error;
+    }
   }
 
   private handleRelayUpgrade(
@@ -803,16 +913,21 @@ export class RuntimeHttpServer {
     }
 
     // Verify the gateway service token before accepting the upgrade.
-    const tokenError = this.verifyGatewayServiceToken(req);
-    if (tokenError) return tokenError;
+    const authenticated = this.authenticateGatewayServiceToken(req);
+    if (authenticated instanceof Response) return authenticated;
 
     const wsUrl = new URL(req.url);
     const callSessionId = wsUrl.searchParams.get("callSessionId");
     if (!callSessionId) {
       return new Response("Missing callSessionId", { status: 400 });
     }
-    const upgraded = server.upgrade(req, { data: { callSessionId } });
+    const activity = this.acquirePooledWebSocketActivity(authenticated);
+    if (activity instanceof Response) return activity;
+    const upgraded = server.upgrade(req, {
+      data: { callSessionId, pooledDrainRelease: activity },
+    });
     if (!upgraded) {
+      activity();
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
     // Bun's WebSocket upgrade consumes the request — no Response is sent.
@@ -832,23 +947,27 @@ export class RuntimeHttpServer {
     }
 
     // Verify the gateway service token before accepting the upgrade.
-    const tokenError = this.verifyGatewayServiceToken(req);
-    if (tokenError) return tokenError;
+    const authenticated = this.authenticateGatewayServiceToken(req);
+    if (authenticated instanceof Response) return authenticated;
 
     const wsUrl = new URL(req.url);
     const callSessionId = wsUrl.searchParams.get("callSessionId");
     if (!callSessionId) {
       return new Response("Missing callSessionId", { status: 400 });
     }
+    const activity = this.acquirePooledWebSocketActivity(authenticated);
+    if (activity instanceof Response) return activity;
     // Media-stream connections use a distinct wsType so the open/message/close
     // handlers route them to MediaStreamCallSession instead of RelayConnection.
     const upgraded = server.upgrade(req, {
       data: {
         wsType: "media-stream",
         callSessionId,
+        pooledDrainRelease: activity,
       } satisfies MediaStreamWebSocketData,
     });
     if (!upgraded) {
+      activity();
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
     // Bun's WebSocket upgrade consumes the request — no Response is sent.
@@ -876,8 +995,8 @@ export class RuntimeHttpServer {
     }
 
     // Verify the gateway service token before accepting the upgrade.
-    const tokenError = this.verifyGatewayServiceToken(req);
-    if (tokenError) return tokenError;
+    const authenticated = this.authenticateGatewayServiceToken(req);
+    if (authenticated instanceof Response) return authenticated;
 
     const wsUrl = new URL(req.url);
     // provider is optional compatibility metadata — the runtime resolves
@@ -889,6 +1008,8 @@ export class RuntimeHttpServer {
         status: 400,
       });
     }
+    const activity = this.acquirePooledWebSocketActivity(authenticated);
+    if (activity instanceof Response) return activity;
 
     const sampleRateRaw = wsUrl.searchParams.get("sampleRate");
     const sampleRate = sampleRateRaw ? parseInt(sampleRateRaw, 10) : undefined;
@@ -901,9 +1022,11 @@ export class RuntimeHttpServer {
         mimeType,
         sampleRate,
         sessionId,
+        pooledDrainRelease: activity,
       } satisfies SttStreamWebSocketData,
     });
     if (!upgraded) {
+      activity();
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
     // Bun's WebSocket upgrade consumes the request — no Response is sent.
@@ -913,9 +1036,9 @@ export class RuntimeHttpServer {
   /**
    * Handle WebSocket upgrade for `/v1/live-voice`.
    *
-   * The gateway owns downstream client auth and forwards this upstream with
-   * a short-lived gateway service token. The runtime accepts only private
-   * network peers/origins so the shell is not publicly reachable.
+   * The gateway owns downstream client auth and forwards a short-lived actor
+   * exchange token plus canonical tenant headers. The runtime accepts only
+   * private network peers/origins so the shell is not publicly reachable.
    */
   private handleLiveVoiceUpgrade(
     req: Request,
@@ -929,16 +1052,40 @@ export class RuntimeHttpServer {
       );
     }
 
-    const tokenError = this.verifyGatewayServiceToken(req);
-    if (tokenError) return tokenError;
+    const authenticated = this.authenticateWebSocketToken(req);
+    if (authenticated instanceof Response) return authenticated;
+    if (
+      authenticated &&
+      authenticated.principalType !== "actor" &&
+      authenticated.principalType !== "svc_gateway"
+    ) {
+      return httpError("FORBIDDEN", "Forbidden", 403);
+    }
+    if (
+      isPlatformIsolatedRuntime() &&
+      authenticated?.principalType !== "actor"
+    ) {
+      return httpError("FORBIDDEN", "Tenant-bound actor required", 403);
+    }
+    if (
+      authenticated?.principalType === "actor" &&
+      !authenticated.scopes.has("calls.write")
+    ) {
+      return httpError("FORBIDDEN", "Voice scope required", 403);
+    }
+    const activity = this.acquirePooledWebSocketActivity(authenticated);
+    if (activity instanceof Response) return activity;
 
     const upgraded = server.upgrade(req, {
       data: {
         wsType: "live-voice",
         lastSeq: 0,
+        ...(authenticated ? { authContext: authenticated } : {}),
+        pooledDrainRelease: activity,
       } satisfies LiveVoiceWebSocketData,
     });
     if (!upgraded) {
+      activity();
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
     return undefined!;
@@ -951,8 +1098,8 @@ export class RuntimeHttpServer {
     if (!isPrivateNetworkPeer(server, req) || !isPrivateNetworkOrigin(req)) {
       return httpError("FORBIDDEN", "Direct provider access disabled", 403);
     }
-    const tokenError = this.verifyGatewayServiceToken(req);
-    if (tokenError) return tokenError;
+    const authenticated = this.authenticateGatewayServiceToken(req);
+    if (authenticated instanceof Response) return authenticated;
     const providerJwt = req.headers.get(
       "x-elevenlabs-speech-engine-authorization",
     );
@@ -966,10 +1113,16 @@ export class RuntimeHttpServer {
     ) {
       return httpError("UNAUTHORIZED", "Invalid provider authorization", 401);
     }
+    const activity = this.acquirePooledWebSocketActivity(authenticated);
+    if (activity instanceof Response) return activity;
     const upgraded = server.upgrade(req, {
-      data: { wsType: "elevenlabs-speech-engine" },
+      data: {
+        wsType: "elevenlabs-speech-engine",
+        pooledDrainRelease: activity,
+      },
     });
     if (!upgraded) {
+      activity();
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
     return undefined!;
@@ -1024,11 +1177,51 @@ export class RuntimeHttpServer {
         return;
       }
 
-      const result = await this.liveVoiceSessionManager.startSession(frame, {
-        sendFrame: async (serverFrame) => {
-          this.sendLiveVoiceFrame(ws, serverFrame);
+      const authContext = ws.data.authContext;
+      const trustContext =
+        authContext?.principalType === "actor"
+          ? resolveAuthenticatedOwnerTrustContext({
+              actorPrincipalId: authContext.actorPrincipalId,
+              platformOwnerBound: Boolean(authContext.tenantContext),
+              sourceChannel: "vellum",
+            })
+          : null;
+      const result = await this.liveVoiceSessionManager.startSession(
+        frame,
+        {
+          sendFrame: async (serverFrame) => {
+            this.sendLiveVoiceFrame(ws, serverFrame);
+          },
         },
-      });
+        authContext?.principalType === "actor"
+          ? {
+              ...(authContext.tenantContext
+                ? { tenantContext: authContext.tenantContext }
+                : {}),
+              ...(trustContext && authContext.tenantContext
+                ? {
+                    ownerTrust: {
+                      actorPrincipalId: authContext.tenantContext.actorId,
+                      userId: authContext.tenantContext.userId,
+                    },
+                  }
+                : {}),
+              ...(authContext.pooledWorkerLease
+                ? {
+                    pooledWorkerLease: {
+                      tenant: {
+                        orgId: authContext.pooledWorkerLease.organizationId,
+                        assistantId: authContext.pooledWorkerLease.assistantId,
+                      },
+                      workerStackId:
+                        authContext.pooledWorkerLease.workerStackId,
+                      generation: authContext.pooledWorkerLease.leaseGeneration,
+                    },
+                  }
+                : {}),
+            }
+          : {},
+      );
       if (result.status === "accepted") {
         ws.data.sessionId = result.sessionId;
       }

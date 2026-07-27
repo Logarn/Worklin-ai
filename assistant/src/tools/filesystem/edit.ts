@@ -1,4 +1,5 @@
 import { RiskLevel } from "../../permissions/types.js";
+import { assertPooledWorkspaceFileMutationWithinQuota } from "../../runtime/pooled-workspace-quota.js";
 import { registerTool } from "../registry.js";
 import { FileSystemOps } from "../shared/filesystem/file-ops-service.js";
 import { formatEditDiff } from "../shared/filesystem/format-diff.js";
@@ -88,8 +89,9 @@ export const fileEditTool = {
 
     const replaceAll = input.replace_all === true;
 
-    const ops = new FileSystemOps((path, opts) =>
-      sandboxPolicy(path, context.workingDir, opts),
+    const ops = new FileSystemOps(
+      (path, opts) => sandboxPolicy(path, context.workingDir, opts),
+      { beforeWrite: assertPooledWorkspaceFileMutationWithinQuota },
     );
 
     const result = ops.editFileSafe({

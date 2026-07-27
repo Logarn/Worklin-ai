@@ -16,7 +16,10 @@ import {
   describeSubscriptionModelIncompatibility,
   isConnectionCompatibleWithModel,
 } from "./connection-model-compat.js";
-import { tryResolveProviderForConnectionName } from "./connection-resolution.js";
+import {
+  isPersonalProviderConnection,
+  tryResolveProviderForConnectionName,
+} from "./connection-resolution.js";
 import { listConnections } from "./inference/connections.js";
 import { initializeProviders, listProviders } from "./registry.js";
 import type {
@@ -51,12 +54,25 @@ let lazyInitPromise: Promise<void> | null = null;
 export class CallSiteConfiguredProvider implements Provider {
   public readonly name: string;
   public readonly tokenEstimationProvider?: string;
+  private readonly routingOptions: ConfiguredProviderOptions;
 
   constructor(
     private readonly inner: Provider,
     private readonly callSite: LLMCallSite,
-    private readonly routingOptions: ConfiguredProviderOptions = {},
+    routingOptionsOrOverrideProfile: ConfiguredProviderOptions | string = {},
+    forceOverrideProfile?: boolean,
+    selectionSeed?: string,
   ) {
+    this.routingOptions =
+      typeof routingOptionsOrOverrideProfile === "string"
+        ? {
+            overrideProfile: routingOptionsOrOverrideProfile,
+            ...(forceOverrideProfile === undefined
+              ? {}
+              : { forceOverrideProfile }),
+            ...(selectionSeed === undefined ? {} : { selectionSeed }),
+          }
+        : routingOptionsOrOverrideProfile;
     this.name = inner.name;
     this.tokenEstimationProvider = inner.tokenEstimationProvider;
   }
@@ -131,16 +147,19 @@ export async function resolveConfiguredProvider(
   // The boot-time backfill ensures every profile has one in production.
   // When unset (profile set provider without a connection, test envs that
   // skip backfill, freshly-installed configs not yet backfilled, or users
-  // who manually cleared the field), try to auto-resolve from the provider
-  // before falling back to null.
+  // who manually cleared the field), try to auto-resolve a personal connection
+  // from the provider before falling back to null. Managed transport must be
+  // selected by an explicit profile binding.
   if (!connectionName) {
     if (inferenceProvider) {
       try {
         const candidates = listConnections(getDb(), {
           provider: inferenceProvider,
         });
-        const active = candidates.find((c) =>
-          isConnectionCompatibleWithModel(c, resolved.model),
+        const active = candidates.find(
+          (candidate) =>
+            isPersonalProviderConnection(candidate) &&
+            isConnectionCompatibleWithModel(candidate, resolved.model),
         );
         if (active) {
           connectionName = active.name;

@@ -14,6 +14,7 @@ mock.module("../util/logger.js", () => ({
 
 let savedRaw: Record<string, unknown> | null = null;
 let rawConfig: Record<string, unknown>;
+let listedConnections: Array<Record<string, unknown>> = [];
 
 function makeDefaultRawConfig(): Record<string, unknown> {
   return {
@@ -85,13 +86,13 @@ mock.module("../memory/embedding-backend.js", () => ({
 // omits it. That path queries the `provider_connections` table, which the
 // test doesn't migrate — stub it out so the guard logic stays the focus.
 mock.module("../providers/inference/connections.js", () => ({
-  listConnections: () => [],
+  listConnections: () => listedConnections,
   createConnection: () => ({ ok: false, error: { code: "already_exists" } }),
   PROVIDERS_REQUIRING_BASE_URL_AND_MODELS: new Set(["openai-compatible"]),
 }));
 
 import { ROUTES } from "../runtime/routes/conversation-query-routes.js";
-import { BadRequestError } from "../runtime/routes/errors.js";
+import { BadRequestError, ConflictError } from "../runtime/routes/errors.js";
 
 const replaceRoute = ROUTES.find(
   (r) => r.operationId === "config_llm_profiles_replace",
@@ -102,6 +103,7 @@ const patchRoute = ROUTES.find((r) => r.operationId === "config_patch")!;
 beforeEach(() => {
   rawConfig = makeDefaultRawConfig();
   savedRaw = null;
+  listedConnections = [];
 });
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,74 @@ describe("PUT /v1/config/llm/profiles/:name — managed profile guard", () => {
     });
     expect(result).toEqual({ ok: true });
     expect(savedRaw).not.toBeNull();
+  });
+
+  test("an unpinned user profile selects only a compatible personal connection", async () => {
+    listedConnections = [
+      {
+        name: "openai-managed",
+        provider: "openai",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      {
+        name: "chatgpt-subscription",
+        provider: "openai",
+        auth: {
+          type: "oauth_subscription",
+          credential: "credential/chatgpt/access_token",
+        },
+        isManaged: false,
+      },
+      {
+        name: "openai-personal",
+        provider: "openai",
+        auth: {
+          type: "api_key",
+          credential: "credential/openai/api_key",
+        },
+        isManaged: false,
+      },
+    ];
+
+    await replaceRoute.handler({
+      pathParams: { name: "my-custom" },
+      body: { source: "user", provider: "openai", model: "gpt-4o" },
+    });
+
+    expect(
+      (savedRaw as unknown as Record<string, any>).llm.profiles["my-custom"]
+        .provider_connection,
+    ).toBe("openai-personal");
+  });
+
+  test("never auto-selects managed or model-incompatible subscription transport", async () => {
+    listedConnections = [
+      {
+        name: "openai-managed",
+        provider: "openai",
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      {
+        name: "chatgpt-subscription",
+        provider: "openai",
+        auth: {
+          type: "oauth_subscription",
+          credential: "credential/chatgpt/access_token",
+        },
+        isManaged: false,
+      },
+    ];
+
+    await replaceRoute.handler({
+      pathParams: { name: "my-custom" },
+      body: { source: "user", provider: "openai", model: "gpt-4o" },
+    });
+
+    expect(
+      (savedRaw as unknown as Record<string, any>).llm.profiles["my-custom"],
+    ).not.toHaveProperty("provider_connection");
   });
 
   // -------------------------------------------------------------------------
@@ -293,6 +363,139 @@ describe("PUT /v1/config/llm/profiles/:name — managed profile guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("PATCH /v1/config — managed profile deletion guard", () => {
+  test("rejects a stale expectedActiveProfile without writing", async () => {
+    (rawConfig.llm as Record<string, unknown>).activeProfile = "balanced";
+
+    await expect(
+      patchRoute.handler({
+        body: {
+          expectedActiveProfile: "cost-optimized",
+          llm: { activeProfile: "my-custom" },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(savedRaw).toBeNull();
+  });
+
+  test("writes a matching compare-and-swap patch without persisting the precondition", async () => {
+    (rawConfig.llm as Record<string, unknown>).activeProfile = "balanced";
+
+    await patchRoute.handler({
+      body: {
+        expectedActiveProfile: "balanced",
+        expectedActiveProfileDecision: {
+          profile: "balanced",
+          provider: "anthropic",
+          model: "claude-sonnet",
+          provider_connection: null,
+        },
+        expectedProfileOrder: [],
+        expectedCallSites: { conversationTitle: null },
+        llm: { activeProfile: "my-custom" },
+      },
+    });
+
+    expect(savedRaw).not.toHaveProperty("expectedActiveProfile");
+    expect(savedRaw).not.toHaveProperty("expectedActiveProfileDecision");
+    expect(savedRaw).not.toHaveProperty("expectedProfileOrder");
+    expect(savedRaw).not.toHaveProperty("expectedCallSites");
+    expect((savedRaw?.llm as Record<string, unknown>).activeProfile).toBe(
+      "my-custom",
+    );
+  });
+
+  test("rejects a stale provider decision even when the profile name still matches", async () => {
+    (rawConfig.llm as Record<string, unknown>).activeProfile = "balanced";
+    (
+      (rawConfig.llm as Record<string, any>).profiles.balanced as Record<
+        string,
+        unknown
+      >
+    ).model = "claude-opus-newer";
+
+    await expect(
+      patchRoute.handler({
+        body: {
+          expectedActiveProfile: "balanced",
+          expectedActiveProfileDecision: {
+            profile: "balanced",
+            provider: "anthropic",
+            model: "claude-sonnet",
+            provider_connection: null,
+          },
+          llm: {
+            profiles: {
+              balanced: { provider_connection: "anthropic-personal" },
+            },
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(savedRaw).toBeNull();
+  });
+
+  test("rejects a stale profile order even when the active decision still matches", async () => {
+    const llm = rawConfig.llm as Record<string, unknown>;
+    llm.activeProfile = "balanced";
+    llm.profileOrder = ["balanced", "my-custom"];
+
+    await expect(
+      patchRoute.handler({
+        body: {
+          expectedActiveProfile: "balanced",
+          expectedActiveProfileDecision: {
+            profile: "balanced",
+            provider: "anthropic",
+            model: "claude-sonnet",
+            provider_connection: null,
+          },
+          expectedProfileOrder: ["balanced"],
+          llm: {
+            activeProfile: "my-custom",
+            profileOrder: ["balanced", "new-personal-profile"],
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(savedRaw).toBeNull();
+  });
+
+  test("rejects a stale patched call site even when the active decision still matches", async () => {
+    const llm = rawConfig.llm as Record<string, unknown>;
+    llm.activeProfile = "balanced";
+    llm.callSites = {
+      conversationTitle: { profile: "my-custom" },
+    };
+
+    await expect(
+      patchRoute.handler({
+        body: {
+          expectedActiveProfile: "balanced",
+          expectedActiveProfileDecision: {
+            profile: "balanced",
+            provider: "anthropic",
+            model: "claude-sonnet",
+            provider_connection: null,
+          },
+          expectedCallSites: {
+            conversationTitle: { profile: "balanced" },
+          },
+          llm: {
+            activeProfile: "my-custom",
+            callSites: {
+              conversationTitle: { profile: "my-custom" },
+            },
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(savedRaw).toBeNull();
+  });
+
   test("rejects deletion of quality-optimized via null with descriptive message", async () => {
     await expect(
       patchRoute.handler({

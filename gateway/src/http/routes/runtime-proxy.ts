@@ -11,6 +11,7 @@ import {
   mintExchangeToken,
   mintServiceToken,
 } from "../../auth/token-exchange.js";
+import { validatePooledWorkerLeaseClaims } from "../../auth/pooled-worker-lease.js";
 import { parseSub } from "../../auth/subject.js";
 import {
   applyRuntimeTenantContextHeaders,
@@ -18,6 +19,7 @@ import {
 } from "../../auth/runtime-tenant-context.js";
 import type {
   RuntimeTenantContextClaim,
+  RuntimeWorkerLeaseClaim,
   TokenClaims,
 } from "../../auth/types.js";
 import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
@@ -26,6 +28,7 @@ import { credentialKey } from "../../credential-key.js";
 import { readCredential } from "../../credential-reader.js";
 import { fetchImpl } from "../../fetch.js";
 import { getLogger } from "../../logger.js";
+import { installRuntimeWorkerLeaseAuthority } from "../../runtime-worker-lease-authority.js";
 import { isLoopbackAddress } from "../../util/is-loopback-address.js";
 import { tryIpcProxy } from "./ipc-runtime-proxy.js";
 import {
@@ -170,6 +173,7 @@ export function createRuntimeProxyHandler(
     let exchangeToken: string;
     let platformOwnerBound = false;
     let tenantContext: RuntimeTenantContextClaim | null = null;
+    let pooledWorkerLease: RuntimeWorkerLeaseClaim | null = null;
     const authHeader = req.headers.get("authorization");
 
     if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
@@ -196,50 +200,106 @@ export function createRuntimeProxyHandler(
         );
         return Response.json({ error: "Unauthorized" }, { status: 401 });
       }
+      const pooledLeaseValidation = validatePooledWorkerLeaseClaims(
+        result.claims,
+        config.runtimeWorkerStackId,
+      );
+      if (!pooledLeaseValidation.ok) {
+        log.warn(
+          {
+            method: req.method,
+            path: url.pathname,
+            reason: pooledLeaseValidation.reason,
+          },
+          "Runtime proxy rejected pooled worker lease identity",
+        );
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+      }
+      pooledWorkerLease = pooledLeaseValidation.claim;
+      if (pooledWorkerLease) {
+        if (!config.runtimeWorkerLeaseAuthorityFile) {
+          log.error(
+            { method: req.method, path: url.pathname },
+            "Runtime proxy pooled lease authority file is not configured",
+          );
+          return Response.json(
+            { error: "Worker lease authority unavailable" },
+            { status: 503 },
+          );
+        }
+        try {
+          const update = installRuntimeWorkerLeaseAuthority(
+            config.runtimeWorkerLeaseAuthorityFile,
+            pooledWorkerLease,
+          );
+          if (update === "stale") {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+          }
+        } catch (err) {
+          log.error(
+            { err, method: req.method, path: url.pathname },
+            "Runtime proxy failed to install pooled lease authority",
+          );
+          return Response.json(
+            { error: "Worker lease authority unavailable" },
+            { status: 503 },
+          );
+        }
+      }
       let exchangeClaims = result.claims;
       let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
       if (
         config.runtimeAssistantScopeMode === "enforce" ||
         config.runtimeAssistantScopeMode === "claim_once"
       ) {
-        const requested = requestedAssistantId(
-          result.claims,
-          assistantScopedPath,
-        );
-        if (!requested) {
-          return Response.json({ error: "Forbidden" }, { status: 403 });
-        }
-        let expectedAssistantId: string | null;
-        try {
-          expectedAssistantId = await resolveStackAssistantId(
-            config,
-            requested,
+        let expectedAssistantId: string | null = null;
+        if (pooledWorkerLease) {
+          expectedAssistantId = pooledWorkerLease.assistant_id;
+          if (
+            assistantScopedPath &&
+            assistantScopedPath.assistantId !== expectedAssistantId
+          ) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+          }
+        } else {
+          const requested = requestedAssistantId(
+            result.claims,
+            assistantScopedPath,
           );
-        } catch (err) {
-          log.error(
-            { err, method: req.method, path: url.pathname },
-            "Runtime proxy actor scope validation failed",
-          );
-          return Response.json(
-            { error: "Assistant identity unavailable" },
-            { status: 503 },
-          );
-        }
-        if (!expectedAssistantId) {
-          return Response.json(
-            { error: "Assistant identity unavailable" },
-            { status: 503 },
-          );
-        }
-        if (
-          assistantScopedPath &&
-          assistantScopedPath.assistantId !== expectedAssistantId
-        ) {
-          return Response.json({ error: "Forbidden" }, { status: 403 });
+          if (!requested) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+          }
+          try {
+            expectedAssistantId = await resolveStackAssistantId(
+              config,
+              requested,
+            );
+          } catch (err) {
+            log.error(
+              { err, method: req.method, path: url.pathname },
+              "Runtime proxy actor scope validation failed",
+            );
+            return Response.json(
+              { error: "Assistant identity unavailable" },
+              { status: 503 },
+            );
+          }
+          if (!expectedAssistantId) {
+            return Response.json(
+              { error: "Assistant identity unavailable" },
+              { status: 503 },
+            );
+          }
+          if (
+            assistantScopedPath &&
+            assistantScopedPath.assistantId !== expectedAssistantId
+          ) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+          }
         }
         actorScopeAssistantId = expectedAssistantId;
       }
-      if (actorScopeAssistantId) {
+      if (actorScopeAssistantId && !pooledWorkerLease) {
         const boundClaims = bindPlatformOwnerClaims(
           result.claims,
           actorScopeAssistantId,
@@ -259,8 +319,9 @@ export function createRuntimeProxyHandler(
         exchangeClaims,
         {
           required:
-            config.runtimeAssistantScopeMode === "enforce" ||
-            config.runtimeAssistantScopeMode === "claim_once",
+            !pooledWorkerLease &&
+            (config.runtimeAssistantScopeMode === "enforce" ||
+              config.runtimeAssistantScopeMode === "claim_once"),
           expectedAssistantId: actorScopeAssistantId,
           requestedAssistantId: assistantScopedPath?.assistantId,
         },
@@ -293,18 +354,21 @@ export function createRuntimeProxyHandler(
         config.runtimeAssistantScopeMode === "enforce" ||
         config.runtimeAssistantScopeMode === "claim_once"
       ) {
-        let expectedAssistantId: string | null;
-        try {
-          expectedAssistantId = await resolveStackAssistantId(config);
-        } catch (err) {
-          log.error(
-            { err, method: req.method, path: url.pathname },
-            "Runtime proxy assistant scope validation failed",
-          );
-          return Response.json(
-            { error: "Assistant identity unavailable" },
-            { status: 503 },
-          );
+        let expectedAssistantId: string | null =
+          pooledWorkerLease?.assistant_id ?? null;
+        if (!expectedAssistantId) {
+          try {
+            expectedAssistantId = await resolveStackAssistantId(config);
+          } catch (err) {
+            log.error(
+              { err, method: req.method, path: url.pathname },
+              "Runtime proxy assistant scope validation failed",
+            );
+            return Response.json(
+              { error: "Assistant identity unavailable" },
+              { status: 503 },
+            );
+          }
         }
         if (!expectedAssistantId) {
           log.error(
@@ -371,11 +435,13 @@ export function createRuntimeProxyHandler(
     }
 
     // Use a manual AbortController so the timeout only covers the connection
-    // phase (waiting for response headers). Once headers arrive, the timeout is
-    // cleared so streaming responses (SSE, chunked) can run indefinitely.
+    // phase (waiting for response headers). The downstream request signal stays
+    // active for the full response lifetime: clearing the connection timer must
+    // not let assistant work continue after the proxy client disconnects.
     const { controller, clear } = createTimeoutController(
       config.runtimeTimeoutMs,
     );
+    const upstreamSignal = AbortSignal.any([controller.signal, req.signal]);
 
     // Buffer the request body instead of streaming req.body to avoid
     // Content-Length mismatches when Bun re-sends a ReadableStream, which
@@ -392,7 +458,7 @@ export function createRuntimeProxyHandler(
         method: req.method,
         headers: reqHeaders,
         body: bodyBuffer,
-        signal: controller.signal,
+        signal: upstreamSignal,
       });
       clear();
     } catch (err) {

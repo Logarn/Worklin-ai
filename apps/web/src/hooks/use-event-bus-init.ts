@@ -28,11 +28,16 @@ import { sseService } from "@/assistant/sse-service";
 import { subscribeLifecycleDiagnostics } from "@/lib/lifecycle-diagnostics";
 import { setupQueryFocusManager } from "@/lib/query-focus-manager";
 import { publishCapacitorAppStateSource } from "@/runtime/event-sources/capacitor-app-state";
+import { publishCapacitorDeepLinksSource } from "@/runtime/event-sources/capacitor-deep-links";
 import { publishVisibilitySource } from "@/runtime/event-sources/dom-visibility";
 import { publishElectronConnectivitySource } from "@/runtime/event-sources/electron-connectivity";
 import { publishElectronDeepLinksSource } from "@/runtime/event-sources/electron-deep-links";
 import { publishElectronPowerSource } from "@/runtime/event-sources/electron-power";
 import { publishWindowOnlineSource } from "@/runtime/event-sources/window-online";
+import {
+  usesPooledRequestPolling,
+  useResolvedAssistantsStore,
+} from "@/stores/resolved-assistants-store";
 
 interface UseEventBusInitParams {
   /** Resolved assistant id, or `null` when not yet loaded. */
@@ -45,6 +50,12 @@ export function useEventBusInit({
   assistantId,
   isAssistantActive,
 }: UseEventBusInitParams): void {
+  const usesRequestPolling = useResolvedAssistantsStore((state) =>
+    usesPooledRequestPolling(
+      state.assistants.find((assistant) => assistant.id === assistantId),
+    ),
+  );
+
   useEffect(() => {
     // Source helpers touch `document` / `window` at call time and
     // document their "caller guards under SSR/Node" contract in their
@@ -58,6 +69,7 @@ export function useEventBusInit({
       publishVisibilitySource(),
       publishWindowOnlineSource(),
       publishCapacitorAppStateSource(),
+      publishCapacitorDeepLinksSource(),
       publishElectronPowerSource(),
       publishElectronDeepLinksSource(),
       publishElectronConnectivitySource(),
@@ -77,6 +89,12 @@ export function useEventBusInit({
     void (async () => {
       await lifecycleService.checkAssistant(assistantId);
       if (cancelled) return;
+      // checkAssistant refreshes the API descriptor, so re-read the store
+      // after it settles instead of trusting the render-time snapshot.
+      const refreshed = useResolvedAssistantsStore
+        .getState()
+        .assistants.find((assistant) => assistant.id === assistantId);
+      if (usesPooledRequestPolling(refreshed)) return;
       detach = sseService.attach(assistantId);
     })();
 
@@ -84,5 +102,5 @@ export function useEventBusInit({
       cancelled = true;
       detach?.();
     };
-  }, [assistantId, isAssistantActive]);
+  }, [assistantId, isAssistantActive, usesRequestPolling]);
 }

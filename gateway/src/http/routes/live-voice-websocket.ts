@@ -1,11 +1,15 @@
 import { buildWsUpstreamUrl } from "@vellumai/assistant-client";
 
 import {
+  mintExchangeToken,
+  mintRuntimeTenantActorToken,
   validateEdgeToken,
   mintServiceToken,
 } from "../../auth/token-exchange.js";
 import { isActorTokenRevoked } from "../../auth/actor-token-revocation.js";
 import { parseSub } from "../../auth/subject.js";
+import { validateRuntimeTenantContext } from "../../auth/runtime-tenant-context.js";
+import type { RuntimeTenantContextClaim } from "../../auth/types.js";
 import type { GatewayConfig } from "../../config.js";
 import { getLogger } from "../../logger.js";
 import { requestHasVelayBridgeAuth } from "../../velay/bridge-auth.js";
@@ -14,6 +18,8 @@ const log = getLogger("live-voice-ws");
 
 // Cap buffered messages to prevent unbounded memory growth if upstream stalls
 const MAX_PENDING_MESSAGES = 100;
+const MAX_PENDING_BYTES = 4 * 1024 * 1024;
+const MAX_CLIENT_FRAME_BYTES = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Velay-attested managed auth headers
@@ -70,9 +76,17 @@ export type LiveVoiceSocketData = {
   config: GatewayConfig;
   upstream?: WebSocket;
   pendingMessages?: (string | ArrayBuffer | Uint8Array)[];
+  pendingMessageBytes?: number;
   upstreamPath?: string;
   providerAuthorization?: string;
+  callerTenantContext?: RuntimeTenantContextClaim;
+  upstreamActorToken?: string;
 };
+
+type LiveVoiceAuthBinding = Pick<
+  LiveVoiceSocketData,
+  "callerTenantContext" | "upstreamActorToken"
+>;
 
 /**
  * Create a WebSocket upgrade handler that proxies live voice frames between
@@ -88,13 +102,14 @@ export function createLiveVoiceWebsocketHandler(config: GatewayConfig) {
     }
 
     const url = new URL(req.url);
-    const authResponse = checkLiveVoiceAuth(req, url, config);
-    if (authResponse) return authResponse;
+    const authResult = checkLiveVoiceAuth(req, url, config);
+    if (authResult instanceof Response) return authResult;
 
     const upgraded = server.upgrade(req, {
       data: {
         wsType: "live-voice",
         config,
+        ...authResult,
       } satisfies LiveVoiceSocketData,
     });
 
@@ -141,9 +156,9 @@ function checkLiveVoiceAuth(
   req: Request,
   url: URL,
   config: GatewayConfig,
-): Response | null {
+): Response | LiveVoiceAuthBinding {
   if (!config.runtimeProxyRequireAuth) {
-    return null;
+    return {};
   }
 
   // Managed/cloud path: velay validates the browser wsToken and injects
@@ -159,7 +174,24 @@ function checkLiveVoiceAuth(
           { userId: velayContext.userId, orgId: velayContext.orgId },
           "Live voice WS: authenticated via velay-attested managed context",
         );
-        return null;
+        if (!config.platformAssistantId) {
+          log.error(
+            "Live voice WS: managed tenant binding is missing its assistant id",
+          );
+          return new Response("Runtime identity unavailable", { status: 503 });
+        }
+        const tenantContext: RuntimeTenantContextClaim = {
+          version: 1,
+          organization_id: velayContext.orgId,
+          user_id: velayContext.userId,
+          assistant_id: config.platformAssistantId,
+          actor_id: `vellum-principal-${velayContext.userId}`,
+          request_id: crypto.randomUUID(),
+        };
+        return {
+          callerTenantContext: tenantContext,
+          upstreamActorToken: mintRuntimeTenantActorToken(tenantContext),
+        };
       }
       log.warn("Live voice WS: ignoring velay context without bridge proof");
     }
@@ -207,7 +239,39 @@ function checkLiveVoiceAuth(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  return null;
+  const requiresTenantContext =
+    config.runtimeAssistantScopeMode === "enforce" ||
+    config.runtimeAssistantScopeMode === "claim_once";
+  const tenantResult = validateRuntimeTenantContext(
+    req.headers,
+    result.claims,
+    {
+      required: requiresTenantContext,
+      expectedAssistantId: requiresTenantContext
+        ? config.platformAssistantId
+        : undefined,
+      // Browser WebSocket APIs cannot attach canonical x-worklin headers.
+      // The signed claim, subject, and runtime identity bind this transport.
+      requireHeaders: false,
+    },
+  );
+  if (!tenantResult.ok) {
+    log.warn(
+      { reason: tenantResult.reason },
+      "Live voice WS: denied invalid tenant context",
+    );
+    return new Response("Forbidden", { status: 403 });
+  }
+
+  return {
+    ...(tenantResult.context
+      ? { callerTenantContext: tenantResult.context }
+      : {}),
+    upstreamActorToken: mintExchangeToken(
+      result.claims,
+      result.claims.scope_profile,
+    ),
+  };
 }
 
 /**
@@ -220,12 +284,21 @@ export function getLiveVoiceWebsocketHandlers() {
       const { config } = ws.data;
 
       ws.data.pendingMessages = [];
+      ws.data.pendingMessageBytes = 0;
+
+      if (ws.data.callerTenantContext && !ws.data.upstreamActorToken) {
+        log.error(
+          "Refusing tenant-bound live voice without an actor exchange token",
+        );
+        ws.close(1008, "Tenant binding unavailable");
+        return;
+      }
 
       const { url: upstreamUrl, logSafeUrl: logSafeUpstreamUrl } =
         buildWsUpstreamUrl({
           baseUrl: config.assistantRuntimeBaseUrl,
           path: ws.data.upstreamPath ?? "/v1/live-voice",
-          serviceToken: mintServiceToken(),
+          serviceToken: ws.data.upstreamActorToken ?? mintServiceToken(),
         });
 
       log.info(
@@ -244,7 +317,11 @@ export function getLiveVoiceWebsocketHandlers() {
                 ws.data.providerAuthorization,
             },
           })
-        : new WebSocket(upstreamUrl);
+        : ws.data.callerTenantContext
+          ? new HeaderWebSocket(upstreamUrl, {
+              headers: tenantContextHeaders(ws.data.callerTenantContext),
+            })
+          : new WebSocket(upstreamUrl);
       ws.data.upstream = upstream;
 
       upstream.addEventListener("open", () => {
@@ -255,6 +332,7 @@ export function getLiveVoiceWebsocketHandlers() {
             upstream.send(msg);
           }
           ws.data.pendingMessages = undefined;
+          ws.data.pendingMessageBytes = undefined;
         }
       });
 
@@ -281,11 +359,24 @@ export function getLiveVoiceWebsocketHandlers() {
       ws: import("bun").ServerWebSocket<LiveVoiceSocketData>,
       message: string | ArrayBuffer | Uint8Array,
     ) {
+      const frameBytes = liveVoiceFrameBytes(message);
+      if (frameBytes > MAX_CLIENT_FRAME_BYTES) {
+        log.warn(
+          { frameBytes },
+          "Live voice client frame exceeded the byte limit",
+        );
+        ws.close(1009, "Frame too large");
+        return;
+      }
       const upstream = ws.data.upstream;
       if (upstream && upstream.readyState === WebSocket.OPEN) {
         upstream.send(message);
       } else if (ws.data.pendingMessages) {
-        if (ws.data.pendingMessages.length >= MAX_PENDING_MESSAGES) {
+        const pendingBytes = ws.data.pendingMessageBytes ?? 0;
+        if (
+          ws.data.pendingMessages.length >= MAX_PENDING_MESSAGES ||
+          pendingBytes + frameBytes > MAX_PENDING_BYTES
+        ) {
           log.warn(
             "Live voice pending message buffer overflow — closing connection",
           );
@@ -293,6 +384,7 @@ export function getLiveVoiceWebsocketHandlers() {
           return;
         }
         ws.data.pendingMessages.push(message);
+        ws.data.pendingMessageBytes = pendingBytes + frameBytes;
       }
     },
 
@@ -304,6 +396,7 @@ export function getLiveVoiceWebsocketHandlers() {
       const { upstream } = ws.data;
       log.info({ code, reason }, "Live voice downstream WS closed");
       ws.data.pendingMessages = undefined;
+      ws.data.pendingMessageBytes = undefined;
       if (
         upstream &&
         (upstream.readyState === WebSocket.OPEN ||
@@ -313,4 +406,25 @@ export function getLiveVoiceWebsocketHandlers() {
       }
     },
   };
+}
+
+function tenantContextHeaders(
+  context: RuntimeTenantContextClaim,
+): Record<string, string> {
+  return {
+    "X-Worklin-Tenant-Context-Version": String(context.version),
+    "X-Worklin-Org-Id": context.organization_id,
+    "X-Worklin-User-Id": context.user_id,
+    "X-Worklin-Assistant-Id": context.assistant_id,
+    "X-Worklin-Actor-Id": context.actor_id,
+    "X-Worklin-Request-Id": context.request_id,
+  };
+}
+
+function liveVoiceFrameBytes(
+  message: string | ArrayBuffer | Uint8Array,
+): number {
+  return typeof message === "string"
+    ? new TextEncoder().encode(message).byteLength
+    : message.byteLength;
 }

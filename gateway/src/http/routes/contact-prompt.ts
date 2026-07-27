@@ -26,6 +26,7 @@ import {
 } from "../../db/schema.js";
 import { ipcCallAssistant } from "../../ipc/assistant-client.js";
 import { getLogger } from "../../logger.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("contact-prompt");
 
@@ -48,6 +49,11 @@ interface ContactPromptSubmitBody {
 export async function handleContactPromptSubmit(
   req: Request,
 ): Promise<Response> {
+  const pooledBoundary = rejectPooledSharedStateAccess(
+    "Contact prompt persistence",
+  );
+  if (pooledBoundary) return pooledBoundary;
+
   let body: ContactPromptSubmitBody;
   try {
     body = (await req.json()) as ContactPromptSubmitBody;

@@ -17,6 +17,7 @@ import type { GatewayConfig } from "../../config.js";
 import { getGatewaySecurityDir } from "../../paths.js";
 import { fetchImpl } from "../../fetch.js";
 import { getLogger } from "../../logger.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 import { isLoopbackAddress } from "../../util/is-loopback-address.js";
 import { VELAY_FORWARDED_HEADER } from "../../velay/bridge-utils.js";
 import { requestArrivedViaEdgeProxy } from "../edge-forwarded-header.js";
@@ -154,6 +155,11 @@ export function createChannelVerificationSessionProxyHandler(
       req: Request,
       clientIp?: string,
     ): Promise<Response> {
+      const pooledBoundary = rejectPooledSharedStateAccess(
+        "Guardian device bootstrap",
+      );
+      if (pooledBoundary) return pooledBoundary;
+
       // Defense-in-depth: reject requests that arrived via the Velay HTTP
       // bridge. The bridge injects this header unconditionally; the path
       // allowlist is the primary guard, this is the secondary. A Velay client
@@ -421,6 +427,11 @@ export function createChannelVerificationSessionProxyHandler(
     },
 
     async handleGuardianRefresh(req: Request): Promise<Response> {
+      const pooledBoundary = rejectPooledSharedStateAccess(
+        "Guardian device token refresh",
+      );
+      if (pooledBoundary) return pooledBoundary;
+
       try {
         const body = (await req.json()) as Record<string, unknown>;
         const refreshToken =
@@ -493,6 +504,11 @@ export function createChannelVerificationSessionProxyHandler(
       clientIp?: string,
       req?: Request,
     ): Promise<Response> {
+      const pooledBoundary = rejectPooledSharedStateAccess(
+        "Guardian device bootstrap reset",
+      );
+      if (pooledBoundary) return pooledBoundary;
+
       if (req?.headers.get(VELAY_FORWARDED_HEADER)) {
         log.warn("Guardian reset-bootstrap rejected — Velay-bridged request");
         return Response.json(

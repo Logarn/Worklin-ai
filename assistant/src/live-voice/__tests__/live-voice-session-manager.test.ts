@@ -104,6 +104,37 @@ describe("LiveVoiceSessionManager", () => {
     ]);
   });
 
+  test("carries the authenticated tenant and owner identity into session creation", async () => {
+    let received: LiveVoiceSessionFactoryContext | undefined;
+    const manager = new LiveVoiceSessionManager({
+      createSessionId: () => "session-tenant",
+      createSession: (context) => {
+        received = context;
+        return createTestSession();
+      },
+    });
+    const tenantContext = {
+      version: 1 as const,
+      organizationId: "org-1",
+      userId: "user-1",
+      assistantId: "assistant-1",
+      actorId: "vellum-principal-user-1",
+      requestId: "request-1",
+    };
+    const ownerTrust = {
+      actorPrincipalId: tenantContext.actorId,
+      userId: tenantContext.userId,
+    };
+
+    await manager.startSession(START_FRAME, createSink().sink, {
+      tenantContext,
+      ownerTrust,
+    });
+
+    expect(received?.tenantContext).toEqual(tenantContext);
+    expect(received?.ownerTrust).toEqual(ownerTrust);
+  });
+
   test("rejects concurrent start attempts with a busy frame", async () => {
     const sessions: TestSession[] = [];
     const manager = new LiveVoiceSessionManager({
@@ -372,6 +403,75 @@ describe("LiveVoiceSessionManager", () => {
     const next = await manager.startSession(START_FRAME, third.sink);
     expect(next).toEqual({ status: "accepted", sessionId: "session-2" });
     expect(manager.activeSessionId).toBe("session-2");
+  });
+
+  test("registers native voice identity and releases its lifecycle fence on close", async () => {
+    const registerSession = mock(() => {});
+    const unregisterSession = mock(() => {});
+    const manager = new LiveVoiceSessionManager({
+      createSessionId: () => "session-tenant",
+      createSession: () => createTestSession(),
+      lifecycle: {
+        registerSession,
+        isSessionCurrent: () => true,
+        unregisterSession,
+      },
+    });
+    const identity = {
+      tenantContext: {
+        version: 1 as const,
+        organizationId: "org-1",
+        userId: "user-1",
+        assistantId: "assistant-1",
+        actorId: "actor-1",
+        requestId: "request-1",
+      },
+    };
+
+    await manager.startSession(START_FRAME, createSink().sink, identity);
+    await manager.releaseSession("session-tenant", "client_end");
+
+    expect(registerSession).toHaveBeenCalledWith({
+      sessionId: "session-tenant",
+      identity,
+    });
+    expect(unregisterSession).toHaveBeenCalledWith("session-tenant");
+    expect(manager.activeSessionId).toBeNull();
+  });
+
+  test("closes native voice and drops outbound callbacks after its lease becomes stale", async () => {
+    let current = true;
+    let context: LiveVoiceSessionFactoryContext | undefined;
+    const session = createTestSession();
+    const unregisterSession = mock(() => {});
+    const manager = new LiveVoiceSessionManager({
+      createSessionId: () => "session-lease",
+      createSession: (value) => {
+        context = value;
+        return session;
+      },
+      lifecycle: {
+        registerSession: () => {},
+        isSessionCurrent: () => current,
+        unregisterSession,
+      },
+    });
+    const sink = createSink();
+    await manager.startSession(START_FRAME, sink.sink);
+    current = false;
+
+    await expect(
+      context!.sendFrame({
+        type: "thinking",
+        turnId: "turn-stale",
+      }),
+    ).rejects.toThrow("lease is stale");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sink.frames).toEqual([]);
+    expect(session.closeReasons).toEqual(["error"]);
+    expect(unregisterSession).toHaveBeenCalledWith("session-lease");
+    expect(manager.activeSessionId).toBeNull();
   });
 
   test("does not import runtime, gateway, provider, or conversation modules", async () => {

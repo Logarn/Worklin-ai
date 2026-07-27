@@ -292,6 +292,28 @@ export function listCliCommandEntries(): CliCommandEntry[] {
     .map((entry) => Object.freeze({ ...entry }));
 }
 
+/**
+ * Clear config-derived CLI capabilities after all pooled requests quiesce.
+ * An active seed would be able to repopulate the cache after the assignment
+ * changed, so fail closed instead of clearing underneath it.
+ */
+export function resetCliCommandStoreForTenantAssignment(): void {
+  if (
+    activeSeedDrain !== null ||
+    seedWaiters.length > 0 ||
+    processedSeedGeneration < requestedSeedGeneration
+  ) {
+    throw new Error(
+      "Cannot reset the CLI capability store while seeding is active.",
+    );
+  }
+  entries = null;
+  requestedSeedGeneration = 0;
+  processedSeedGeneration = 0;
+  lastSeedError = null;
+  legacyKindBackfillDone = false;
+}
+
 /** @internal Test-only: clear the module-level cache. */
 export function _resetCliCommandStoreForTests(): void {
   entries = null;

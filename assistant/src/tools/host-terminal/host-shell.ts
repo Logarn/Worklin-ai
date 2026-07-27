@@ -29,6 +29,7 @@ import { assistantEventHub } from "../../runtime/assistant-event-hub.js";
 import { redactSecrets } from "../../security/secret-scanner.js";
 import { getLogger } from "../../util/logger.js";
 import {
+  assertBackgroundToolExecutionSupported,
   generateBackgroundToolId,
   isBackgroundToolLimitReached,
   MAX_BACKGROUND_TOOLS,
@@ -269,6 +270,7 @@ export const hostShellTool = {
       );
 
       if (background) {
+        assertBackgroundToolExecutionSupported();
         // Check the registry limit BEFORE starting the proxy request so we
         // never leak an untracked proxy when the registry is full.
         if (isBackgroundToolLimitReached()) {
@@ -375,6 +377,7 @@ export const hostShellTool = {
     hostEnv.__CONVERSATION_ID = context.conversationId;
 
     if (background) {
+      assertBackgroundToolExecutionSupported();
       // Check the registry limit BEFORE spawning so we never leak an
       // untracked process when the registry is full.
       if (isBackgroundToolLimitReached()) {

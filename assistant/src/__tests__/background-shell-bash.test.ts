@@ -78,6 +78,7 @@ const mockGenerateBackgroundToolId = mock(() => "bg-test1234");
 const mockIsBackgroundToolLimitReached = mock(() => false);
 
 mock.module("../tools/background-tool-registry.js", () => ({
+  assertBackgroundToolExecutionSupported: () => {},
   registerBackgroundTool: mockRegisterBackgroundTool,
   removeBackgroundTool: mockRemoveBackgroundTool,
   generateBackgroundToolId: mockGenerateBackgroundToolId,

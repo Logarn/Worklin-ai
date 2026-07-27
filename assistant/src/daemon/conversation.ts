@@ -26,6 +26,7 @@ import type {
 } from "../channels/types.js";
 import { parseChannelId, parseInterfaceId } from "../channels/types.js";
 import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import {
   contextWindowConfigFromEffective,
   resolveEffectiveContextWindow,
@@ -106,6 +107,7 @@ import {
   applyCompactionResult,
   runAgentLoopImpl,
 } from "./conversation-agent-loop.js";
+import { trackConversationAgentLoop } from "./conversation-agent-loop-registry.js";
 import type { HistoryConversationContext } from "./conversation-history.js";
 import { undo as undoImpl } from "./conversation-history.js";
 import {
@@ -772,6 +774,7 @@ export class Conversation {
    * greeting so the user's next real message gets a cache hit.
    */
   warmPromptCache(): void {
+    if (isPooledWorkerRuntime()) return;
     this.cacheWarmAbort?.abort();
     const abort = new AbortController();
     this.cacheWarmAbort = abort;
@@ -1265,7 +1268,7 @@ export class Conversation {
   setProcessing(value: boolean): void {
     const wasProcessing = this._processing;
     this._processing = value;
-    if (wasProcessing && !value) {
+    if (wasProcessing && !value && !isPooledWorkerRuntime()) {
       void publishSyncInvalidation([
         conversationMetadataSyncTag(this.conversationId),
       ]);
@@ -1852,12 +1855,14 @@ export class Conversation {
     },
   ): Promise<void> {
     const { onEvent, ...rest } = options ?? {};
-    return runAgentLoopImpl(
-      this,
-      content,
-      userMessageId,
-      onEvent ?? this.sendToClient,
-      rest,
+    return trackConversationAgentLoop(
+      runAgentLoopImpl(
+        this,
+        content,
+        userMessageId,
+        onEvent ?? this.sendToClient,
+        rest,
+      ),
     );
   }
 

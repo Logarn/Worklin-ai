@@ -15,6 +15,7 @@ import type {
   UserPromptSubmitContext,
 } from "@vellumai/plugin-api";
 
+import { isPooledWorkerRuntime } from "../../../../config/env.js";
 import { getConversation } from "../../../../memory/conversation-crud.js";
 import {
   resolvePersistedTitleContext,
@@ -23,6 +24,11 @@ import {
 import { queueGenerateConversationTitle } from "../../../../memory/conversation-title-service.js";
 
 const userPromptSubmit: PluginHookFn<UserPromptSubmitContext> = async (ctx) => {
+  // Pooled workers cannot let a timer outlive the authenticated request and
+  // tenant lease. Their first title pass runs synchronously at the successful
+  // stop hook instead, after the main assistant reply has completed.
+  if (isPooledWorkerRuntime()) return;
+
   let titleContext: TitleContext | undefined;
 
   // A remote human channel has no attached interactive UI, so

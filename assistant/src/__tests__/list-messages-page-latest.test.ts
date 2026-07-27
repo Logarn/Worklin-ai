@@ -37,6 +37,11 @@ mock.module("../daemon/identity-helpers.js", () => ({
   getAssistantName: () => mockAssistantName,
 }));
 
+import type { Conversation } from "../daemon/conversation.js";
+import {
+  clearConversations,
+  setConversation,
+} from "../daemon/conversation-registry.js";
 import { createConversation } from "../memory/conversation-crud.js";
 import { getDb } from "../memory/db-connection.js";
 import { initializeDb } from "../memory/db-init.js";
@@ -108,10 +113,12 @@ interface MessagePayload {
 
 interface ListResponse {
   messages: MessagePayload[];
+  conversationId?: string | null;
   hasMore?: boolean;
   oldestTimestamp?: number | null;
   oldestMessageId?: string | null;
   seq?: number | null;
+  isProcessing: boolean;
 }
 
 function callList(query: Record<string, string>): ListResponse {
@@ -123,8 +130,38 @@ function callList(query: Record<string, string>): ListResponse {
 describe("handleListMessages page=latest", () => {
   beforeEach(() => {
     resetTables();
+    clearConversations();
     _resetStreamStateForTesting();
     mockAssistantName = null;
+  });
+
+  test("reports authoritative in-memory processing state for request polling", () => {
+    const conv = createConversation();
+    setConversation(conv.id, {
+      isProcessing: () => true,
+    } as Conversation);
+
+    const body = callList({ conversationId: conv.id });
+
+    expect(body.isProcessing).toBe(true);
+    expect(body.conversationId).toBe(conv.id);
+  });
+
+  test("reports false when a conversation is not resident in memory", () => {
+    const conv = createConversation();
+
+    const body = callList({ conversationId: conv.id });
+
+    expect(body.isProcessing).toBe(false);
+    expect(body.conversationId).toBe(conv.id);
+  });
+
+  test("returns null resolved id while a polled conversation key has not materialized", () => {
+    const body = callList({ conversationKey: "draft-not-created-yet" });
+
+    expect(body.messages).toEqual([]);
+    expect(body.conversationId).toBeNull();
+    expect(body.isProcessing).toBe(false);
   });
 
   describe("persisted seq", () => {

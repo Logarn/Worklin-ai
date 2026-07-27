@@ -106,7 +106,10 @@ export function clearPinnedTab(
  *
  * Returns the number of slots cleared.
  */
-export function clearPinnedTabByTabId(tabId: string, clientId?: string): number {
+export function clearPinnedTabByTabId(
+  tabId: string,
+  clientId?: string,
+): number {
   if (!tabId) return 0;
   let cleared = 0;
   for (const [conversationId, inner] of pinnedTabs.entries()) {
@@ -139,8 +142,16 @@ export function clearPinnedTabByTabId(tabId: string, clientId?: string): number 
 }
 
 /**
- * Reset the entire pin store. Test-only.
+ * Clear every process-local host Chrome routing pin.
+ *
+ * Pinned tabs belong to one tenant's conversations and Chrome clients, so a
+ * pooled worker must never retain them across an assignment boundary.
  */
-export function __resetPinnedTabsForTests(): void {
+export function clearAllPinnedTabs(): void {
   pinnedTabs.clear();
+}
+
+/** Reset the entire pin store. Test-only compatibility alias. */
+export function __resetPinnedTabsForTests(): void {
+  clearAllPinnedTabs();
 }

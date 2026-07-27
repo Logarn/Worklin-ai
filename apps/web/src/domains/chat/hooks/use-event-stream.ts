@@ -22,12 +22,7 @@
  * does not register any `visibilitychange` listener of its own.
  */
 
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-} from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import { useChatSessionStore } from "@/domains/chat/chat-session-store";
 import { useStreamStore } from "@/domains/chat/stream-store";
@@ -45,6 +40,10 @@ import type { EventStream } from "@/lib/streaming/stream-transport";
 import type { ReconcileActiveConversationResult } from "@/domains/chat/hooks/use-message-reconciliation";
 import type { AssistantEvent } from "@/types/event-types";
 import type { UseAssistantReachabilityResult } from "@/assistant/use-assistant-reachability";
+import {
+  usesPooledRequestPolling,
+  useResolvedAssistantsStore,
+} from "@/stores/resolved-assistants-store";
 
 /** Params accepted by {@link useEventStream}. */
 export interface UseEventStreamParams {
@@ -82,6 +81,12 @@ export function useEventStream({
   reachabilityPhase,
   reachabilityReset,
 }: UseEventStreamParams): void {
+  const usesRequestPolling = useResolvedAssistantsStore((state) =>
+    usesPooledRequestPolling(
+      state.assistants.find((assistant) => assistant.id === assistantId),
+    ),
+  );
+
   // ---- Ref-stabilize unstable callback params ----
   //
   // Updated in `useLayoutEffect` (commit phase) so refs only ever
@@ -175,11 +180,17 @@ export function useEventStream({
       conversationId: capturedConversationId,
     });
     // `use-send-message.ts` reads `stream` as a presence bit to decide
-    // whether SSE will deliver the response. We write a sentinel whose
-    // `cancel()` is a no-op — the real teardown is the bus unsubscribe
-    // in `useBusSubscription`.
-    const presence: EventStream = { cancel: () => {} };
-    ss.setStream(presence);
+    // whether SSE will deliver the response. Dedicated runtimes retain the
+    // no-op sentinel (the real teardown is the bus unsubscribe). Pooled
+    // workers deliberately advertise no stream so the send path uses its
+    // bounded /messages polling fallback instead of waiting for events from a
+    // connection that must never be opened.
+    const presence: EventStream | null = usesRequestPolling
+      ? null
+      : { cancel: () => {} };
+    if (presence) {
+      ss.setStream(presence);
+    }
 
     return () => {
       useStreamStore.getState().bumpEpoch();
@@ -188,7 +199,7 @@ export function useEventStream({
       // them. Uses identity check (stream) and value check (context),
       // matching the original ref-based ownership checks.
       const s = useStreamStore.getState();
-      if (s.stream === presence) {
+      if (presence && s.stream === presence) {
         s.setStream(null);
       }
       const ctx = s.streamContext;
@@ -204,6 +215,7 @@ export function useEventStream({
     assistantId,
     activeConversationId,
     conversationExistsOnServer,
+    usesRequestPolling,
   ]);
 
   // --------------------------------------------------------------------------

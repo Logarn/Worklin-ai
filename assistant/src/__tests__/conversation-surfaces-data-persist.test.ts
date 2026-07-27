@@ -41,6 +41,7 @@ const {
   flushSurfaceDataPersist,
   handleSurfaceAction,
   markSurfaceCompleted,
+  pendingSurfaceDataPersistCount,
   scheduleSurfaceDataPersist,
   showStandaloneSurface,
   surfaceProxyResolver,
@@ -413,6 +414,47 @@ describe("ui_surface_update persistence", () => {
 
     // Cleanup the other conversation's timer.
     cancelPendingSurfaceDataPersists("conv-other");
+  });
+
+  test("pooled runtime persists inline and leaves no timer across the request boundary", () => {
+    const previousRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+    process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+    const surfaceId = "surface-pooled-inline";
+    seedRows([
+      {
+        id: "msg-pooled-inline",
+        content: [
+          {
+            type: "ui_surface",
+            surfaceId,
+            surfaceType: "card",
+            data: { title: "x", body: "" },
+          },
+        ],
+      },
+    ]);
+
+    try {
+      scheduleSurfaceDataPersist("conv-persist-1", surfaceId, {
+        title: "x",
+        body: "durable-before-response",
+      } as SurfaceData);
+
+      expect(writes).toHaveLength(1);
+      expect(pendingSurfaceDataPersistCount()).toBe(0);
+      const block = (writes[0].content as Array<Record<string, unknown>>).find(
+        (candidate) => candidate.type === "ui_surface",
+      )!;
+      expect((block.data as Record<string, unknown>).body).toBe(
+        "durable-before-response",
+      );
+    } finally {
+      if (previousRuntimeMode === undefined) {
+        delete process.env.WORKLIN_RUNTIME_MODE;
+      } else {
+        process.env.WORKLIN_RUNTIME_MODE = previousRuntimeMode;
+      }
+    }
   });
 });
 

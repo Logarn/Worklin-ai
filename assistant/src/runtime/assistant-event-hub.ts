@@ -13,6 +13,7 @@
  */
 
 import type { HostProxyCapability, InterfaceId } from "../channels/types.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import type { ServerMessage } from "../daemon/message-protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -542,6 +543,33 @@ export class AssistantEventHub {
     return targets.length;
   }
 
+  /**
+   * Dispose every subscriber and run each eviction callback.
+   *
+   * Pooled workers use this at a tenant-assignment boundary so an SSE stream
+   * authenticated for the prior lease cannot receive events from the next
+   * tenant assigned to the same process.
+   */
+  disposeAllSubscribers(): number {
+    const targets = Array.from(this.subscribers);
+    for (const entry of targets) {
+      entry.active = false;
+      this.subscribers.delete(entry);
+      try {
+        entry.onEvict();
+      } catch {
+        /* ignore eviction callback errors */
+      }
+    }
+    if (targets.length > 0) {
+      log.info(
+        { count: targets.length },
+        "force-disposed all assistant-event subscribers",
+      );
+    }
+    return targets.length;
+  }
+
   /** Number of currently active subscribers (useful for tests and caps). */
   subscriberCount(): number {
     return this.subscribers.size;
@@ -569,6 +597,26 @@ export const assistantEventHub = new AssistantEventHub({ maxSubscribers: 100 });
  * events in send order.
  */
 let _hubChain = Promise.resolve();
+const activeAssistantEventHubWork = new Set<Promise<unknown>>();
+
+function trackAssistantEventHubWork<T>(work: Promise<T>): Promise<T> {
+  const tracked = work.then(
+    (value) => {
+      activeAssistantEventHubWork.delete(tracked);
+      return value;
+    },
+    (error) => {
+      activeAssistantEventHubWork.delete(tracked);
+      throw error;
+    },
+  );
+  activeAssistantEventHubWork.add(tracked);
+  return tracked;
+}
+
+export function activeAssistantEventHubWorkCount(): number {
+  return activeAssistantEventHubWork.size;
+}
 
 /**
  * Wraps a `ServerMessage` in an `AssistantEvent` envelope and publishes it
@@ -599,7 +647,9 @@ export function broadcastMessage(
   // The home-feed `activity.failed` notification side-effect lives in the
   // notifications pipeline now, so we no longer emit a feed event here.
   if (msg.type === "confirmation_request" && resolvedConversationId) {
-    void createCanonicalRequestForConfirmation(msg, resolvedConversationId);
+    void trackAssistantEventHubWork(
+      createCanonicalRequestForConfirmation(msg, resolvedConversationId),
+    );
   }
 
   // `conversation_list_invalidated` is a list-level system event — publish
@@ -636,40 +686,45 @@ export function broadcastMessage(
         }
       : undefined;
   stampAndBuffer(event, { targeting: publishOptions });
-  _hubChain = _hubChain
-    .then(() => assistantEventHub.publish(event, publishOptions))
-    .then(() => {
-      // When a conversation title changes, also publish a
-      // `conversation_list_invalidated` so the macOS sidebar refreshes
-      // its row ordering for the renamed conversation. Web consumes the
-      // paired `sync_changed` with `conversation:<id>:metadata` tag
-      // emitted by `publishConversationTitleChanged` and patches the
-      // single row in place, so the broadcast is scoped to macOS only.
-      //
-      // TODO(electron-cutover): remove this emission once macOS migrates
-      // to the Electron client and consumes `sync_changed` directly. At
-      // that point `conversation_list_invalidated` has no remaining
-      // consumers and the message type can be retired.
-      if (msg.type === "conversation_title_updated") {
-        return assistantEventHub
-          .publish(
-            buildAssistantEvent({
-              type: "conversation_list_invalidated",
-              reason: "renamed",
-            }),
-            { targetInterfaceId: "macos" },
-          )
-          .catch((err: unknown) => {
-            log.warn(
-              { err },
-              "Failed to publish conversation_list_invalidated after title update",
-            );
-          });
-      }
-    })
-    .catch((err: unknown) => {
-      log.warn({ err }, "assistant-events hub subscriber threw during publish");
-    });
+  _hubChain = trackAssistantEventHubWork(
+    _hubChain
+      .then(() => assistantEventHub.publish(event, publishOptions))
+      .then(() => {
+        // When a conversation title changes, also publish a
+        // `conversation_list_invalidated` so the macOS sidebar refreshes
+        // its row ordering for the renamed conversation. Web consumes the
+        // paired `sync_changed` with `conversation:<id>:metadata` tag
+        // emitted by `publishConversationTitleChanged` and patches the
+        // single row in place, so the broadcast is scoped to macOS only.
+        //
+        // TODO(electron-cutover): remove this emission once macOS migrates
+        // to the Electron client and consumes `sync_changed` directly. At
+        // that point `conversation_list_invalidated` has no remaining
+        // consumers and the message type can be retired.
+        if (msg.type === "conversation_title_updated") {
+          return assistantEventHub
+            .publish(
+              buildAssistantEvent({
+                type: "conversation_list_invalidated",
+                reason: "renamed",
+              }),
+              { targetInterfaceId: "macos" },
+            )
+            .catch((err: unknown) => {
+              log.warn(
+                { err },
+                "Failed to publish conversation_list_invalidated after title update",
+              );
+            });
+        }
+      })
+      .catch((err: unknown) => {
+        log.warn(
+          { err },
+          "assistant-events hub subscriber threw during publish",
+        );
+      }),
+  );
 }
 
 function extractConversationId(msg: ServerMessage): string | undefined {
@@ -747,7 +802,7 @@ async function createCanonicalRequestForConfirmation(
       expiresAt: Date.now() + 5 * 60 * 1000,
     });
 
-    if (trustContext && conversation) {
+    if (trustContext && conversation && !isPooledWorkerRuntime()) {
       bridgeConfirmationRequestToGuardian({
         canonicalRequest,
         trustContext,

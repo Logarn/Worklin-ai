@@ -142,6 +142,9 @@ export function mintToken(params: {
   artifact_id?: string;
   collaboration_role?: "viewer" | "commenter" | "editor" | "owner";
   tenant_context?: TokenClaims["tenant_context"];
+  service_tenant_context?: TokenClaims["service_tenant_context"];
+  pooled_worker_lease?: TokenClaims["pooled_worker_lease"];
+  jti?: string;
 }): string {
   const now = Math.floor(Date.now() / 1000);
   const claims: TokenClaims = {
@@ -156,8 +159,14 @@ export function mintToken(params: {
       ? { collaboration_role: params.collaboration_role }
       : {}),
     ...(params.tenant_context ? { tenant_context: params.tenant_context } : {}),
+    ...(params.service_tenant_context
+      ? { service_tenant_context: params.service_tenant_context }
+      : {}),
+    ...(params.pooled_worker_lease
+      ? { pooled_worker_lease: params.pooled_worker_lease }
+      : {}),
     iat: now,
-    jti: randomBytes(16).toString("hex"),
+    jti: params.jti ?? randomBytes(16).toString("hex"),
   };
 
   const payload = base64urlEncode(JSON.stringify(claims));

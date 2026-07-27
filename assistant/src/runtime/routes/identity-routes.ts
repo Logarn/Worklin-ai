@@ -7,6 +7,7 @@ import { availableParallelism, cpus, totalmem } from "node:os";
 
 import { z } from "zod";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import { getCpuLimit, getIsPlatform } from "../../config/env-registry.js";
 import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
@@ -378,7 +379,8 @@ export function handleDetailedHealth(): Response {
 export function handleReadyz(): Response {
   const isolatedRuntime =
     process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() === "isolated";
-  if (isolatedRuntime) {
+  const pooledRuntime = isPooledWorkerRuntime();
+  if (isolatedRuntime || pooledRuntime) {
     const daemonReadiness = getDaemonReadiness();
     if (!daemonReadiness.ready) {
       return Response.json(
@@ -391,48 +393,58 @@ export function handleReadyz(): Response {
     }
   }
 
-  const storage = checkStorageReadiness(() => {
-    const sqlite = getSqlite();
-    sqlite.query("SELECT 1").get();
-    const result = sqlite.query("PRAGMA quick_check(1)").get() as {
-      quick_check?: unknown;
-    } | null;
-    if (result?.quick_check !== "ok") {
-      throw new Error(
-        `SQLite integrity check failed: ${String(result?.quick_check ?? "no result")}`,
+  // An idle pooled worker intentionally has no tenant database open. Its
+  // assignment lifecycle validates the restored database before activation,
+  // so probing SQLite here would make every idle worker look unhealthy.
+  if (!pooledRuntime) {
+    const storage = checkStorageReadiness(() => {
+      const sqlite = getSqlite();
+      sqlite.query("SELECT 1").get();
+      const result = sqlite.query("PRAGMA quick_check(1)").get() as {
+        quick_check?: unknown;
+      } | null;
+      if (result?.quick_check !== "ok") {
+        throw new Error(
+          `SQLite integrity check failed: ${String(result?.quick_check ?? "no result")}`,
+        );
+      }
+    });
+    if (!storage.ready) {
+      getLogger("health").error(
+        { error: storage.error },
+        "Runtime storage is not ready",
       );
-    }
-  });
-  if (!storage.ready) {
-    getLogger("health").error(
-      { error: storage.error },
-      "Runtime storage is not ready",
-    );
-    return Response.json(
-      {
-        status: "starting",
-        reason: "storage_unavailable",
-      },
-      { status: 503 },
-    );
-  }
-
-  const cesClient = getCesClient();
-  if (!cesClient?.isReady()) {
-    getLogger("health").warn(
-      { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
-      isolatedRuntime
-        ? "CES not ready — isolated runtime remains unavailable"
-        : "CES not ready — continuing in compatibility mode",
-    );
-    if (isolatedRuntime) {
       return Response.json(
         {
           status: "starting",
-          reason: cesClient ? "ces_not_ready" : "ces_unavailable",
+          reason: "storage_unavailable",
         },
         { status: 503 },
       );
+    }
+  }
+
+  // Pooled interactive-only workers deliberately keep CES disabled. Their
+  // request-scoped model key and credential paths are served by the control
+  // plane and fail closed independently.
+  if (!pooledRuntime) {
+    const cesClient = getCesClient();
+    if (!cesClient?.isReady()) {
+      getLogger("health").warn(
+        { reason: cesClient ? "ces_not_ready" : "ces_unavailable" },
+        isolatedRuntime
+          ? "CES not ready — isolated runtime remains unavailable"
+          : "CES not ready — continuing in compatibility mode",
+      );
+      if (isolatedRuntime) {
+        return Response.json(
+          {
+            status: "starting",
+            reason: cesClient ? "ces_not_ready" : "ces_unavailable",
+          },
+          { status: 503 },
+        );
+      }
     }
   }
   return Response.json({
@@ -589,6 +601,10 @@ function buildLocalTimeContext(
 function triggerEmptyStateGreetingGeneration(
   localTimeContext: string | null,
 ): boolean {
+  if (isPooledWorkerRuntime()) {
+    return false;
+  }
+
   if (greetingGenerationInFlight) {
     return true;
   }

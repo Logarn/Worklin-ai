@@ -112,6 +112,18 @@ describe("enforcePolicy", () => {
     expect(result).toBeNull();
   });
 
+  test("local.all satisfies route scopes only when local is an allowed principal", () => {
+    authDisabled = false;
+    const ctx = buildTestContext({
+      principalType: "local",
+      scopes: ["local.all"],
+    });
+    expect(enforcePolicy("messages", ACTOR_WRITE_POLICY, ctx)).toBeNull();
+    expect(
+      enforcePolicy("channels/inbound", GATEWAY_INGRESS_POLICY, ctx),
+    ).not.toBeNull();
+  });
+
   test("allows svc_gateway with ingress.write on channels/inbound", () => {
     authDisabled = false;
     const ctx = buildTestContext({

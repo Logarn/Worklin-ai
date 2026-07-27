@@ -183,6 +183,20 @@ describe("useConversationStore", () => {
       expect(getState().pendingDraftProfiles.get("draft-b")).toBe("fast");
     });
 
+    it("does not let a late send clear a newer profile for the same draft", () => {
+      getState().setPendingDraftProfile("draft-a", "smart");
+      getState().setPendingDraftProfile("draft-a", "fast");
+
+      const before = getState().pendingDraftProfiles;
+      getState().clearPendingDraftProfile("draft-a", "smart");
+
+      expect(getState().pendingDraftProfiles).toBe(before);
+      expect(getState().pendingDraftProfiles.get("draft-a")).toBe("fast");
+
+      getState().clearPendingDraftProfile("draft-a", "fast");
+      expect(getState().pendingDraftProfiles.has("draft-a")).toBe(false);
+    });
+
     it("returns the same Map reference when setting an unchanged value", () => {
       getState().setPendingDraftProfile("draft-a", "smart");
       const before = getState().pendingDraftProfiles;

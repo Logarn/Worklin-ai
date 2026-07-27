@@ -5,14 +5,15 @@ import { oauthCompletionStorageKey } from "@/lib/auth/oauth-popup";
 import {
   buildOAuthCompleteDeepLink,
   getNativeUrlSchemeForHost,
+  type OAuthCompleteDeepLinkPayload,
 } from "@/runtime/native-deep-link";
 
 /**
  * OAuth popup completion page.
  *
- * On web, the page is rendered inside a popup window; it posts a message
- * to `window.opener`, mirrors the payload to `localStorage` for popup
- * contexts where `window.opener` is lost, and calls `window.close()`.
+ * On web, the bootstrap page severs `window.opener` before the parent is
+ * allowed to navigate it to the external provider. Completion returns through
+ * a same-origin storage handoff, so the provider never inherits an opener.
  *
  * On Capacitor iOS the page is rendered inside `SFSafariViewController`,
  * which has no `window.opener`, a sandboxed `localStorage`, and ignores
@@ -21,28 +22,6 @@ import {
  */
 
 // ── SVG icons ────────────────────────────────────────────────────────────────
-
-function CheckmarkIcon() {
-  return (
-    <svg
-      className="oauth-icon"
-      viewBox="0 0 56 56"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <circle cx="28" cy="28" r="28" fill="var(--oauth-positive-bg)" />
-      <path
-        className="oauth-check"
-        d="M17 28.5L24.5 36L39 21"
-        stroke="var(--oauth-positive-fg)"
-        strokeWidth="3.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
 
 function ErrorIcon() {
   return (
@@ -68,6 +47,31 @@ function ErrorIcon() {
         strokeWidth="3.5"
         strokeLinecap="round"
         fill="none"
+      />
+    </svg>
+  );
+}
+
+function PendingIcon() {
+  return (
+    <svg
+      className="oauth-icon oauth-spinner"
+      viewBox="0 0 56 56"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="28"
+        cy="28"
+        r="22"
+        stroke="var(--oauth-card-border)"
+        strokeWidth="5"
+      />
+      <path
+        d="M28 6a22 22 0 0 1 22 22"
+        stroke="var(--oauth-positive-fg)"
+        strokeWidth="5"
+        strokeLinecap="round"
       />
     </svg>
   );
@@ -152,10 +156,11 @@ const OAUTH_STYLES = `
     margin-bottom: 20px;
     flex-shrink: 0;
   }
-  .oauth-check {
-    stroke-dasharray: 32;
-    stroke-dashoffset: 32;
-    animation: oauthDraw 0.4s ease-out 0.45s forwards;
+  .oauth-spinner {
+    animation: oauthSpin 0.8s linear infinite;
+  }
+  @keyframes oauthSpin {
+    to { transform: rotate(360deg); }
   }
   .oauth-cross {
     stroke-dasharray: 22;
@@ -190,6 +195,14 @@ function formatProviderName(provider: string): string {
     .join(" ");
 }
 
+export function getOAuthCompletionDeepLink(
+  host: string,
+  payload: OAuthCompleteDeepLinkPayload,
+): string | null {
+  const scheme = getNativeUrlSchemeForHost(host);
+  return scheme ? buildOAuthCompleteDeepLink(scheme, payload) : null;
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function OAuthPopupCompletePage() {
@@ -199,33 +212,63 @@ export function OAuthPopupCompletePage() {
   const oauthProvider = searchParams.get("oauth_provider");
   const oauthCode = searchParams.get("oauth_code");
   const isNativeFlow = searchParams.get("native") === "1";
+  const usesDeepLinkHandoff =
+    isNativeFlow || searchParams.get("handoff") === "deep-link";
+  const isBootstrap = searchParams.get("oauth_pending") === "1";
 
   const displayProvider = oauthProvider
     ? formatProviderName(oauthProvider)
     : "";
 
-  const isSuccess = oauthStatus === "connected";
+  const isConnectedCallback = oauthStatus === "connected";
 
-  const title = isSuccess
-    ? displayProvider
-      ? `Connected to ${displayProvider}`
-      : "Authorization Successful"
-    : "Authorization Failed";
+  const title = isBootstrap
+    ? "Preparing authorization"
+    : isConnectedCallback
+      ? "Verifying connection"
+      : "Authorization Failed";
 
-  const subtitle = isSuccess
-    ? "You can close this popup and return to the app."
-    : `${displayProvider || "Service"} connection failed. Please try again.`;
+  const subtitle = isBootstrap
+    ? `Opening ${displayProvider || "the service"} securely...`
+    : isConnectedCallback
+      ? "Return to Worklin while the connected account is verified."
+      : `${displayProvider || "Service"} connection failed. Please try again.`;
 
   useEffect(() => {
-    if (isNativeFlow && requestId) {
-      const scheme = getNativeUrlSchemeForHost(window.location.host);
-      if (scheme) {
-        window.location.href = buildOAuthCompleteDeepLink(scheme, {
+    if (isBootstrap) {
+      if (!requestId || !oauthProvider || !window.opener) return;
+
+      const opener = window.opener;
+      try {
+        window.opener = null;
+      } catch {
+        return;
+      }
+      if (window.opener !== null) return;
+
+      // Packaged app:// openers have an opaque origin. This ready-only message
+      // carries no credentials; the receiver validates source, HTTPS origin,
+      // request, and provider before navigating to the authorization URL.
+      opener.postMessage(
+        {
+          type: "vellum:oauth-popup-ready",
           requestId,
-          oauthStatus: oauthStatus || null,
-          oauthProvider: oauthProvider || null,
-          oauthCode: oauthCode || null,
-        });
+          oauthProvider,
+        },
+        "*",
+      );
+      return;
+    }
+
+    if (usesDeepLinkHandoff && requestId) {
+      const deepLink = getOAuthCompletionDeepLink(window.location.host, {
+        requestId,
+        oauthStatus: oauthStatus || null,
+        oauthProvider: oauthProvider || null,
+        oauthCode: oauthCode || null,
+      });
+      if (deepLink) {
+        window.location.href = deepLink;
         return;
       }
     }
@@ -238,10 +281,6 @@ export function OAuthPopupCompletePage() {
       oauthCode: oauthCode || null,
     };
 
-    if (window.opener && requestId) {
-      window.opener.postMessage(payload, window.location.origin);
-    }
-
     if (requestId) {
       try {
         window.localStorage.setItem(
@@ -249,22 +288,36 @@ export function OAuthPopupCompletePage() {
           JSON.stringify(payload),
         );
       } catch {
-        // Best-effort fallback for popup contexts where window.opener is lost.
+        // Same-origin web relay. Packaged/native callers use the deep link above.
       }
     }
 
     window.close();
-  }, [requestId, oauthStatus, oauthProvider, oauthCode, isNativeFlow]);
+  }, [
+    requestId,
+    oauthStatus,
+    oauthProvider,
+    oauthCode,
+    usesDeepLinkHandoff,
+    isBootstrap,
+  ]);
 
   return (
     <div className="oauth-page">
       <style dangerouslySetInnerHTML={{ __html: OAUTH_STYLES }} />
       <div className="oauth-card">
-        {isSuccess ? <CheckmarkIcon /> : <ErrorIcon />}
+        {isBootstrap || isConnectedCallback ? <PendingIcon /> : <ErrorIcon />}
         <h1>{title}</h1>
         <p>{subtitle}</p>
-        {!isSuccess && oauthCode && (
-          <p style={{ marginTop: 8, fontSize: 11, color: "var(--oauth-text-secondary)", opacity: 0.7 }}>
+        {!isConnectedCallback && !isBootstrap && oauthCode && (
+          <p
+            style={{
+              marginTop: 8,
+              fontSize: 11,
+              color: "var(--oauth-text-secondary)",
+              opacity: 0.7,
+            }}
+          >
             Error: {oauthCode}
           </p>
         )}

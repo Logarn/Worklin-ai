@@ -9,6 +9,7 @@
 
 import { isAbsolute, resolve, sep } from "node:path";
 
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { generateAppIcon } from "../media/app-icon-generator.js";
 import { addAppConversationId } from "../memory/app-store.js";
 import { invalidateEdgeIndex } from "../memory/v2/edge-index.js";
@@ -62,7 +63,9 @@ function notifyAppChanged(
 ): void {
   refreshSurfacesForApp(ctx, appId, opts);
   broadcastAppFilesChanged(appId);
-  void updatePublishedAppDeployment(appId);
+  if (!isPooledWorkerRuntime()) {
+    void updatePublishedAppDeployment(appId);
+  }
 }
 
 function broadcastAppFilesChanged(appId: string): void {
@@ -108,11 +111,13 @@ registerHook("app_create", (_name, _input, result, { ctx }) => {
         );
       }
 
-      ensureAppSourceWatcher();
+      if (!isPooledWorkerRuntime()) {
+        ensureAppSourceWatcher();
+      }
 
       notifyAppChanged(ctx, parsed.id);
 
-      if (parsed.name) {
+      if (parsed.name && !isPooledWorkerRuntime()) {
         void generateAppIcon(parsed.id, parsed.name, parsed.description)
           .then(() => {
             broadcastAppFilesChanged(parsed.id!);

@@ -37,19 +37,26 @@ const setSelectedAssistantMock = mock(async (_id: string | null) => {});
 let pendingProviderKey: unknown = null;
 let applyPendingProviderKeyImpl: (
   assistantId: string,
+  runtimeProvider?: string | null,
+  scope?: { userId: string | null },
 ) => Promise<void> = async () => {};
-const applyPendingProviderKeyMock = mock((assistantId: string) =>
-  applyPendingProviderKeyImpl(assistantId),
+const applyPendingProviderKeyMock = mock(
+  (
+    assistantId: string,
+    runtimeProvider?: string | null,
+    scope?: { userId: string | null },
+  ) => applyPendingProviderKeyImpl(assistantId, runtimeProvider, scope),
 );
 let applyChatgptSubscriptionProviderImpl: (
   assistantId: string,
+  scope?: { userId: string | null },
 ) => Promise<void> = async () => {};
-const applyChatgptSubscriptionProviderMock = mock((assistantId: string) =>
-  applyChatgptSubscriptionProviderImpl(assistantId),
+const applyChatgptSubscriptionProviderMock = mock(
+  (assistantId: string, scope?: { userId: string | null }) =>
+    applyChatgptSubscriptionProviderImpl(assistantId, scope),
 );
-let chatgptOnConnected:
-  | ((connection: unknown) => void | Promise<void>)
-  | null = null;
+let chatgptOnConnected: ((connection: unknown) => void | Promise<void>) | null =
+  null;
 
 const hatchAssistantMock = mock(async () => ({
   ok: true,
@@ -357,6 +364,7 @@ mock.module("@/stores/client-feature-flag-store", () => ({
 
 mock.module("@/stores/auth-store", () => ({
   useAuthStore: {
+    getState: () => ({ user: { id: "user-1" } }),
     use: {
       user: () => ({
         id: "user-1",
@@ -611,11 +619,12 @@ describe("onboarding lifecycle sync", () => {
   });
 
   test("an already-active hosted assistant primes new-browser state before leaving hatching", async () => {
-    pendingProviderKey = { provider: "xai", key: "provider-key-value" };
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
     getAssistantImpl = async () =>
       assistantResult("active", {
         id: "asst-returning",
         is_local: false,
+        runtime_provider: "railway",
         ingress_url: "https://worklin-ai.vercel.app",
         platform_actor_token: "actor-token-returning",
       });
@@ -625,6 +634,8 @@ describe("onboarding lifecycle sync", () => {
     await waitFor(() =>
       expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
         "asst-returning",
+        "railway",
+        { userId: "user-1" },
       ),
     );
     expect(setSelectedAssistantMock).toHaveBeenCalledWith("asst-returning");
@@ -634,6 +645,46 @@ describe("onboarding lifecycle sync", () => {
         token: "actor-token-returning",
       }),
     );
+    await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
+      timeout: 2_000,
+    });
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(routes.onboarding.prechat, {
+        replace: true,
+      }),
+    );
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
+  });
+
+  test("an already-active pooled assistant never installs a direct runtime connection", async () => {
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
+    getAssistantImpl = async () =>
+      assistantResult("active", {
+        id: "asst-pooled-returning",
+        is_local: false,
+        runtime_provider: "pooled_worker",
+        ingress_url: null,
+        platform_actor_token: null,
+      });
+
+    render(<HatchingScreen />);
+
+    await waitFor(() =>
+      expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
+        "asst-pooled-returning",
+        "pooled_worker",
+        { userId: "user-1" },
+      ),
+    );
+    expect(setSelectedAssistantMock).toHaveBeenCalledWith(
+      "asst-pooled-returning",
+    );
+    expect(setSelfHostedConnectionMock).toHaveBeenCalledWith(null);
+    const runtimeConnectionCalls = setSelfHostedConnectionMock.mock
+      .calls as unknown as Array<[unknown]>;
+    expect(
+      runtimeConnectionCalls.some(([connection]) => connection !== null),
+    ).toBe(false);
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled(), {
       timeout: 2_000,
     });
@@ -659,7 +710,11 @@ describe("onboarding lifecycle sync", () => {
         "Worklin started your assistant, but could not get permission to save the AI provider yet. Please try again.",
       ),
     ).toBeTruthy();
-    expect(applyPendingProviderKeyMock).toHaveBeenCalledWith("asst-1");
+    expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
+      "asst-1",
+      undefined,
+      { userId: "user-1" },
+    );
     expect(checkAssistantMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
       replace: true,
@@ -692,12 +747,49 @@ describe("onboarding lifecycle sync", () => {
     expect(completionError).toBeInstanceOf(Error);
     expect(applyChatgptSubscriptionProviderMock).toHaveBeenCalledWith(
       "asst-1",
+      { userId: "user-1" },
     );
     expect(screen.getByText("Connect ChatGPT")).toBeTruthy();
     expect(checkAssistantMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
       replace: true,
     });
+  });
+
+  test("pooled provider rejection shows its actionable message and does not continue", async () => {
+    pendingProviderKey = {
+      provider: "openai",
+      authType: "oauth_subscription",
+      key: "",
+    };
+    getAssistantImpl = async () =>
+      assistantResult("active", { runtime_provider: "pooled_worker" });
+    applyPendingProviderKeyImpl = async () => {
+      throw Object.assign(
+        new Error(
+          "ChatGPT subscription sign-in is not available on pooled assistants yet. Choose OpenAI API and enter an API key instead.",
+        ),
+        {
+          code: "pooled_provider_api_key_required",
+          status: 409,
+        },
+      );
+    };
+
+    render(<HatchingScreen />);
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "ChatGPT subscription sign-in is not available on pooled assistants yet. Choose OpenAI API and enter an API key instead.",
+      ),
+    ).toBeTruthy();
+    expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
+      "asst-1",
+      "pooled_worker",
+      { userId: "user-1" },
+    );
+    expect(checkAssistantMock).not.toHaveBeenCalled();
   });
 
   test("fresh platform hatch redirects to provider selection when pending provider state is missing", async () => {

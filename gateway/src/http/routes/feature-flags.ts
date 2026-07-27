@@ -9,6 +9,10 @@ import {
   writeFeatureFlag,
 } from "../../feature-flag-store.js";
 import { getLogger } from "../../logger.js";
+import {
+  isPooledGatewayRuntime,
+  pooledSharedStateUnavailableResponse,
+} from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("feature-flags");
 
@@ -29,8 +33,9 @@ export function createFeatureFlagsGetHandler() {
   return async (_req: Request): Promise<Response> => {
     try {
       const defaults = loadFeatureFlagDefaults();
-      const persisted = readPersistedFeatureFlags();
-      const remote = readRemoteFeatureFlags();
+      const pooled = isPooledGatewayRuntime();
+      const persisted = pooled ? {} : readPersistedFeatureFlags();
+      const remote = pooled ? {} : readRemoteFeatureFlags();
       const envOverrides = readEnvFeatureFlagOverrides();
 
       const entries: FeatureFlagEntry[] = [];
@@ -63,6 +68,9 @@ export function createFeatureFlagsGetHandler() {
 
 export function createFeatureFlagsPatchHandler() {
   return async (req: Request, flagKey: string): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Feature flag changes");
+    }
     // Validate flagKey is non-empty and matches allowed key charset
     if (!flagKey) {
       return Response.json(

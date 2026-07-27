@@ -11,6 +11,8 @@
  * the future.
  */
 
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
+
 export interface BackgroundTool {
   id: string;
   /** Tool type identifier (e.g. "bash", "host_bash"). */
@@ -26,12 +28,23 @@ export interface BackgroundTool {
 export const MAX_BACKGROUND_TOOLS = 20;
 
 const registry = new Map<string, BackgroundTool>();
+const cancelling = new Set<string>();
+
+export function assertBackgroundToolExecutionSupported(): void {
+  assertPooledRuntimeAsyncOperationSupported("background tools");
+}
 
 /**
  * Registers a background tool in the in-memory store.
  * Throws if the registry would exceed {@link MAX_BACKGROUND_TOOLS}.
  */
 export function registerBackgroundTool(tool: BackgroundTool): void {
+  try {
+    assertBackgroundToolExecutionSupported();
+  } catch (error) {
+    tool.cancel("Pooled workers do not support background tools.");
+    throw error;
+  }
   if (registry.size >= MAX_BACKGROUND_TOOLS) {
     throw new Error(
       `Background tool limit reached (max ${MAX_BACKGROUND_TOOLS}). Cancel an existing background tool before starting a new one.`,
@@ -43,6 +56,7 @@ export function registerBackgroundTool(tool: BackgroundTool): void {
 /** Removes a background tool entry by ID. */
 export function removeBackgroundTool(id: string): void {
   registry.delete(id);
+  cancelling.delete(id);
 }
 
 /**
@@ -50,7 +64,9 @@ export function removeBackgroundTool(id: string): void {
  * `conversationId`.
  */
 export function listBackgroundTools(conversationId?: string): BackgroundTool[] {
-  const all = Array.from(registry.values());
+  const all = Array.from(registry.values()).filter(
+    (tool) => !cancelling.has(tool.id),
+  );
   if (conversationId === undefined) {
     return all;
   }
@@ -58,16 +74,18 @@ export function listBackgroundTools(conversationId?: string): BackgroundTool[] {
 }
 
 /**
- * Cancels a background tool by ID: calls `tool.cancel()`, removes the entry,
- * and returns `true`. Returns `false` if the ID is not found.
+ * Requests cancellation for a background tool by ID and hides it from list
+ * APIs. The producer removes the tracked execution only after its underlying
+ * process or proxy request reaches a terminal event.
  */
 export function cancelBackgroundTool(id: string, reason?: string): boolean {
   const tool = registry.get(id);
   if (!tool) {
     return false;
   }
+  if (cancelling.has(id)) return true;
+  cancelling.add(id);
   tool.cancel(reason);
-  registry.delete(id);
   return true;
 }
 
@@ -78,11 +96,21 @@ export function cancelBackgroundTools(
   const cancelled: BackgroundTool[] = [];
   for (const tool of Array.from(registry.values())) {
     if (!shouldCancel(tool)) continue;
+    if (cancelling.has(tool.id)) continue;
+    cancelling.add(tool.id);
     tool.cancel(reason);
-    registry.delete(tool.id);
     cancelled.push(tool);
   }
   return cancelled;
+}
+
+/**
+ * Counts executions that have not emitted their terminal cleanup event yet.
+ * A cancellation request remains counted until its producer calls
+ * {@link removeBackgroundTool}.
+ */
+export function activeBackgroundToolExecutionCount(): number {
+  return registry.size;
 }
 
 /**
@@ -109,4 +137,5 @@ export function isBackgroundToolLimitReached(): boolean {
  */
 export function _clearRegistryForTesting(): void {
   registry.clear();
+  cancelling.clear();
 }

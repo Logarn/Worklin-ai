@@ -50,39 +50,46 @@ describe("postChatMessage onboarding payload", () => {
     // mutating requests, which reads `document.cookie`. Stub a minimal
     // `document` so the bun test (Node) environment doesn't throw.
     originalDocument = (globalThis as { document?: unknown }).document;
-    (globalThis as { document?: unknown }).document = { cookie: "csrftoken=test" };
-    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      // The heyapi client passes a Request object as `input`; read the body
-      // by cloning and calling `.text()` so we can decode the JSON payload.
-      const url = input instanceof Request ? input.url : String(input);
-      let bodyText: string | undefined;
-      if (input instanceof Request) {
-        bodyText = await input.clone().text();
-      } else if (typeof init?.body === "string") {
-        bodyText = init.body;
-      }
-      capturedRequests.push({ url, body: bodyText ?? "" });
-      if (url.includes("/workspace/file")) {
-        return new Response(JSON.stringify({ detail: "File not found" }), {
-          status: 404,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (url.includes("/workspace/write")) {
-        return new Response(JSON.stringify({ path: "users/guardian.md", size: 1 }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response(
-        JSON.stringify({
-          accepted: true,
-          messageId: "msg-1",
-          conversationId: "conv-resp-1",
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
+    (globalThis as { document?: unknown }).document = {
+      cookie: "csrftoken=test",
+    };
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        // The heyapi client passes a Request object as `input`; read the body
+        // by cloning and calling `.text()` so we can decode the JSON payload.
+        const url = input instanceof Request ? input.url : String(input);
+        let bodyText: string | undefined;
+        if (input instanceof Request) {
+          bodyText = await input.clone().text();
+        } else if (typeof init?.body === "string") {
+          bodyText = init.body;
+        }
+        capturedRequests.push({ url, body: bodyText ?? "" });
+        if (url.includes("/workspace/file")) {
+          return new Response(JSON.stringify({ detail: "File not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/workspace/write")) {
+          return new Response(
+            JSON.stringify({ path: "users/guardian.md", size: 1 }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            accepted: true,
+            messageId: "msg-1",
+            conversationId: "conv-resp-1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -269,25 +276,29 @@ describe("postChatMessage wire-field bilingual cutover", () => {
     capturedRequests = [];
     useAssistantIdentityStore.getState().clearIdentity();
     originalDocument = (globalThis as { document?: unknown }).document;
-    (globalThis as { document?: unknown }).document = { cookie: "csrftoken=test" };
-    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      let bodyText: string | undefined;
-      if (input instanceof Request) {
-        bodyText = await input.clone().text();
-      } else if (typeof init?.body === "string") {
-        bodyText = init.body;
-      }
-      capturedRequests.push({ url, body: bodyText ?? "" });
-      return new Response(
-        JSON.stringify({
-          accepted: true,
-          messageId: "msg-1",
-          conversationId: "conv-resp-1",
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
+    (globalThis as { document?: unknown }).document = {
+      cookie: "csrftoken=test",
+    };
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        let bodyText: string | undefined;
+        if (input instanceof Request) {
+          bodyText = await input.clone().text();
+        } else if (typeof init?.body === "string") {
+          bodyText = init.body;
+        }
+        capturedRequests.push({ url, body: bodyText ?? "" });
+        return new Response(
+          JSON.stringify({
+            accepted: true,
+            messageId: "msg-1",
+            conversationId: "conv-resp-1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -301,7 +312,9 @@ describe("postChatMessage wire-field bilingual cutover", () => {
   });
 
   function getMessageBody(): Record<string, unknown> {
-    const requests = capturedRequests.filter((r) => r.url.includes("/messages"));
+    const requests = capturedRequests.filter((r) =>
+      r.url.includes("/messages"),
+    );
     expect(requests).toHaveLength(1);
     return JSON.parse(requests[0]!.body) as Record<string, unknown>;
   }
@@ -324,6 +337,26 @@ describe("postChatMessage wire-field bilingual cutover", () => {
     const body = getMessageBody();
     expect(body.conversationId).toBe("conv-internal-2");
     expect(body).not.toHaveProperty("conversationKey");
+  });
+
+  test("allows a pooled first-message observer to force a stable conversationKey", async () => {
+    useAssistantIdentityStore.getState().setIdentity("Vel", "0.9.0");
+
+    await postChatMessage(
+      "asst-1",
+      "draft-stable-1",
+      "hi",
+      [],
+      undefined,
+      "client-message-1",
+      undefined,
+      { conversationWireField: "conversationKey" },
+    );
+
+    const body = getMessageBody();
+    expect(body.conversationKey).toBe("draft-stable-1");
+    expect(body.clientMessageId).toBe("client-message-1");
+    expect(body).not.toHaveProperty("conversationId");
   });
 
   test("sends only conversationKey on assistants older than 0.8.6", async () => {
@@ -391,21 +424,25 @@ describe("postChatMessage server-minted conversation flow", () => {
     };
     useAssistantIdentityStore.getState().clearIdentity();
     originalDocument = (globalThis as { document?: unknown }).document;
-    (globalThis as { document?: unknown }).document = { cookie: "csrftoken=test" };
-    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      let bodyText: string | undefined;
-      if (input instanceof Request) {
-        bodyText = await input.clone().text();
-      } else if (typeof init?.body === "string") {
-        bodyText = init.body;
-      }
-      capturedRequests.push({ url, body: bodyText ?? "" });
-      return new Response(JSON.stringify(nextResponseBody), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
+    (globalThis as { document?: unknown }).document = {
+      cookie: "csrftoken=test",
+    };
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        let bodyText: string | undefined;
+        if (input instanceof Request) {
+          bodyText = await input.clone().text();
+        } else if (typeof init?.body === "string") {
+          bodyText = init.body;
+        }
+        capturedRequests.push({ url, body: bodyText ?? "" });
+        return new Response(JSON.stringify(nextResponseBody), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -419,7 +456,9 @@ describe("postChatMessage server-minted conversation flow", () => {
   });
 
   function getMessageBody(): Record<string, unknown> {
-    const requests = capturedRequests.filter((r) => r.url.includes("/messages"));
+    const requests = capturedRequests.filter((r) =>
+      r.url.includes("/messages"),
+    );
     expect(requests).toHaveLength(1);
     return JSON.parse(requests[0]!.body) as Record<string, unknown>;
   }
@@ -497,6 +536,32 @@ describe("postChatMessage server-minted conversation flow", () => {
     expect(result.error.detail).toContain("did not return a conversation id");
   });
 
+  test("surfaces an error carried by a successful pooled heartbeat response", async () => {
+    useAssistantIdentityStore.getState().setIdentity("Vel", "0.8.6");
+    nextResponseBody = {
+      accepted: false,
+      status: 504,
+      error: {
+        code: "POOLED_TURN_TIMEOUT",
+        detail: "The assistant turn exceeded the interactive limit.",
+      },
+    };
+
+    const result = await postChatMessage("asst-1", null, "hi");
+
+    if (result.ok) {
+      throw new Error("expected failure");
+    }
+    expect(result).toEqual({
+      ok: false,
+      status: 504,
+      error: {
+        code: "POOLED_TURN_TIMEOUT",
+        detail: "The assistant turn exceeded the interactive limit.",
+      },
+    });
+  });
+
   test("still uses conversationKey wire field when conversationId is provided (legacy non-null path unchanged)", async () => {
     // On assistants older than 0.8.6, the wire-field gate still picks
     // `conversationKey` only — the `conversationId` field is not added
@@ -526,25 +591,29 @@ describe("postChatMessage clientTimezone payload", () => {
     capturedRequests = [];
     useAssistantIdentityStore.getState().clearIdentity();
     originalDocument = (globalThis as { document?: unknown }).document;
-    (globalThis as { document?: unknown }).document = { cookie: "csrftoken=test" };
-    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      let bodyText: string | undefined;
-      if (input instanceof Request) {
-        bodyText = await input.clone().text();
-      } else if (typeof init?.body === "string") {
-        bodyText = init.body;
-      }
-      capturedRequests.push({ url, body: bodyText ?? "" });
-      return new Response(
-        JSON.stringify({
-          accepted: true,
-          messageId: "msg-1",
-          conversationId: "conv-resp-1",
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
+    (globalThis as { document?: unknown }).document = {
+      cookie: "csrftoken=test",
+    };
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        let bodyText: string | undefined;
+        if (input instanceof Request) {
+          bodyText = await input.clone().text();
+        } else if (typeof init?.body === "string") {
+          bodyText = init.body;
+        }
+        capturedRequests.push({ url, body: bodyText ?? "" });
+        return new Response(
+          JSON.stringify({
+            accepted: true,
+            messageId: "msg-1",
+            conversationId: "conv-resp-1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -558,7 +627,9 @@ describe("postChatMessage clientTimezone payload", () => {
   });
 
   function getMessageBody(): Record<string, unknown> {
-    const requests = capturedRequests.filter((r) => r.url.includes("/messages"));
+    const requests = capturedRequests.filter((r) =>
+      r.url.includes("/messages"),
+    );
     expect(requests).toHaveLength(1);
     return JSON.parse(requests[0]!.body) as Record<string, unknown>;
   }

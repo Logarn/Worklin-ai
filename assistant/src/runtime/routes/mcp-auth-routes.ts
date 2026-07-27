@@ -21,6 +21,7 @@ import { getMcpAuthState } from "../../mcp/mcp-auth-state.js";
 import { deleteMcpOAuthCredentials } from "../../mcp/mcp-oauth-provider.js";
 import { getLogger } from "../../util/logger.js";
 import { GATEWAY_PRINCIPALS } from "../auth/route-policy.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import { BadRequestError, InternalError, NotFoundError } from "./errors.js";
 import type { RouteDefinition } from "./types.js";
 
@@ -30,12 +31,17 @@ async function handleMcpAuthStart({
   body,
 }: {
   body?: Record<string, unknown>;
-}): Promise<{ auth_url: string; state: string; already_authenticated?: boolean }> {
+}): Promise<{
+  auth_url: string;
+  state: string;
+  already_authenticated?: boolean;
+}> {
+  assertPooledRuntimeAsyncOperationSupported("MCP authentication");
+
   const { serverId } = body as { serverId: string };
 
   const raw = loadRawConfig();
-  const servers =
-    (raw.mcp as Partial<McpConfig> | undefined)?.servers ?? {};
+  const servers = (raw.mcp as Partial<McpConfig> | undefined)?.servers ?? {};
   const serverConfig = servers[serverId];
 
   if (!serverConfig) {
@@ -63,7 +69,11 @@ async function handleMcpAuthStart({
     throw new InternalError(err instanceof Error ? err.message : String(err));
   }
 
-  return { auth_url: result.auth_url, state: serverId, already_authenticated: result.already_authenticated };
+  return {
+    auth_url: result.auth_url,
+    state: serverId,
+    already_authenticated: result.already_authenticated,
+  };
 }
 
 function handleMcpAuthStatus({
@@ -74,6 +84,8 @@ function handleMcpAuthStatus({
   | { status: "pending"; auth_url: string }
   | { status: "complete" }
   | { status: "error"; error: string } {
+  assertPooledRuntimeAsyncOperationSupported("MCP authentication");
+
   const { serverId } = pathParams as { serverId: string };
   const state = getMcpAuthState(serverId);
 
@@ -81,7 +93,8 @@ function handleMcpAuthStatus({
     throw new NotFoundError(`No active OAuth flow for server "${serverId}"`);
   }
 
-  if (state.status === "pending") return { status: "pending", auth_url: state.authUrl };
+  if (state.status === "pending")
+    return { status: "pending", auth_url: state.authUrl };
   if (state.status === "complete") return { status: "complete" };
   return { status: "error", error: state.error };
 }
@@ -99,9 +112,11 @@ function triggerReload(context: string): void {
   });
 }
 
-function handleMcpReload(_args: {
-  body?: Record<string, unknown>;
-}): { ok: true } {
+function handleMcpReload(_args: { body?: Record<string, unknown> }): {
+  ok: true;
+} {
+  assertPooledRuntimeAsyncOperationSupported("MCP authentication");
+
   triggerReload("internal_mcp_reload");
   return { ok: true };
 }
@@ -173,6 +188,8 @@ interface McpServerEntry {
 async function handleMcpList(_args: {
   body?: Record<string, unknown>;
 }): Promise<{ servers: McpServerEntry[] }> {
+  assertPooledRuntimeAsyncOperationSupported("MCP authentication");
+
   const raw = loadRawConfig();
   const mcpConfig = raw.mcp as Partial<McpConfig> | undefined;
   const servers = mcpConfig?.servers ?? {};
@@ -213,15 +230,9 @@ async function handleMcpAdd({
 }: {
   body?: Record<string, unknown>;
 }): Promise<{ added: true }> {
-  const {
-    name,
-    transportType,
-    url,
-    command,
-    args,
-    risk,
-    disabled,
-  } = body as {
+  assertPooledRuntimeAsyncOperationSupported("MCP authentication");
+
+  const { name, transportType, url, command, args, risk, disabled } = body as {
     name: string;
     transportType: string;
     url?: string;
@@ -294,6 +305,8 @@ async function handleMcpRemove({
 }: {
   body?: Record<string, unknown>;
 }): Promise<{ removed: true }> {
+  assertPooledRuntimeAsyncOperationSupported("MCP authentication");
+
   const { name } = body as { name: string };
 
   const raw = loadRawConfig();

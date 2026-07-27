@@ -107,3 +107,13 @@ export function getCallController(
 ): CallController | undefined {
   return activeCallControllers.get(callSessionId);
 }
+
+export function activeCallControllerCount(): number {
+  return activeCallControllers.size;
+}
+
+export function destroyAllCallControllers(): void {
+  for (const controller of [...activeCallControllers.values()]) {
+    controller.destroy();
+  }
+}

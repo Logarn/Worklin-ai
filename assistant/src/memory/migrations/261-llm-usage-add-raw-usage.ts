@@ -1,4 +1,4 @@
-import type { DrizzleDb } from "../db-connection.js";
+import { type DrizzleDb, getSqliteFrom } from "../db-connection.js";
 import { tableHasColumn } from "./schema-introspection.js";
 import { withCrashRecovery } from "./validate-migration-state.js";
 
@@ -22,11 +22,26 @@ const COLUMN = "raw_usage";
  * payload.
  */
 export function migrateLlmUsageAddRawUsage(database: DrizzleDb): void {
+  // The live schema is the source of truth. Restores and older table rebuilds
+  // can preserve a completed (or failed) checkpoint while replacing the table
+  // with a shape that predates raw_usage. Clear only this migration's stale
+  // checkpoint so the idempotent structural repair runs again and records a
+  // fresh completion marker.
+  if (!tableHasColumn(database, TABLE, COLUMN)) {
+    getSqliteFrom(database)
+      .query(`DELETE FROM memory_checkpoints WHERE key = ?`)
+      .run(CHECKPOINT_KEY);
+  }
+
   withCrashRecovery(database, CHECKPOINT_KEY, () => {
     if (!tableHasColumn(database, TABLE, COLUMN)) {
       database.run(`ALTER TABLE ${TABLE} ADD COLUMN ${COLUMN} TEXT`);
     }
   });
+
+  if (!tableHasColumn(database, TABLE, COLUMN)) {
+    throw new Error(`${TABLE}.${COLUMN} migration postcondition failed`);
+  }
 }
 
 export function downLlmUsageAddRawUsage(database: DrizzleDb): void {

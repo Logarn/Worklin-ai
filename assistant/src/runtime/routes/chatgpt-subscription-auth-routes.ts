@@ -41,6 +41,7 @@ import {
 } from "../../security/secure-keys.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import { BadRequestError } from "./errors.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
@@ -493,6 +494,10 @@ async function startLoopbackCallbackServer(state: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 async function handleStartAuth(_args: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported(
+    "ChatGPT subscription authentication",
+  );
+
   cleanupExpiredEntries();
 
   const state = generateState();
@@ -506,6 +511,10 @@ async function handleStartAuth(_args: RouteHandlerArgs) {
 }
 
 async function handleExchange(args: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported(
+    "ChatGPT subscription authentication",
+  );
+
   const { code, state, code_verifier } = args.body as {
     code: string;
     state: string;
@@ -671,6 +680,10 @@ async function handleBrowserHeldDeviceStatus(args: RouteHandlerArgs) {
 }
 
 async function handleStatus(args: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported(
+    "ChatGPT subscription authentication",
+  );
+
   cleanupExpiredEntries();
   const params = statusParams(args);
   const state = params.state;

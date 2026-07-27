@@ -1,5 +1,10 @@
 import { getLogger } from "../../logger.js";
 import { mutateConfigFile, readConfigFile } from "../../config-file-utils.js";
+import {
+  isPooledGatewayRuntime,
+  POOLED_SAFE_PRIVACY_CONFIG,
+  pooledSharedStateUnavailableResponse,
+} from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("privacy-config");
 
@@ -85,6 +90,9 @@ function resolveBoolean(
 
 export function createPrivacyConfigPatchHandler() {
   return async (req: Request): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Privacy config changes");
+    }
     let body: unknown;
     try {
       body = await req.json();
@@ -249,6 +257,9 @@ export function createPrivacyConfigPatchHandler() {
 
 export function createPrivacyConfigGetHandler() {
   return async (_req: Request): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return Response.json(POOLED_SAFE_PRIVACY_CONFIG);
+    }
     const result = readConfigFile();
     if (!result.ok) {
       log.error(

@@ -209,3 +209,29 @@ function evictExpired(): void {
     }
   }
 }
+
+/**
+ * Drop every buffered audio capability before a pooled worker changes tenant.
+ *
+ * Streaming subscribers are closed first so no controller owned by the old
+ * assignment survives the reset. Completed buffers and their unguessable IDs
+ * are then made unreachable, and capacity accounting returns to zero.
+ */
+export function resetAudioStoreForTenantAssignment(): void {
+  for (const entry of streamingStore.values()) {
+    entry.complete = true;
+    for (const controller of entry.subscribers) {
+      try {
+        controller.close();
+      } catch {
+        // The reader may already have cancelled or closed.
+      }
+    }
+    entry.subscribers.clear();
+    entry.chunks.length = 0;
+    entry.totalBytes = 0;
+  }
+  streamingStore.clear();
+  store.clear();
+  currentBytes = 0;
+}

@@ -3,7 +3,9 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { VoiceTurnHandle } from "../calls/voice-session-bridge.js";
 import { startVoiceTurn } from "../calls/voice-session-bridge.js";
 import {
+  claimManagedVoiceProviderConversationEvent,
   getManagedVoiceSessionByProviderConversation,
+  isManagedVoiceSessionBindingCurrent,
   releaseManagedVoiceSession,
 } from "./provider-session.js";
 
@@ -60,14 +62,24 @@ type SpeechEngineSocket = {
 
 type TranscriptEntry = { role?: unknown; content?: unknown };
 
+export function isValidElevenLabsEventId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
 export class ElevenLabsSpeechEngineSession {
   private readonly socket: SpeechEngineSocket;
+  private readonly startVoiceTurn: typeof startVoiceTurn;
   private providerConversationId: string | null = null;
   private activeEventId: number | null = null;
   private activeTurn: VoiceTurnHandle | null = null;
+  private highestEventId = -1;
 
-  constructor(socket: SpeechEngineSocket) {
+  constructor(
+    socket: SpeechEngineSocket,
+    startTurn: typeof startVoiceTurn = startVoiceTurn,
+  ) {
     this.socket = socket;
+    this.startVoiceTurn = startTurn;
   }
 
   handleMessage(raw: string): void {
@@ -78,11 +90,21 @@ export class ElevenLabsSpeechEngineSession {
       this.socket.close(1003, "Invalid JSON");
       return;
     }
-    if (
-      message.type === "init" &&
-      typeof message.conversation_id === "string"
-    ) {
-      this.providerConversationId = message.conversation_id;
+    if (message.type === "init") {
+      if (this.providerConversationId !== null) {
+        this.socket.close(1008, "Conversation is already initialized");
+        return;
+      }
+      if (typeof message.conversation_id !== "string") {
+        this.socket.close(1008, "Invalid conversation");
+        return;
+      }
+      const providerConversationId = message.conversation_id.trim();
+      if (!providerConversationId || providerConversationId.length > 255) {
+        this.socket.close(1008, "Invalid conversation");
+        return;
+      }
+      this.providerConversationId = providerConversationId;
       return;
     }
     if (message.type === "ping") {
@@ -91,18 +113,27 @@ export class ElevenLabsSpeechEngineSession {
     }
     if (message.type === "user_transcript") {
       const eventId = message.event_id;
-      if (typeof eventId !== "number") return;
+      if (!isValidElevenLabsEventId(eventId)) return;
       const content = lastUserContent(message.user_transcript);
       if (!content) return;
+      if (eventId <= this.highestEventId) return;
+      this.highestEventId = eventId;
       this.startTurn(eventId, content);
       return;
     }
-    if (message.type === "close") this.close();
+    if (message.type === "close") this.close(true);
   }
 
-  close(): void {
+  /**
+   * Abort work owned by this provider transport. A transient socket close
+   * must not release the canonical Worklin session because ElevenLabs may
+   * reconnect it; only an explicit provider/client end releases the lease.
+   */
+  close(releaseSession = false): void {
     this.activeTurn?.abort();
     this.activeTurn = null;
+    this.activeEventId = null;
+    if (!releaseSession) return;
     if (!this.providerConversationId) return;
     const binding = getManagedVoiceSessionByProviderConversation(
       this.providerConversationId,
@@ -118,13 +149,18 @@ export class ElevenLabsSpeechEngineSession {
   }
 
   private async runTurn(eventId: number, content: string): Promise<void> {
-    const binding = await this.waitForBinding();
-    if (!binding || this.activeEventId !== eventId) {
+    const claim = await this.waitForEventClaim(eventId);
+    if (claim?.status !== "accepted" || this.activeEventId !== eventId) {
       this.finish(eventId);
       return;
     }
+    const { binding } = claim;
     try {
-      const handle = await startVoiceTurn({
+      if (!isManagedVoiceSessionBindingCurrent(binding)) {
+        this.finish(eventId);
+        return;
+      }
+      const handle = await this.startVoiceTurn({
         conversationId: binding.conversationId,
         voiceSessionId: binding.sessionId,
         assistantId: binding.assistantId,
@@ -139,7 +175,14 @@ export class ElevenLabsSpeechEngineSession {
         isInbound: true,
         callbacks: {
           assistant_text_delta: ({ text }) => {
-            if (this.activeEventId !== eventId || !text) return;
+            const current = isManagedVoiceSessionBindingCurrent(binding);
+            if (this.activeEventId !== eventId || !text || !current) {
+              if (!current) {
+                this.activeTurn?.abort();
+                this.finish(eventId);
+              }
+              return;
+            }
             this.socket.send(
               JSON.stringify({
                 type: "agent_response",
@@ -149,12 +192,22 @@ export class ElevenLabsSpeechEngineSession {
               }),
             );
           },
-          message_complete: () => this.finish(eventId),
+          message_complete: () => {
+            if (!isManagedVoiceSessionBindingCurrent(binding)) {
+              this.activeTurn?.abort();
+            }
+            this.finish(eventId);
+          },
         },
         onError: () => this.finish(eventId),
       });
-      if (this.activeEventId !== eventId) handle.abort();
-      else this.activeTurn = handle;
+      if (
+        this.activeEventId !== eventId ||
+        !isManagedVoiceSessionBindingCurrent(binding)
+      ) {
+        handle.abort();
+        this.finish(eventId);
+      } else this.activeTurn = handle;
     } catch {
       this.finish(eventId);
     }
@@ -174,13 +227,14 @@ export class ElevenLabsSpeechEngineSession {
     this.activeTurn = null;
   }
 
-  private async waitForBinding() {
+  private async waitForEventClaim(eventId: number) {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (this.providerConversationId) {
-        const binding = getManagedVoiceSessionByProviderConversation(
+        const claim = claimManagedVoiceProviderConversationEvent(
           this.providerConversationId,
+          eventId,
         );
-        if (binding) return binding;
+        if (claim.status !== "invalid") return claim;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }

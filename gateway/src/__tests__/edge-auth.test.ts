@@ -40,6 +40,10 @@ let mockValidateEdgeToken = mock(
 );
 mock.module("../auth/token-exchange.js", () => ({
   validateEdgeToken: (token: string) => mockValidateEdgeToken(token),
+  // guardian-bootstrap reaches the reverse IPC client, which now attaches a
+  // gateway service token to pooled-runtime calls. Keep that transitive import
+  // satisfied while this suite exercises edge-token validation only.
+  mintServiceToken: () => "test-service-token",
 }));
 
 const { AuthRateLimiter } = await import("../auth-rate-limiter.js");

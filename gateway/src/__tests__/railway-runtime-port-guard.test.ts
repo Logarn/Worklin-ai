@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
 describe("Railway runtime port wiring", () => {
-  test("combined and isolated runtime modes expose the correct process", async () => {
+  test("combined, isolated, and pooled runtime modes expose the correct process", async () => {
     const entrypoint = await Bun.file(
       new URL("../../../runtime/entrypoint.sh", import.meta.url),
     ).text();
     const dockerfile = await Bun.file(
       new URL("../../../runtime/Dockerfile", import.meta.url),
+    ).text();
+    const gatewayIndex = await Bun.file(
+      new URL("../index.ts", import.meta.url),
     ).text();
 
     expect(entrypoint).toContain(': "${PORT:=8080}"');
@@ -20,8 +23,19 @@ describe("Railway runtime port wiring", () => {
     expect(entrypoint).toContain(': "${WORKLIN_RUNTIME_MODE:=combined}"');
     expect(entrypoint).toContain(': "${GATEWAY_PORT:=${PORT}}"');
     expect(entrypoint).toContain(': "${GATEWAY_PORT:=7830}"');
+    expect(entrypoint).toContain(': "${GATEWAY_HOST:=::}"');
+    expect(entrypoint).toContain("export GATEWAY_HOST");
+    expect(gatewayIndex).toContain(
+      "hostname: process.env.GATEWAY_HOST?.trim() || undefined",
+    );
     expect(entrypoint).toContain(
-      'if [[ "${WORKLIN_RUNTIME_MODE}" != "isolated" ]]; then',
+      'if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ||',
+    );
+    expect(entrypoint).toContain(
+      '"${WORKLIN_RUNTIME_MODE}" == "pooled_worker"',
+    );
+    expect(entrypoint).toContain(
+      'if [[ "${WORKLIN_RUNTIME_MODE}" == "combined" ]]; then',
     );
     expect(dockerfile).not.toContain("ENV GATEWAY_PORT=7830");
     expect(dockerfile).not.toContain(

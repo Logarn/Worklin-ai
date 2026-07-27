@@ -1,27 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
-import {
-    assistantsOauthConnectionsListOptions,
-    useAssistantsOauthStartCreateMutation,
-} from "@/generated/api/@tanstack/react-query.gen";
-import type { OAuthConnection } from "@/generated/api/types.gen";
-import { useOAuthCompleteDeepLinkListener } from "@/hooks/use-oauth-complete-deep-link-listener";
-import {
-    getOAuthCompleteMessagePayload,
-    getOAuthCompleteStoragePayload,
-    isOAuthCompletePayloadForRequest,
-    oauthCompletionStorageKey,
-    type OAuthCompletePayload,
-} from "@/lib/auth/oauth-popup";
-import { openUrl, openUrlFinishedListener } from "@/runtime/browser";
+import { connectManagedOAuth } from "@/lib/auth/managed-oauth-flow";
 import { isElectron } from "@/runtime/is-electron";
-import { useIsNativePlatform } from "@/runtime/native-auth";
-import type { OAuthCompleteDeepLinkPayload } from "@/runtime/native-deep-link";
 import { publicAsset } from "@/utils/public-asset";
-import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
 
 const GOOGLE_PROVIDER_KEY = "google";
@@ -59,334 +42,107 @@ export function GoogleConnectScreen({
   onBack,
 }: GoogleConnectScreenProps) {
   const electron = isElectron();
-  const queryClient = useQueryClient();
-  const isNative = useIsNativePlatform();
-
-  const popupRef = useRef<Window | null>(null);
-  const pendingRequestRef = useRef<{ requestId: string } | null>(null);
-  const popupCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const popupClosedGraceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const messageListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
-  const storageListenerRef = useRef<((event: StorageEvent) => void) | null>(null);
-  const nativeFinishUnsubRef = useRef<(() => void) | null>(null);
+  const activeRequestRef = useRef<AbortController | null>(null);
   const [oauthInProgress, setOAuthInProgress] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
-  const clearPendingRequest = useCallback(() => {
-    pendingRequestRef.current = null;
+  useEffect(() => {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
+    setOAuthInProgress(false);
+    setConnectError(null);
+
+    return () => {
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
+    };
+  }, [assistantId]);
+
+  const cancelActiveRequest = useCallback(() => {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
     setOAuthInProgress(false);
   }, []);
 
-  const removeEventListeners = useCallback(() => {
-    if (messageListenerRef.current) {
-      window.removeEventListener("message", messageListenerRef.current);
-      messageListenerRef.current = null;
-    }
-    if (storageListenerRef.current) {
-      window.removeEventListener("storage", storageListenerRef.current);
-      storageListenerRef.current = null;
-    }
-  }, []);
+  const handleBack = useCallback(() => {
+    cancelActiveRequest();
+    onBack();
+  }, [cancelActiveRequest, onBack]);
 
-  const closePopupWindow = useCallback(() => {
-    if (popupRef.current && !popupRef.current.closed) {
-      popupRef.current.close();
-    }
-    popupRef.current = null;
-    if (popupCheckIntervalRef.current) {
-      clearInterval(popupCheckIntervalRef.current);
-      popupCheckIntervalRef.current = null;
-    }
-    if (popupClosedGraceTimeoutRef.current) {
-      clearTimeout(popupClosedGraceTimeoutRef.current);
-      popupClosedGraceTimeoutRef.current = null;
-    }
-  }, []);
-
-  const startOAuth = useAssistantsOauthStartCreateMutation();
-
-  useEffect(() => {
-    return () => {
-      if (popupCheckIntervalRef.current) clearInterval(popupCheckIntervalRef.current);
-      if (popupClosedGraceTimeoutRef.current) clearTimeout(popupClosedGraceTimeoutRef.current);
-      if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
-      if (messageListenerRef.current) {
-        window.removeEventListener("message", messageListenerRef.current);
-      }
-      if (storageListenerRef.current) {
-        window.removeEventListener("storage", storageListenerRef.current);
-      }
-      if (nativeFinishUnsubRef.current) {
-        nativeFinishUnsubRef.current();
-        nativeFinishUnsubRef.current = null;
-      }
-    };
-  }, []);
-
-  const fetchActiveGoogleConnection = useCallback(async (): Promise<OAuthConnection | null> => {
-    try {
-      const connections = await queryClient.fetchQuery({
-        ...assistantsOauthConnectionsListOptions({
-          path: { assistant_id: assistantId },
-        }),
-        staleTime: 0,
-      });
-      return (
-        (connections as OAuthConnection[]).find(
-          (c) => c.provider === GOOGLE_PROVIDER_KEY && c.connected,
-        ) ?? null
-      );
-    } catch {
-      return null;
-    }
-  }, [assistantId, queryClient]);
-
-  const handleOAuthSuccess = useCallback(async () => {
-    closePopupWindow();
-    clearPendingRequest();
-    const connection = await fetchActiveGoogleConnection();
-    onConnect(connection?.scopes_granted ?? []);
-  }, [clearPendingRequest, closePopupWindow, fetchActiveGoogleConnection, onConnect]);
-
-  const handleOAuthCompletePayload = useCallback(
-    (payload: OAuthCompletePayload) => {
-      if (payload.type !== "vellum:oauth-complete") return;
-      if (
-        !pendingRequestRef.current ||
-        payload.requestId !== pendingRequestRef.current.requestId
-      ) {
-        return;
-      }
-      if (payload.oauthStatus === "connected") {
-        void handleOAuthSuccess();
-      } else {
-        closePopupWindow();
-        clearPendingRequest();
-      }
-    },
-    [clearPendingRequest, closePopupWindow, handleOAuthSuccess],
-  );
-
-  const handleOAuthMessage = useCallback(
-    (event: MessageEvent) => {
-      const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) return;
-      const payload = getOAuthCompleteMessagePayload(
-        event,
-        window.location.origin,
-        pendingRequest.requestId,
-      );
-      if (payload) handleOAuthCompletePayload(payload);
-    },
-    [handleOAuthCompletePayload],
-  );
-
-  const handleOAuthStorage = useCallback(
-    (event: StorageEvent) => {
-      const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) return;
-      const payload = getOAuthCompleteStoragePayload(
-        event,
-        pendingRequest.requestId,
-      );
-      if (payload) {
-        handleOAuthCompletePayload(payload);
-        window.localStorage.removeItem(
-          oauthCompletionStorageKey(pendingRequest.requestId),
-        );
-      }
-    },
-    [handleOAuthCompletePayload],
-  );
-
-  const handleOAuthDeepLink = useCallback(
-    (payload: OAuthCompleteDeepLinkPayload) => {
-      const pendingRequest = pendingRequestRef.current;
-      if (!pendingRequest) return;
-      if (payload.requestId !== pendingRequest.requestId) return;
-      handleOAuthCompletePayload({
-        type: "vellum:oauth-complete",
-        requestId: payload.requestId,
-        oauthStatus: payload.oauthStatus,
-        oauthProvider: payload.oauthProvider,
-        oauthCode: payload.oauthCode,
-      });
-    },
-    [handleOAuthCompletePayload],
-  );
-  useOAuthCompleteDeepLinkListener(handleOAuthDeepLink);
+  const handleSkip = useCallback(() => {
+    cancelActiveRequest();
+    onSkip();
+  }, [cancelActiveRequest, onSkip]);
 
   const handleConnect = useCallback(() => {
-    const requestId = crypto.randomUUID();
+    if (activeRequestRef.current) return;
 
-    removeEventListeners();
-    messageListenerRef.current = handleOAuthMessage;
-    storageListenerRef.current = handleOAuthStorage;
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+    setOAuthInProgress(true);
+    setConnectError(null);
 
-    if (isNative) {
-      setOAuthInProgress(true);
-      pendingRequestRef.current = { requestId };
-      startOAuth.mutate(
-        {
-          path: { assistant_id: assistantId, provider: GOOGLE_PROVIDER_KEY },
-          body: {
-            requested_scopes: [],
-            redirect_after_connect: `${routes.account.oauth.popupComplete}?requestId=${requestId}&native=1`,
-          },
-        },
-        {
-          onSuccess(data) {
-            void openUrl(data.connect_url);
-          },
-          onError() {
-            clearPendingRequest();
-          },
-        },
-      );
+    void connectManagedOAuth({
+      assistantId,
+      providerKey: GOOGLE_PROVIDER_KEY,
+      providerLabel: "Google",
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (activeRequestRef.current !== controller) return;
+        activeRequestRef.current = null;
+        setOAuthInProgress(false);
 
-      window.addEventListener("message", handleOAuthMessage);
-      window.addEventListener("storage", handleOAuthStorage);
-
-      if (nativeFinishUnsubRef.current) nativeFinishUnsubRef.current();
-      const unsubFinished = openUrlFinishedListener(() => {
-        const pendingRequest = pendingRequestRef.current;
-        if (!pendingRequest) {
-          unsubFinished();
-          nativeFinishUnsubRef.current = null;
+        if (result.status === "connected") {
+          onConnect(result.connection.scopes_granted);
           return;
         }
-        void (async () => {
-          const connection = await fetchActiveGoogleConnection();
-          if (!pendingRequestRef.current) return;
-          if (connection) {
-            await handleOAuthSuccess();
-          } else {
-            clearPendingRequest();
-          }
-          removeEventListeners();
-          unsubFinished();
-          nativeFinishUnsubRef.current = null;
-        })();
+
+        setConnectError(
+          result.message ??
+            "Google authorization was cancelled before an account connected.",
+        );
+      })
+      .catch((error: unknown) => {
+        if (
+          activeRequestRef.current !== controller ||
+          controller.signal.aborted
+        ) {
+          return;
+        }
+        activeRequestRef.current = null;
+        setOAuthInProgress(false);
+        setConnectError(
+          error instanceof Error
+            ? error.message
+            : "Worklin could not connect Google. Try again.",
+        );
       });
-      nativeFinishUnsubRef.current = unsubFinished;
-      return;
-    }
-
-    const popup = window.open("", "_blank", "width=500,height=600");
-    if (popup === null) {
-      removeEventListeners();
-      return;
-    }
-
-    popupRef.current = popup;
-    setOAuthInProgress(true);
-    pendingRequestRef.current = { requestId };
-
-    window.addEventListener("message", handleOAuthMessage);
-    window.addEventListener("storage", handleOAuthStorage);
-
-    popupCheckIntervalRef.current = setInterval(() => {
-      if (
-        popupRef.current &&
-        popupRef.current.closed &&
-        pendingRequestRef.current &&
-        !popupClosedGraceTimeoutRef.current
-      ) {
-        popupClosedGraceTimeoutRef.current = setTimeout(async () => {
-          popupClosedGraceTimeoutRef.current = null;
-          const pendingRequest = pendingRequestRef.current;
-          if (!pendingRequest) return;
-
-          const storedCompletion = window.localStorage.getItem(
-            oauthCompletionStorageKey(pendingRequest.requestId),
-          );
-          if (storedCompletion) {
-            try {
-              const parsed: unknown = JSON.parse(storedCompletion);
-              if (isOAuthCompletePayloadForRequest(parsed, pendingRequest.requestId)) {
-                handleOAuthCompletePayload(parsed);
-                window.localStorage.removeItem(
-                  oauthCompletionStorageKey(pendingRequest.requestId),
-                );
-                removeEventListeners();
-                return;
-              }
-            } catch {
-              // Fall through to poll path.
-            }
-          }
-
-          const connection = await fetchActiveGoogleConnection();
-          if (!pendingRequestRef.current) return;
-
-          if (connection) {
-            await handleOAuthSuccess();
-          } else {
-            closePopupWindow();
-            clearPendingRequest();
-          }
-          removeEventListeners();
-        }, 1000);
-      }
-    }, 100);
-
-    startOAuth.mutate(
-      {
-        path: { assistant_id: assistantId, provider: GOOGLE_PROVIDER_KEY },
-        body: {
-          requested_scopes: [],
-          redirect_after_connect: `${routes.account.oauth.popupComplete}?requestId=${requestId}`,
-        },
-      },
-      {
-        onSuccess(data) {
-          if (popupRef.current && !popupRef.current.closed) {
-            popupRef.current.location.href = data.connect_url;
-          } else if (pendingRequestRef.current) {
-            closePopupWindow();
-            clearPendingRequest();
-            removeEventListeners();
-          }
-        },
-        onError() {
-          closePopupWindow();
-          clearPendingRequest();
-          removeEventListeners();
-        },
-      },
-    );
-  }, [
-    assistantId,
-    clearPendingRequest,
-    closePopupWindow,
-    fetchActiveGoogleConnection,
-    handleOAuthCompletePayload,
-    handleOAuthMessage,
-    handleOAuthStorage,
-    handleOAuthSuccess,
-    isNative,
-    removeEventListeners,
-    startOAuth,
-  ]);
+  }, [assistantId, onConnect]);
 
   const assistantInlineName = assistantName || "your assistant";
   const assistantSentenceName = assistantName || "Your assistant";
 
   return (
     <OnboardingLayout showCreatureFooter={false}>
-      <div className={`mx-auto flex w-full max-w-md flex-col items-center ${electron ? "min-h-full px-8 pt-11 pb-8 electron-prechat-type" : "px-6 pt-12 pb-40"} text-[var(--content-default)]`}>
+      <div
+        className={`mx-auto flex w-full max-w-md flex-col items-center ${electron ? "min-h-full px-8 pt-11 pb-8 electron-prechat-type" : "px-6 pt-12 pb-40"} text-[var(--content-default)]`}
+      >
         <div
           className="grid w-full grid-cols-[auto_1fr_auto] items-center"
           style={{ animation: "fadeInUp 0.3s ease-out 0.1s both" }}
         >
           <button
             type="button"
-            onClick={onBack}
+            onClick={handleBack}
             aria-label="Back"
             className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-[var(--content-secondary)] transition-colors hover:bg-[var(--surface-base)]"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
-          <h1 className={`text-center ${electron ? "text-title-large" : "text-3xl font-semibold tracking-tight"}`}>
+          <h1
+            className={`text-center ${electron ? "text-title-large" : "text-3xl font-semibold tracking-tight"}`}
+          >
             Connect Google
           </h1>
           <div aria-hidden="true" className="h-8 w-8" />
@@ -434,15 +190,23 @@ export function GoogleConnectScreen({
           className={`${electron ? "mt-auto" : "mt-8"} flex w-full flex-col gap-2`}
           style={{ animation: "fadeInUp 0.3s ease-out 0.35s both" }}
         >
+          {connectError && (
+            <p
+              role="alert"
+              className="mb-2 text-center text-sm text-[var(--content-negative)]"
+            >
+              {connectError}
+            </p>
+          )}
           <Button
             variant="primary"
             size="regular"
             fullWidth
             onClick={handleConnect}
-            disabled={oauthInProgress || startOAuth.isPending}
+            disabled={oauthInProgress}
             className={`${electron ? "h-9" : "h-11 text-base"}`}
           >
-            {oauthInProgress || startOAuth.isPending ? (
+            {oauthInProgress ? (
               <span className="flex items-center justify-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                 Waiting for authorization...
@@ -455,8 +219,7 @@ export function GoogleConnectScreen({
             variant="ghost"
             size="regular"
             fullWidth
-            onClick={onSkip}
-            disabled={oauthInProgress || startOAuth.isPending}
+            onClick={handleSkip}
             className={`${electron ? "h-9" : "h-11 text-base"}`}
           >
             Skip for now

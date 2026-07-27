@@ -42,6 +42,7 @@
 import { existsSync, type FSWatcher, watch } from "node:fs";
 
 import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { getConfig } from "../config/loader.js";
 import {
   getCoreToolOverride,
@@ -122,6 +123,10 @@ export class WorkspaceToolsWatcher {
 
   start(): void {
     if (this.watcher) return;
+    if (isPooledWorkerRuntime()) {
+      log.debug("Workspace tools watcher is unavailable in pooled workers");
+      return;
+    }
     if (
       !isAssistantFeatureFlagEnabled(WORKSPACE_TOOLS_WATCHER_FLAG, getConfig())
     ) {

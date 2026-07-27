@@ -14,7 +14,7 @@
  */
 
 import { getLogger } from "../util/logger.js";
-import { checkUnrecognizedEnvVars } from "./env-registry.js";
+import { checkUnrecognizedEnvVars, getIsPlatform } from "./env-registry.js";
 import { getConfig } from "./loader.js";
 
 const log = getLogger("env");
@@ -89,10 +89,13 @@ export function getRuntimeHttpHost(): string {
 
 /**
  * True when HTTP API auth is disabled via DISABLE_HTTP_AUTH=true.
- * Used in platform-managed deployments where the platform handles auth.
+ * Platform tenant runtimes always keep HTTP authentication enabled.
  */
 export function isHttpAuthDisabled(): boolean {
-  return str("DISABLE_HTTP_AUTH")?.toLowerCase() === "true";
+  return (
+    str("DISABLE_HTTP_AUTH")?.toLowerCase() === "true" &&
+    !isPlatformIsolatedRuntime()
+  );
 }
 
 // ── Monitoring ───────────────────────────────────────────────────────────────
@@ -215,12 +218,55 @@ export function setPlatformAssistantId(value: string | undefined): void {
 /**
  * Platform assistant ID — UUID of this assistant on the platform.
  *
- * Resolved from the in-memory override (populated by providers-setup
- * rehydration from the credential store at daemon startup, or by
- * secret-routes when the platform pushes the value).
+ * Resolved from the immutable runtime binding first, then the in-memory
+ * override populated by providers-setup rehydration or secret-routes.
  */
 export function getPlatformAssistantId(): string {
-  return _platformAssistantIdOverride ?? "";
+  return (
+    str("WORKLIN_PLATFORM_ASSISTANT_ID") ?? _platformAssistantIdOverride ?? ""
+  );
+}
+
+/**
+ * True when this daemon runs inside a platform tenant boundary.
+ *
+ * Dedicated and pooled workers authenticate every shared HTTP/IPC request
+ * even if a stale deployment still carries DISABLE_HTTP_AUTH=true. Local and
+ * self-hosted daemons retain the development bypass.
+ */
+export function isPlatformIsolatedRuntime(): boolean {
+  const runtimeMode = str("WORKLIN_RUNTIME_MODE")?.toLowerCase();
+  const scopeMode = str("RUNTIME_ASSISTANT_SCOPE_MODE")?.toLowerCase();
+  const pooledStateTransport =
+    str("WORKLIN_RUNTIME_WORKER_STATE_TRANSPORT_ENABLED")?.toLowerCase() ===
+    "true";
+  return (
+    runtimeMode === "isolated" ||
+    runtimeMode === "pooled" ||
+    runtimeMode === "pooled_worker" ||
+    scopeMode === "enforce" ||
+    scopeMode === "claim_once" ||
+    pooledStateTransport ||
+    Boolean(str("WORKLIN_RUNTIME_WORKER_STACK_ID")) ||
+    Boolean(str("WORKLIN_PLATFORM_ASSISTANT_ID"))
+  );
+}
+
+export function isPooledWorkerRuntime(): boolean {
+  const runtimeMode = str("WORKLIN_RUNTIME_MODE")?.toLowerCase();
+  return (
+    runtimeMode === "pooled" ||
+    runtimeMode === "pooled_worker" ||
+    Boolean(str("WORKLIN_RUNTIME_WORKER_STACK_ID"))
+  );
+}
+
+export function getRuntimeWorkerStackId(): string {
+  return str("WORKLIN_RUNTIME_WORKER_STACK_ID") ?? "";
+}
+
+export function getRuntimeWorkerLeaseAuthorityFile(): string {
+  return str("WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE") ?? "";
 }
 
 let _platformOrganizationIdOverride: string | undefined;
@@ -253,7 +299,53 @@ export function getPlatformUserId(): string {
   return str("PLATFORM_USER_ID") ?? _platformUserIdOverride ?? "";
 }
 
+/** Clear process-local platform identity left by a prior pooled assignment. */
+export function resetPlatformRuntimeIdentityOverrides(): void {
+  _platformBaseUrlOverride = undefined;
+  _platformAssistantIdOverride = undefined;
+  _platformOrganizationIdOverride = undefined;
+  _platformUserIdOverride = undefined;
+}
+
 // ── Startup validation ──────────────────────────────────────────────────────
+
+export const POOLED_FORBIDDEN_GLOBAL_SECRET_ENV_VARS = Object.freeze([
+  "CES_SERVICE_TOKEN",
+  "ASSISTANT_API_KEY",
+  "GUARDIAN_BOOTSTRAP_SECRET",
+  "WORKLIN_RUNTIME_WORKER_OPERATOR_RECOVERY_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "GEMINI_API_KEY",
+  "GOOGLE_GEMINI_API_KEY",
+  "FIREWORKS_API_KEY",
+  "MOONSHOT_API_KEY",
+  "KIMI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENAI_COMPATIBLE_API_KEY",
+  "MINIMAX_API_KEY",
+  "OLLAMA_API_KEY",
+  "BRAVE_API_KEY",
+  "PERPLEXITY_API_KEY",
+  "TAVILY_API_KEY",
+  "DEEPGRAM_API_KEY",
+  "XAI_API_KEY",
+  "GITHUB_TOKEN",
+  "HUME_API_KEY",
+  "ELEVENLABS_API_KEY",
+  "FISH_AUDIO_API_KEY",
+  "TWILIO_AUTH_TOKEN",
+  "TELEGRAM_BOT_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "SLACK_APP_TOKEN",
+  "WHATSAPP_ACCESS_TOKEN",
+  "RESEND_API_KEY",
+  "MAILGUN_API_KEY",
+  "WORKLIN_PLATFORM_ASSISTANT_ID",
+  "PLATFORM_ORGANIZATION_ID",
+  "PLATFORM_USER_ID",
+] as const);
 
 /**
  * Validate environment at startup. Call early in daemon lifecycle
@@ -269,6 +361,103 @@ export function validateEnv(): void {
   const httpPort = getRuntimeHttpPort();
   if (httpPort < 1 || httpPort > 65535) {
     throw new Error(`Invalid RUNTIME_HTTP_PORT: ${httpPort} (must be 1-65535)`);
+  }
+
+  if (isPooledWorkerRuntime()) {
+    if (!getIsPlatform()) {
+      throw new Error("Pooled workers require IS_PLATFORM=true.");
+    }
+
+    if (
+      POOLED_FORBIDDEN_GLOBAL_SECRET_ENV_VARS.some((name) => Boolean(str(name)))
+    ) {
+      throw new Error(
+        "Pooled workers must not receive global integration credentials or tenant identity environment variables.",
+      );
+    }
+
+    const workerStackId = getRuntimeWorkerStackId();
+    const authorityFile = getRuntimeWorkerLeaseAuthorityFile();
+    if (!workerStackId || !authorityFile) {
+      throw new Error(
+        "Pooled workers require WORKLIN_RUNTIME_WORKER_STACK_ID and WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE.",
+      );
+    }
+    const stateTransportEnabled =
+      str("WORKLIN_RUNTIME_WORKER_STATE_TRANSPORT_ENABLED")?.toLowerCase() ===
+      "true";
+    const stateProvider =
+      str("WORKLIN_RUNTIME_WORKER_STATE_PROVIDER")?.toLowerCase() ?? "gcs";
+    const stateBucket = str("WORKLIN_RUNTIME_WORKER_STATE_BUCKET") ?? "";
+    if (!stateTransportEnabled || !stateBucket) {
+      throw new Error(
+        "Pooled workers require WORKLIN_RUNTIME_WORKER_STATE_TRANSPORT_ENABLED=true and WORKLIN_RUNTIME_WORKER_STATE_BUCKET.",
+      );
+    }
+    if (
+      !/^[a-z0-9][a-z0-9.-]{1,220}[a-z0-9]$/u.test(stateBucket) ||
+      stateBucket.includes("..") ||
+      stateBucket.startsWith("goog") ||
+      /^(\d{1,3}\.){3}\d{1,3}$/u.test(stateBucket)
+    ) {
+      throw new Error("WORKLIN_RUNTIME_WORKER_STATE_BUCKET is invalid.");
+    }
+    if (stateProvider !== "gcs" && stateProvider !== "s3") {
+      throw new Error("WORKLIN_RUNTIME_WORKER_STATE_PROVIDER is invalid.");
+    }
+    if (
+      [
+        "WORKLIN_RUNTIME_WORKER_STATE_GCS_SERVICE_ACCOUNT_JSON",
+        "WORKLIN_RUNTIME_WORKER_STATE_S3_ACCESS_KEY_ID",
+        "WORKLIN_RUNTIME_WORKER_STATE_S3_SECRET_ACCESS_KEY",
+        "ACCESS_KEY_ID",
+        "SECRET_ACCESS_KEY",
+        "S3_ACCESS_KEY_ID",
+        "S3_SECRET_ACCESS_KEY",
+        "S3_SESSION_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+      ].some((name) => Boolean(str(name)))
+    ) {
+      throw new Error(
+        "Pooled workers must not receive object-storage credentials.",
+      );
+    }
+    if (stateProvider === "s3") {
+      const endpointValue =
+        str("WORKLIN_RUNTIME_WORKER_STATE_S3_ENDPOINT") ?? "";
+      const region = str("WORKLIN_RUNTIME_WORKER_STATE_S3_REGION") ?? "";
+      const style =
+        str("WORKLIN_RUNTIME_WORKER_STATE_S3_URL_STYLE") ?? "virtual";
+      let endpoint: URL;
+      try {
+        endpoint = new URL(endpointValue);
+      } catch {
+        throw new Error("WORKLIN_RUNTIME_WORKER_STATE_S3_ENDPOINT is invalid.");
+      }
+      if (
+        endpoint.protocol !== "https:" ||
+        endpoint.username ||
+        endpoint.password ||
+        endpoint.search ||
+        endpoint.hash ||
+        endpoint.port ||
+        (endpoint.pathname !== "/" && endpoint.pathname !== "") ||
+        !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(
+          endpoint.hostname,
+        ) ||
+        /^(\d{1,3}\.){3}\d{1,3}$/u.test(endpoint.hostname) ||
+        endpoint.hostname.startsWith("[") ||
+        endpoint.hostname.endsWith(".localhost") ||
+        endpoint.hostname.endsWith(".local") ||
+        !region ||
+        (style !== "path" && style !== "virtual") ||
+        (style === "virtual" && stateBucket.includes("."))
+      ) {
+        throw new Error("Pooled worker Railway S3 state metadata is invalid.");
+      }
+    }
   }
 
   for (const warning of checkUnrecognizedEnvVars()) {

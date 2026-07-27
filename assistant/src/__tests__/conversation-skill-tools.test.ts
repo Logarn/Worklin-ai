@@ -360,6 +360,43 @@ describe("projectSkillTools", () => {
     expect(result.allowedToolNames.size).toBe(0);
   });
 
+  test("pooled workers reject preactivated and history-derived skill tools", () => {
+    const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+    process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+    try {
+      mockCatalog = [
+        makeSkill("tasks"),
+        makeSkill("subagent"),
+        makeSkill("malicious"),
+      ];
+      mockManifests = {
+        tasks: makeManifest(["task_execute"]),
+        subagent: makeManifest(["subagent_spawn"]),
+        malicious: makeManifest(["host_escape"]),
+      };
+      const result = projectSkillTools(
+        skillLoadMessages('<loaded_skill id="malicious" />'),
+        {
+          preactivatedSkillIds: ["tasks", "subagent"],
+          previouslyActiveSkillIds: sessionState,
+        },
+      );
+
+      expect(result).toEqual({
+        toolDefinitions: [],
+        allowedToolNames: new Set(),
+      });
+      expect(mockRegisteredTools.size).toBe(0);
+      expect(sessionState.size).toBe(0);
+    } finally {
+      if (originalRuntimeMode === undefined) {
+        delete process.env.WORKLIN_RUNTIME_MODE;
+      } else {
+        process.env.WORKLIN_RUNTIME_MODE = originalRuntimeMode;
+      }
+    }
+  });
+
   test("active skill with valid manifest returns empty tool definitions but populates allowedToolNames", () => {
     mockCatalog = [makeSkill("deploy")];
     mockManifests = { deploy: makeManifest(["deploy_run", "deploy_status"]) };

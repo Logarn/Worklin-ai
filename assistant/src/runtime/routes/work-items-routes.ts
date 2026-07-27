@@ -35,6 +35,7 @@ import {
 import { buildAssistantEvent } from "../assistant-event.js";
 import { assistantEventHub } from "../assistant-event-hub.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import {
   BadRequestError,
   ConflictError,
@@ -747,6 +748,8 @@ export const ROUTES: RouteDefinition[] = [
       "409": { description: "Work item is already running or not runnable" },
     },
     handler: async ({ pathParams }) => {
+      assertPooledRuntimeAsyncOperationSupported("work-item runs");
+
       const workItem = getWorkItem(pathParams!.id);
       if (!workItem) {
         throw new NotFoundError("Work item not found");

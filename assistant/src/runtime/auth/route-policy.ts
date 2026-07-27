@@ -117,7 +117,7 @@ export function enforcePolicy(
 
   // Check required scopes
   for (const scope of policy.requiredScopes) {
-    if (!authCtx.scopes.has(scope)) {
+    if (!authCtx.scopes.has(scope) && !authCtx.scopes.has("local.all")) {
       log.warn(
         { endpoint, missingScope: scope, principalType: authCtx.principalType },
         "Route policy denied: missing required scope",

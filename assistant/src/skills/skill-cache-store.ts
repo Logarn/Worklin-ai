@@ -84,10 +84,19 @@ export function deleteCacheEntry(key: string): boolean {
   return _store.delete(key);
 }
 
-/** Clear all entries — exposed for test isolation only. */
-export function clearCacheForTests(): void {
+/**
+ * Clear all caller-provided values before a pooled worker changes tenant.
+ *
+ * The HTTP cache surface accepts arbitrary data and explicit keys, so keeping
+ * this process-local map across assignments would let a later tenant retrieve
+ * an earlier tenant's value by reusing its key.
+ */
+export function resetSkillCacheForTenantAssignment(): void {
   _store.clear();
 }
+
+/** Backwards-compatible test alias. */
+export const clearCacheForTests = resetSkillCacheForTenantAssignment;
 
 /** Visible-for-testing internals. */
 export const _internals = {

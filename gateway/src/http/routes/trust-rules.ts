@@ -17,6 +17,10 @@ import { ipcSuggestTrustRule } from "../../ipc/assistant-client.js";
 import { getGatewayDb } from "../../db/connection.js";
 import { autoApproveThresholds } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
+import {
+  isPooledGatewayRuntime,
+  pooledSharedStateUnavailableResponse,
+} from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("trust-rules");
 
@@ -64,6 +68,7 @@ export interface TrustRulesListParams {
 }
 
 export function listTrustRules(params: TrustRulesListParams = {}) {
+  if (isPooledGatewayRuntime()) return { rules: [] };
   // Construct per call so DB resets use the current gateway DB connection.
   const store = new TrustRuleStore();
   const userRelevantOnly = !params.includeAll && params.origin === undefined;
@@ -82,6 +87,7 @@ export function listTrustRules(params: TrustRulesListParams = {}) {
  * Falls back to "low" if the DB is unavailable or the row is missing.
  */
 function readInteractiveThreshold(): string {
+  if (isPooledGatewayRuntime()) return "none";
   try {
     const db = getGatewayDb();
     const row = db
@@ -101,6 +107,9 @@ function readInteractiveThreshold(): string {
 
 export function createTrustRulesSuggestHandler() {
   return async (req: Request): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Trust rule suggestions");
+    }
     let body: unknown;
     try {
       body = await req.json();
@@ -167,6 +176,9 @@ export function createTrustRulesCreateHandler() {
   const store = new TrustRuleStore();
 
   return async (req: Request): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Trust rule changes");
+    }
     let body: unknown;
     try {
       body = await req.json();
@@ -235,6 +247,9 @@ export function createTrustRulesUpdateHandler() {
   const store = new TrustRuleStore();
 
   return async (req: Request, ruleId: string): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Trust rule changes");
+    }
     if (!ruleId) {
       return Response.json({ error: "Rule ID is required" }, { status: 400 });
     }
@@ -302,6 +317,9 @@ export function createTrustRulesDeleteHandler() {
   const store = new TrustRuleStore();
 
   return async (_req: Request, ruleId: string): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Trust rule changes");
+    }
     if (!ruleId) {
       return Response.json({ error: "Rule ID is required" }, { status: 400 });
     }
@@ -379,6 +397,9 @@ export function createTrustRulesResetHandler() {
   const store = new TrustRuleStore();
 
   return async (_req: Request, ruleId: string): Promise<Response> => {
+    if (isPooledGatewayRuntime()) {
+      return pooledSharedStateUnavailableResponse("Trust rule changes");
+    }
     if (!ruleId) {
       return Response.json({ error: "Rule ID is required" }, { status: 400 });
     }

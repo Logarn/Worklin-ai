@@ -41,6 +41,14 @@ export function publishElectronDeepLinksSource(): () => void {
       case "openThread":
         publish("deeplink.openThread", { threadId: link.threadId });
         break;
+      case "oauthComplete":
+        publish("oauth.complete", {
+          requestId: link.requestId,
+          oauthStatus: link.oauthStatus,
+          oauthProvider: link.oauthProvider,
+          oauthCode: link.oauthCode,
+        });
+        break;
       case "unknown":
         publish("deeplink.unknown", { url: link.url });
         break;

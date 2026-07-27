@@ -12,6 +12,25 @@ This boundary is enforced at three layers:
 2. **Runtime-proxy guard:** The runtime-proxy handler rejects any `/webhooks/*` path with a 404, preventing accidental forwarding of webhook traffic to the runtime even if a new webhook path is added to the gateway without a dedicated handler.
 3. **Runtime server:** The runtime HTTP server does not register any `/webhooks/telegram` routes. Direct Twilio webhook routes (`/webhooks/twilio/*`) return 410 with a `GATEWAY_ONLY` error code, and relay WebSocket upgrades are restricted to private network peers.
 
+### Pooled Worker Gateway Boundary
+
+A pooled worker gateway accepts only tokens carrying the exact active tenant,
+worker stack ID, lease generation, and expiry. It atomically installs and
+revokes that authority in a gateway-owned file whose group-readable copy is
+verified by the assistant on every request. Token exchange preserves the lease
+claim; it does not turn a pooled request into a static gateway-service request.
+
+The control plane provides a request-bound gateway-ingress token for ordinary
+HTTP and managed Hume callbacks. Client-supplied tenant headers are discarded
+and reconstructed from verified claims. Pooled requests use the HTTP proxy, not
+the local IPC shortcut, so the private model-key capability reaches the
+assistant request boundary and is never exposed to renderer route handlers.
+
+The gateway does not make an unsupported long-lived route safe: event streams,
+terminal sessions, native voice, unbound provider callbacks, credentials, and
+background execution are rejected by the control-plane route policy. See
+[`../docs/pooled-runtime-workers.md`](../docs/pooled-runtime-workers.md).
+
 ```
 Internet
   |

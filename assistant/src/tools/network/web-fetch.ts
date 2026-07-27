@@ -5,6 +5,7 @@ import {
 } from "node:https";
 import { Readable } from "node:stream";
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import type { WebFetchMetadata } from "../../daemon/message-types/web-activity.js";
 import { RiskLevel } from "../../permissions/types.js";
 import { wrapUntrustedContent } from "../../security/untrusted-content.js";
@@ -642,7 +643,8 @@ export async function executeWebFetch(
     });
   }
 
-  const allowPrivateNetwork = input.allow_private_network === true;
+  const allowPrivateNetwork =
+    !isPooledWorkerRuntime() && input.allow_private_network === true;
   const resolveHost = options?.resolveHostAddresses ?? resolveHostAddresses;
   const requestExecutor = options?.requestExecutor ?? defaultRequestExecutor;
 

@@ -9,6 +9,7 @@
  *   - service_account      → reject (v2 not yet shipped)
  */
 
+import { isPooledWorkerRuntime } from "../../config/env.js";
 import {
   buildManagedBaseUrl,
   resolveManagedProxyContext,
@@ -66,6 +67,11 @@ export async function resolveAuth(
     }
 
     case "platform": {
+      // Pooled v1 is BYOK-only. Managed credentials and provider environment
+      // variables are worker-global and must never be used for a tenant turn.
+      if (isPooledWorkerRuntime()) {
+        return { ok: false, error: { code: "platform_unavailable" } };
+      }
       const managedBaseUrl = await buildManagedBaseUrl(provider);
       if (!managedBaseUrl) {
         const providerEnvVar = getLlmProviderEnvVar(provider);

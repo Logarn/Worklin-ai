@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   __resetPinnedTabsForTests,
+  clearAllPinnedTabs,
   clearPinnedTab,
   clearPinnedTabByTabId,
   getPinnedTab,
@@ -46,6 +47,16 @@ describe("pinned-tabs", () => {
     setPinnedTab("conv-a", "42");
     clearPinnedTab("nonexistent");
     expect(getPinnedTab("conv-a")).toBe("42");
+  });
+
+  test("assignment reset clears pins for every conversation and client", () => {
+    setPinnedTab("old-conv-a", "42", "clientA");
+    setPinnedTab("old-conv-b", "99", "clientB");
+
+    clearAllPinnedTabs();
+
+    expect(getPinnedTab("old-conv-a", "clientA")).toBeUndefined();
+    expect(getPinnedTab("old-conv-b", "clientB")).toBeUndefined();
   });
 
   test("clearPinnedTabByTabId clears every matching conversation", () => {

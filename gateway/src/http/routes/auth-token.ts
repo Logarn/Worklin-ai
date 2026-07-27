@@ -12,6 +12,7 @@ import { mintToken, verifyToken } from "../../auth/token-service.js";
 import { getGatewayDb } from "../../db/connection.js";
 import { actorTokenRecords } from "../../db/schema.js";
 import { getLogger } from "../../logger.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 import { isLoopbackPeer } from "../../util/is-loopback-address.js";
 
 const log = getLogger("auth-token");
@@ -88,6 +89,11 @@ export async function handleCreateToken(
   server: Server<unknown> | undefined,
   trustProxy = false,
 ): Promise<Response> {
+  const pooledBoundary = rejectPooledSharedStateAccess(
+    "Local actor token minting",
+  );
+  if (pooledBoundary) return pooledBoundary;
+
   // With a trusted reverse proxy declared, judge loopback-ness by the real
   // client IP (first X-Forwarded-For entry) rather than the raw socket peer,
   // which is always 127.0.0.1 behind a same-host proxy/tunnel. Defaults false,

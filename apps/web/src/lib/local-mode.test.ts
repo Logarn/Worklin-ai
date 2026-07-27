@@ -78,6 +78,7 @@ describe("syncPlatformAssistantsToLockfile", () => {
     name: "A",
     is_local: false,
     created: "2026-01-01",
+    runtime_provider: "pooled_worker",
   };
 
   test("skips the host replace when the org is unresolved (no wipe)", async () => {
@@ -94,7 +95,11 @@ describe("syncPlatformAssistantsToLockfile", () => {
     const [entries, org] = replacePlatformAssistantsHost.mock.calls[0]!;
     expect(org).toBe("org-1");
     expect(entries).toEqual([
-      expect.objectContaining({ assistantId: "platform-a", organizationId: "org-1" }),
+      expect.objectContaining({
+        assistantId: "platform-a",
+        organizationId: "org-1",
+        runtimeProvider: "pooled_worker",
+      }),
     ]);
   });
 

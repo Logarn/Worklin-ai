@@ -87,6 +87,8 @@ function config(
     allowLegacySharedRuntime: false,
     legacySharedRuntimeAssistantIds: [],
     legacySharedRuntimeUserEmailHashes: [],
+    pooledRuntimeCanaryAssistantIds: [],
+    pooledRuntimeCanaryUserEmailHashes: [],
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
     runtimeRoot: "/data",
@@ -1060,9 +1062,37 @@ describe("runtimeStackConfigFromEnv", () => {
       allowLegacySharedRuntime: false,
       legacySharedRuntimeAssistantIds: [],
       legacySharedRuntimeUserEmailHashes: [],
+      pooledRuntimeCanaryAssistantIds: [],
+      pooledRuntimeCanaryUserEmailHashes: [],
       runtimeStackUrlTemplate: null,
       preprovisionedRuntimeSlots: [],
     });
+  });
+
+  test("parses a trimmed pooled canary assistant allowlist", () => {
+    expect(
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_POOLED_RUNTIME_CANARY_ASSISTANT_IDS:
+            "asst-1, asst-2, ,asst-3",
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ).pooledRuntimeCanaryAssistantIds,
+    ).toEqual(["asst-1", "asst-2", "asst-3"]);
+  });
+
+  test("parses a trimmed pooled canary user-email-hash allowlist", () => {
+    expect(
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_POOLED_RUNTIME_CANARY_USER_EMAIL_HASHES:
+            "hash-1, hash-2, ,hash-3",
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ).pooledRuntimeCanaryUserEmailHashes,
+    ).toEqual(["hash-1", "hash-2", "hash-3"]);
   });
 
   test("parses a trimmed pilot user-email-hash allowlist", () => {

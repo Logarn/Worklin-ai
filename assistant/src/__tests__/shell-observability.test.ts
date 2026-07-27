@@ -98,6 +98,7 @@ mock.module("../runtime/agent-wake.js", () => ({
 const registeredTools: BackgroundTool[] = [];
 
 mock.module("../tools/background-tool-registry.js", () => ({
+  assertBackgroundToolExecutionSupported: () => {},
   registerBackgroundTool: (tool: BackgroundTool) => {
     registeredTools.push(tool);
   },

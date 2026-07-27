@@ -131,10 +131,15 @@ describe("CallSiteRoutingProvider", () => {
   test("routes to default provider when callSite resolves to same provider name (no connection)", async () => {
     setLlmConfig({
       default: { provider: "anthropic", model: "claude-opus-4-7" },
+      profiles: {
+        managedAnthropic: {
+          source: "managed",
+          provider: "anthropic",
+          model: "claude-haiku-4-5-20251001",
+        },
+      },
       callSites: {
-        // Same provider as default, no connection — should reuse default
-        // without doing any connection resolution work.
-        memoryRetrieval: { model: "claude-haiku-4-5-20251001" },
+        memoryRetrieval: { profile: "managedAnthropic" },
       },
     });
 
@@ -196,11 +201,12 @@ describe("CallSiteRoutingProvider", () => {
     expect(response.model).toBe("openai");
   });
 
-  test("falls back to default when connection resolves to null (soft credential failure)", async () => {
+  test("fails closed when a personal connection resolves to null", async () => {
     setLlmConfig({
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         altOpenai: {
+          source: "user",
           provider: "openai",
           provider_connection: "openai-conn",
           model: "gpt-5.4",
@@ -223,12 +229,16 @@ describe("CallSiteRoutingProvider", () => {
       async () => null,
     );
 
-    const response = await wrapped.sendMessage(DUMMY_MESSAGES, {
-      config: { callSite: "memoryRetrieval" },
+    await expect(
+      wrapped.sendMessage(DUMMY_MESSAGES, {
+        config: { callSite: "memoryRetrieval" },
+      }),
+    ).rejects.toMatchObject({
+      name: "ConnectionResolutionError",
+      reason: "unavailable",
     });
 
-    expect(calls.default).toBe(1);
-    expect(response.model).toBe("anthropic");
+    expect(calls.default).toBe(0);
   });
 
   test("alternate-provider profile WITHOUT a connection throws ConnectionResolutionError", async () => {
@@ -236,6 +246,7 @@ describe("CallSiteRoutingProvider", () => {
       default: { provider: "anthropic", model: "claude-opus-4-7" },
       profiles: {
         legacyOpenai: {
+          source: "managed",
           provider: "openai",
           // No provider_connection — alternate-provider routing requires
           // one, so this profile is expected to throw

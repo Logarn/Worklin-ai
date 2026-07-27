@@ -27,10 +27,12 @@ This file is the cross-system architecture index. Detailed designs live in domai
 | Workflow manual testing runbook             | [`assistant/docs/workflows-testing.md`](assistant/docs/workflows-testing.md)                       |
 | Collaborative artifacts                     | [Collaborative Artifacts](#collaborative-artifacts) (this file)                                    |
 | Service communication matrix                | [`docs/service-communication-matrix.md`](docs/service-communication-matrix.md)                     |
+| Pooled runtime workers                      | [`docs/pooled-runtime-workers.md`](docs/pooled-runtime-workers.md)                                 |
 
 ## Cross-Cutting Invariants
 
 - Public ingress is gateway-only; external webhook/API routes are implemented in `gateway/` and forwarded internally.
+- Platform pooled workers are single-tenant per active lease. Routing requires signed tenant and generation claims; reassignment requires drain, export, verification, sanitization, authority revocation, and an exact database release. Pooled workers never persist provider credentials. See [`docs/pooled-runtime-workers.md`](docs/pooled-runtime-workers.md).
 - Bundled-skill outbound API calls that require credentials use the Credential Execution Service (CES) tools (`make_authenticated_request`, `run_authenticated_command`) rather than manual token plumbing or proxied shell execution. See `assistant/docs/credential-execution-service.md`.
 - Managed shared-identity channel routing runs in a separate managed-gateway service lane from the per-assistant `gateway/` lane. The deployable managed-gateway runtime is platform-owned; this repo keeps public contracts/fixtures under `gateway-managed/`.
 - Production LLM calls go through the provider abstraction, not provider SDKs in feature code.

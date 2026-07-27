@@ -16,6 +16,7 @@ import { z } from "zod";
 import { createGuardianBinding } from "../../auth/guardian-bootstrap.js";
 import { assistantDbQuery } from "../../db/assistant-db-proxy.js";
 import { getLogger } from "../../logger.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("guardian-channel-create");
 
@@ -63,6 +64,11 @@ export function createGuardianChannelHandler() {
   return async function handleGuardianChannelCreate(
     req: Request,
   ): Promise<Response> {
+    const pooledBoundary = rejectPooledSharedStateAccess(
+      "Guardian contact channel changes",
+    );
+    if (pooledBoundary) return pooledBoundary;
+
     // ── Parse & validate request body ─────────────────────────────
 
     let rawBody: unknown;

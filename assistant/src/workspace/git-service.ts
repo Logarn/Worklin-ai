@@ -1056,10 +1056,21 @@ export function getAllWorkspaceGitServices(): ReadonlyMap<
 }
 
 /**
+ * Forget per-workspace mutex, initialization, and circuit-breaker state before
+ * a pooled worker reuses the same workspace path for another tenant.
+ *
+ * Callers must first prove that no request or agent loop is still using a
+ * service instance. The pooled assignment reset does so via the drain fence.
+ */
+export function resetGitServiceRegistryForTenantAssignment(): void {
+  serviceRegistry.clear();
+}
+
+/**
  * @internal Test-only: clear the service registry
  */
 export function _resetGitServiceRegistry(): void {
-  serviceRegistry.clear();
+  resetGitServiceRegistryForTenantAssignment();
 }
 
 /**

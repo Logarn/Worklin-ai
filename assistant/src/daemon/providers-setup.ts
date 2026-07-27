@@ -1,4 +1,6 @@
 import {
+  isPooledWorkerRuntime,
+  resetPlatformRuntimeIdentityOverrides,
   setPlatformAssistantId,
   setPlatformBaseUrl,
   setPlatformOrganizationId,
@@ -35,97 +37,115 @@ export async function initializeProvidersAndTools(
   config: AssistantConfig,
 ): Promise<void> {
   log.info("Daemon startup: initializing providers and tools");
+  const pooledRuntime = isPooledWorkerRuntime();
 
   // Register meet-join via the lazy-external path. The skill runs as a
   // separate `bun run` subprocess; the daemon installs proxy
   // tools/routes/shutdown-hooks here that dispatch over the skill IPC
   // socket on first use. Failures are non-fatal: the daemon continues
   // without meet tools and surfaces the cause in the log.
-  void startMeetHost().catch((err) => {
-    log.error(
-      { err },
-      "Failed to register meet-join; daemon will continue without meet tools",
-    );
+  if (!pooledRuntime) {
+    void startMeetHost().catch((err) => {
+      log.error(
+        { err },
+        "Failed to register meet-join; daemon will continue without meet tools",
+      );
+    });
+  }
+
+  if (pooledRuntime) {
+    // Pooled identity is request/lease-bound. Never rehydrate process-global
+    // identity from the secure store, which can persist across assignments.
+    resetPlatformRuntimeIdentityOverrides();
+    setSentryOrganizationId(undefined);
+    setSentryUserId(undefined);
+  } else {
+    // Rehydrate the platform base URL from the credential store so managed
+    // proxy activation survives assistant restarts. The in-memory override is
+    // normally only set by handleAddSecret/handleDeleteSecret at runtime.
+    try {
+      const key = credentialKey("vellum", "platform_base_url");
+      const persisted = await getSecureKeyAsync(key);
+      if (persisted) {
+        setPlatformBaseUrl(persisted);
+        log.info("Rehydrated platform base URL from credential store");
+      }
+    } catch (err) {
+      log.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        "Failed to rehydrate platform base URL from credential store (non-fatal)",
+      );
+    }
+
+    // Rehydrate the platform assistant ID from the credential store so
+    // getPlatformAssistantId() returns the correct value after restarts.
+    try {
+      const key = credentialKey("vellum", "platform_assistant_id");
+      const persisted = await getSecureKeyAsync(key);
+      const trimmed = persisted?.trim();
+      if (trimmed) {
+        setPlatformAssistantId(trimmed);
+        log.info("Rehydrated platform assistant ID from credential store");
+      }
+    } catch (err) {
+      log.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        "Failed to rehydrate platform assistant ID from credential store (non-fatal)",
+      );
+    }
+
+    // Rehydrate the platform organization ID from the credential store so
+    // Sentry events include organization context after restarts.
+    try {
+      const key = credentialKey("vellum", "platform_organization_id");
+      const persisted = await getSecureKeyAsync(key);
+      const trimmed = persisted?.trim();
+      if (trimmed) {
+        setPlatformOrganizationId(trimmed);
+        setSentryOrganizationId(trimmed);
+        log.info("Rehydrated platform organization ID from credential store");
+      }
+    } catch (err) {
+      log.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        "Failed to rehydrate platform organization ID from credential store (non-fatal)",
+      );
+    }
+
+    // Rehydrate the platform user ID from the credential store so
+    // telemetry events include user context after restarts.
+    try {
+      const key = credentialKey("vellum", "platform_user_id");
+      const persisted = await getSecureKeyAsync(key);
+      const trimmed = persisted?.trim();
+      if (trimmed) {
+        setPlatformUserId(trimmed);
+        setSentryUserId(trimmed);
+        log.info("Rehydrated platform user ID from credential store");
+      }
+    } catch (err) {
+      log.warn(
+        { error: err instanceof Error ? err.message : String(err) },
+        "Failed to rehydrate platform user ID from credential store (non-fatal)",
+      );
+    }
+  }
+
+  if (!pooledRuntime) {
+    await initializeProviders(config);
+  }
+  // Pooled workers install only tenant-neutral/request-bound tools. Dedicated
+  // runtimes retain host tools, extension bootstraps, and workspace overrides.
+  await initializeTools({
+    profile: pooledRuntime ? "pooled" : "dedicated",
   });
 
-  // Rehydrate the platform base URL from the credential store so managed
-  // proxy activation survives assistant restarts. The in-memory override is
-  // normally only set by handleAddSecret/handleDeleteSecret at runtime.
-  try {
-    const key = credentialKey("vellum", "platform_base_url");
-    const persisted = await getSecureKeyAsync(key);
-    if (persisted) {
-      setPlatformBaseUrl(persisted);
-      log.info("Rehydrated platform base URL from credential store");
-    }
-  } catch (err) {
-    log.warn(
-      { error: err instanceof Error ? err.message : String(err) },
-      "Failed to rehydrate platform base URL from credential store (non-fatal)",
-    );
-  }
-
-  // Rehydrate the platform assistant ID from the credential store so
-  // getPlatformAssistantId() returns the correct value after restarts.
-  try {
-    const key = credentialKey("vellum", "platform_assistant_id");
-    const persisted = await getSecureKeyAsync(key);
-    const trimmed = persisted?.trim();
-    if (trimmed) {
-      setPlatformAssistantId(trimmed);
-      log.info("Rehydrated platform assistant ID from credential store");
-    }
-  } catch (err) {
-    log.warn(
-      { error: err instanceof Error ? err.message : String(err) },
-      "Failed to rehydrate platform assistant ID from credential store (non-fatal)",
-    );
-  }
-
-  // Rehydrate the platform organization ID from the credential store so
-  // Sentry events include organization context after restarts.
-  try {
-    const key = credentialKey("vellum", "platform_organization_id");
-    const persisted = await getSecureKeyAsync(key);
-    const trimmed = persisted?.trim();
-    if (trimmed) {
-      setPlatformOrganizationId(trimmed);
-      setSentryOrganizationId(trimmed);
-      log.info("Rehydrated platform organization ID from credential store");
-    }
-  } catch (err) {
-    log.warn(
-      { error: err instanceof Error ? err.message : String(err) },
-      "Failed to rehydrate platform organization ID from credential store (non-fatal)",
-    );
-  }
-
-  // Rehydrate the platform user ID from the credential store so
-  // telemetry events include user context after restarts.
-  try {
-    const key = credentialKey("vellum", "platform_user_id");
-    const persisted = await getSecureKeyAsync(key);
-    const trimmed = persisted?.trim();
-    if (trimmed) {
-      setPlatformUserId(trimmed);
-      setSentryUserId(trimmed);
-      log.info("Rehydrated platform user ID from credential store");
-    }
-  } catch (err) {
-    log.warn(
-      { error: err instanceof Error ? err.message : String(err) },
-      "Failed to rehydrate platform user ID from credential store (non-fatal)",
-    );
-  }
-
-  await initializeProviders(config);
-  // initializeTools() also loads workspace tool overrides from
-  // `<workspaceDir>/tools/` once core tools have settled, so they own
-  // their names before the MCP / plugin registrations below run.
-  await initializeTools();
-
   // Start MCP servers and register their tools
-  if (config.mcp?.servers && Object.keys(config.mcp.servers).length > 0) {
+  if (
+    !pooledRuntime &&
+    config.mcp?.servers &&
+    Object.keys(config.mcp.servers).length > 0
+  ) {
     const manager = getMcpServerManager();
     try {
       const serverToolInfos = await manager.start(config.mcp);

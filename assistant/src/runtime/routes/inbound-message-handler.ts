@@ -82,6 +82,7 @@ import { canonicalizeInboundIdentity } from "../../util/canonicalize-identity.js
 import { getLogger } from "../../util/logger.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { deliverChannelReply } from "../gateway-client.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import { resolveTrustContext } from "../trust-context-resolver.js";
 import { canonicalChannelAssistantId } from "./channel-route-shared.js";
 import { BadRequestError } from "./errors.js";
@@ -228,6 +229,7 @@ export function _setDeleteLookupConfigForTests(
 export async function handleChannelInbound({
   body: rawBody = {},
 }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("channel ingress");
   // Gateway-origin proof is enforced by route-policy middleware (svc_gateway
   // principal type required) before this handler runs. The exchange JWT
   // itself proves gateway origin.

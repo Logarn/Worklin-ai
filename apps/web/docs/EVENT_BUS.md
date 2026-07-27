@@ -40,7 +40,7 @@ Centralizing through a bus also gives us:
 | `apps/web/src/lib/event-bus.ts` | The bus itself. Plain module with `publish` / `subscribe` / `__resetForTesting` exports and a module-private handler `Map`. Not a Zustand store — no state, just a registry. See the [stateless-registries carve-out](./STATE_MANAGEMENT.md#when-zustand-does-not-apply-stateless-registries). |
 | `apps/web/src/hooks/use-bus-subscription.ts` | React hook wrapping `useEffect` + `subscribe` with a stable handler ref so inline arrows don't re-register on every render. |
 | `apps/web/src/hooks/use-event-bus-init.ts` | Thin React adapter. Wires the signal sources at mount and calls `sseService.attach` whenever the active assistant changes. Mounted exactly once by `RootLayout` so the bus is alive on every authenticated route. |
-| `apps/web/src/runtime/event-sources/*` | One file per host-environment signal (DOM visibility, network online/offline, Capacitor app state, Electron `powerMonitor`, Electron deep links). Each calls `publish` directly and returns an unsubscribe. |
+| `apps/web/src/runtime/event-sources/*` | One file per host-environment signal (DOM visibility, network online/offline, Capacitor app state/deep links, Electron `powerMonitor`/deep links). Each calls `publish` directly and returns an unsubscribe. |
 | `apps/web/src/lib/lifecycle-diagnostics.ts` | Bus consumer that records `app.*` / `power.*` signals into the durable lifecycle diagnostics ring so support bundles show whether any resume / visibility / network signal fired. Attached once alongside the signal sources in `use-event-bus-init.ts`. |
 | `apps/web/src/assistant/sse-service.ts` | Non-React owner of the assistant-scoped SSE connection. Opens the stream, republishes envelopes as `sse.event`, drives the bounce policy from `app.*` / `power.*` / `reachability.*` signals. |
 
@@ -76,6 +76,7 @@ Every event name in `BusEventMap` has a typed payload. Producers:
 | `deeplink.send` | `{ message }` | Electron host: inbound `vellum://send?message=…` URL routed by Launch Services. Chat domain consumes to pre-fill the composer. |
 | `deeplink.openThread` | `{ threadId }` | Electron host: inbound `vellum://thread/<id>` URL. Chat domain consumes to navigate. |
 | `deeplink.unknown` | `{ url }` | Parser fallback for foreign schemes / malformed URLs. Consumers typically log + drop; exists so the bridge surface is exhaustive. |
+| `oauth.complete` | `{ requestId; oauthStatus; oauthProvider; oauthCode }` | Capacitor or Electron host: a validated custom-scheme callback returned from managed OAuth. The shared flow matches the active request/provider and verifies the captured assistant's backend connection before reporting success. |
 
 ## Subscribing
 

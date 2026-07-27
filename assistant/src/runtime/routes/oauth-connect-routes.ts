@@ -22,6 +22,7 @@ import {
 } from "../../oauth/oauth-store.js";
 import { getLogger } from "../../util/logger.js";
 import { GATEWAY_PRINCIPALS } from "../auth/route-policy.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import { BadRequestError, InternalError, NotFoundError } from "./errors.js";
 import type { RouteDefinition } from "./types.js";
 
@@ -32,6 +33,8 @@ async function handleOAuthConnectStart({
 }: {
   body?: Record<string, unknown>;
 }): Promise<{ auth_url: string; state: string }> {
+  assertPooledRuntimeAsyncOperationSupported("OAuth connections");
+
   const {
     service,
     clientId: rawClientId,
@@ -128,9 +131,18 @@ async function handleOAuthConnectStart({
       onDeferredComplete: (r) => {
         if (!resolvedState) return;
         if (r.success) {
-          setOAuthConnectComplete(resolvedState, r.service, r.accountInfo, r.grantedScopes);
+          setOAuthConnectComplete(
+            resolvedState,
+            r.service,
+            r.accountInfo,
+            r.grantedScopes,
+          );
         } else {
-          setOAuthConnectError(resolvedState, r.service, r.error ?? "OAuth connect failed");
+          setOAuthConnectError(
+            resolvedState,
+            r.service,
+            r.error ?? "OAuth connect failed",
+          );
         }
       },
     });
@@ -162,23 +174,34 @@ function handleOAuthConnectStatus({
   granted_scopes?: string[];
   error?: string;
 } {
+  assertPooledRuntimeAsyncOperationSupported("OAuth connections");
+
   const { state } = pathParams as { state: string };
   const flowState = getOAuthConnectState(state);
 
   if (flowState === null) {
-    throw new NotFoundError(`No active OAuth connect flow for state "${state}"`);
+    throw new NotFoundError(
+      `No active OAuth connect flow for state "${state}"`,
+    );
   }
 
-  if (flowState.status === "pending") return { status: "pending", service: flowState.service };
+  if (flowState.status === "pending")
+    return { status: "pending", service: flowState.service };
   if (flowState.status === "complete") {
     return {
       status: "complete",
       service: flowState.service,
       ...(flowState.accountInfo ? { account_info: flowState.accountInfo } : {}),
-      ...(flowState.grantedScopes ? { granted_scopes: flowState.grantedScopes } : {}),
+      ...(flowState.grantedScopes
+        ? { granted_scopes: flowState.grantedScopes }
+        : {}),
     };
   }
-  return { status: "error", service: flowState.service, error: flowState.error };
+  return {
+    status: "error",
+    service: flowState.service,
+    error: flowState.error,
+  };
 }
 
 export const ROUTES: RouteDefinition[] = [
@@ -217,7 +240,9 @@ export const ROUTES: RouteDefinition[] = [
     tags: ["internal"],
     pathParams: [{ name: "state" }],
     additionalResponses: {
-      "404": { description: "No active OAuth connect flow for the given state token" },
+      "404": {
+        description: "No active OAuth connect flow for the given state token",
+      },
     },
     handler: handleOAuthConnectStatus,
   },

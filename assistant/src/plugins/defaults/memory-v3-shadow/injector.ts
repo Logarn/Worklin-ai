@@ -61,6 +61,7 @@
  */
 
 import { isAssistantFeatureFlagEnabled } from "../../../config/assistant-feature-flags.js";
+import { isPooledWorkerRuntime } from "../../../config/env.js";
 import { getConfig } from "../../../config/loader.js";
 import { isPersonalMemoryAllowed } from "../../../daemon/trust-context.js";
 import {
@@ -237,6 +238,10 @@ export const memoryV3Injector: Injector = {
   // of this sort key, which only orders content-producing injectors.
   order: 1000,
   async produce(ctx: TurnContext): Promise<InjectionBlock | null> {
+    // Memory-v3 schedules process-global prune work and retains selection
+    // lanes between turns. Until those jobs are tenant-scoped and drain-aware,
+    // pooled workers use the ordinary request-bound memory retrieval path.
+    if (isPooledWorkerRuntime()) return null;
     const config = getConfig();
     if (config.memory.enabled === false) return null;
     const live = isAssistantFeatureFlagEnabled(MEMORY_V3_LIVE, config);
@@ -373,6 +378,7 @@ export const memoryV3SpotlightInjector: Injector = {
   // After the cards injector so the shared memo is (usually) already primed.
   order: 1001,
   async produce(ctx: TurnContext): Promise<InjectionBlock | null> {
+    if (isPooledWorkerRuntime()) return null;
     const config = getConfig();
     if (config.memory.enabled === false) return null;
     // Live-only: shadow mode logs spotlight refs from the cards injector and

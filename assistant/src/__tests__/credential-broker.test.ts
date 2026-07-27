@@ -198,6 +198,57 @@ describe("CredentialBroker", () => {
     });
   });
 
+  describe("pooled tenant assignment cleanup", () => {
+    test("does not let tenant A transient values or usage tokens survive into tenant B", () => {
+      upsertCredentialMetadata("github", "token", {
+        allowedTools: ["browser_fill_credential"],
+      });
+      broker.injectTransient("github", "token", "tenant-a-secret");
+      const tenantAToken = broker.authorize({
+        service: "github",
+        field: "token",
+        toolName: "browser_fill_credential",
+      });
+      expect(tenantAToken.authorized).toBe(true);
+      expect(broker.transientValueCount).toBe(1);
+      expect(broker.activeTokenCount).toBe(1);
+
+      broker.revokeAll();
+      expect(broker.clearTransientValues()).toBe(1);
+      expect(broker.transientValueCount).toBe(0);
+      expect(broker.activeTokenCount).toBe(0);
+
+      if (tenantAToken.authorized) {
+        expect(broker.consume(tenantAToken.token.tokenId)).toEqual({
+          success: false,
+          reason: "Token not found or already revoked",
+        });
+      }
+
+      const tenantBToken = broker.authorize({
+        service: "github",
+        field: "token",
+        toolName: "browser_fill_credential",
+      });
+      expect(tenantBToken.authorized).toBe(true);
+      if (tenantBToken.authorized) {
+        expect(broker.consume(tenantBToken.token.tokenId)).toEqual({
+          success: true,
+          storageKey: credentialKey("github", "token"),
+        });
+      }
+    });
+
+    test("is idempotent after all transient values are cleared", () => {
+      broker.injectTransient("github", "token", "one");
+      broker.injectTransient("slack", "token", "two");
+
+      expect(broker.clearTransientValues()).toBe(2);
+      expect(broker.clearTransientValues()).toBe(0);
+      expect(broker.transientValueCount).toBe(0);
+    });
+  });
+
   describe("activeTokenCount", () => {
     test("counts only unconsumed tokens", () => {
       upsertCredentialMetadata("github", "token", {

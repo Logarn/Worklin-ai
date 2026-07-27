@@ -60,7 +60,11 @@ import { fetchMe, patchConsent } from "@/domains/account/profile";
 import { restoreConsentForUser, persistConsentForUser, resolveServerConsent, CONSENT_VERSION } from "@/utils/onboarding-cleanup";
 import { useOnboardingStore } from "@/domains/onboarding/onboarding-store";
 import { clearOrganization, useOrganizationStore } from "@/stores/organization-store";
-import { clearUserScopedStorage } from "@/lib/auth/session-cleanup";
+import {
+  clearUserScopedFrontendState,
+  clearUserScopedStorage,
+} from "@/lib/auth/session-cleanup";
+import { clearPendingProviderSecretUnlessOwnedBy } from "@/lib/auth/pending-provider-secret";
 import { subscribe } from "@/lib/event-bus";
 import { isElectron } from "@/runtime/is-electron";
 import { isNativePlatform, isOAuthFlowInFlight, installSessionCookies, waitForNativeSessionCookie } from "@/runtime/native-auth";
@@ -219,6 +223,7 @@ async function restoreOfflineSession(set: AuthSet): Promise<boolean> {
 function syncOrganizationState(nextUserId: string | null): void {
   if (!nextUserId || (previousUserId && previousUserId !== nextUserId)) {
     clearOrganization();
+    clearUserScopedFrontendState();
   }
   previousUserId = nextUserId;
 }
@@ -228,6 +233,10 @@ function broadcastAuthChange(): void {
 }
 
 async function syncUserScopedState(nextUserId: string | null): Promise<void> {
+  // Raw onboarding keys are short-lived but survive ordinary session refreshes.
+  // Enforce their persisted owner even on a cold reload where previousUserId is
+  // not yet populated, and clear legacy unbound values fail-closed.
+  clearPendingProviderSecretUnlessOwnedBy(nextUserId);
   if (nextUserId) {
     try {
       const me = await fetchMe();
@@ -718,6 +727,7 @@ const useAuthStoreBase = create<AuthStore>()((set, get) => ({
       }
       void deleteBiometricToken();
       clearOrganization();
+      clearUserScopedFrontendState();
       clearUserScopedStorage();
       if (!gatewayAuthMode) {
         lifecycleService.resetForLogout();
@@ -780,6 +790,7 @@ export function setupAuthListeners(): () => void {
   if (typeof BroadcastChannel !== "undefined") {
     broadcastChannel = new BroadcastChannel("auth");
     broadcastChannel.onmessage = () => {
+      clearUserScopedFrontendState();
       clearUserScopedStorage();
       window.location.reload();
     };

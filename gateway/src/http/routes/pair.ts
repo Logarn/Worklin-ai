@@ -33,6 +33,7 @@ import { mintToken } from "../../auth/token-service.js";
 import { KNOWN_EXTENSION_ORIGINS } from "../../chrome-extension-origins.js";
 import { assistantDbQuery } from "../../db/assistant-db-proxy.js";
 import { getLogger } from "../../logger.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 import { enforceLoopbackOnly, errorResponse } from "../loopback-guard.js";
 
 const log = getLogger("pair");
@@ -173,6 +174,8 @@ export async function handlePair(
       headers: { Allow: "POST" },
     });
   }
+  const pooledBoundary = rejectPooledSharedStateAccess("Local device pairing");
+  if (pooledBoundary) return pooledBoundary;
 
   // Loopback-only boundary (Velay/edge markers, peer IP, Host header,
   // X-Forwarded-For) — shared with the other local-machine endpoints.

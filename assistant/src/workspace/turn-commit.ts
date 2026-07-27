@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { parseIdentityFields } from "../daemon/handlers/identity.js";
 import { syncIdentityNameToPlatform } from "../platform/sync-identity.js";
 import { getLogger } from "../util/logger.js";
@@ -186,7 +187,9 @@ export async function commitTurnChanges(
             const content = readFileSync(identityPath, "utf-8");
             const fields = parseIdentityFields(content);
             if (fields.name) {
-              syncIdentityNameToPlatform(fields.name);
+              if (!isPooledWorkerRuntime()) {
+                syncIdentityNameToPlatform(fields.name);
+              }
             }
           }
         } catch (syncErr) {
@@ -198,24 +201,26 @@ export async function commitTurnChanges(
       }
 
       // Fire-and-forget enrichment — never blocks turn completion
-      try {
-        const commitHash = await gitService.getHeadHash();
-        const ctx: CommitContext = {
-          workspaceDir,
-          trigger: "turn",
-          conversationId,
-          turnNumber,
-          changedFiles: uniqueFiles,
-          timestampMs: Date.now(),
-        };
-        getEnrichmentService().enqueue({
-          workspaceDir,
-          commitHash,
-          context: ctx,
-          gitService,
-        });
-      } catch (enrichErr) {
-        log.debug({ enrichErr }, "Failed to enqueue enrichment (non-fatal)");
+      if (!isPooledWorkerRuntime()) {
+        try {
+          const commitHash = await gitService.getHeadHash();
+          const ctx: CommitContext = {
+            workspaceDir,
+            trigger: "turn",
+            conversationId,
+            turnNumber,
+            changedFiles: uniqueFiles,
+            timestampMs: Date.now(),
+          };
+          getEnrichmentService().enqueue({
+            workspaceDir,
+            commitHash,
+            context: ctx,
+            gitService,
+          });
+        } catch (enrichErr) {
+          log.debug({ enrichErr }, "Failed to enqueue enrichment (non-fatal)");
+        }
       }
     } else {
       log.debug(

@@ -224,4 +224,31 @@ describe("AuthSessionCache", () => {
     expect(cache.isAuthenticated("www.Example.COM")).toBe(true);
     expect(cache.isAuthenticated("EXAMPLE.COM")).toBe(true);
   });
+
+  test("tenant assignment reset drops memory and reloads the restored tenant file", () => {
+    writeSessionsFile(tmpDir, [
+      {
+        domain: "old-tenant.example",
+        authenticatedAt: Date.now(),
+        expiresAt: Date.now() + 86_400_000,
+        method: "stored",
+      },
+    ]);
+    const cache = new AuthSessionCache(tmpDir);
+    expect(cache.isAuthenticated("old-tenant.example")).toBe(true);
+
+    // Simulate the pooled state restore replacing this assignment's file.
+    writeSessionsFile(tmpDir, [
+      {
+        domain: "new-tenant.example",
+        authenticatedAt: Date.now(),
+        expiresAt: Date.now() + 86_400_000,
+        method: "stored",
+      },
+    ]);
+    cache.resetForTenantAssignment();
+
+    expect(cache.isAuthenticated("old-tenant.example")).toBe(false);
+    expect(cache.isAuthenticated("new-tenant.example")).toBe(true);
+  });
 });

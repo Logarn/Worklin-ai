@@ -5,6 +5,7 @@ import {
   clearCacheForTests,
   deleteCacheEntry,
   getCacheEntry,
+  resetSkillCacheForTenantAssignment,
   setCacheEntry,
 } from "../skills/skill-cache-store.js";
 
@@ -178,5 +179,15 @@ describe("clearCacheForTests", () => {
     setCacheEntry("b", { key: "k2" });
     clearCacheForTests();
     expect(_internals.store.size).toBe(0);
+  });
+});
+
+describe("resetSkillCacheForTenantAssignment", () => {
+  test("prevents an explicit key from resolving after tenant handoff", () => {
+    setCacheEntry({ private: "tenant-a" }, { key: "shared-key" });
+
+    resetSkillCacheForTenantAssignment();
+
+    expect(getCacheEntry("shared-key")).toBeNull();
   });
 });

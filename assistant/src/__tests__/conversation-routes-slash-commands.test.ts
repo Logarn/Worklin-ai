@@ -8,7 +8,11 @@
  */
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-mock.module("../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
+let pooledRuntime = false;
+mock.module("../config/env.js", () => ({
+  isHttpAuthDisabled: () => true,
+  isPooledWorkerRuntime: () => pooledRuntime,
+}));
 
 const formatCompactResultMock = mock(
   (result: { maxInputTokens: number }) =>
@@ -197,7 +201,13 @@ mock.module("../ipc/gateway-client.js", () => ({
   ipcCall: ipcCallMock,
 }));
 
+import {
+  clearConversations,
+  setConversation,
+} from "../daemon/conversation-registry.js";
 import type { AuthContext } from "../runtime/auth/types.js";
+import * as pendingInteractions from "../runtime/pending-interactions.js";
+import { ROUTES as APPROVAL_ROUTES } from "../runtime/routes/approval-routes.js";
 import { handleSendMessage } from "../runtime/routes/conversation-routes.js";
 import { callHandler } from "./helpers/call-route-handler.js";
 
@@ -292,6 +302,8 @@ function makeConversation() {
     assistantId: "self",
     trustContext: undefined,
     hasPendingConfirmation: () => false,
+    hasPendingSecret: () => false,
+    handleSecretResponse: () => {},
     setHostBrowserProxy: () => {},
     setHostCuProxy: () => {},
     setHostAppControlProxy: () => {},
@@ -345,9 +357,12 @@ function makeDeps(
 
 describe("handleSendMessage slash command interception", () => {
   beforeEach(() => {
+    pooledRuntime = false;
     formatCompactResultMock.mockClear();
     addMessageMock.mockClear();
     ipcCallMock.mockClear();
+    pendingInteractions.clear();
+    clearConversations();
   });
 
   test("intercepts built-in slash commands (unknown kind) without calling agent loop", async () => {
@@ -461,6 +476,144 @@ describe("handleSendMessage slash command interception", () => {
     expect(runAgentLoop).toHaveBeenCalledTimes(1);
     const loopContent = runAgentLoop.mock.calls[0][0];
     expect(loopContent).toBe("hello there");
+  });
+
+  test("keeps a pooled POST pending until its agent loop settles", async () => {
+    pooledRuntime = true;
+    const { conversation, runAgentLoop } = makeConversation();
+    let finishLoop!: () => void;
+    let markLoopStarted!: () => void;
+    const loopStarted = new Promise<void>((resolve) => {
+      markLoopStarted = resolve;
+    });
+    runAgentLoop.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishLoop = () => resolve(undefined);
+          markLoopStarted();
+        }),
+    );
+
+    let responseSettled = false;
+    const responsePromise = callHandler(
+      (args) => handleSendMessage(args, makeDeps(conversation)),
+      makeRequest("pooled turn"),
+      undefined,
+      202,
+    ).then((response) => {
+      responseSettled = true;
+      return response;
+    });
+
+    await loopStarted;
+    await Promise.resolve();
+    expect(responseSettled).toBe(false);
+
+    finishLoop();
+    const response = await responsePromise;
+    expect(response.status).toBe(202);
+  });
+
+  test("transient secret submission unblocks the same pooled message POST", async () => {
+    pooledRuntime = true;
+    const { conversation, runAgentLoop } = makeConversation();
+    const handleSecretResponse = mock(
+      (requestId: string, value?: string, delivery?: string) => {
+        const interaction = pendingInteractions.resolve(requestId, "answered");
+        interaction?.rpcResolve?.({ value, delivery });
+      },
+    );
+    Object.assign(conversation, {
+      hasPendingSecret: (requestId: string) => requestId === "pooled-secret-1",
+      handleSecretResponse,
+    });
+    setConversation("conv-slash-test", conversation);
+    let promptRegistered!: () => void;
+    const registered = new Promise<void>((resolve) => {
+      promptRegistered = resolve;
+    });
+    runAgentLoop.mockImplementation(async () => {
+      const answer = await new Promise<unknown>((resolve) => {
+        pendingInteractions.register("pooled-secret-1", {
+          conversationId: "conv-slash-test",
+          kind: "secret",
+          rpcResolve: resolve,
+        });
+        promptRegistered();
+      });
+      expect(answer).toEqual({
+        value: "tenant-secret",
+        delivery: "transient_send",
+      });
+      return undefined;
+    });
+
+    let postSettled = false;
+    const post = callHandler(
+      (args) => handleSendMessage(args, makeDeps(conversation)),
+      makeRequest("use the protected tool"),
+      undefined,
+      202,
+    ).then((response) => {
+      postSettled = true;
+      return response;
+    });
+
+    await registered;
+    await Promise.resolve();
+    expect(postSettled).toBe(false);
+
+    const secretRoute = APPROVAL_ROUTES.find(
+      (route) => route.operationId === "secret",
+    );
+    expect(secretRoute).toBeDefined();
+    expect(
+      await secretRoute!.handler({
+        body: {
+          requestId: "pooled-secret-1",
+          value: "tenant-secret",
+          delivery: "transient_send",
+        },
+      }),
+    ).toEqual({ accepted: true });
+
+    const response = await post;
+    expect(response.status).toBe(202);
+    expect(postSettled).toBe(true);
+    expect(handleSecretResponse).toHaveBeenCalledWith(
+      "pooled-secret-1",
+      "tenant-secret",
+      "transient_send",
+    );
+    expect(pendingInteractions.get("pooled-secret-1")).toBeUndefined();
+  });
+
+  test("keeps dedicated POST fire-and-forget behavior", async () => {
+    const { conversation, runAgentLoop } = makeConversation();
+    let finishLoop!: () => void;
+    let markLoopStarted!: () => void;
+    const loopStarted = new Promise<void>((resolve) => {
+      markLoopStarted = resolve;
+    });
+    runAgentLoop.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishLoop = () => resolve(undefined);
+          markLoopStarted();
+        }),
+    );
+
+    const responsePromise = callHandler(
+      (args) => handleSendMessage(args, makeDeps(conversation)),
+      makeRequest("dedicated turn"),
+      undefined,
+      202,
+    );
+    await loopStarted;
+
+    const response = await responsePromise;
+    expect(response.status).toBe(202);
+    finishLoop();
   });
 
   test("passes SlashContext with resolved profile context budget", async () => {

@@ -15,6 +15,7 @@ import {
   getPersistedSeq,
   getReplayWindow,
   recordPersistedSeq,
+  resetAssistantStreamStateForTenantAssignment,
   stampAndBuffer,
 } from "../runtime/assistant-stream-state.js";
 
@@ -643,6 +644,20 @@ describe("assistant-stream-state", () => {
       recordPersistedSeq("conv_overflow", 9999);
       expect(getPersistedSeq("conv_0")).toBe(5000);
       expect(getPersistedSeq("conv_1")).toBeNull();
+    });
+  });
+
+  describe("pooled tenant assignment reset", () => {
+    test("drops replay payloads and persisted conversation cursors", () => {
+      stampAndBuffer(mkEvent({ conversationId: "tenant-a-conversation" }));
+      recordPersistedSeq("tenant-a-conversation", 1);
+
+      resetAssistantStreamStateForTenantAssignment();
+
+      expect(getCurrentSeq()).toBe(0);
+      expect(getReplayWindow(0)).toEqual([]);
+      expect(getPersistedSeq("tenant-a-conversation")).toBeNull();
+      expect(_peekStreamForTesting().ringLength).toBe(0);
     });
   });
 

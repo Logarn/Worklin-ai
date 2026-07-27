@@ -25,6 +25,7 @@ let cached: AssistantConfig | null = null;
 let cachedFileSignature: ConfigFileSignature | null = null;
 let loading = false;
 let suppressConfigDiskWritesDepth = 0;
+let pooledRuntimeNeutralConfig: AssistantConfig | null = null;
 
 type ConfigFileSignature =
   | {
@@ -621,6 +622,10 @@ export function mergeDefaultWorkspaceConfig(): DefaultWorkspaceConfigMergeResult
 }
 
 export function loadConfig(): AssistantConfig {
+  if (pooledRuntimeNeutralConfig) {
+    return pooledRuntimeNeutralConfig;
+  }
+
   const freshCached = getCachedConfigIfFresh();
   if (freshCached) return freshCached;
 
@@ -798,6 +803,10 @@ export function getConfig(): AssistantConfig {
  * workspace-existence check runs.
  */
 export function getConfigReadOnly(): AssistantConfig {
+  if (pooledRuntimeNeutralConfig) {
+    return pooledRuntimeNeutralConfig;
+  }
+
   const freshCached = getCachedConfigIfFresh();
   if (freshCached) return freshCached;
 
@@ -818,6 +827,31 @@ export function invalidateConfigCache(): void {
   cached = null;
   cachedFileSignature = null;
   loading = false;
+}
+
+/**
+ * Pin config reads to schema defaults while a pooled worker is unassigned.
+ *
+ * The worker volume can contain a crashed tenant's config until the control
+ * plane proves quiescence and restores or prepares the next assignment.
+ * Returning an in-memory neutral config prevents any pre-lease route,
+ * provider, logger, or watcher bootstrap from observing that stale file.
+ */
+export function installPooledRuntimeNeutralConfig(): AssistantConfig {
+  cached = null;
+  cachedFileSignature = null;
+  loading = false;
+  pooledRuntimeNeutralConfig = cloneDefaultConfig();
+  return pooledRuntimeNeutralConfig;
+}
+
+/**
+ * Release the neutral override only after an authenticated assignment has
+ * restored or prepared its workspace and is ready for tenant bootstrap.
+ */
+export function releasePooledRuntimeNeutralConfigForAssignment(): void {
+  pooledRuntimeNeutralConfig = null;
+  invalidateConfigCache();
 }
 
 export async function withSuppressedConfigDiskWrites<T>(

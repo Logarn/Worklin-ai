@@ -15,6 +15,7 @@ import {
     setPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
 import { isElectron } from "@/runtime/is-electron";
+import { useAuthStore } from "@/stores/auth-store";
 import { routes } from "@/utils/routes";
 import { Button } from "@vellumai/design-library/components/button";
 import { Input } from "@vellumai/design-library/components/input";
@@ -25,7 +26,9 @@ export function ApiKeyScreen() {
   const hosting = searchParams.get("hosting");
   const next = searchParams.get("next");
   const electron = isElectron();
-  const pending = peekPendingProviderKey();
+  const userId = useAuthStore.use.user()?.id ?? null;
+  const providerKeyScope = { userId };
+  const pending = peekPendingProviderKey(providerKeyScope);
 
   const [providerOption, setProviderOption] = useState<OnboardingProviderOptionId>(
     () => {
@@ -51,18 +54,21 @@ export function ApiKeyScreen() {
 
   const onContinue = () => {
     if (!canContinue) return;
-    setPendingProviderKey({
-      provider: entry.provider,
-      providerOptionId: entry.id,
-      authType: entry.authType,
-      key: requiresKey ? apiKey.trim() : "",
-      connectionName: entry.connectionName,
-      credentialName: entry.credentialName,
-      connectionLabel: entry.connectionLabel,
-      baseUrl: entry.baseUrl ?? null,
-      models: entry.models ? [...entry.models] : null,
-      defaultModel: entry.defaultModel,
-    });
+    setPendingProviderKey(
+      {
+        provider: entry.provider,
+        providerOptionId: entry.id,
+        authType: entry.authType,
+        key: requiresKey ? apiKey.trim() : "",
+        connectionName: entry.connectionName,
+        credentialName: entry.credentialName,
+        connectionLabel: entry.connectionLabel,
+        baseUrl: entry.baseUrl ?? null,
+        models: entry.models ? [...entry.models] : null,
+        defaultModel: entry.defaultModel,
+      },
+      providerKeyScope,
+    );
     if (next === "hatching") {
       const params = new URLSearchParams();
       if (hosting) params.set("hosting", hosting);

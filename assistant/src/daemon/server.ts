@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { disposeAcpSessionManager } from "../acp/index.js";
 import { compileApp } from "../bundler/app-compiler.js";
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { getConfig } from "../config/loader.js";
 import { onContactChange } from "../contacts/contact-events.js";
 import type { CesClient } from "../credential-execution/client.js";
@@ -271,62 +272,71 @@ export class DaemonServer {
   // ── Server lifecycle ────────────────────────────────────────────────
 
   async start(): Promise<void> {
-    const config = getConfig();
-    await initializeProviders(config);
-    this.configWatcher.initFingerprint(config);
+    const pooledInteractiveOnly = isPooledWorkerRuntime();
+    if (!pooledInteractiveOnly) {
+      const config = getConfig();
+      await initializeProviders(config);
+      this.configWatcher.initFingerprint(config);
+    }
 
-    this.evictor.start();
+    if (!pooledInteractiveOnly) this.evictor.start();
 
-    try {
-      await this.cliIpc.start();
-    } catch (err) {
-      if (isEaddrInUse(err)) {
-        log.error(
+    if (!pooledInteractiveOnly) {
+      try {
+        await this.cliIpc.start();
+      } catch (err) {
+        if (isEaddrInUse(err)) {
+          log.error(
+            { err },
+            "CLI IPC socket already in use by another daemon — aborting startup to prevent duplicate processing",
+          );
+          throw err;
+        }
+        log.warn(
           { err },
-          "CLI IPC socket already in use by another daemon — aborting startup to prevent duplicate processing",
+          "CLI IPC server failed to start — continuing startup with degraded CLI connectivity",
         );
-        throw err;
       }
-      log.warn(
-        { err },
-        "CLI IPC server failed to start — continuing startup with degraded CLI connectivity",
-      );
     }
 
-    // Start the skill IPC server. First-party skill processes connect to this
-    // socket to access host capabilities (host.log, host.config.*,
-    // host.events.*, host.registries.*). Route registry is populated by
-    // subsequent PRs in the skill-isolation plan.
-    try {
-      await this.skillIpc.start();
-    } catch (err) {
-      log.warn(
-        { err },
-        "Skill IPC server failed to start — continuing startup with degraded skill host connectivity",
-      );
+    if (!pooledInteractiveOnly) {
+      // Start the skill IPC server. First-party skill processes connect to this
+      // socket to access host capabilities (host.log, host.config.*,
+      // host.events.*, host.registries.*). Route registry is populated by
+      // subsequent PRs in the skill-isolation plan.
+      try {
+        await this.skillIpc.start();
+      } catch (err) {
+        log.warn(
+          { err },
+          "Skill IPC server failed to start — continuing startup with degraded skill host connectivity",
+        );
+      }
     }
 
-    this.configWatcher.start(
-      () => this.evictConversationsForReload(),
-      () => this.broadcastIdentityChanged(),
-      () => this.broadcastSoundsConfigUpdated(),
-      () => this.broadcastAvatarUpdated(),
-      () => this.broadcastConfigChanged(),
-      () => refreshSkillCapabilityMemories(getConfig()),
-      () => this.broadcastIdentityIntroChanged(),
-    );
+    if (!pooledInteractiveOnly) {
+      this.configWatcher.start(
+        () => this.evictConversationsForReload(),
+        () => this.broadcastIdentityChanged(),
+        () => this.broadcastSoundsConfigUpdated(),
+        () => this.broadcastAvatarUpdated(),
+        () => this.broadcastConfigChanged(),
+        () => refreshSkillCapabilityMemories(getConfig()),
+        () => this.broadcastIdentityIntroChanged(),
+      );
 
-    this.syncIdentityToPlatform();
+      this.syncIdentityToPlatform();
 
-    this.appSourceWatcher.start((appId) => this.handleAppSourceChange(appId));
+      this.appSourceWatcher.start((appId) => this.handleAppSourceChange(appId));
 
-    this.pluginSourceWatcher.start();
-    WorkspaceToolsWatcher.getInstance().start();
+      this.pluginSourceWatcher.start();
+      WorkspaceToolsWatcher.getInstance().start();
 
-    // Broadcast contacts_changed to all clients when any contact mutation occurs.
-    this.unsubscribeContactChange = onContactChange(() => {
-      broadcastMessage({ type: "contacts_changed" });
-    });
+      // Broadcast contacts_changed to all clients when any contact mutation occurs.
+      this.unsubscribeContactChange = onContactChange(() => {
+        broadcastMessage({ type: "contacts_changed" });
+      });
+    }
 
     log.info("DaemonServer started (HTTP-only mode)");
   }
@@ -340,7 +350,7 @@ export class DaemonServer {
     this.pluginSourceWatcher.stop();
     WorkspaceToolsWatcher.getInstance().stop();
     this.cliIpc.stop();
-    this.skillIpc.stop();
+    if (!isPooledWorkerRuntime()) this.skillIpc.stop();
     if (this.unsubscribeContactChange) {
       this.unsubscribeContactChange();
       this.unsubscribeContactChange = null;

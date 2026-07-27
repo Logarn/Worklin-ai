@@ -327,10 +327,17 @@ export async function saveCalibration(
   return path;
 }
 
-/** @internal Test-only: drop the in-process calibration cache. */
-export function clearAnisotropyCacheForTests(): void {
+/**
+ * Drop calibrations loaded from the current tenant's workspace before that
+ * fixed workspace path is rebound to another tenant.
+ */
+export function resetAnisotropyCacheForTenantAssignment(): void {
   cache.clear();
 }
+
+/** @internal Test-only alias. */
+export const clearAnisotropyCacheForTests =
+  resetAnisotropyCacheForTenantAssignment;
 
 // ── Power iteration internals ────────────────────────────────────────────────
 

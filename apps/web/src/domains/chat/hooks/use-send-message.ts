@@ -11,7 +11,12 @@
  */
 
 import { captureError } from "@/lib/sentry/capture-error";
-import { type MutableRefObject, useCallback, useRef } from "react";
+import {
+  type MutableRefObject,
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import { routes } from "@/utils/routes";
@@ -30,7 +35,10 @@ import {
 } from "@/assistant/disk-pressure";
 import { useChatSessionStore } from "@/domains/chat/chat-session-store";
 import { useStreamStore } from "@/domains/chat/stream-store";
-import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import {
+  useResolvedAssistantsStore,
+  usesPooledRequestPolling,
+} from "@/stores/resolved-assistants-store";
 import { recordDiagnostic } from "@/lib/diagnostics";
 import { saveDismissedSurfaceIds } from "@/domains/chat/utils/dismissed-surfaces-storage";
 import { isSending, useTurnStore } from "@/domains/chat/turn-store";
@@ -56,28 +64,40 @@ import {
 
 import { clearQueueStatus } from "@/domains/chat/utils/stream-updaters/shared";
 import { mapRuntimeToDisplayMessage } from "@/domains/chat/utils/map-runtime-message";
-import { attachConfirmationToToolCall } from "@/domains/chat/utils/chat";
 import type { ChatError } from "@/domains/chat/types";
 
 import {
   clearPendingConfirmationsFromMessages,
   dismissInteractiveSurfaces,
   newTurnId,
-  parsePendingConfirmationData,
-  parsePendingSecretState,
   resolvePostError,
 } from "@/domains/chat/utils/send-message-utils";
 import { useComposerStore } from "@/domains/chat/composer-store";
 import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
-import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
+import {
+  authInfoGetOptions,
+  configGetOptions,
+  configGetQueryKey,
+  conversationsByIdGetOptions,
+  inferenceProviderconnectionsGetOptions,
+  secretsGetOptions,
+} from "@/generated/daemon/@tanstack/react-query.gen";
 import type { Conversation } from "@/types/conversation-types";
-import { getPendingInteractions } from "@/domains/chat/api/interactions";
 import {
   fetchConversationMessages,
+  POOLED_REQUEST_POLL_TIMEOUT_MS,
   postChatMessage,
   pollForResponse,
 } from "@/domains/chat/api/messages";
+import {
+  beginRequestPolledTurn,
+  createActiveRequestPolledObservation,
+  stopMatchingRequestPolledObservation,
+  suppressRequestPolledObservation,
+  type ActiveRequestPolledObservation,
+} from "@/domains/chat/api/request-polled-turn";
+import { restoreRequestPolledInteractions } from "@/domains/chat/api/request-polled-interactions";
 import { surfaceConversation } from "@/domains/chat/api/conversations";
 import type { ConversationMessage } from "@vellumai/assistant-api";
 import { supportsServerMintedConversation } from "@/lib/backwards-compat/server-minted-conversation";
@@ -86,8 +106,15 @@ import {
   ConversationNotFoundError,
   fetchConversationDetail,
 } from "@/utils/fetch-conversation-detail";
-import { ensureRunnableProfileFromStoredConnection } from "@/assistant/provider-profile-repair";
+import {
+  ensureRunnableProfileFromStoredConnection,
+  repairUnavailableManagedProfile,
+} from "@/assistant/provider-profile-repair";
 import { shouldAttemptProviderProfileRepair } from "@/domains/chat/utils/provider-profile-repair-trigger";
+import {
+  checkProviderReadyForSend,
+  type ProviderSendSelection,
+} from "@/domains/chat/utils/provider-send-guard";
 
 // ---------------------------------------------------------------------------
 // Stream send result
@@ -161,12 +188,11 @@ export function useSendMessage({
   // -------------------------------------------------------------------------
   // Server-mint in-flight gate
   // -------------------------------------------------------------------------
-  // Holds the draft id of an in-flight server-mint POST (the FIRST
-  // message in a brand-new conversation on an assistant that supports
-  // `supportsServerMintedConversation()`). While set, `sendMessage`
-  // refuses to start a new send — the POST 200s quickly so the window
-  // is brief, and blocking is simpler than threading a deferred
-  // through the queue path.
+  // Holds the draft id of an in-flight first-message POST. Dedicated
+  // assistants use the server-mint flow; pooled assistants use a stable
+  // conversationKey so bounded polling can observe the turn before the POST
+  // resolves. While set, `sendMessage` refuses a second send because the
+  // authoritative internal id is not available to the queue path yet.
   //
   // Without this gate, a follow-up send during the window would post
   // the local draft key to a 0.8.6+ assistant's strict-lookup endpoint
@@ -176,6 +202,21 @@ export function useSendMessage({
   // clear guards against re-mounts overwriting a newer mint.
   const pendingDraftMintRef = useRef<string | null>(null);
   const surfacingConversationIdsRef = useRef<Set<string>>(new Set());
+  const activeRequestPolledObservationRef =
+    useRef<ActiveRequestPolledObservation | null>(null);
+
+  // A pooled observer is scoped to exactly one assistant/conversation. Abort
+  // it when the user switches chats or this hook unmounts so a hidden turn
+  // cannot keep polling for six minutes and later surface a stale timeout.
+  useEffect(
+    () => () => {
+      const observation = activeRequestPolledObservationRef.current;
+      if (!observation) return;
+      suppressRequestPolledObservation(observation);
+      activeRequestPolledObservationRef.current = null;
+    },
+    [assistantId, activeConversationId],
+  );
 
   // -------------------------------------------------------------------------
   // Queue management (delegated to useMessageQueue)
@@ -235,6 +276,116 @@ export function useSendMessage({
       }
     }, [assistantId, queryClient]);
 
+  const resolveProviderSendSelection =
+    useCallback(async (): Promise<ProviderSendSelection> => {
+      if (!assistantId || !activeConversationId) {
+        return { kind: "unverified" };
+      }
+
+      const pendingProfile = useConversationStore
+        .getState()
+        .pendingDraftProfiles.get(activeConversationId);
+      if (pendingProfile) {
+        return {
+          kind: "conversation-override",
+          profileName: pendingProfile,
+        };
+      }
+
+      if (isDraftConversationId(activeConversationId)) {
+        return { kind: "workspace-active" };
+      }
+
+      try {
+        const data = await queryClient.fetchQuery({
+          ...conversationsByIdGetOptions({
+            path: {
+              assistant_id: assistantId,
+              id: activeConversationId,
+            },
+          }),
+          staleTime: 0,
+        });
+        const storedProfile = data.conversation.inferenceProfile;
+        return storedProfile
+          ? { kind: "conversation-override", profileName: storedProfile }
+          : { kind: "workspace-active" };
+      } catch (error) {
+        return { kind: "unverified", error };
+      }
+    }, [activeConversationId, assistantId, queryClient]);
+
+  const ensureProviderReadyForSend = useCallback(
+    async (selection: ProviderSendSelection): Promise<string | null> => {
+      if (!assistantId) return null;
+
+      const result = await checkProviderReadyForSend({
+        selection,
+        loadConfig: () =>
+          queryClient.fetchQuery({
+            ...configGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          }),
+        loadConnections: async () => {
+          const data = await queryClient.fetchQuery({
+            ...inferenceProviderconnectionsGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          });
+          return data.connections;
+        },
+        loadSecrets: async () => {
+          const data = await queryClient.fetchQuery({
+            ...secretsGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          });
+          return data.secrets;
+        },
+        loadManagedStatus: () =>
+          queryClient.fetchQuery({
+            ...authInfoGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          }),
+        repairActiveSelection: (expectedActiveProfile) =>
+          repairUnavailableManagedProfile(assistantId, expectedActiveProfile),
+      });
+
+      if (!result.allowed && result.error) {
+        captureError(result.error, {
+          context:
+            result.reason === "managed-status-unverified"
+              ? "check_managed_provider_before_send"
+              : "guard_unavailable_managed_provider_send",
+        });
+      }
+      if (
+        result.reason === "managed-repaired" ||
+        result.reason === "personal-repaired"
+      ) {
+        void queryClient.invalidateQueries({
+          queryKey: configGetQueryKey({ path: { assistant_id: assistantId } }),
+        });
+      }
+      if (result.allowed) {
+        return result.profileName;
+      }
+
+      setError({
+        message: result.message,
+        code: "PROVIDER_NOT_CONFIGURED",
+      });
+      return null;
+    },
+    [assistantId, queryClient, setError],
+  );
+
   const surfaceConversationAfterUserSend = useCallback(
     async (conversationId: string) => {
       if (!assistantId) return;
@@ -290,6 +441,7 @@ export function useSendMessage({
       attachmentIds: string[] = [],
       isDraft = false,
       clientMessageId?: string,
+      inferenceProfileForSend?: string,
     ): Promise<SendStreamResult> => {
       if (!activeConversationId || !assistantId) {
         return {
@@ -324,36 +476,153 @@ export function useSendMessage({
       // assistant-known `requestConversationId` for non-drafts or
       // pre-0.8.6 assistants preserves the legacy `conversationKey`
       // create-or-lookup behavior through `pickConversationIdWireField()`.
+      const resolvedAssistant = useResolvedAssistantsStore
+        .getState()
+        .assistants.find((item) => item.id === requestAssistantId);
+      const usePooledPolling = usesPooledRequestPolling(resolvedAssistant);
       const useServerMint =
+        !usePooledPolling &&
         isDraft &&
         (isDraftConversationId(requestConversationId) ||
           supportsServerMintedConversation());
       // While this POST is in flight, `sendMessage` rejects new sends
       // for this draft — see `pendingDraftMintRef` declaration above.
-      if (useServerMint) {
+      if (useServerMint || (usePooledPolling && isDraft)) {
         pendingDraftMintRef.current = requestConversationId;
       }
-      // A model profile the user picked in the composer before this
-      // conversation's row was available — a brand-new draft, or an existing
-      // conversation opened by URL while still loading (see
-      // `ComposerSettingsMenu`). Forward it so this turn, and the conversation's
-      // per-conversation override, use the chosen profile instead of the global
-      // default — covering the window before the menu's load-time promotion PUT
-      // lands. Keyed by id, so only this conversation's own stash is read.
-      const inferenceProfileForSend = useConversationStore
-        .getState()
-        .pendingDraftProfiles.get(requestConversationId);
-      const postResult = await postChatMessage(
-        requestAssistantId,
-        useServerMint ? null : requestConversationId,
-        content,
-        attachmentIds,
-        onboardingContext ?? undefined,
-        clientMessageId,
-        inferenceProfileForSend,
-      );
+      // The caller resolved and verified this exact profile immediately before
+      // the send. Draft selections are included in that resolution, so pooled
+      // and dedicated requests use the same fail-closed provider decision.
+      const correlationClientMessageId = clientMessageId ?? crypto.randomUUID();
+
+      /**
+       * Restore a pending prompt through the same interaction store and
+       * transcript attachment path used after an SSE reconnect. This only
+       * displays the normal approval UI; execution still requires the user to
+       * submit a decision through the authenticated confirmation endpoint.
+       */
+      const restorePendingInteractionState = async (
+        resolvedConversationId: string,
+      ): Promise<boolean> =>
+        restoreRequestPolledInteractions({
+          assistantId: requestAssistantId,
+          conversationId: resolvedConversationId,
+          isCurrent: () => isCurrentSendScope(resolvedConversationId),
+        });
+
+      const applyRequestPolledSnapshot = async (
+        snapshot: Awaited<ReturnType<typeof fetchConversationMessages>>,
+      ) => {
+        const resolvedConversationId = snapshot?.conversationId;
+        const activeObservation =
+          activeRequestPolledObservationRef.current;
+        if (
+          resolvedConversationId &&
+          activeObservation?.turnId === turnId
+        ) {
+          activeObservation.resolvedConversationId = resolvedConversationId;
+        }
+        if (
+          !resolvedConversationId ||
+          !isCurrentSendScope(resolvedConversationId)
+        ) {
+          return;
+        }
+
+        // Approval actions read this context. Set it as soon as polling
+        // resolves a first-message conversation instead of waiting for the
+        // long-running POST to finish.
+        useStreamStore.getState().setStreamContext({
+          assistantId: requestAssistantId,
+          conversationId: resolvedConversationId,
+        });
+
+        const serverMessages = snapshot.messages ?? [];
+        if (serverMessages.length > 0) {
+          const serverSeq = snapshot.seq ?? null;
+          const localSeq = getLocalSeq(resolvedConversationId);
+          recordLocalSeq(resolvedConversationId, serverSeq);
+          setMessages((prev) => {
+            if (!isCurrentSendScope(resolvedConversationId)) return prev;
+            return reconcileSnapshot(prev, serverMessages, {
+              serverSeq,
+              localSeq,
+            });
+          });
+        }
+
+        // The agent can be paused inside PermissionPrompter while the message
+        // POST (and pooled-worker lease) is intentionally still open. Read the
+        // interaction registry on every bounded snapshot so the normal Allow /
+        // Deny card is available to unblock that same turn.
+        await restorePendingInteractionState(resolvedConversationId);
+      };
+
+      const postMessage = () =>
+        postChatMessage(
+          requestAssistantId,
+          useServerMint ? null : requestConversationId,
+          content,
+          attachmentIds,
+          onboardingContext ?? undefined,
+          correlationClientMessageId,
+          inferenceProfileForSend,
+          usePooledPolling && isDraft
+            ? { conversationWireField: "conversationKey" }
+            : undefined,
+        );
+
+      const requestPolledTurn = usePooledPolling
+        ? beginRequestPolledTurn({
+            post: postMessage,
+            observe: (signal) =>
+              pollForResponse(requestAssistantId, "", requestConversationId, {
+                ...(isDraft ? { conversationKey: requestConversationId } : {}),
+                clientMessageId: correlationClientMessageId,
+                signal,
+                timeoutMs: POOLED_REQUEST_POLL_TIMEOUT_MS,
+                onSnapshot: applyRequestPolledSnapshot,
+              }),
+          })
+        : null;
+      const requestPolledObservation = requestPolledTurn
+        ? createActiveRequestPolledObservation({
+            assistantId: requestAssistantId,
+            requestConversationId,
+            turnId,
+            stopObservation: requestPolledTurn.stopObservation,
+          })
+        : null;
+      if (requestPolledObservation) {
+        const previous = activeRequestPolledObservationRef.current;
+        if (previous && previous !== requestPolledObservation) {
+          suppressRequestPolledObservation(previous);
+        }
+        activeRequestPolledObservationRef.current = requestPolledObservation;
+      }
+      const stopRequestPolledObservation = () => {
+        if (!requestPolledObservation) return;
+        suppressRequestPolledObservation(requestPolledObservation);
+        if (
+          activeRequestPolledObservationRef.current ===
+          requestPolledObservation
+        ) {
+          activeRequestPolledObservationRef.current = null;
+        }
+      };
+
+      let postResult: Awaited<ReturnType<typeof postChatMessage>>;
+      try {
+        postResult = await (requestPolledTurn?.postResult ?? postMessage());
+      } catch (error) {
+        stopRequestPolledObservation();
+        if (pendingDraftMintRef.current === requestConversationId) {
+          pendingDraftMintRef.current = null;
+        }
+        throw error;
+      }
       if (
-        useServerMint &&
+        (useServerMint || (usePooledPolling && isDraft)) &&
         pendingDraftMintRef.current === requestConversationId
       ) {
         // Clear only if we still own the gate. A re-mount or scope flip
@@ -362,6 +631,7 @@ export function useSendMessage({
         pendingDraftMintRef.current = null;
       }
       if (!postResult.ok) {
+        stopRequestPolledObservation();
         if (!isCurrentSendScope()) {
           recordDiagnostic("send_error_ignored_inactive_conversation", {
             assistantId: requestAssistantId,
@@ -397,7 +667,10 @@ export function useSendMessage({
       if (inferenceProfileForSend) {
         useConversationStore
           .getState()
-          .clearPendingDraftProfile(requestConversationId);
+          .clearPendingDraftProfile(
+            requestConversationId,
+            inferenceProfileForSend,
+          );
       }
       if (onboardingDraftConversationIdRef.current === activeConversationId) {
         onboardingDraftConversationIdRef.current = null;
@@ -417,6 +690,7 @@ export function useSendMessage({
       const effectiveConversationId = postResult.conversationId;
 
       if (!isCurrentSendScope(effectiveConversationId)) {
+        stopRequestPolledObservation();
         recordDiagnostic("send_result_ignored_inactive_conversation", {
           assistantId: postResult.assistantId,
           conversationId: requestConversationId,
@@ -451,12 +725,14 @@ export function useSendMessage({
       });
 
       if (postResult.queued) {
+        stopRequestPolledObservation();
         return {
           status: "ok",
           resolvedConversationId: postResult.conversationId,
         };
       }
       if (hasMatchingActiveStream) {
+        stopRequestPolledObservation();
         return {
           status: "ok",
           userMessageId: postResult.messageId,
@@ -464,12 +740,34 @@ export function useSendMessage({
         };
       }
 
-      pollForResponse(
-        postResult.assistantId,
-        postResult.messageId,
-        effectiveConversationId,
-      )
+      const responsePoll =
+        requestPolledTurn?.observation ??
+        pollForResponse(
+          postResult.assistantId,
+          postResult.messageId,
+          effectiveConversationId,
+          {
+            onSnapshot: (snapshot) => {
+              if (!isCurrentSendScope(effectiveConversationId)) return;
+              const serverMessages = snapshot.messages ?? [];
+              if (serverMessages.length === 0) return;
+              const serverSeq = snapshot.seq ?? null;
+              const localSeq = getLocalSeq(effectiveConversationId);
+              recordLocalSeq(effectiveConversationId, serverSeq);
+              setMessages((prev) => {
+                if (!isCurrentSendScope(effectiveConversationId)) return prev;
+                return reconcileSnapshot(prev, serverMessages, {
+                  serverSeq,
+                  localSeq,
+                });
+              });
+            },
+          },
+        );
+
+      responsePoll
         .then(async (reply) => {
+          if (requestPolledObservation?.resultSuppressed) return;
           if (!isCurrentSendScope(effectiveConversationId)) {
             recordDiagnostic("poll_response_ignored_inactive_conversation", {
               assistantId: postResult.assistantId,
@@ -482,33 +780,10 @@ export function useSendMessage({
             });
             return;
           }
-          let restoredConfData:
-            Parameters<typeof attachConfirmationToToolCall>[1] | null = null;
-          try {
-            const interactions = await getPendingInteractions(
-              postResult.assistantId,
-              effectiveConversationId,
-            );
-            if (!isCurrentSendScope(effectiveConversationId)) return;
-            if (interactions.pendingSecret) {
-              useInteractionStore
-                .getState()
-                .showSecret(
-                  parsePendingSecretState(interactions.pendingSecret),
-                );
-              if (!reply) return;
-            }
-            if (interactions.pendingConfirmation) {
-              const { confData, state } = parsePendingConfirmationData(
-                interactions.pendingConfirmation,
-              );
-              restoredConfData = confData;
-              useInteractionStore.getState().showConfirmation(state);
-              if (!reply) return;
-            }
-          } catch {
-            // Best-effort
-          }
+          const restoredInteraction = await restorePendingInteractionState(
+            effectiveConversationId,
+          );
+          if (restoredInteraction && !reply) return;
 
           if (!reply) {
             setError({ message: "Assistant did not respond in time." });
@@ -556,40 +831,22 @@ export function useSendMessage({
               { ...mapped, timestamp: mapped.timestamp ?? Date.now() },
             ];
           });
-          if (restoredConfData && isCurrentSendScope(effectiveConversationId)) {
-            const capturedConfData = restoredConfData;
-            // Zustand set() is synchronous — messages already reflect the
-            // setMessages call above, so getState() gives us fresh state.
-            const currentMessages = useChatSessionStore.getState().messages;
-            const result = attachConfirmationToToolCall(
-              currentMessages,
-              capturedConfData,
-            );
-            if (result.attachedToolCallId) {
-              useInteractionStore
-                .getState()
-                .setInlineConfirmationToolCallId(result.attachedToolCallId);
-              useChatSessionStore
-                .getState()
-                .setConfirmationToolCall(
-                  capturedConfData.requestId,
-                  result.attachedToolCallId,
-                );
-            } else {
-              useInteractionStore
-                .getState()
-                .setInlineConfirmationToolCallId(null);
-            }
-            setMessages(() => result.updatedMessages);
-          }
           startReconciliationLoop(epoch);
         })
         .catch((err) => {
+          if (requestPolledObservation?.resultSuppressed) return;
           if (!isCurrentSendScope(effectiveConversationId)) return;
           captureError(err, { context: "send_message_stream" });
           setError({ message: "Connection lost. Please try again." });
         })
         .finally(() => {
+          if (
+            activeRequestPolledObservationRef.current ===
+            requestPolledObservation
+          ) {
+            activeRequestPolledObservationRef.current = null;
+          }
+          if (requestPolledObservation?.resultSuppressed) return;
           if (!isCurrentSendScope(effectiveConversationId)) return;
           // Defense-in-depth: settle the turn if SSE didn't already.
           // `onPollReconciled` no-ops when the turn is already idle, so
@@ -624,14 +881,14 @@ export function useSendMessage({
         setError({ message: "No active conversation. Please try again." });
         return;
       }
-      // Block any send while a server-mint POST is in flight for the
-      // active draft. The POST 200s quickly so this window is brief;
-      // rejecting is simpler than threading the unresolved id through
-      // the queue path. See `pendingDraftMintRef` declaration.
+      // Block any second send while the active draft's first POST is in
+      // flight. The queue path cannot safely target the conversation until
+      // that request returns its authoritative internal id. See
+      // `pendingDraftMintRef` declaration.
       if (pendingDraftMintRef.current === activeConversationId) {
         setError({
           message:
-            "Setting up your conversation. Please try again in a moment.",
+            "Your first message is still being processed. Please try again in a moment.",
         });
         return;
       }
@@ -641,6 +898,10 @@ export function useSendMessage({
         });
         return;
       }
+      const providerSelection = await resolveProviderSendSelection();
+      const inferenceProfileForSend =
+        await ensureProviderReadyForSend(providerSelection);
+      if (!inferenceProfileForSend) return;
       setError(null);
       useInteractionStore.getState().resetSecretAndConfirmation();
       useChatSessionStore.getState().clearConfirmationToolCallMap();
@@ -702,6 +963,7 @@ export function useSendMessage({
             attachmentIds,
             undefined,
             clientMessageId,
+            inferenceProfileForSend,
           );
           if (!postResult.ok) {
             revertQueuedMessage(userMessage.id);
@@ -730,6 +992,14 @@ export function useSendMessage({
               status: postResult.status,
             });
             return;
+          }
+          if (inferenceProfileForSend) {
+            useConversationStore
+              .getState()
+              .clearPendingDraftProfile(
+                activeConversationId,
+                inferenceProfileForSend,
+              );
           }
           void surfaceConversationAfterUserSend(
             postResult.conversationId,
@@ -817,6 +1087,7 @@ export function useSendMessage({
           attachments.map((att) => att.id),
           isDraft,
           clientMessageId,
+          inferenceProfileForSend,
         );
 
         if (result.status === "failed") {
@@ -952,6 +1223,8 @@ export function useSendMessage({
       revertQueuedMessage,
       persistDismissedSurfaces,
       repairMissingProviderProfile,
+      ensureProviderReadyForSend,
+      resolveProviderSendSelection,
       queryClient,
       surfaceConversationAfterUserSend,
     ],
@@ -962,6 +1235,15 @@ export function useSendMessage({
   // -------------------------------------------------------------------------
   const handleStopGenerating = useCallback(async () => {
     if (!assistantId || !activeConversationId) return;
+    const pooledCancellationConversationId =
+      stopMatchingRequestPolledObservation(
+        activeRequestPolledObservationRef.current,
+        assistantId,
+        activeConversationId,
+      );
+    if (pooledCancellationConversationId) {
+      activeRequestPolledObservationRef.current = null;
+    }
     useStreamStore.getState().bumpEpoch();
     patchConversation(queryClient, assistantId, activeConversationId, {
       isProcessing: false,
@@ -973,7 +1255,10 @@ export function useSendMessage({
     useChatSessionStore.getState().clearConfirmationToolCallMap();
     try {
       await conversationsByIdCancelPost({
-        path: { assistant_id: assistantId, id: activeConversationId },
+        path: {
+          assistant_id: assistantId,
+          id: pooledCancellationConversationId ?? activeConversationId,
+        },
         throwOnError: true,
       });
     } catch {

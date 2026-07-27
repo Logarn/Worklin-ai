@@ -12,6 +12,7 @@ import { join, resolve, sep } from "node:path";
 
 import { z } from "zod";
 
+import { isPlatformIsolatedRuntime } from "../../config/env.js";
 import {
   deleteAttachment,
   getAttachmentById,
@@ -63,6 +64,16 @@ function resolveAllowedAttachmentDirectories(): string[] {
     "data",
     "attachments",
   );
+  if (isPlatformIsolatedRuntime()) {
+    return [workspaceAttachmentsDir].map((dir) => {
+      try {
+        return realpathSync(dir);
+      } catch {
+        return resolve(dir);
+      }
+    });
+  }
+
   const recordingsDir = join(
     process.env.HOME ?? "",
     "Library/Application Support/vellum-assistant/recordings",
@@ -302,6 +313,18 @@ function handleJsonUpload(
     let resolvedPath = resolveAllowedFileBackedAttachmentPath(filePath);
 
     if (!resolvedPath) {
+      // Desktop clients may attach an arbitrary local file by copying it into
+      // their workspace. A hosted runtime must never perform that copy: the
+      // request handler runs outside the tool sandbox, so accepting `/proc`,
+      // service storage, a global temp file, or a symlink escape would turn the
+      // attachment API into an arbitrary host-file reader. Hosted callers must
+      // upload bytes or first place the file inside the active workspace.
+      if (isPlatformIsolatedRuntime()) {
+        throw new BadRequestError(
+          "filePath must resolve inside the active workspace on hosted runtimes",
+        );
+      }
+
       const canonicalSource = resolveCanonicalPath(filePath);
       if (!existsSync(canonicalSource)) {
         throw new BadRequestError("filePath does not exist on disk");

@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { createHmac, randomUUID } from "node:crypto";
 
+import { ensureRuntimeWorkerLeaseSchema } from "./runtime-worker-leases.js";
+
 export const RUNTIME_STACK_STATUSES = [
   "provisioning",
   "active",
@@ -56,6 +58,8 @@ export interface RuntimeStackConfig {
   allowLegacySharedRuntime: boolean;
   legacySharedRuntimeAssistantIds: readonly string[];
   legacySharedRuntimeUserEmailHashes: readonly string[];
+  pooledRuntimeCanaryAssistantIds: readonly string[];
+  pooledRuntimeCanaryUserEmailHashes: readonly string[];
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
   runtimeRoot: string | null;
@@ -156,6 +160,13 @@ function parsePreprovisionedRuntimeSlots(
   return slots;
 }
 
+function parseCommaSeparatedList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 export function runtimeStackConfigFromEnv(
   rawEnv: EnvLike,
   gatewayUrl: string,
@@ -169,18 +180,18 @@ export function runtimeStackConfigFromEnv(
     rawEnv.WORKLIN_REQUIRE_ISOLATED_RUNTIME,
     true,
   );
-  const legacySharedRuntimeUserEmailHashes = (
-    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES ?? ""
-  )
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const legacySharedRuntimeAssistantIds = (
-    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS ?? ""
-  )
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const legacySharedRuntimeUserEmailHashes = parseCommaSeparatedList(
+    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_USER_EMAIL_HASHES,
+  );
+  const legacySharedRuntimeAssistantIds = parseCommaSeparatedList(
+    rawEnv.WORKLIN_LEGACY_SHARED_RUNTIME_ASSISTANT_IDS,
+  );
+  const pooledRuntimeCanaryUserEmailHashes = parseCommaSeparatedList(
+    rawEnv.WORKLIN_POOLED_RUNTIME_CANARY_USER_EMAIL_HASHES,
+  );
+  const pooledRuntimeCanaryAssistantIds = parseCommaSeparatedList(
+    rawEnv.WORKLIN_POOLED_RUNTIME_CANARY_ASSISTANT_IDS,
+  );
   const template = rawEnv.WORKLIN_RUNTIME_STACK_URL_TEMPLATE?.trim() || null;
   return {
     gatewayUrl,
@@ -189,6 +200,8 @@ export function runtimeStackConfigFromEnv(
     allowLegacySharedRuntime,
     legacySharedRuntimeAssistantIds,
     legacySharedRuntimeUserEmailHashes,
+    pooledRuntimeCanaryAssistantIds,
+    pooledRuntimeCanaryUserEmailHashes,
     runtimeStackUrlTemplate: template,
     runtimeStackProvider:
       rawEnv.WORKLIN_RUNTIME_STACK_PROVIDER?.trim() ||
@@ -325,6 +338,7 @@ export function ensureRuntimeStackSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_assistants_user_runtime
       ON assistants(user_id, runtime_stack_id);
   `);
+  ensureRuntimeWorkerLeaseSchema(db);
 }
 
 export function getRuntimeStackForAssistant(

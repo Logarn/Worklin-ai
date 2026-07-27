@@ -10,17 +10,38 @@
  * segment to 'self' (the daemon's internal scope constant).
  */
 
+import { randomUUID } from "node:crypto";
+
 import { getLogger } from "../logger.js";
 
 import { CURRENT_POLICY_EPOCH } from "./policy.js";
 import { parseSub } from "./subject.js";
 import { mintToken, verifyToken, type VerifyResult } from "./token-service.js";
-import type { ScopeProfile, TokenClaims } from "./types.js";
+import type {
+  RuntimeTenantContextClaim,
+  ScopeProfile,
+  TokenClaims,
+} from "./types.js";
 
 const log = getLogger("token-exchange");
 
 /** TTL for exchange tokens — short-lived, minted per-request. */
 const EXCHANGE_TOKEN_TTL_SECONDS = 60;
+
+function serviceTenantContext():
+  | NonNullable<TokenClaims["service_tenant_context"]>
+  | undefined {
+  const assistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID?.trim();
+  if (!assistantId) return undefined;
+  const organizationId = process.env.PLATFORM_ORGANIZATION_ID?.trim();
+  return {
+    version: 1,
+    assistant_id: assistantId,
+    service_id: "gateway",
+    request_id: randomUUID(),
+    ...(organizationId ? { organization_id: organizationId } : {}),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Edge token validation
@@ -82,12 +103,24 @@ export function mintExchangeToken(
     }
   }
 
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const ttlSeconds = edgeClaims.pooled_worker_lease
+    ? Math.min(
+        EXCHANGE_TOKEN_TTL_SECONDS,
+        edgeClaims.exp - nowSeconds,
+        edgeClaims.pooled_worker_lease.lease_expires_at - nowSeconds,
+      )
+    : EXCHANGE_TOKEN_TTL_SECONDS;
+  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1) {
+    throw new Error("Pooled worker lease token has expired.");
+  }
+
   return mintToken({
     aud: "vellum-daemon",
     sub: exchangeSub,
     scope_profile: targetScopeProfile,
     policy_epoch: CURRENT_POLICY_EPOCH,
-    ttlSeconds: EXCHANGE_TOKEN_TTL_SECONDS,
+    ttlSeconds,
     ...(edgeClaims.artifact_id ? { artifact_id: edgeClaims.artifact_id } : {}),
     ...(edgeClaims.collaboration_role
       ? { collaboration_role: edgeClaims.collaboration_role }
@@ -95,6 +128,33 @@ export function mintExchangeToken(
     ...(edgeClaims.tenant_context
       ? { tenant_context: edgeClaims.tenant_context }
       : {}),
+    ...(edgeClaims.service_tenant_context
+      ? { service_tenant_context: edgeClaims.service_tenant_context }
+      : {}),
+    ...(edgeClaims.pooled_worker_lease
+      ? { pooled_worker_lease: edgeClaims.pooled_worker_lease }
+      : {}),
+    ...(edgeClaims.pooled_worker_lease && edgeClaims.jti
+      ? { jti: edgeClaims.jti }
+      : {}),
+  });
+}
+
+/**
+ * Mint a daemon actor capability from caller identity attested by the managed
+ * Velay bridge. This gives WebSocket upgrades the same signed tenant envelope
+ * as ordinary control-plane actor requests.
+ */
+export function mintRuntimeTenantActorToken(
+  tenantContext: RuntimeTenantContextClaim,
+): string {
+  return mintToken({
+    aud: "vellum-daemon",
+    sub: `actor:self:${tenantContext.actor_id}`,
+    scope_profile: "actor_client_v1",
+    policy_epoch: CURRENT_POLICY_EPOCH,
+    ttlSeconds: EXCHANGE_TOKEN_TTL_SECONDS,
+    tenant_context: tenantContext,
   });
 }
 
@@ -110,12 +170,14 @@ export function mintExchangeToken(
  * sub=svc:gateway:self, scope_profile=gateway_ingress_v1
  */
 export function mintIngressToken(): string {
+  const tenantContext = serviceTenantContext();
   return mintToken({
     aud: "vellum-daemon",
     sub: "svc:gateway:self",
     scope_profile: "gateway_ingress_v1",
     policy_epoch: CURRENT_POLICY_EPOCH,
     ttlSeconds: EXCHANGE_TOKEN_TTL_SECONDS,
+    ...(tenantContext ? { service_tenant_context: tenantContext } : {}),
   });
 }
 
@@ -127,12 +189,14 @@ export function mintIngressToken(): string {
  * sub=svc:gateway:self, scope_profile=gateway_service_v1
  */
 export function mintServiceToken(): string {
+  const tenantContext = serviceTenantContext();
   return mintToken({
     aud: "vellum-daemon",
     sub: "svc:gateway:self",
     scope_profile: "gateway_service_v1",
     policy_epoch: CURRENT_POLICY_EPOCH,
     ttlSeconds: EXCHANGE_TOKEN_TTL_SECONDS,
+    ...(tenantContext ? { service_tenant_context: tenantContext } : {}),
   });
 }
 

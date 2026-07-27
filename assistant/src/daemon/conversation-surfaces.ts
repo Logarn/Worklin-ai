@@ -1,5 +1,6 @@
 import { v4 as uuid } from "uuid";
 
+import { isPooledWorkerRuntime } from "../config/env.js";
 import { isActivationSession } from "../memory/activation-session-store.js";
 import {
   addAppConversationId,
@@ -159,6 +160,11 @@ export function scheduleSurfaceDataPersist(
   if (existing) {
     clearTimeout(existing.timer);
   }
+  if (isPooledWorkerRuntime()) {
+    pendingSurfacePersists.delete(surfaceId);
+    persistSurfaceData(conversationId, surfaceId, data);
+    return;
+  }
   const timer = setTimeout(() => {
     pendingSurfacePersists.delete(surfaceId);
     persistSurfaceData(conversationId, surfaceId, data);
@@ -211,6 +217,11 @@ export function flushPendingSurfaceDataPersists(conversationId?: string): void {
     pendingSurfacePersists.delete(surfaceId);
     persistSurfaceData(pending.conversationId, surfaceId, pending.data);
   }
+}
+
+/** Number of delayed surface writes that could outlive the current tenant. */
+export function pendingSurfaceDataPersistCount(): number {
+  return pendingSurfacePersists.size;
 }
 
 /**
@@ -966,11 +977,11 @@ export function cleanupStandaloneSurface(
  * Handle content_changed action from document editor.
  * Auto-saves the document content to the app store.
  */
-function handleDocumentContentChanged(
+async function handleDocumentContentChanged(
   ctx: SurfaceConversationContext,
   surfaceId: string,
   data?: Record<string, unknown>,
-): void {
+): Promise<void> {
   if (!data) {
     log.warn({ surfaceId }, "content_changed action missing data");
     return;
@@ -1012,7 +1023,7 @@ function handleDocumentContentChanged(
 
     // Regenerate the editor HTML with updated content
     // We need to import the editor template dynamically
-    import("../tools/document/editor-template.js")
+    const save = import("../tools/document/editor-template.js")
       .then(({ generateEditorHTML }) => {
         const updatedHtml = generateEditorHTML(
           title || app.name,
@@ -1034,6 +1045,11 @@ function handleDocumentContentChanged(
           "Failed to import editor template for auto-save",
         );
       });
+    if (isPooledWorkerRuntime()) {
+      await save;
+    } else {
+      void save;
+    }
   } catch (err) {
     log.error({ err, appId }, "Failed to auto-save document");
   }
@@ -1692,7 +1708,7 @@ export async function handleSurfaceAction(
       { surfaceId, actionId, requestId, attachmentCount: attachments.length },
       "Processing surface action immediately (history-restored) with attachments",
     );
-    ctx
+    const processing = ctx
       .processMessage({
         content,
         attachments,
@@ -1717,6 +1733,11 @@ export async function handleSurfaceAction(
           }),
         );
       });
+    if (isPooledWorkerRuntime()) {
+      await processing;
+    } else {
+      void processing;
+    }
     return;
   }
   const retainPending = pending.surfaceType === "dynamic_page";
@@ -1733,7 +1754,7 @@ export async function handleSurfaceAction(
   // content_changed is a non-terminal state update for document auto-save
   // Save the document content and don't forward to the conversation
   if (actionId === "content_changed") {
-    handleDocumentContentChanged(ctx, surfaceId, data);
+    await handleDocumentContentChanged(ctx, surfaceId, data);
     return;
   }
 
@@ -1985,7 +2006,7 @@ export async function handleSurfaceAction(
     },
     "Processing surface action as follow-up with attachments",
   );
-  ctx
+  const processing = ctx
     .processMessage({
       content,
       attachments: pendingAttachments,
@@ -2006,6 +2027,11 @@ export async function handleSurfaceAction(
         message: `Failed to process surface action: ${message}`,
       });
     });
+  if (isPooledWorkerRuntime()) {
+    await processing;
+  } else {
+    void processing;
+  }
 }
 
 /**

@@ -39,6 +39,11 @@ const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv.ACTOR_TOKEN_SIGNING_KEY = process.env.ACTOR_TOKEN_SIGNING_KEY;
   savedEnv.IS_CONTAINERIZED = process.env.IS_CONTAINERIZED;
+  savedEnv.WORKLIN_RUNTIME_MODE = process.env.WORKLIN_RUNTIME_MODE;
+  savedEnv.WORKLIN_RUNTIME_WORKER_STACK_ID =
+    process.env.WORKLIN_RUNTIME_WORKER_STACK_ID;
+  delete process.env.WORKLIN_RUNTIME_MODE;
+  delete process.env.WORKLIN_RUNTIME_WORKER_STACK_ID;
   // Clean up key files from previous tests so they don't leak between cases.
   const deprecatedDir = getDeprecatedDir();
   if (existsSync(deprecatedDir))
@@ -55,6 +60,17 @@ afterEach(() => {
     delete process.env.IS_CONTAINERIZED;
   } else {
     process.env.IS_CONTAINERIZED = savedEnv.IS_CONTAINERIZED;
+  }
+  if (savedEnv.WORKLIN_RUNTIME_MODE === undefined) {
+    delete process.env.WORKLIN_RUNTIME_MODE;
+  } else {
+    process.env.WORKLIN_RUNTIME_MODE = savedEnv.WORKLIN_RUNTIME_MODE;
+  }
+  if (savedEnv.WORKLIN_RUNTIME_WORKER_STACK_ID === undefined) {
+    delete process.env.WORKLIN_RUNTIME_WORKER_STACK_ID;
+  } else {
+    process.env.WORKLIN_RUNTIME_WORKER_STACK_ID =
+      savedEnv.WORKLIN_RUNTIME_WORKER_STACK_ID;
   }
   // Reset signing key so interop tests don't leak state
   _resetSigningKeyForTesting();
@@ -99,6 +115,18 @@ describe("resolveSigningKey", () => {
     expect(key2.toString("hex")).toBe("cd".repeat(32));
     expect(key2.toString("hex")).not.toBe(key1.toString("hex"));
   });
+
+  test("pooled workers fail closed instead of loading or creating a disk key", () => {
+    process.env.WORKLIN_RUNTIME_MODE = "pooled";
+    delete process.env.ACTOR_TOKEN_SIGNING_KEY;
+
+    expect(() => resolveSigningKey()).toThrow(
+      "Pooled workers require ACTOR_TOKEN_SIGNING_KEY",
+    );
+    expect(
+      existsSync(join(getDeprecatedDir(), "actor-token-signing-key")),
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -131,6 +159,19 @@ describe("env-to-disk signing key sync", () => {
 
     const keyPath = join(getDeprecatedDir(), "actor-token-signing-key");
     expect(existsSync(keyPath)).toBe(false);
+  });
+
+  test("pooled worker env keys stay memory-only even outside container mode", () => {
+    delete process.env.IS_CONTAINERIZED;
+    process.env.WORKLIN_RUNTIME_MODE = "pooled";
+    process.env.ACTOR_TOKEN_SIGNING_KEY = VALID_HEX_KEY;
+
+    const key = resolveSigningKey();
+
+    expect(key.toString("hex")).toBe(VALID_HEX_KEY);
+    expect(
+      existsSync(join(getDeprecatedDir(), "actor-token-signing-key")),
+    ).toBe(false);
   });
 
   test("mismatched disk key is updated to env key in non-containerized mode", () => {

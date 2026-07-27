@@ -63,7 +63,13 @@ mock.module("../config/loader.js", () => ({
           },
         },
       },
-      profiles: {},
+      profiles: {
+        balanced: { provider: "anthropic", model: "claude-opus-4-7" },
+        "quality-optimized": {
+          provider: "anthropic",
+          model: "claude-opus-4-7",
+        },
+      },
       callSites: {},
       pricingOverrides: [],
     },
@@ -190,7 +196,9 @@ function makeHangingConversation(): Conversation {
     content: string;
     onEvent?: (msg: ServerMessage) => void;
     requestId?: string;
+    inferenceProfile?: string;
   }> = [];
+  const appliedInferenceProfiles: Array<string | null> = [];
   return {
     isProcessing: () => processing,
     persistUserMessage: (options: { requestId?: string }) => {
@@ -223,11 +231,13 @@ function makeHangingConversation(): Conversation {
       content: string;
       onEvent?: (msg: ServerMessage) => void;
       requestId?: string;
+      inferenceProfile?: string;
     }) => {
       enqueuedMessages.push({
         content: options.content,
         onEvent: options.onEvent,
         requestId: options.requestId,
+        inferenceProfile: options.inferenceProfile,
       });
       return {
         queued: true,
@@ -241,7 +251,11 @@ function makeHangingConversation(): Conversation {
     handleConfirmationResponse: () => {},
     handleSecretResponse: () => {},
     getMessages: () => messages as never[],
+    applyInferenceProfileState: (state: { profile: string | null }) => {
+      appliedInferenceProfiles.push(state.profile);
+    },
     _enqueuedMessages: enqueuedMessages,
+    _appliedInferenceProfiles: appliedInferenceProfiles,
   } as unknown as Conversation;
 }
 
@@ -832,13 +846,14 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
     // Wait for the agent loop to start
     await new Promise((r) => setTimeout(r, 30));
 
-    // Second message should be queued, not rejected
+    // Each later message should be queued with its own guarded profile.
     const res2 = await fetch(messagesUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
       body: JSON.stringify({
         conversationKey: "conv-busy",
         content: "Second",
+        inferenceProfile: "balanced",
         sourceChannel: "vellum",
         interface: "macos",
       }),
@@ -854,6 +869,30 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
     expect(body2.queued).toBe(true);
     expect(typeof body2.conversationId).toBe("string");
     expect(body2.conversationId.length).toBeGreaterThan(0);
+
+    const res3 = await fetch(messagesUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
+      body: JSON.stringify({
+        conversationKey: "conv-busy",
+        content: "Third",
+        inferenceProfile: "quality-optimized",
+        sourceChannel: "vellum",
+        interface: "macos",
+      }),
+    });
+    expect(res3.status).toBe(202);
+
+    const busyConversation = conversation as unknown as {
+      _enqueuedMessages: Array<{ inferenceProfile?: string }>;
+      _appliedInferenceProfiles: Array<string | null>;
+    };
+    expect(
+      busyConversation._enqueuedMessages.map(
+        (message) => message.inferenceProfile,
+      ),
+    ).toEqual(["balanced", "quality-optimized"]);
+    expect(busyConversation._appliedInferenceProfiles).toEqual([]);
 
     await stopServer();
   });

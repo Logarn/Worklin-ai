@@ -225,6 +225,13 @@ export interface PowerEvent {
 export type DeepLink =
   | { kind: "send"; message: string }
   | { kind: "openThread"; threadId: string }
+  | {
+      kind: "oauthComplete";
+      requestId: string;
+      oauthStatus: string | null;
+      oauthProvider: string;
+      oauthCode: string | null;
+    }
   | { kind: "unknown"; url: string };
 
 // ---------------------------------------------------------------------------
@@ -404,6 +411,7 @@ export interface LockfileAssistant {
   species?: string;
   hatchedAt?: string;
   organizationId?: string;
+  runtimeProvider?: string;
   resources?: LocalAssistantResources;
 }
 

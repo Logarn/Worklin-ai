@@ -302,3 +302,31 @@ describe("setInput", () => {
     expect(getStore().input).toBe("hello world");
   });
 });
+
+describe("reset", () => {
+  test("clears text and attachment state", () => {
+    getStore().setInput("hello");
+    useComposerStore.setState({
+      attachments: [
+        {
+          kind: "uploaded",
+          localId: "att-1",
+          id: "srv-1",
+          filename: "file.txt",
+          mimeType: "text/plain",
+          sizeBytes: 100,
+          previewUrl: null,
+        },
+      ],
+      attachmentLastError: "oops",
+      restoredDraftConversationId: "conv-1",
+    });
+
+    getStore().reset();
+
+    expect(getStore().input).toBe("");
+    expect(getStore().restoredDraftConversationId).toBeNull();
+    expect(getStore().attachments).toEqual([]);
+    expect(getStore().attachmentLastError).toBeNull();
+  });
+});

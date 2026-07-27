@@ -28,16 +28,18 @@
  * back to a shorter deterministic path so CLI commands can still connect.
  */
 
-import { existsSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 
-import {
-  ensureSocketDir,
-  SocketWatchdog,
-} from "@vellumai/ipc-server-utils";
+import { ensureSocketDir, SocketWatchdog } from "@vellumai/ipc-server-utils";
 
 import { findLocalGuardianPrincipalId } from "../runtime/local-actor-identity.js";
-import { RouteError } from "../runtime/routes/errors.js";
+import {
+  ConflictError,
+  ForbiddenError,
+  RouteError,
+  UnauthorizedError,
+} from "../runtime/routes/errors.js";
 import { ROUTES } from "../runtime/routes/index.js";
 import type {
   RouteDefinition,
@@ -53,11 +55,15 @@ import {
   writeStreamEnd,
 } from "./ipc-framing.js";
 import { type DbProxyParams, handleDbProxy } from "./routes/db-proxy.js";
+import { runDatabaseProxyWithPooledRuntimeDrainFence } from "./routes/db-proxy-drain-fence.js";
 import {
   type DbProxyTransactionParams,
   handleDbProxyTransaction,
 } from "./routes/db-proxy-transaction.js";
-import { routeDefinitionsToIpcMethods } from "./routes/route-adapter.js";
+import {
+  authenticateIpcRouteArgs,
+  routeDefinitionsToIpcMethods,
+} from "./routes/route-adapter.js";
 import { ensureSocketPathFree } from "./socket-cleanup.js";
 import { resolveIpcSocketPath } from "./socket-path.js";
 
@@ -145,6 +151,8 @@ export interface AssistantIpcServerOptions {
    * Set to `0` to disable. Defaults to {@link SocketWatchdog}'s 5000ms.
    */
   watchdogIntervalMs?: number;
+  /** Route source used by isolated server tests. Defaults to the runtime ROUTES. */
+  routes?: RouteDefinition[];
 }
 
 export class AssistantIpcServer {
@@ -159,7 +167,10 @@ export class AssistantIpcServer {
    * their accept loops drain.
    */
   private legacyServers = new Set<Server>();
-  private abortControllers = new Map<string, AbortController>();
+  private abortControllers = new Map<
+    string,
+    { controller: AbortController; ownerKey?: string }
+  >();
 
   constructor(options?: AssistantIpcServerOptions) {
     const resolution = resolveIpcSocketPath("assistant");
@@ -168,7 +179,9 @@ export class AssistantIpcServer {
       { source: resolution.source, path: resolution.path },
       "Assistant IPC socket path resolved",
     );
-    for (const route of routeDefinitionsToIpcMethods(ROUTES)) {
+    for (const route of routeDefinitionsToIpcMethods(
+      options?.routes ?? ROUTES,
+    )) {
       this.methods.set(route.operationId, route.handler);
     }
 
@@ -177,16 +190,37 @@ export class AssistantIpcServer {
     // defined directly here; all other routes go in ROUTES. Remove once
     // contacts/guardian-binding logic is fully migrated to the gateway's
     // own database.
-    this.methods.set("db_proxy", (params) =>
-      handleDbProxy(params as unknown as DbProxyParams),
-    );
-    this.methods.set("db_proxy_transaction", (params) =>
-      handleDbProxyTransaction(params as unknown as DbProxyTransactionParams),
-    );
+    this.methods.set("db_proxy", (params) => {
+      assertGatewayDatabaseProxyAuth(params.authContext);
+      return runDatabaseProxyWithPooledRuntimeDrainFence(
+        params.authContext,
+        "db_proxy",
+        () => handleDbProxy(params as unknown as DbProxyParams),
+      );
+    });
+    this.methods.set("db_proxy_transaction", (params) => {
+      assertGatewayDatabaseProxyAuth(params.authContext);
+      return runDatabaseProxyWithPooledRuntimeDrainFence(
+        params.authContext,
+        "db_proxy_transaction",
+        () =>
+          handleDbProxyTransaction(
+            params as unknown as DbProxyTransactionParams,
+          ),
+      );
+    });
 
     this.methods.set("$cancel", (params) => {
+      assertCancellationAuth(params.authContext);
       const targetId = (params as { targetId?: string }).targetId;
-      if (targetId) this.abortControllers.get(targetId)?.abort();
+      if (!targetId) return null;
+      const target = this.abortControllers.get(targetId);
+      if (!target) return null;
+      const requesterKey = ipcAuthOwnerKey(params.authContext);
+      if (!target.ownerKey || requesterKey !== target.ownerKey) {
+        throw new ForbiddenError("Cannot cancel another tenant's IPC request");
+      }
+      target.controller.abort();
       return null;
     });
 
@@ -228,7 +262,9 @@ export class AssistantIpcServer {
   stop(): void {
     this.watchdog.stop();
 
-    for (const ctrl of this.abortControllers.values()) ctrl.abort();
+    for (const entry of this.abortControllers.values()) {
+      entry.controller.abort();
+    }
     this.abortControllers.clear();
 
     for (const client of this.clients) {
@@ -299,6 +335,21 @@ export class AssistantIpcServer {
       });
     });
 
+    server.once("listening", () => {
+      try {
+        // The combined runtime runs the gateway and assistant under separate
+        // UIDs in the shared `vellum` group. The workspace directory is
+        // setgid, so the socket inherits that group; make both the initial
+        // listener and watchdog replacements connectable by the gateway.
+        chmodSync(this.socketPath, 0o660);
+      } catch (err) {
+        log.error(
+          { err, path: this.socketPath },
+          "Failed to set assistant IPC socket permissions",
+        );
+      }
+    });
+
     server.on("error", (err) => {
       log.error({ err }, "Assistant IPC server error");
     });
@@ -337,16 +388,34 @@ export class AssistantIpcServer {
     // Skip AbortController for the $cancel meta-method itself
     const needsAbortTracking = req.method !== "$cancel";
     let abortController: AbortController | undefined;
+    let ownsAbortEntry = false;
     if (needsAbortTracking) {
       abortController = new AbortController();
-      this.abortControllers.set(req.id, abortController);
     }
 
     try {
-      const handlerArgs = {
+      const rawHandlerArgs = {
         ...injectLocalActorHeader(req.params),
         ...(abortController && { abortSignal: abortController.signal }),
       };
+      const handlerArgs =
+        req.method === "get_route_schema"
+          ? rawHandlerArgs
+          : authenticateIpcRouteArgs(
+              rawHandlerArgs,
+              `_ipc/${req.method}`,
+              "POST",
+            );
+      if (abortController) {
+        if (this.abortControllers.has(req.id)) {
+          throw new ConflictError("IPC request id is already active");
+        }
+        this.abortControllers.set(req.id, {
+          controller: abortController,
+          ownerKey: ipcAuthOwnerKey(handlerArgs.authContext),
+        });
+        ownsAbortEntry = true;
+      }
       const result = handler(handlerArgs);
 
       if (result instanceof Promise) {
@@ -375,7 +444,7 @@ export class AssistantIpcServer {
         this.sendResult(socket, reader, req.id, result);
       }
     } catch (err) {
-      this.abortControllers.delete(req.id);
+      if (ownsAbortEntry) this.abortControllers.delete(req.id);
       log.warn({ err, method: req.method }, "IPC handler error");
       this.sendResponse(socket, reader, this.buildErrorResponse(req.id, err));
     }
@@ -442,7 +511,7 @@ export class AssistantIpcServer {
     response: IpcStreamingResponse,
   ): void {
     if (socket.destroyed) {
-      this.abortControllers.get(requestId)?.abort();
+      this.abortControllers.get(requestId)?.controller.abort();
       this.abortControllers.delete(requestId);
       return;
     }
@@ -469,7 +538,7 @@ export class AssistantIpcServer {
         .read()
         .then(({ done, value }) => {
           if (socket.destroyed) {
-            this.abortControllers.get(requestId)?.abort();
+            this.abortControllers.get(requestId)?.controller.abort();
             this.abortControllers.delete(requestId);
             streamReader.cancel().catch(() => {});
             return;
@@ -613,4 +682,63 @@ function injectLocalActorHeader(
       "x-vellum-actor-principal-id": localActor,
     },
   };
+}
+
+function ipcAuthOwnerKey(
+  authContext: RouteHandlerArgs["authContext"],
+): string | undefined {
+  const actor = authContext?.tenantContext;
+  if (actor) {
+    return [
+      "actor",
+      actor.organizationId,
+      actor.assistantId,
+      actor.actorId,
+    ].join(":");
+  }
+  const service = authContext?.serviceTenantContext;
+  if (service) {
+    return [
+      "service",
+      service.organizationId ?? "",
+      service.assistantId,
+      service.serviceId,
+    ].join(":");
+  }
+  if (!authContext) return undefined;
+  return [authContext.principalType, authContext.subject].join(":");
+}
+
+function assertGatewayDatabaseProxyAuth(
+  authContext: RouteHandlerArgs["authContext"],
+): void {
+  if (!authContext) {
+    throw new UnauthorizedError("IPC authentication required");
+  }
+  if (
+    authContext.principalType !== "svc_gateway" ||
+    !authContext.scopes.has("internal.write")
+  ) {
+    throw new ForbiddenError(
+      "Database proxy requires the gateway internal service principal",
+    );
+  }
+}
+
+function assertCancellationAuth(
+  authContext: RouteHandlerArgs["authContext"],
+): void {
+  if (!authContext) {
+    throw new UnauthorizedError("IPC authentication required");
+  }
+  const allowed =
+    (authContext.principalType === "actor" &&
+      authContext.scopes.has("chat.write")) ||
+    (authContext.principalType === "svc_gateway" &&
+      authContext.scopes.has("internal.write")) ||
+    (authContext.principalType === "local" &&
+      authContext.scopes.has("local.all"));
+  if (!allowed) {
+    throw new ForbiddenError("Principal cannot cancel IPC requests");
+  }
 }

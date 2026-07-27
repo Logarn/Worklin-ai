@@ -1,7 +1,12 @@
+import { createHash } from "node:crypto";
+
 import { startVoiceTurn } from "../calls/voice-session-bridge.js";
 import type { RouteHandlerArgs } from "../runtime/routes/types.js";
 import { RouteResponse } from "../runtime/routes/types.js";
-import { verifyManagedVoiceSessionToken } from "./provider-session.js";
+import {
+  claimManagedVoiceProviderTurn,
+  isManagedVoiceSessionBindingCurrent,
+} from "./provider-session.js";
 
 interface ChatMessage {
   role?: unknown;
@@ -37,15 +42,39 @@ export function handleProviderChatCompletions(
   args: RouteHandlerArgs,
 ): RouteResponse {
   const token = sessionTokenFrom(args);
-  const binding = token ? verifyManagedVoiceSessionToken(token) : null;
   const content = lastUserText(args.body?.messages);
-  if (!binding || !content) {
+  if (!token || !content) {
     return new RouteResponse(
       JSON.stringify({ error: { message: "Invalid voice session" } }),
       { "Content-Type": "application/json" },
       401,
     );
   }
+  const requestKey = createHash("sha256")
+    .update(JSON.stringify(args.body?.messages ?? []))
+    .digest("base64url");
+  const claimed = claimManagedVoiceProviderTurn(token, requestKey);
+  if (claimed.status !== "accepted") {
+    return new RouteResponse(
+      JSON.stringify({
+        error: {
+          message:
+            claimed.status === "replayed"
+              ? "Voice provider turn already processed"
+              : claimed.status === "limit_exceeded"
+                ? "Voice session turn limit reached"
+                : "Invalid voice session",
+        },
+      }),
+      { "Content-Type": "application/json" },
+      claimed.status === "replayed"
+        ? 409
+        : claimed.status === "limit_exceeded"
+          ? 429
+          : 401,
+    );
+  }
+  const { binding } = claimed;
 
   const encoder = new TextEncoder();
   let handle: Awaited<ReturnType<typeof startVoiceTurn>> | null = null;
@@ -71,7 +100,14 @@ export function handleProviderChatCompletions(
         finished = true;
         controller.close();
       };
+      const requireCurrentLease = () => {
+        if (isManagedVoiceSessionBindingCurrent(binding)) return true;
+        handle?.abort();
+        finish("cancelled");
+        return false;
+      };
       try {
+        if (!requireCurrentLease()) return;
         handle = await startVoiceTurn({
           conversationId: binding.conversationId,
           voiceSessionId: binding.sessionId,
@@ -88,7 +124,7 @@ export function handleProviderChatCompletions(
           signal: args.abortSignal,
           callbacks: {
             assistant_text_delta: (message) => {
-              if (!message.text) return;
+              if (!message.text || !requireCurrentLease()) return;
               send({
                 id: binding.sessionId,
                 object: "chat.completion.chunk",
@@ -103,16 +139,20 @@ export function handleProviderChatCompletions(
                 ],
               });
             },
-            message_complete: (message) =>
+            message_complete: (message) => {
+              if (!requireCurrentLease()) return;
               finish(
                 message.type === "generation_cancelled" ? "cancelled" : "stop",
-              ),
+              );
+            },
           },
           onError: (message) => {
+            if (!requireCurrentLease()) return;
             send({ error: { message } });
             finish("cancelled");
           },
         });
+        if (!requireCurrentLease()) return;
       } catch (error) {
         send({
           error: {

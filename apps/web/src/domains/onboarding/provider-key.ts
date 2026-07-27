@@ -11,18 +11,24 @@ import type {
   OnboardingProviderId,
   OnboardingProviderOptionId,
 } from "@/domains/onboarding/provider-catalog";
+import {
+  isPooledApiKeyProvider,
+  isPooledRuntimeProvider,
+} from "@/assistant/pooled-model-provider";
+import { PENDING_PROVIDER_KEY_STORAGE } from "@/lib/auth/pending-provider-secret";
 
 // Model-provider API key collected during onboarding. Held in sessionStorage
 // (consume-once) between the API-key step and the post-hatch application, then
 // written to the freshly hatched assistant. Mirrors the macOS flow, which
 // holds the key in-memory and POSTs it to the daemon once the assistant is up.
 
-const PENDING_KEY_STORAGE = "onboarding.providerKey";
 export const ONBOARDING_PROFILE_NAME = "custom-balanced";
 export const CHATGPT_SUBSCRIPTION_CONNECTION_NAME = "chatgpt-subscription";
 export const CHATGPT_SUBSCRIPTION_MODEL = "gpt-5.4-mini";
 
 export interface PendingProviderKey {
+  /** Authenticated user that entered this raw key. */
+  ownerUserId?: string;
   provider: OnboardingProviderId;
   providerOptionId?: OnboardingProviderOptionId;
   authType?: OnboardingProviderAuthType;
@@ -36,13 +42,40 @@ export interface PendingProviderKey {
   defaultModel?: string;
 }
 
-export function setPendingProviderKey(value: PendingProviderKey | null): void {
+export interface PendingProviderKeyScope {
+  userId: string | null;
+}
+
+export class PooledProviderSetupError extends Error {
+  readonly status = 409;
+
+  constructor(
+    readonly code:
+      | "pooled_provider_api_key_required"
+      | "pooled_provider_credential_alias_unsupported"
+      | "pooled_provider_unsupported",
+    message: string,
+  ) {
+    super(message);
+    this.name = "PooledProviderSetupError";
+  }
+}
+
+export function setPendingProviderKey(
+  value: PendingProviderKey | null,
+  scope?: PendingProviderKeyScope,
+): void {
   try {
     if (value === null) {
-      sessionStorage.removeItem(PENDING_KEY_STORAGE);
+      sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
       return;
     }
-    sessionStorage.setItem(PENDING_KEY_STORAGE, JSON.stringify(value));
+    sessionStorage.setItem(
+      PENDING_PROVIDER_KEY_STORAGE,
+      JSON.stringify(
+        scope ? { ...value, ownerUserId: scope.userId ?? undefined } : value,
+      ),
+    );
   } catch {
     // Storage unavailable (private mode / quota) — degrade silently.
   }
@@ -59,21 +92,36 @@ function isPendingProviderKey(value: unknown): value is PendingProviderKey {
   );
 }
 
-export function peekPendingProviderKey(): PendingProviderKey | null {
+export function peekPendingProviderKey(
+  scope?: PendingProviderKeyScope,
+): PendingProviderKey | null {
   try {
-    const raw = sessionStorage.getItem(PENDING_KEY_STORAGE);
+    const raw = sessionStorage.getItem(PENDING_PROVIDER_KEY_STORAGE);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isPendingProviderKey(parsed) ? parsed : null;
+    if (!isPendingProviderKey(parsed)) {
+      sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
+      return null;
+    }
+    if (
+      scope &&
+      (!scope.userId || parsed.ownerUserId !== scope.userId)
+    ) {
+      sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
 }
 
-export function consumePendingProviderKey(): PendingProviderKey | null {
-  const value = peekPendingProviderKey();
+export function consumePendingProviderKey(
+  scope?: PendingProviderKeyScope,
+): PendingProviderKey | null {
+  const value = peekPendingProviderKey(scope);
   try {
-    sessionStorage.removeItem(PENDING_KEY_STORAGE);
+    sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
   } catch {
     // ignore
   }
@@ -281,10 +329,61 @@ export async function configureOnboardingProviderProfile(
  */
 export async function applyPendingProviderKey(
   assistantId: string,
+  runtimeProvider?: string | null,
+  scope?: PendingProviderKeyScope,
 ): Promise<void> {
-  const pending = peekPendingProviderKey();
+  const pending = peekPendingProviderKey(scope);
   if (!pending) return;
   const authType = pendingProviderAuthType(pending);
+  if (isPooledRuntimeProvider(runtimeProvider)) {
+    if (!isPooledApiKeyProvider(pending.provider)) {
+      throw new PooledProviderSetupError(
+        "pooled_provider_unsupported",
+        pending.provider === "openai-compatible" ||
+          pending.providerOptionId === "xai"
+          ? "xAI and custom OpenAI-compatible providers are not available on pooled assistants yet. Choose Anthropic, Fireworks, Gemini, Kimi, MiniMax, OpenAI API, or OpenRouter."
+          : pending.provider === "ollama"
+            ? "Ollama runs on your own computer and is not available on a pooled cloud assistant. Choose a supported API-key provider."
+            : "This provider is not available on pooled assistants yet. Choose a supported API-key provider.",
+      );
+    }
+    if (authType !== "api_key") {
+      throw new PooledProviderSetupError(
+        "pooled_provider_api_key_required",
+        authType === "oauth_subscription"
+          ? "ChatGPT subscription sign-in is not available on pooled assistants yet. Choose OpenAI API and enter an API key instead."
+          : "Pooled assistants currently require a supported provider API key.",
+      );
+    }
+    const credentialName = credentialNameFor(
+      pending.provider,
+      pending.credentialName,
+    );
+    if (credentialName !== pending.provider) {
+      throw new PooledProviderSetupError(
+        "pooled_provider_credential_alias_unsupported",
+        "Custom credential names are not available on pooled assistants. Save this key under the selected provider instead.",
+      );
+    }
+    const trimmed = pending.key.trim();
+    if (!trimmed) {
+      throw new PooledProviderSetupError(
+        "pooled_provider_api_key_required",
+        "Enter an API key for the selected provider.",
+      );
+    }
+    await writeApiKeySecret(
+      assistantId,
+      pending.provider,
+      pending.provider,
+      trimmed,
+    );
+    // The assignment bootstrap creates the provider connection and active
+    // profile from this tenant-scoped vault entry. Mutating worker-local
+    // connection/config routes here would be partial and non-durable.
+    setPendingProviderKey(null);
+    return;
+  }
   if (authType === "oauth_subscription") {
     throw new Error("ChatGPT subscription sign-in must complete before apply.");
   }
@@ -316,8 +415,9 @@ export async function applyPendingProviderKey(
 
 export async function applyChatgptSubscriptionProvider(
   assistantId: string,
+  scope?: PendingProviderKeyScope,
 ): Promise<void> {
-  const pending = peekPendingProviderKey();
+  const pending = peekPendingProviderKey(scope);
   if (!pending || pendingProviderAuthType(pending) !== "oauth_subscription") {
     return;
   }

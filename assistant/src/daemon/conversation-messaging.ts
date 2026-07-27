@@ -44,6 +44,7 @@ import {
 import type { SecretPrompter } from "../permissions/secret-prompter.js";
 import type { Message } from "../providers/types.js";
 import type { AuthContext } from "../runtime/auth/types.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { getLogger } from "../util/logger.js";
 import type { MessageQueue } from "./conversation-queue-manager.js";
 import type { SlackInboundMessageMetadata } from "./handlers/shared.js";
@@ -305,6 +306,8 @@ export interface EnqueueMessageOptions {
   isInteractive?: boolean;
   displayContent?: string;
   transport?: ConversationTransportMetadata;
+  /** Guarded inference profile to apply only when this queued turn runs. */
+  inferenceProfile?: string;
   clientMessageId?: string;
   /** JWT-verified requester principal captured for queued host-proxy routing. */
   sourceActorPrincipalId?: string;
@@ -329,6 +332,7 @@ export function enqueueMessage(
     isInteractive,
     displayContent,
     transport,
+    inferenceProfile,
     clientMessageId,
     authContext,
   } = options;
@@ -365,6 +369,7 @@ export function enqueueMessage(
     sourceActorPrincipalId,
     authContext: queuedAuthContext,
     transport,
+    inferenceProfile,
     displayContent,
     sentAt: Date.now(),
     clientMessageId,
@@ -641,6 +646,7 @@ export function redirectToSecurePrompt(
   detectedTypes: string[],
   options?: RedirectToSecurePromptOptions,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("secure prompt callbacks");
   const target = resolveIngressSecretTarget(detectedTypes);
 
   secretPrompter

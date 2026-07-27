@@ -8,10 +8,14 @@
  * actually enforces, IPC and HTTP diverge silently.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 
 import { z } from "zod";
 
+import {
+  initAuthSigningKey,
+  mintToken,
+} from "../../../runtime/auth/token-service.js";
 import type { RouteDefinition } from "../../../runtime/routes/types.js";
 import { routeDefinitionsToIpcMethods } from "../route-adapter.js";
 
@@ -30,6 +34,61 @@ function defineRoute(overrides: Partial<RouteDefinition>): RouteDefinition {
     method: "GET",
     handler: noopHandler,
     policy: null,
+    ...overrides,
+  };
+}
+
+const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+const originalPlatformAssistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+const originalPlatformOrganizationId = process.env.PLATFORM_ORGANIZATION_ID;
+
+beforeAll(() => {
+  initAuthSigningKey(Buffer.from("ipc-route-adapter-signing-key!!"));
+});
+
+afterEach(() => {
+  if (originalRuntimeMode === undefined)
+    delete process.env.WORKLIN_RUNTIME_MODE;
+  else process.env.WORKLIN_RUNTIME_MODE = originalRuntimeMode;
+  if (originalPlatformAssistantId === undefined) {
+    delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+  } else {
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = originalPlatformAssistantId;
+  }
+  if (originalPlatformOrganizationId === undefined) {
+    delete process.env.PLATFORM_ORGANIZATION_ID;
+  } else {
+    process.env.PLATFORM_ORGANIZATION_ID = originalPlatformOrganizationId;
+  }
+});
+
+function isolatedHeaders(
+  overrides: Record<string, string> = {},
+): Record<string, string> {
+  const tenantContext = {
+    version: 1 as const,
+    organization_id: "org-ipc",
+    user_id: "user-ipc",
+    assistant_id: "assistant-ipc",
+    actor_id: "actor-ipc",
+    request_id: "request-ipc",
+  };
+  const token = mintToken({
+    aud: "vellum-daemon",
+    sub: "actor:self:actor-ipc",
+    scope_profile: "actor_client_v1",
+    policy_epoch: 1,
+    ttlSeconds: 300,
+    tenant_context: tenantContext,
+  });
+  return {
+    authorization: `Bearer ${token}`,
+    "x-worklin-tenant-context-version": "1",
+    "x-worklin-org-id": tenantContext.organization_id,
+    "x-worklin-user-id": tenantContext.user_id,
+    "x-worklin-assistant-id": tenantContext.assistant_id,
+    "x-worklin-actor-id": tenantContext.actor_id,
+    "x-worklin-request-id": tenantContext.request_id,
     ...overrides,
   };
 }
@@ -95,6 +154,155 @@ describe("routeDefinitionsToIpcMethods — eligibility", () => {
     expect(
       result.find((r) => r.operationId === "get_route_schema"),
     ).toBeDefined();
+  });
+});
+
+describe("routeDefinitionsToIpcMethods — isolated tenant authentication", () => {
+  test("rejects an isolated IPC route without a daemon exchange token", async () => {
+    process.env.WORKLIN_RUNTIME_MODE = "isolated";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "assistant-ipc";
+    const [route] = routeDefinitionsToIpcMethods([
+      defineRoute({ operationId: "protected" }),
+    ]);
+
+    await expect(route.handler({ headers: {} })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      statusCode: 401,
+    });
+  });
+
+  test("does not trust an AuthContext supplied inside IPC params", async () => {
+    process.env.WORKLIN_RUNTIME_MODE = "isolated";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "assistant-ipc";
+    const [route] = routeDefinitionsToIpcMethods([
+      defineRoute({ operationId: "protected" }),
+    ]);
+
+    await expect(
+      route.handler({
+        authContext: {
+          subject: "svc:gateway:self",
+          principalType: "svc_gateway",
+          assistantId: "self",
+          scopeProfile: "gateway_service_v1",
+          scopes: new Set(["internal.write"]),
+          policyEpoch: 1,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      statusCode: 401,
+    });
+  });
+
+  test("validates the signed tenant context and exposes only normalized identity", async () => {
+    process.env.WORKLIN_RUNTIME_MODE = "isolated";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "assistant-ipc";
+    process.env.PLATFORM_ORGANIZATION_ID = "org-ipc";
+    let received: Parameters<RouteDefinition["handler"]>[0] | undefined;
+    const [route] = routeDefinitionsToIpcMethods([
+      defineRoute({
+        operationId: "protected",
+        handler: (args) => {
+          received = args;
+          return { ok: true };
+        },
+      }),
+    ]);
+
+    await route.handler({
+      headers: isolatedHeaders({
+        "X-Vellum-Actor-Principal-Id": "forged-actor",
+        "x-vellum-platform-owner": "caller-value",
+      }),
+    });
+
+    expect(received?.authContext?.assistantId).toBe("self");
+    expect(received?.authContext?.tenantContext).toEqual({
+      version: 1,
+      organizationId: "org-ipc",
+      userId: "user-ipc",
+      assistantId: "assistant-ipc",
+      actorId: "actor-ipc",
+      requestId: "request-ipc",
+    });
+    expect(received?.headers?.authorization).toBeUndefined();
+    expect(received?.headers?.["x-worklin-user-id"]).toBe("user-ipc");
+    expect(received?.headers?.["x-vellum-actor-principal-id"]).toBe(
+      "actor-ipc",
+    );
+    expect(received?.headers?.["x-vellum-platform-owner"]).toBe("true");
+    expect(
+      Object.keys(received?.headers ?? {}).filter(
+        (key) => key.toLowerCase() === "x-worklin-user-id",
+      ),
+    ).toEqual(["x-worklin-user-id"]);
+  });
+
+  test("rejects a signed IPC token when canonical metadata is altered", async () => {
+    process.env.WORKLIN_RUNTIME_MODE = "isolated";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "assistant-ipc";
+    const [route] = routeDefinitionsToIpcMethods([
+      defineRoute({ operationId: "protected" }),
+    ]);
+
+    await expect(
+      route.handler({
+        headers: isolatedHeaders({ "x-worklin-request-id": "forged-request" }),
+      }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      statusCode: 403,
+    });
+  });
+
+  test("preserves unauthenticated local IPC compatibility outside isolated mode", async () => {
+    delete process.env.WORKLIN_RUNTIME_MODE;
+    delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+    const [route] = routeDefinitionsToIpcMethods([
+      defineRoute({
+        operationId: "local",
+        handler: (args) => args.headers,
+      }),
+    ]);
+
+    await expect(
+      route.handler({
+        headers: { "x-vellum-actor-principal-id": "local-guardian" },
+      }),
+    ).resolves.toEqual({
+      "x-vellum-actor-principal-id": "local-guardian",
+      "x-vellum-principal-type": "local",
+    });
+  });
+
+  test("enforces route principal and scope policy for direct local IPC", async () => {
+    delete process.env.WORKLIN_RUNTIME_MODE;
+    delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+    const [localRoute, gatewayRoute] = routeDefinitionsToIpcMethods([
+      defineRoute({
+        operationId: "local-write",
+        policy: {
+          requiredScopes: ["chat.write"],
+          allowedPrincipalTypes: ["local"],
+        },
+        handler: () => ({ ok: true }),
+      }),
+      defineRoute({
+        operationId: "gateway-only",
+        policy: {
+          requiredScopes: ["internal.write"],
+          allowedPrincipalTypes: ["svc_gateway"],
+        },
+        handler: () => ({ ok: true }),
+      }),
+    ]);
+
+    await expect(localRoute.handler({})).resolves.toEqual({ ok: true });
+    await expect(gatewayRoute.handler({})).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      statusCode: 403,
+    });
   });
 });
 

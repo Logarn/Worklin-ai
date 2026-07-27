@@ -8,6 +8,7 @@ import type { BackgroundWakeRuntime } from "../../background-wake/runtime-regist
 import { getBackgroundWakeRuntime } from "../../background-wake/runtime-registry.js";
 import { getLogger } from "../../util/logger.js";
 import { GATEWAY_PRINCIPALS } from "../auth/route-policy.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import { BadRequestError, ServiceUnavailableError } from "./errors.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
@@ -137,6 +138,7 @@ function handlePrepareSleep() {
 }
 
 async function handleDrainDue(body: Record<string, unknown>) {
+  assertPooledRuntimeAsyncOperationSupported("background wake drains");
   const request = parseDrainDueBody(body);
   const runtime = getBackgroundWakeRuntime();
   if (!runtime) {

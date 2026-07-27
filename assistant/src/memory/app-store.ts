@@ -367,6 +367,15 @@ function invalidateDirNameCache(appId?: string): void {
   }
 }
 
+/**
+ * Clear process-local app path lookups before a pooled worker is assigned to
+ * another tenant. App IDs and slugs are tenant workspace data and must be
+ * rediscovered from the newly restored workspace.
+ */
+export function resetAppStoreCachesForTenantAssignment(): void {
+  invalidateDirNameCache();
+}
+
 // ---------------------------------------------------------------------------
 // File path validation
 // ---------------------------------------------------------------------------

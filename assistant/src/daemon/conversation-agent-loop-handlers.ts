@@ -505,6 +505,32 @@ function resetPartialPersistAccumulator(state: EventHandlerState): void {
   state.pendingPartialFlushPromise = undefined;
 }
 
+/**
+ * Prevent a debounced partial-persistence write from escaping a pooled turn.
+ * A timer that has not fired is cancelled; an already-running write is awaited.
+ */
+export async function settlePendingPartialPersistOnExit(
+  state: EventHandlerState,
+): Promise<void> {
+  if (state.pendingPartialFlushTimer !== undefined) {
+    clearTimeout(state.pendingPartialFlushTimer);
+    state.pendingPartialFlushTimer = undefined;
+  }
+  const pending = state.pendingPartialFlushPromise;
+  if (pending === undefined) return;
+  try {
+    await pending;
+  } catch {
+    // Partial flushes are best-effort and currently swallow write failures.
+    // Keep this defensive so cleanup cannot turn a completed response into an
+    // otherwise unrelated turn failure.
+  } finally {
+    if (state.pendingPartialFlushPromise === pending) {
+      state.pendingPartialFlushPromise = undefined;
+    }
+  }
+}
+
 /** Flush `state.currentMessageContent` to the persisted assistant row. */
 async function flushAccumulatedContent(
   state: EventHandlerState,

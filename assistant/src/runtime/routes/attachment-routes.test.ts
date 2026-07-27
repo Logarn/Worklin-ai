@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -35,7 +36,10 @@ mock.module("../../util/platform.js", () => ({
   getWorkspaceDir: () => testWorkspaceDir,
 }));
 
-import { resolveAllowedFileBackedAttachmentPath } from "./attachment-routes.js";
+import {
+  resolveAllowedFileBackedAttachmentPath,
+  ROUTES,
+} from "./attachment-routes.js";
 
 beforeAll(() => {
   mkdirSync(attachmentsDir, { recursive: true });
@@ -108,5 +112,91 @@ describe("resolveAllowedFileBackedAttachmentPath", () => {
     symlinkSync(outsideFile, symlinkPath);
 
     expect(resolveAllowedFileBackedAttachmentPath(symlinkPath)).toBeNull();
+  });
+});
+
+describe("hosted attachment file-path boundary", () => {
+  const uploadRoute = ROUTES.find(
+    (route) => route.operationId === "attachment_upload",
+  )!;
+
+  async function expectHostedPathRejected(filePath: string): Promise<void> {
+    const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+    const before = readdirSync(attachmentsDir).sort();
+    process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+    try {
+      await expect(
+        uploadRoute.handler({
+          headers: { "content-type": "application/json" },
+          body: {
+            filename: "copied-secret.txt",
+            mimeType: "text/plain",
+            filePath,
+          },
+        }),
+      ).rejects.toThrow(
+        "filePath must resolve inside the active workspace on hosted runtimes",
+      );
+      expect(readdirSync(attachmentsDir).sort()).toEqual(before);
+    } finally {
+      if (originalRuntimeMode === undefined) {
+        delete process.env.WORKLIN_RUNTIME_MODE;
+      } else {
+        process.env.WORKLIN_RUNTIME_MODE = originalRuntimeMode;
+      }
+    }
+  }
+
+  test("rejects process, kernel, device, and application host paths", async () => {
+    for (const filePath of [
+      "/proc/self/environ",
+      "/sys/kernel/uevent_seqnum",
+      "/dev/null",
+      "/app/assistant/package.json",
+    ]) {
+      await expectHostedPathRejected(filePath);
+    }
+  });
+
+  test("rejects global temp and prior-tenant files before copy or persistence", async () => {
+    const priorTenantFile = join(outsideDir, "prior-tenant-secret.txt");
+    writeFileSync(priorTenantFile, "prior tenant secret");
+    await expectHostedPathRejected(priorTenantFile);
+  });
+
+  test("rejects hosted access to the desktop-global recordings directory", async () => {
+    const recordingFile = join(recordingsDir, "hosted-recording.mov");
+    writeFileSync(recordingFile, "recording");
+    await expectHostedPathRejected(recordingFile);
+  });
+
+  test("rejects a workspace symlink whose target escapes the active tenant", async () => {
+    const target = join(outsideDir, "symlinked-prior-tenant-secret.txt");
+    const link = join(attachmentsDir, "hosted-symlink.txt");
+    writeFileSync(target, "secret");
+    symlinkSync(target, link);
+    try {
+      await expectHostedPathRejected(link);
+    } finally {
+      rmSync(link, { force: true });
+    }
+  });
+
+  test("still accepts a real file inside the active workspace allowlist", () => {
+    const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+    process.env.WORKLIN_RUNTIME_MODE = "pooled_worker";
+    const attachmentFile = join(attachmentsDir, "hosted-current-tenant.txt");
+    writeFileSync(attachmentFile, "current tenant");
+    try {
+      expect(resolveAllowedFileBackedAttachmentPath(attachmentFile)).toBe(
+        attachmentFile,
+      );
+    } finally {
+      if (originalRuntimeMode === undefined) {
+        delete process.env.WORKLIN_RUNTIME_MODE;
+      } else {
+        process.env.WORKLIN_RUNTIME_MODE = originalRuntimeMode;
+      }
+    }
   });
 });

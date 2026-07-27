@@ -5,19 +5,27 @@ interface ManagedVoiceRoutingPayload {
   expiresAtMs?: unknown;
 }
 
+export interface ManagedVoiceRoutingHint {
+  assistantId: string;
+  sessionId: string;
+  expiresAtMs: number;
+}
+
 /**
- * Decode the assistant id from a managed-voice session token for routing only.
+ * Decode a managed-voice session token for routing only.
  *
  * The control-plane cannot verify this token because the HMAC key and active
  * session lease intentionally live inside the assistant runtime. The runtime
  * remains the authority and validates the complete signed token before it
- * starts a turn. This helper only selects the isolated runtime that should
- * receive the callback.
+ * starts a turn. Callers must additionally match this hint to an authenticated
+ * session lease that the control-plane already holds; the decoded fields alone
+ * never authorize a request.
  */
-export function assistantIdFromManagedVoiceRoutingToken(
+export function managedVoiceRoutingHintFromToken(
   token: string,
   nowMs = Date.now(),
-): string | null {
+): ManagedVoiceRoutingHint | null {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) return null;
   const [payloadPart, signaturePart, extra] = token.split(".");
   if (!payloadPart || !signaturePart || extra) return null;
 
@@ -32,16 +40,35 @@ export function assistantIdFromManagedVoiceRoutingToken(
 
   if (
     payload.version !== 1 ||
-    typeof payload.assistantId !== "string" ||
-    !payload.assistantId.trim() ||
-    typeof payload.sessionId !== "string" ||
-    !payload.sessionId.trim() ||
+    !validOpaqueId(payload.assistantId) ||
+    !validOpaqueId(payload.sessionId) ||
     typeof payload.expiresAtMs !== "number" ||
-    !Number.isFinite(payload.expiresAtMs) ||
+    !Number.isSafeInteger(payload.expiresAtMs) ||
     payload.expiresAtMs <= nowMs
   ) {
     return null;
   }
 
-  return payload.assistantId;
+  return {
+    assistantId: payload.assistantId,
+    sessionId: payload.sessionId,
+    expiresAtMs: payload.expiresAtMs,
+  };
+}
+
+export function assistantIdFromManagedVoiceRoutingToken(
+  token: string,
+  nowMs = Date.now(),
+): string | null {
+  return managedVoiceRoutingHintFromToken(token, nowMs)?.assistantId ?? null;
+}
+
+function validOpaqueId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
 }

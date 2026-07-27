@@ -1,4 +1,5 @@
 import { TrustRuleStore, type TrustRule } from "../db/trust-rule-store.js";
+import { isPooledGatewayRuntime } from "../pooled-runtime-shared-state.js";
 
 // ---------------------------------------------------------------------------
 // Cache class
@@ -152,12 +153,18 @@ class TrustRuleCache {
 // ---------------------------------------------------------------------------
 
 let cache: TrustRuleCache | null = null;
+const pooledSafeCache = Object.freeze({
+  findBaseRisk: (_tool: string, _command: string): TrustRule | null => null,
+  findToolOverride: (_tool: string, _pattern: string): TrustRule | null => null,
+  getAllForTool: (_tool: string): TrustRule[] => [],
+});
 
 export function initTrustRuleCache(store?: TrustRuleStore): void {
   cache = new TrustRuleCache(store ?? new TrustRuleStore());
 }
 
-export function getTrustRuleCache(): TrustRuleCache {
+export function getTrustRuleCache(): TrustRuleCache | typeof pooledSafeCache {
+  if (isPooledGatewayRuntime()) return pooledSafeCache;
   if (!cache)
     throw new Error(
       "Risk rule cache not initialized \u2014 call initTrustRuleCache() at startup",

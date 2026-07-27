@@ -12,7 +12,6 @@ import { v4 as uuid } from "uuid";
 
 import { cleanupBootstrapFiles } from "../prompts/bootstrap-cleanup.js";
 import { initConversationDir } from "./conversation-disk-view.js";
-import { GENERATING_TITLE } from "./conversation-title-service.js";
 import { getDb } from "./db-connection.js";
 import { conversationKeys, conversations } from "./schema.js";
 
@@ -205,7 +204,7 @@ export function getOrCreateConversation(
 
     const now = Date.now();
     const conversationId = uuid();
-    const title = GENERATING_TITLE;
+    const title = "New Conversation";
     const memoryScopeId = "default";
 
     tx.insert(conversations)

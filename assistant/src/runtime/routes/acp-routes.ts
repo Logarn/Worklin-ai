@@ -24,6 +24,7 @@ import { broadcastMessage } from "../../runtime/assistant-event-hub.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import * as pendingInteractions from "../pending-interactions.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../pooled-runtime-policy.js";
 import {
   BadRequestError,
   ConflictError,
@@ -162,6 +163,8 @@ function awaitRouteApproval(args: {
 }
 
 async function spawnSession({ body, abortSignal }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const agent = body?.agent as string | undefined;
   const task = body?.task as string | undefined;
   const conversationId = body?.conversationId as string | undefined;
@@ -228,6 +231,8 @@ async function spawnSession({ body, abortSignal }: RouteHandlerArgs) {
 }
 
 async function steerSession({ pathParams, body }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const id = pathParams?.id as string;
   const instruction = body?.instruction as string | undefined;
 
@@ -375,6 +380,8 @@ async function approveThenResume(args: {
 }
 
 async function cancelSession({ pathParams }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const id = pathParams?.id as string;
   const manager = getAcpSessionManager();
   try {
@@ -386,6 +393,8 @@ async function cancelSession({ pathParams }: RouteHandlerArgs) {
 }
 
 function closeSession({ pathParams }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const id = pathParams?.id as string;
   const manager = getAcpSessionManager();
   try {
@@ -397,6 +406,8 @@ function closeSession({ pathParams }: RouteHandlerArgs) {
 }
 
 function listSessions({ queryParams }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const limit = parseLimit(queryParams?.limit);
   const conversationId = queryParams?.conversationId;
   const sessions = listMergedSessions({ limit, conversationId });
@@ -404,6 +415,8 @@ function listSessions({ queryParams }: RouteHandlerArgs) {
 }
 
 function bulkDeleteSessions({ queryParams }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const status = queryParams?.status;
   if (status !== "completed") {
     throw new BadRequestError(
@@ -436,6 +449,8 @@ function bulkDeleteSessions({ queryParams }: RouteHandlerArgs) {
 }
 
 function deleteSession({ pathParams }: RouteHandlerArgs) {
+  assertPooledRuntimeAsyncOperationSupported("ACP sessions");
+
   const id = pathParams?.id as string;
   const manager = getAcpSessionManager();
 

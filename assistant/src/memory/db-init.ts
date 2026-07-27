@@ -287,8 +287,14 @@ function saveTemplate(): void {
 
 // ---------------------------------------------------------------------------
 
-export function initializeDb(): void {
-  if (process.env.BUN_TEST === "1" && tryRestoreTemplate()) {
+export interface InitializeDbOptions {
+  failOnMigrationError?: boolean;
+  useTestTemplate?: boolean;
+}
+
+export function initializeDb(options: InitializeDbOptions = {}): void {
+  const useTestTemplate = options.useTestTemplate !== false;
+  if (process.env.BUN_TEST === "1" && useTestTemplate && tryRestoreTemplate()) {
     return;
   }
 
@@ -550,13 +556,35 @@ export function initializeDb(): void {
     );
   }
 
+  let migrationValidation:
+    | ReturnType<typeof validateMigrationState>
+    | undefined;
+  let migrationValidationError: unknown;
   try {
-    validateMigrationState(database);
+    migrationValidation = validateMigrationState(database);
   } catch (err) {
+    migrationValidationError = err;
     log.error({ err }, "validateMigrationState failed");
   }
 
-  if (process.env.BUN_TEST === "1") {
+  if (options.failOnMigrationError) {
+    const unresolvedMigrations = [
+      ...failures,
+      ...(migrationValidation?.crashed ?? []),
+    ];
+    if (migrationValidationError || unresolvedMigrations.length > 0) {
+      log.error(
+        {
+          failedMigrations: [...new Set(unresolvedMigrations)],
+          validationError: migrationValidationError,
+        },
+        "Strict DB initialization rejected an incomplete migration state",
+      );
+      throw new Error("Database migrations did not reach a current state.");
+    }
+  }
+
+  if (process.env.BUN_TEST === "1" && useTestTemplate) {
     saveTemplate();
   }
 }

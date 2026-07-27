@@ -11,7 +11,10 @@ import { ChoiceSurface } from "@/domains/chat/components/surfaces/choice-surface
 import { CopyBlockSurface } from "@/domains/chat/components/surfaces/copy-block-surface";
 import { OAuthConnectSurface } from "@/domains/chat/components/surfaces/oauth-connect-surface";
 import { SurfaceRouter } from "@/domains/chat/components/surfaces/surface-router";
-import type { ManagedOAuthConnectClient } from "@/domains/chat/api/managed-oauth";
+import type {
+  ManagedOAuthConnectClient,
+  ManagedOAuthConnectResult,
+} from "@/domains/chat/api/managed-oauth";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import type { Surface } from "@/domains/chat/types/types";
 
@@ -224,11 +227,14 @@ describe("OAuthConnectSurface", () => {
     fireEvent.click(getByRole("button", { name: "Connect" }));
 
     await waitFor(() => {
-      expect(oauthClient.connect).toHaveBeenCalledWith({
-        assistantId: "assistant-1",
-        providerKey: "google",
-        providerLabel: "Google",
-      });
+      expect(oauthClient.connect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assistantId: "assistant-1",
+          providerKey: "google",
+          providerLabel: "Google",
+          signal: expect.any(AbortSignal),
+        }),
+      );
       expect(onAction).toHaveBeenCalledWith("surface-1", "connect", {
         status: "connected",
         providerKey: "google",
@@ -297,6 +303,48 @@ describe("OAuthConnectSurface", () => {
     fireEvent.click(getByRole("button", { name: "Dismiss" }));
 
     expect(oauthClient.connect).not.toHaveBeenCalled();
+    expect(onAction).toHaveBeenCalledWith("surface-1", "cancel", {
+      status: "cancelled",
+      providerKey: "linear",
+      providerLabel: "Linear",
+    });
+  });
+
+  test("aborts an in-flight managed OAuth request when dismissed", async () => {
+    const onAction = mock(() => {});
+    let capturedSignal: AbortSignal | undefined;
+    const oauthClient: ManagedOAuthConnectClient = {
+      fetchProvider: mock(async () => null),
+      connect: mock(
+        async (options) =>
+          await new Promise<ManagedOAuthConnectResult>((resolve) => {
+            capturedSignal = options.signal;
+            options.signal?.addEventListener(
+              "abort",
+              () => resolve({ status: "cancelled" }),
+              { once: true },
+            );
+          }),
+      ),
+    };
+
+    const { getByRole } = render(
+      <OAuthConnectSurface
+        surface={makeSurface({
+          surfaceType: "oauth_connect",
+          data: { providerKey: "linear", displayName: "Linear" },
+        })}
+        assistantId="assistant-1"
+        oauthClient={oauthClient}
+        onAction={onAction}
+      />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(capturedSignal).toBeDefined());
+    fireEvent.click(getByRole("button", { name: "Dismiss" }));
+
+    expect(capturedSignal?.aborted).toBe(true);
     expect(onAction).toHaveBeenCalledWith("surface-1", "cancel", {
       status: "cancelled",
       providerKey: "linear",

@@ -18,6 +18,7 @@ import {
   getApp,
   getAppDirPath,
   getAppsDir,
+  resetAppStoreCachesForTenantAssignment,
   resolveAppDir,
   slugify,
   updateApp,
@@ -50,9 +51,11 @@ function makeAppParams(name: string) {
 beforeEach(() => {
   testDataDir = freshTempDir();
   process.env.VELLUM_WORKSPACE_DIR = testDataDir;
+  resetAppStoreCachesForTenantAssignment();
 });
 
 afterEach(() => {
+  resetAppStoreCachesForTenantAssignment();
   if (existsSync(testDataDir)) {
     rmSync(testDataDir, { recursive: true, force: true });
   }
@@ -295,6 +298,37 @@ describe("deleteApp()", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveAppDir() validation", () => {
+  test("assignment reset forces app paths to be rediscovered from disk", () => {
+    const appsDir = getAppsDir();
+    const fakeId = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb";
+    const oldDefinition = join(appsDir, "old-tenant-app.json");
+    writeFileSync(
+      oldDefinition,
+      JSON.stringify({
+        id: fakeId,
+        name: "Old tenant app",
+        dirName: "old-tenant-app",
+      }),
+    );
+
+    expect(resolveAppDir(fakeId).dirName).toBe("old-tenant-app");
+
+    // Simulate restored assignment data using the same UUID with a different
+    // tenant-local slug.
+    rmSync(oldDefinition);
+    writeFileSync(
+      join(appsDir, "new-tenant-app.json"),
+      JSON.stringify({
+        id: fakeId,
+        name: "New tenant app",
+        dirName: "new-tenant-app",
+      }),
+    );
+    resetAppStoreCachesForTenantAssignment();
+
+    expect(resolveAppDir(fakeId).dirName).toBe("new-tenant-app");
+  });
+
   test("falls back to id when dirName contains path traversal (..)", () => {
     const appsDir = getAppsDir();
     const fakeId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";

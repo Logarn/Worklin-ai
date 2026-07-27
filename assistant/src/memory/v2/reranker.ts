@@ -178,7 +178,10 @@ export async function rerankCandidates(
   return finalize();
 }
 
-/** @internal Test-only: clear the LRU cache. */
-export function _resetRerankCacheForTests(): void {
+/** Clear page-content-derived rerank scores before tenant reassignment. */
+export function resetRerankCacheForTenantAssignment(): void {
   cache.clear();
 }
+
+/** @internal Test-only alias. */
+export const _resetRerankCacheForTests = resetRerankCacheForTenantAssignment;

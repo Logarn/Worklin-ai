@@ -37,6 +37,7 @@ import {
 } from "../daemon/trust-context.js";
 import { wakeAgentForOpportunity } from "../runtime/agent-wake.js";
 import { broadcastMessage } from "../runtime/assistant-event-hub.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../runtime/pooled-runtime-policy.js";
 import { getLogger } from "../util/logger.js";
 import type { CapabilityManifest } from "./capabilities.js";
 import {
@@ -185,6 +186,7 @@ export class WorkflowRunManager {
    * events and a conversation wake.
    */
   start(opts: StartWorkflowOptions): { runId: string } {
+    assertPooledRuntimeAsyncOperationSupported("workflow runs");
     const config = this.deps.getConfig();
     if (!this.deps.isFlagEnabled(config)) {
       throw new WorkflowsDisabledError();
@@ -281,6 +283,7 @@ export class WorkflowRunManager {
    * `interrupted`, or already in flight.
    */
   resume(runId: string): { runId: string } {
+    assertPooledRuntimeAsyncOperationSupported("workflow runs");
     const config = this.deps.getConfig();
     if (!this.deps.isFlagEnabled(config)) {
       throw new WorkflowsDisabledError();
@@ -359,6 +362,21 @@ export class WorkflowRunManager {
   /** Abort an in-flight run by signalling its {@link AbortController}. No-op for unknown/finished runs. */
   abort(runId: string): void {
     this.inflight.get(runId)?.abort();
+  }
+
+  /**
+   * Signals every run and waits for each manager-owned completion path to
+   * release its in-flight slot. A timeout returns `false`; callers must keep
+   * the runtime quarantined rather than treating an abort signal as proof that
+   * workflow leaves have stopped.
+   */
+  async quiesce(timeoutMs = 2_000): Promise<boolean> {
+    for (const controller of this.inflight.values()) controller.abort();
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (this.inflight.size > 0 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    return this.inflight.size === 0;
   }
 
   /** Read the current run row (live counts + status), or null if unknown. */

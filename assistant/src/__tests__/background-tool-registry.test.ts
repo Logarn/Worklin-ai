@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 import {
   _clearRegistryForTesting,
+  activeBackgroundToolExecutionCount,
   type BackgroundTool,
   cancelBackgroundTool,
   generateBackgroundToolId,
@@ -54,7 +55,7 @@ describe("background-tool-registry", () => {
   });
 
   describe("cancelBackgroundTool", () => {
-    test("calls cancel(), removes the entry, and returns true", () => {
+    test("hides cancellation immediately but counts it until terminal cleanup", () => {
       const cancelFn = mock(() => {});
       const tool = makeTool({ id: "bg-cancel-1", cancel: cancelFn });
       registerBackgroundTool(tool);
@@ -64,6 +65,10 @@ describe("background-tool-registry", () => {
       expect(result).toBe(true);
       expect(cancelFn).toHaveBeenCalledTimes(1);
       expect(listBackgroundTools()).toHaveLength(0);
+      expect(activeBackgroundToolExecutionCount()).toBe(1);
+
+      removeBackgroundTool("bg-cancel-1");
+      expect(activeBackgroundToolExecutionCount()).toBe(0);
     });
 
     test("returns false for unknown IDs", () => {

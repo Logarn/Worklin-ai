@@ -46,6 +46,10 @@ mock.module("../config/env-registry.js", () => ({
   getIsContainerized: (): boolean => state.containerized,
 }));
 
+mock.module("../config/env.js", () => ({
+  isPooledWorkerRuntime: (): boolean => false,
+}));
+
 mock.module("../config/loader.js", () => ({
   getConfig: (): AssistantConfig => makeConfig(true),
 }));

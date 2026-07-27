@@ -35,6 +35,7 @@ import {
 import {
   extractDeepLinkFromArgv,
   handleDeepLink,
+  interceptOAuthCompletionNavigation,
   installDeepLinks,
 } from "./deep-links";
 import { handleBundleFile, installBundleFlow } from "./bundle-flow";
@@ -448,6 +449,10 @@ app.on("web-contents-created", (_event, contents) => {
   // exceed the default 10-listener cap per WebContents, triggering a spurious
   // MaxListenersExceededWarning. Bump the limit to silence it.
   contents.setMaxListeners(20);
+
+  contents.on("will-navigate", (event, url) => {
+    interceptOAuthCompletionNavigation(event, url);
+  });
 
   // Mirror renderer console output (info and up) into the main log file.
   // The packaged app has no devtools, so without this the renderer's

@@ -12,6 +12,7 @@ import { loadFeatureFlagDefaults } from "../feature-flag-defaults.js";
 import { readEnvFeatureFlagOverrides } from "../feature-flag-env-overrides.js";
 import { readRemoteFeatureFlags } from "../feature-flag-remote-store.js";
 import { readPersistedFeatureFlags } from "../feature-flag-store.js";
+import { isPooledGatewayRuntime } from "../pooled-runtime-shared-state.js";
 import type { IpcRoute } from "./server.js";
 
 const GetFeatureFlagParamsSchema = z.object({
@@ -24,8 +25,9 @@ const GetFeatureFlagParamsSchema = z.object({
  */
 export function getMergedFeatureFlags(): Record<string, boolean | string> {
   const defaults = loadFeatureFlagDefaults();
-  const persisted = readPersistedFeatureFlags();
-  const remote = readRemoteFeatureFlags();
+  const pooled = isPooledGatewayRuntime();
+  const persisted = pooled ? {} : readPersistedFeatureFlags();
+  const remote = pooled ? {} : readRemoteFeatureFlags();
 
   const result: Record<string, boolean | string> = {};
   for (const [key, def] of Object.entries(defaults)) {

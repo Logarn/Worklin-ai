@@ -48,6 +48,7 @@ import type {
   MessageProcessor,
   SlackInboundMessageMetadata,
 } from "../../http-types.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "../../pooled-runtime-policy.js";
 import {
   createSlackDmTextDeliveryController,
   isSlackDeliveryCallbackUrl,
@@ -116,6 +117,7 @@ export interface BackgroundProcessingParams {
 export function processChannelMessageInBackground(
   params: BackgroundProcessingParams,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("channel background processing");
   const {
     processMessage,
     conversationId,

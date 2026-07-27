@@ -20,6 +20,7 @@ import {
   _resetInitBreaker,
   getWorkspaceGitService,
   isDeadlineExpired,
+  resetGitServiceRegistryForTenantAssignment,
   WorkspaceGitService,
 } from "../workspace/git-service.js";
 
@@ -479,6 +480,14 @@ describe("WorkspaceGitService", () => {
       } finally {
         rmSync(testDir2, { recursive: true, force: true });
       }
+    });
+
+    test("tenant reset forgets the service bound to a reused path", () => {
+      const previousTenant = getWorkspaceGitService(testDir);
+
+      resetGitServiceRegistryForTenantAssignment();
+
+      expect(getWorkspaceGitService(testDir)).not.toBe(previousTenant);
     });
   });
 

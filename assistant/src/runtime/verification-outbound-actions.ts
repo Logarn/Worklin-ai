@@ -25,6 +25,7 @@ import {
   updateSessionDelivery,
   updateSessionStatus,
 } from "./channel-verification-service.js";
+import { assertPooledRuntimeAsyncOperationSupported } from "./pooled-runtime-policy.js";
 import {
   composeVerificationEmail,
   composeVerificationSlack,
@@ -147,6 +148,7 @@ export function deliverVerificationTelegram(
   text: string,
   assistantId: string,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("channel verification deliveries");
   (async () => {
     try {
       await sendTelegramReply(chatId, text);
@@ -177,6 +179,7 @@ function initiateGuardianVoiceCall(
   assistantId: string,
   originConversationId?: string,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("channel verification deliveries");
   (async () => {
     try {
       const result = await startVerificationCall({
@@ -216,6 +219,7 @@ function initiateGuardianVoiceCall(
 export async function startOutbound(
   params: StartOutboundParams,
 ): Promise<OutboundActionResult> {
+  assertPooledRuntimeAsyncOperationSupported("channel verification deliveries");
   const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
   const channel = params.channel;
   const originConversationId = params.originConversationId;
@@ -519,6 +523,7 @@ export function deliverVerificationSlack(
   text: string,
   assistantId: string,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("channel verification deliveries");
   deliverVerificationSlackAsync(userId, text, assistantId);
 }
 
@@ -536,6 +541,7 @@ export function deliverVerificationEmail(
   subject: string,
   _assistantId: string,
 ): void {
+  assertPooledRuntimeAsyncOperationSupported("channel verification deliveries");
   (async () => {
     try {
       const { VellumPlatformClient } = await import("../platform/client.js");
@@ -769,6 +775,7 @@ function startOutboundEmail(
 export function resendOutbound(
   params: ResendOutboundParams,
 ): OutboundActionResult {
+  assertPooledRuntimeAsyncOperationSupported("channel verification deliveries");
   const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
   const channel = params.channel;
   const originConversationId = params.originConversationId;

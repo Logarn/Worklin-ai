@@ -361,8 +361,8 @@ export function getOrCreateRerankBackend(
   return _backend;
 }
 
-/** @internal Test-only: reset the cached backend. */
-export function _resetRerankBackendForTests(): void {
+/** Dispose the process-local reranker before a pooled tenant handoff. */
+export function resetRerankBackendForTenantAssignment(): void {
   if (_backend) {
     try {
       _backend.dispose();
@@ -372,3 +372,7 @@ export function _resetRerankBackendForTests(): void {
   }
   _backend = null;
 }
+
+/** @internal Test-only alias. */
+export const _resetRerankBackendForTests =
+  resetRerankBackendForTenantAssignment;

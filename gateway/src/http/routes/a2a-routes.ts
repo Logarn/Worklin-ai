@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { ConfigFileCache } from "../../config-file-cache.js";
 import { getWorkspaceDir } from "../../credential-reader.js";
 import { getLogger } from "../../logger.js";
+import { rejectPooledSharedStateAccess } from "../../pooled-runtime-shared-state.js";
 
 const log = getLogger("a2a-routes");
 
@@ -91,6 +92,11 @@ function readAssistantName(): string {
 
 export function createAgentCardHandler(configFile: ConfigFileCache) {
   return async (_req: Request): Promise<Response> => {
+    const pooledBoundary = rejectPooledSharedStateAccess(
+      "A2A agent identity discovery",
+    );
+    if (pooledBoundary) return pooledBoundary;
+
     const enabled = configFile.getBoolean("a2a", "enabled") ?? false;
     if (!enabled) {
       return Response.json(

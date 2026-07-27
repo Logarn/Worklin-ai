@@ -136,8 +136,14 @@ export interface ConversationListActions {
 
   // --- Pending draft profiles ---
   setPendingDraftProfile: (conversationId: string, profile: string) => void;
-  /** Remove the stash for a single conversation id (no-op when absent). */
-  clearPendingDraftProfile: (conversationId: string) => void;
+  /**
+   * Remove one stash. With `expectedProfile`, clear only if the value still
+   * matches so a late send cannot erase a newer profile choice.
+   */
+  clearPendingDraftProfile: (
+    conversationId: string,
+    expectedProfile?: string,
+  ) => void;
 
   // --- Compound ---
   graduateProcessingConversationId: (
@@ -265,12 +271,18 @@ export const useConversationStore = createSelectors(
       set({ pendingDraftProfiles: new Map(current).set(conversationId, profile) });
     },
 
-    clearPendingDraftProfile: (conversationId) => {
+    clearPendingDraftProfile: (conversationId, expectedProfile) => {
       const current = get().pendingDraftProfiles;
       // No-op when absent so subscribers don't re-render needlessly. Scoped to
       // a single id so a send (or promotion) that resolves after the user moved
       // to another draft can't wipe the newer draft's selection.
       if (!current.has(conversationId)) return;
+      if (
+        expectedProfile !== undefined &&
+        current.get(conversationId) !== expectedProfile
+      ) {
+        return;
+      }
       const next = new Map(current);
       next.delete(conversationId);
       set({ pendingDraftProfiles: next });
