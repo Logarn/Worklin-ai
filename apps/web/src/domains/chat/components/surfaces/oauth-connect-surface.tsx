@@ -1,19 +1,19 @@
 import { Tooltip } from "@vellumai/design-library";
 import {
-    CheckCircle2,
-    ExternalLink,
-    Info,
-    Loader2,
-    X,
-    XCircle,
+  CheckCircle2,
+  ExternalLink,
+  Info,
+  Loader2,
+  X,
+  XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { IntegrationIcon } from "@/components/integrations/integration-icon";
 import {
-    defaultManagedOAuthConnectClient,
-    type ManagedOAuthConnectClient,
-    type ManagedOAuthProviderSummary,
+  defaultManagedOAuthConnectClient,
+  type ManagedOAuthConnectClient,
+  type ManagedOAuthProviderSummary,
 } from "@/domains/chat/api/managed-oauth";
 import type { Surface } from "@/domains/chat/types/types";
 
@@ -106,6 +106,7 @@ export function OAuthConnectSurface({
   );
   const [state, setState] = useState<ConnectState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const activeConnectRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,6 +121,18 @@ export function OAuthConnectSurface({
     };
   }, [assistantId, oauthClient, providerKey]);
 
+  useEffect(() => {
+    activeConnectRef.current?.abort();
+    activeConnectRef.current = null;
+    setState("idle");
+    setErrorMessage(null);
+
+    return () => {
+      activeConnectRef.current?.abort();
+      activeConnectRef.current = null;
+    };
+  }, [assistantId, providerKey]);
+
   const providerLabel = getProviderLabel(data, provider);
   const logoUrl = data.logoUrl ?? provider?.logo_url ?? null;
   const description =
@@ -128,6 +141,9 @@ export function OAuthConnectSurface({
     `Connect ${providerLabel} so I can use it for this task.`;
 
   const submitCancel = () => {
+    activeConnectRef.current?.abort();
+    activeConnectRef.current = null;
+    setState("idle");
     onAction(surface.surfaceId, "cancel", {
       status: "cancelled",
       providerKey,
@@ -139,12 +155,17 @@ export function OAuthConnectSurface({
     if (!assistantId || !providerKey || state === "connecting") return;
     setState("connecting");
     setErrorMessage(null);
+    const controller = new AbortController();
+    activeConnectRef.current = controller;
 
     const result = await oauthClient.connect({
       assistantId,
       providerKey,
       providerLabel,
+      signal: controller.signal,
     });
+    if (activeConnectRef.current !== controller) return;
+    activeConnectRef.current = null;
 
     if (result.status === "connected") {
       setState("connected");
@@ -231,7 +252,6 @@ export function OAuthConnectSurface({
             aria-label="Dismiss"
             title="Dismiss"
             onClick={submitCancel}
-            disabled={state === "connecting"}
             className="inline-flex h-10 w-10 items-center justify-center rounded-md text-[var(--content-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--content-strong)] disabled:opacity-50"
           >
             <X className="h-4 w-4" />

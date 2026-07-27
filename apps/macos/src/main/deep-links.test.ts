@@ -71,6 +71,7 @@ const {
   __resetForTesting,
   extractDeepLinkFromArgv,
   handleDeepLink,
+  interceptOAuthCompletionNavigation,
   installDeepLinks,
   parseVellumUrl,
   resolveAcceptedSchemes,
@@ -160,6 +161,31 @@ describe("parseVellumUrl", () => {
     });
   });
 
+  test("parses packaged OAuth completion with denial detail", () => {
+    expect(
+      parseVellumUrl(
+        "vellum-assistant://oauth-complete?requestId=req-desktop&oauth_status=denied&oauth_provider=github&oauth_code=access_denied",
+      ),
+    ).toEqual({
+      kind: "oauthComplete",
+      requestId: "req-desktop",
+      oauthStatus: "denied",
+      oauthProvider: "github",
+      oauthCode: "access_denied",
+    });
+  });
+
+  test("rejects unscoped OAuth completion without retaining query detail", () => {
+    expect(
+      parseVellumUrl(
+        "vellum-assistant://oauth-complete?oauth_provider=github&oauth_code=secret",
+      ),
+    ).toEqual({
+      kind: "unknown",
+      url: "vellum-assistant://oauth-complete",
+    });
+  });
+
   test("rejects foreign schemes — javascript: returns unknown", () => {
     expect(parseVellumUrl("javascript:alert(1)")).toEqual({
       kind: "unknown",
@@ -235,6 +261,50 @@ describe("extractDeepLinkFromArgv", () => {
   test("returns null when no deep-link arg is present", () => {
     expect(extractDeepLinkFromArgv(["/usr/local/bin/electron", "--foo"]))
       .toBeNull();
+  });
+});
+
+describe("interceptOAuthCompletionNavigation", () => {
+  test("relays a validated HTTPS-popup callback into the renderer bridge", () => {
+    const preventDefault = mock(() => undefined);
+    const win = makeWindow();
+    windows = [win];
+    const url =
+      "vellum-assistant://oauth-complete?requestId=req-desktop&oauth_status=denied&oauth_provider=github&oauth_code=access_denied";
+
+    expect(interceptOAuthCompletionNavigation({ preventDefault }, url)).toBe(
+      true,
+    );
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(win.webContents.send).toHaveBeenCalledWith(
+      "vellum:deepLinks:event",
+      {
+        kind: "oauthComplete",
+        requestId: "req-desktop",
+        oauthStatus: "denied",
+        oauthProvider: "github",
+        oauthCode: "access_denied",
+      },
+    );
+  });
+
+  test("ignores non-OAuth navigation and blocks malformed OAuth callbacks", () => {
+    const preventDefault = mock(() => undefined);
+
+    expect(
+      interceptOAuthCompletionNavigation(
+        { preventDefault },
+        "vellum-assistant://send?message=hello",
+      ),
+    ).toBe(false);
+    expect(
+      interceptOAuthCompletionNavigation(
+        { preventDefault },
+        "vellum-assistant://oauth-complete?oauth_provider=github",
+      ),
+    ).toBe(true);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 });
 

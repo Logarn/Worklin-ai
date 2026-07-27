@@ -22,6 +22,13 @@ import { isElectron } from "@/runtime/is-electron";
 export type DeepLink =
   | { kind: "send"; message: string }
   | { kind: "openThread"; threadId: string }
+  | {
+      kind: "oauthComplete";
+      requestId: string;
+      oauthStatus: string | null;
+      oauthProvider: string;
+      oauthCode: string | null;
+    }
   | { kind: "unknown"; url: string };
 
 export async function drainPendingDeepLinks(): Promise<DeepLink[]> {

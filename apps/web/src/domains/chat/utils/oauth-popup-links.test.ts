@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 let isNativePlatformMock = false;
 let openUrlMock = mock((_url: string) => Promise.resolve());
+let openDetachedOAuthPopupMock = mock(
+  (_url: string, _features?: string) => true,
+);
 
 mock.module("@capacitor/core", () => ({
   Capacitor: {
@@ -16,6 +19,11 @@ mock.module("@capacitor/core", () => ({
 
 mock.module("@/runtime/browser", () => ({
   openUrl: (url: string) => openUrlMock(url),
+}));
+
+mock.module("@/lib/auth/oauth-popup-launcher", () => ({
+  openDetachedOAuthPopup: (url: string, features?: string) =>
+    openDetachedOAuthPopupMock(url, features),
 }));
 
 import {
@@ -30,7 +38,9 @@ const originalWindow = globalThis.window;
 
 interface MockWindowOptions {
   origin?: string;
-  open?: ((url?: string, target?: string, features?: string) => Window | null) | null;
+  open?:
+    | ((url?: string, target?: string, features?: string) => Window | null)
+    | null;
 }
 
 function setMockWindow({
@@ -49,6 +59,7 @@ function setMockWindow({
 beforeEach(() => {
   isNativePlatformMock = false;
   openUrlMock = mock((_url: string) => Promise.resolve());
+  openDetachedOAuthPopupMock = mock((_url: string, _features?: string) => true);
 });
 
 afterEach(() => {
@@ -64,8 +75,12 @@ describe("oauth popup links", () => {
       "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=client-1&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fcallback";
 
     expect(shouldOpenMarkdownLinkInOAuthPopup(oauthUrl)).toBe(true);
-    expect(shouldOpenMarkdownLinkInOAuthPopup("https://example.com/docs")).toBe(false);
-    expect(shouldOpenMarkdownLinkInOAuthPopup("mailto:support@example.com")).toBe(false);
+    expect(shouldOpenMarkdownLinkInOAuthPopup("https://example.com/docs")).toBe(
+      false,
+    );
+    expect(
+      shouldOpenMarkdownLinkInOAuthPopup("mailto:support@example.com"),
+    ).toBe(false);
   });
 
   test("resolves same-origin app routes for client-side navigation", () => {
@@ -90,7 +105,9 @@ describe("oauth popup links", () => {
     expect(getHttpUrl(routes.settings.integrations)).toBe(
       `${origin}${routes.settings.integrations}`,
     );
-    expect(getHttpUrl("x-apple.systempreferences:com.apple.preference.security")).toBeNull();
+    expect(
+      getHttpUrl("x-apple.systempreferences:com.apple.preference.security"),
+    ).toBeNull();
   });
 
   describe("openOAuthUrlInPopup", () => {
@@ -98,7 +115,9 @@ describe("oauth popup links", () => {
       "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=client-1&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fcallback";
 
     test("returns false and skips both surfaces for non-OAuth URLs", () => {
-      const open = mock((_url?: string, _target?: string, _features?: string) => null);
+      const open = mock(
+        (_url?: string, _target?: string, _features?: string) => null,
+      );
       setMockWindow({ open });
 
       expect(openOAuthUrlInPopup("https://example.com/docs")).toBe(false);
@@ -106,21 +125,26 @@ describe("oauth popup links", () => {
       expect(open).not.toHaveBeenCalled();
     });
 
-    test("opens a sized popup on web and reports success", () => {
-      const popup = { focus: mock(() => {}) } as unknown as Window;
-      const open = mock(() => popup);
+    test("uses the detached bootstrap launcher on web", () => {
+      const open = mock(() => null);
       setMockWindow({ open });
 
       expect(openOAuthUrlInPopup(oauthUrl)).toBe(true);
-      expect(open).toHaveBeenCalledWith(oauthUrl, "_blank", "width=500,height=600");
+      expect(openDetachedOAuthPopupMock).toHaveBeenCalledWith(
+        oauthUrl,
+        "width=500,height=600",
+      );
+      expect(open).not.toHaveBeenCalled();
       expect(openUrlMock).not.toHaveBeenCalled();
     });
 
     test("returns false on web when the popup is blocked", () => {
+      openDetachedOAuthPopupMock = mock(() => false);
       const open = mock(() => null);
       setMockWindow({ open });
 
       expect(openOAuthUrlInPopup(oauthUrl)).toBe(false);
+      expect(openDetachedOAuthPopupMock).toHaveBeenCalled();
       expect(openUrlMock).not.toHaveBeenCalled();
     });
 
@@ -132,6 +156,7 @@ describe("oauth popup links", () => {
       expect(openOAuthUrlInPopup(oauthUrl)).toBe(true);
       expect(openUrlMock).toHaveBeenCalledTimes(1);
       expect(openUrlMock).toHaveBeenCalledWith(oauthUrl);
+      expect(openDetachedOAuthPopupMock).not.toHaveBeenCalled();
       expect(open).not.toHaveBeenCalled();
     });
 

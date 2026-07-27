@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 
+import { openDetachedOAuthPopup } from "@/lib/auth/oauth-popup-launcher";
 import { openUrl } from "@/runtime/browser";
 
 const OAUTH_POPUP_FEATURES = "width=500,height=600";
@@ -12,7 +13,9 @@ function parseHttpUrl(href: string | undefined): URL | null {
   let url: URL;
   try {
     const base =
-      typeof window === "undefined" ? "http://localhost" : window.location.origin;
+      typeof window === "undefined"
+        ? "http://localhost"
+        : window.location.origin;
     url = new URL(href, base);
   } catch {
     return null;
@@ -41,15 +44,15 @@ export function shouldOpenMarkdownLinkInOAuthPopup(
 
   return (
     hasOAuthCodeParams ||
-    (
-      url.searchParams.has("client_id") &&
+    (url.searchParams.has("client_id") &&
       url.searchParams.has("redirect_uri") &&
-      /oauth|authorize|auth/.test(path)
-    )
+      /oauth|authorize|auth/.test(path))
   );
 }
 
-export function getSameOriginRoutePath(href: string | undefined): string | null {
+export function getSameOriginRoutePath(
+  href: string | undefined,
+): string | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -66,9 +69,7 @@ export function getHttpUrl(href: string | undefined): string | null {
   return parseHttpUrl(href)?.href ?? null;
 }
 
-export function openOAuthUrlInPopup(
-  href: string | undefined,
-): boolean {
+export function openOAuthUrlInPopup(href: string | undefined): boolean {
   if (!shouldOpenMarkdownLinkInOAuthPopup(href)) {
     return false;
   }
@@ -87,13 +88,8 @@ export function openOAuthUrlInPopup(
     return true;
   }
 
-  const popup = window.open(href, "_blank", OAUTH_POPUP_FEATURES);
-  if (popup === null) {
-    return false;
-  }
-
-  popup.focus();
-  return true;
+  const url = getHttpUrl(href);
+  return url ? openDetachedOAuthPopup(url, OAUTH_POPUP_FEATURES) : false;
 }
 
 export function openMarkdownOAuthLinkInPopup(
