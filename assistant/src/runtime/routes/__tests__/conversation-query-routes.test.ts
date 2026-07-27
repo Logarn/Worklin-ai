@@ -851,9 +851,9 @@ describe("PUT /v1/config/llm/profiles/:name", () => {
       }
     ).profiles.custom;
 
-    // The canonical "openai-managed" connection exists in the test DB;
-    // the route auto-derives it when the UI omits provider_connection.
-    expect(savedProfile.provider_connection).toBe("openai-managed");
+    // User-owned profiles may auto-derive only a personal connection; the
+    // managed platform row is never an implicit "Any active" fallback.
+    expect(savedProfile.provider_connection).toBe("openai-personal");
   });
 
   test("auto-derives provider_connection for BYOK provider (Any active)", async () => {

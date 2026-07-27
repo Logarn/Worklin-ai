@@ -1,15 +1,25 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
-import {
-  configGetQueryKey,
-  inferenceProviderconnectionsGetQueryKey,
-  secretsGetQueryKey,
-} from "@/generated/daemon/@tanstack/react-query.gen";
-import type { ConfigGetResponse, ProviderConnection } from "@/generated/daemon/types.gen";
+import type {
+  ConfigGetResponse,
+  ConfigPatchRequest,
+  ProviderConnection,
+} from "@/generated/daemon/types.gen";
+import * as sdkGen from "@/generated/daemon/sdk.gen";
+
+let configPatchCalls: ConfigPatchRequest[] = [];
+
+mock.module("@/generated/daemon/sdk.gen", () => ({
+  ...sdkGen,
+  configPatch: (options: { body: ConfigPatchRequest }) => {
+    configPatchCalls.push(options.body);
+    return Promise.resolve({ data: {}, response: { ok: true, status: 200 } });
+  },
+}));
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 mock.module("@/assistant/use-active-assistant-id", () => ({
@@ -30,6 +40,13 @@ mock.module("@vellumai/design-library/components/toast", () => ({
   ToastContent: () => null,
 }));
 
+const {
+  authInfoGetQueryKey,
+  configGetQueryKey,
+  inferenceProviderconnectionsGetQueryKey,
+  secretsGetQueryKey,
+} = await import("@/generated/daemon/@tanstack/react-query.gen");
+
 const { LanguageModelCard } = await import(
   "@/domains/settings/ai/language-model-card"
 );
@@ -37,16 +54,20 @@ const { LanguageModelCard } = await import(
 function Wrapper({
   children,
   hasKimiSecret = true,
+  managedInferenceConfigured = true,
+  activeProfile = "kimi-personal",
 }: {
   children: ReactNode;
   hasKimiSecret?: boolean;
+  managedInferenceConfigured?: boolean;
+  activeProfile?: "balanced" | "kimi-personal";
 }) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   const config: ConfigGetResponse = {
     llm: {
-      activeProfile: "kimi-personal",
+      activeProfile,
       profileOrder: ["balanced", "kimi-personal"],
       profiles: {
         balanced: {
@@ -75,6 +96,18 @@ function Wrapper({
   } as unknown as ProviderConnection;
 
   client.setQueryData(
+    authInfoGetQueryKey({ path: { assistant_id: "asst-1" } }),
+    {
+      platformUrl: managedInferenceConfigured
+        ? "https://platform.example.com"
+        : null,
+      assistantId: "asst-1",
+      organizationId: null,
+      userId: null,
+      authenticated: managedInferenceConfigured,
+    },
+  );
+  client.setQueryData(
     configGetQueryKey({ path: { assistant_id: "asst-1" } }),
     config,
   );
@@ -94,6 +127,10 @@ function Wrapper({
 
   return createElement(QueryClientProvider, { client }, children);
 }
+
+beforeEach(() => {
+  configPatchCalls = [];
+});
 
 afterEach(() => {
   cleanup();
@@ -126,7 +163,11 @@ describe("LanguageModelCard", () => {
       </Wrapper>,
     );
 
-    expect(getByText("Key required")).toBeTruthy();
+    const keyRequired = getByText("Key required");
+    expect(keyRequired).toBeTruthy();
+    expect(keyRequired.querySelector("span")?.className).toContain(
+      "content-disabled",
+    );
     expect(queryByText("Key connected")).toBeNull();
   });
 
@@ -157,5 +198,62 @@ describe("LanguageModelCard", () => {
     ).toBeTruthy();
     expect(queryByText("Use Worklin credits")).toBeNull();
     expect(queryByText("Manage providers")).toBeNull();
+  });
+
+  test("hides Worklin credits when managed inference is unavailable", () => {
+    const { getByText, queryByText } = render(
+      <Wrapper managedInferenceConfigured={false}>
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(queryByText("Use Worklin credits")).toBeNull();
+    expect(getByText("Use my API key")).toBeTruthy();
+    expect(getByText("Key connected")).toBeTruthy();
+  });
+
+  test("does not present a stale managed active profile as usable", () => {
+    const { getByText, queryByText } = render(
+      <Wrapper
+        managedInferenceConfigured={false}
+        activeProfile="balanced"
+      >
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(queryByText("Use Worklin credits")).toBeNull();
+    expect(getByText("No model selected")).toBeTruthy();
+    expect(getByText("Key required")).toBeTruthy();
+    expect(queryByText("Using Worklin credits")).toBeNull();
+  });
+
+  test("quick API-key activation uses CAS and reroutes only interactive call sites", async () => {
+    const { getByText } = render(
+      <Wrapper managedInferenceConfigured={false} activeProfile="balanced">
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    fireEvent.click(getByText("Use my API key").closest("button")!);
+    fireEvent.click(getByText("Save choice"));
+
+    await waitFor(() => expect(configPatchCalls).toHaveLength(1));
+    expect(configPatchCalls[0]).toMatchObject({
+      expectedActiveProfile: "balanced",
+      llm: {
+        activeProfile: "kimi-personal",
+        callSites: {
+          conversationTitle: { profile: "kimi-personal" },
+          subagentSpawn: { profile: "kimi-personal" },
+        },
+      },
+    });
+    expect(configPatchCalls[0].llm?.callSites).not.toHaveProperty(
+      "heartbeatAgent",
+    );
+    expect(configPatchCalls[0].llm?.callSites).not.toHaveProperty(
+      "notificationDecision",
+    );
   });
 });

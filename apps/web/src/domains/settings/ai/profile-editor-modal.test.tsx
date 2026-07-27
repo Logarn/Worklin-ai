@@ -81,6 +81,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       data: createdConnection,
       response: { ok: true, status: 200 },
     }),
+  inferenceProviderconnectionsGet: () =>
+    Promise.resolve({
+      data: { connections: [createdConnection] },
+      response: { ok: true, status: 200 },
+    }),
 }));
 
 // Stub the credential hooks so the inline ProviderCreateForm renders without
@@ -119,6 +124,17 @@ function makeConnection(name: string, provider = "anthropic"): ProviderConnectio
     auth: { type: "api_key", credential: `credential/${provider}/api_key` },
     models: null,
   } as unknown as ProviderConnection;
+}
+
+function makeManagedConnection(
+  name: string,
+  provider = "anthropic",
+): ProviderConnection {
+  return {
+    ...makeConnection(name, provider),
+    auth: { type: "platform" },
+    isManaged: true,
+  } as ProviderConnection;
 }
 
 function Wrapper({ children }: { children: ReactNode }) {
@@ -215,6 +231,21 @@ function selectModel(label: string): void {
     fireEvent.click(trigger);
   }
   throw new Error(`expected a Model dropdown offering "${label}"`);
+}
+
+function selectConnection(label: string): void {
+  for (const trigger of dropdownTriggers()) {
+    fireEvent.click(trigger);
+    const option = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).find((candidate) => candidate.textContent?.trim() === label);
+    if (option) {
+      fireEvent.click(option);
+      return;
+    }
+    fireEvent.click(trigger);
+  }
+  throw new Error(`expected a Connection dropdown offering "${label}"`);
 }
 
 function renderCreate(
@@ -438,6 +469,32 @@ describe("ProfileEditorModal create mode — provider-first", () => {
       expect(saveCalls.length).toBe(1);
     });
     expect(saveCalls[0].entry.provider).toBe("anthropic");
+    expect(saveCalls[0].entry.provider_connection).toBe("anthropic-personal");
+  });
+
+  test("requires a specific connection when managed and personal choices are mixed", async () => {
+    const saveCalls: { entry: Record<string, unknown> }[] = [];
+    renderCreate(
+      [
+        makeManagedConnection("anthropic-managed"),
+        makeConnection("anthropic-personal"),
+      ],
+      (_name, entry) => {
+        saveCalls.push({ entry: entry as Record<string, unknown> });
+        return Promise.resolve();
+      },
+    );
+
+    fillCreateForm();
+
+    expect(document.body.textContent).toContain("Choose a specific connection.");
+    expect(getSaveBtn().disabled).toBe(true);
+
+    selectConnection("anthropic-personal");
+    expect(getSaveBtn().disabled).toBe(false);
+    fireEvent.click(getSaveBtn());
+
+    await waitFor(() => expect(saveCalls).toHaveLength(1));
     expect(saveCalls[0].entry.provider_connection).toBe("anthropic-personal");
   });
 

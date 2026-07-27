@@ -1384,18 +1384,6 @@ export async function handleSendMessage(
     { transport },
   );
 
-  if (requestedInferenceProfile !== undefined) {
-    setConversationInferenceProfile(
-      mapping.conversationId,
-      requestedInferenceProfile,
-    );
-    conversation.applyInferenceProfileState({
-      profile: requestedInferenceProfile,
-      sessionId: null,
-      expiresAt: null,
-    });
-  }
-
   // Store pre-chat onboarding context on the conversation when this is the
   // very first message (no prior messages loaded). Artifact persistence runs
   // before LLM inference so client-side identity reads observe the selected
@@ -1671,6 +1659,7 @@ export async function handleSendMessage(
       isInteractive,
       sourceActorPrincipalId,
       transport,
+      inferenceProfile: requestedInferenceProfile,
       clientMessageId,
     });
     if (enqueueResult.rejected) {
@@ -1729,6 +1718,22 @@ export async function handleSendMessage(
       conversationId: mapping.conversationId,
       requestId,
     };
+  }
+
+  // Persist a request-level selection only once the conversation is idle.
+  // Busy requests carry the exact selection on their queued message instead;
+  // mutating live conversation state while another turn is running can reroute
+  // that active turn and lets later queued sends overwrite earlier choices.
+  if (requestedInferenceProfile !== undefined) {
+    setConversationInferenceProfile(
+      mapping.conversationId,
+      requestedInferenceProfile,
+    );
+    conversation.applyInferenceProfileState({
+      profile: requestedInferenceProfile,
+      sessionId: null,
+      expiresAt: null,
+    });
   }
 
   // Auto-deny pending confirmations for idle conversations. The legacy

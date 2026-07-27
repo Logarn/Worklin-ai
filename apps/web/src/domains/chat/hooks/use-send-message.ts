@@ -75,7 +75,14 @@ import {
 import { useComposerStore } from "@/domains/chat/composer-store";
 import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
-import { configGetQueryKey } from "@/generated/daemon/@tanstack/react-query.gen";
+import {
+  authInfoGetOptions,
+  configGetOptions,
+  configGetQueryKey,
+  conversationsByIdGetOptions,
+  inferenceProviderconnectionsGetOptions,
+  secretsGetOptions,
+} from "@/generated/daemon/@tanstack/react-query.gen";
 import type { Conversation } from "@/types/conversation-types";
 import {
   fetchConversationMessages,
@@ -99,8 +106,15 @@ import {
   ConversationNotFoundError,
   fetchConversationDetail,
 } from "@/utils/fetch-conversation-detail";
-import { ensureRunnableProfileFromStoredConnection } from "@/assistant/provider-profile-repair";
+import {
+  ensureRunnableProfileFromStoredConnection,
+  repairUnavailableManagedProfile,
+} from "@/assistant/provider-profile-repair";
 import { shouldAttemptProviderProfileRepair } from "@/domains/chat/utils/provider-profile-repair-trigger";
+import {
+  checkProviderReadyForSend,
+  type ProviderSendSelection,
+} from "@/domains/chat/utils/provider-send-guard";
 
 // ---------------------------------------------------------------------------
 // Stream send result
@@ -262,6 +276,116 @@ export function useSendMessage({
       }
     }, [assistantId, queryClient]);
 
+  const resolveProviderSendSelection =
+    useCallback(async (): Promise<ProviderSendSelection> => {
+      if (!assistantId || !activeConversationId) {
+        return { kind: "unverified" };
+      }
+
+      const pendingProfile = useConversationStore
+        .getState()
+        .pendingDraftProfiles.get(activeConversationId);
+      if (pendingProfile) {
+        return {
+          kind: "conversation-override",
+          profileName: pendingProfile,
+        };
+      }
+
+      if (isDraftConversationId(activeConversationId)) {
+        return { kind: "workspace-active" };
+      }
+
+      try {
+        const data = await queryClient.fetchQuery({
+          ...conversationsByIdGetOptions({
+            path: {
+              assistant_id: assistantId,
+              id: activeConversationId,
+            },
+          }),
+          staleTime: 0,
+        });
+        const storedProfile = data.conversation.inferenceProfile;
+        return storedProfile
+          ? { kind: "conversation-override", profileName: storedProfile }
+          : { kind: "workspace-active" };
+      } catch (error) {
+        return { kind: "unverified", error };
+      }
+    }, [activeConversationId, assistantId, queryClient]);
+
+  const ensureProviderReadyForSend = useCallback(
+    async (selection: ProviderSendSelection): Promise<string | null> => {
+      if (!assistantId) return null;
+
+      const result = await checkProviderReadyForSend({
+        selection,
+        loadConfig: () =>
+          queryClient.fetchQuery({
+            ...configGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          }),
+        loadConnections: async () => {
+          const data = await queryClient.fetchQuery({
+            ...inferenceProviderconnectionsGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          });
+          return data.connections;
+        },
+        loadSecrets: async () => {
+          const data = await queryClient.fetchQuery({
+            ...secretsGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          });
+          return data.secrets;
+        },
+        loadManagedStatus: () =>
+          queryClient.fetchQuery({
+            ...authInfoGetOptions({
+              path: { assistant_id: assistantId },
+            }),
+            staleTime: 0,
+          }),
+        repairActiveSelection: (expectedActiveProfile) =>
+          repairUnavailableManagedProfile(assistantId, expectedActiveProfile),
+      });
+
+      if (!result.allowed && result.error) {
+        captureError(result.error, {
+          context:
+            result.reason === "managed-status-unverified"
+              ? "check_managed_provider_before_send"
+              : "guard_unavailable_managed_provider_send",
+        });
+      }
+      if (
+        result.reason === "managed-repaired" ||
+        result.reason === "personal-repaired"
+      ) {
+        void queryClient.invalidateQueries({
+          queryKey: configGetQueryKey({ path: { assistant_id: assistantId } }),
+        });
+      }
+      if (result.allowed) {
+        return result.profileName;
+      }
+
+      setError({
+        message: result.message,
+        code: "PROVIDER_NOT_CONFIGURED",
+      });
+      return null;
+    },
+    [assistantId, queryClient, setError],
+  );
+
   const surfaceConversationAfterUserSend = useCallback(
     async (conversationId: string) => {
       if (!assistantId) return;
@@ -317,6 +441,7 @@ export function useSendMessage({
       attachmentIds: string[] = [],
       isDraft = false,
       clientMessageId?: string,
+      inferenceProfileForSend?: string,
     ): Promise<SendStreamResult> => {
       if (!activeConversationId || !assistantId) {
         return {
@@ -365,16 +490,9 @@ export function useSendMessage({
       if (useServerMint || (usePooledPolling && isDraft)) {
         pendingDraftMintRef.current = requestConversationId;
       }
-      // A model profile the user picked in the composer before this
-      // conversation's row was available — a brand-new draft, or an existing
-      // conversation opened by URL while still loading (see
-      // `ComposerSettingsMenu`). Forward it so this turn, and the conversation's
-      // per-conversation override, use the chosen profile instead of the global
-      // default — covering the window before the menu's load-time promotion PUT
-      // lands. Keyed by id, so only this conversation's own stash is read.
-      const inferenceProfileForSend = useConversationStore
-        .getState()
-        .pendingDraftProfiles.get(requestConversationId);
+      // The caller resolved and verified this exact profile immediately before
+      // the send. Draft selections are included in that resolution, so pooled
+      // and dedicated requests use the same fail-closed provider decision.
       const correlationClientMessageId = clientMessageId ?? crypto.randomUUID();
 
       /**
@@ -549,7 +667,10 @@ export function useSendMessage({
       if (inferenceProfileForSend) {
         useConversationStore
           .getState()
-          .clearPendingDraftProfile(requestConversationId);
+          .clearPendingDraftProfile(
+            requestConversationId,
+            inferenceProfileForSend,
+          );
       }
       if (onboardingDraftConversationIdRef.current === activeConversationId) {
         onboardingDraftConversationIdRef.current = null;
@@ -777,6 +898,10 @@ export function useSendMessage({
         });
         return;
       }
+      const providerSelection = await resolveProviderSendSelection();
+      const inferenceProfileForSend =
+        await ensureProviderReadyForSend(providerSelection);
+      if (!inferenceProfileForSend) return;
       setError(null);
       useInteractionStore.getState().resetSecretAndConfirmation();
       useChatSessionStore.getState().clearConfirmationToolCallMap();
@@ -838,6 +963,7 @@ export function useSendMessage({
             attachmentIds,
             undefined,
             clientMessageId,
+            inferenceProfileForSend,
           );
           if (!postResult.ok) {
             revertQueuedMessage(userMessage.id);
@@ -866,6 +992,14 @@ export function useSendMessage({
               status: postResult.status,
             });
             return;
+          }
+          if (inferenceProfileForSend) {
+            useConversationStore
+              .getState()
+              .clearPendingDraftProfile(
+                activeConversationId,
+                inferenceProfileForSend,
+              );
           }
           void surfaceConversationAfterUserSend(
             postResult.conversationId,
@@ -953,6 +1087,7 @@ export function useSendMessage({
           attachments.map((att) => att.id),
           isDraft,
           clientMessageId,
+          inferenceProfileForSend,
         );
 
         if (result.status === "failed") {
@@ -1088,6 +1223,8 @@ export function useSendMessage({
       revertQueuedMessage,
       persistDismissedSurfaces,
       repairMissingProviderProfile,
+      ensureProviderReadyForSend,
+      resolveProviderSendSelection,
       queryClient,
       surfaceConversationAfterUserSend,
     ],

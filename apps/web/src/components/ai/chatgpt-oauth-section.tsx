@@ -44,6 +44,7 @@ type ChatgptOAuthState =
 
 interface ChatgptOAuthSectionProps {
   assistantId: string;
+  managedInferenceConfigured?: boolean;
   onConnected: (connection: ProviderConnection) => void | Promise<void>;
 }
 
@@ -86,6 +87,26 @@ interface ChatgptStatusResponse {
   expires_at?: number;
   started_at?: number;
   interval?: number;
+}
+
+const CHATGPT_CONNECTION_NAMES = new Set([
+  "chatgpt-subscription",
+  "openai-chatgpt",
+]);
+const CONNECTION_VERIFICATION_ATTEMPTS = 3;
+const CONNECTION_VERIFICATION_RETRY_MS = 100;
+
+class ChatgptConnectionVerificationError extends Error {
+  constructor() {
+    super("ChatGPT connection was not present in refreshed inventory");
+    this.name = "ChatgptConnectionVerificationError";
+  }
+}
+
+function waitForConnectionVerificationRetry(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, CONNECTION_VERIFICATION_RETRY_MS);
+  });
 }
 
 function formatChatgptAuthError(message: string): string {
@@ -134,6 +155,7 @@ function formatChatgptAuthError(message: string): string {
 
 export function ChatgptOAuthSection({
   assistantId,
+  managedInferenceConfigured = false,
   onConnected,
 }: ChatgptOAuthSectionProps) {
   const [oauthState, setOauthState] = useState<ChatgptOAuthState>("idle");
@@ -157,36 +179,38 @@ export function ChatgptOAuthSection({
   const queryClient = useQueryClient();
 
   const notifyConnectedConnection = useCallback(async () => {
-    const { data } = await inferenceProviderconnectionsGet({
-      path: { assistant_id: assistantId },
-      query: { provider: "openai" },
-      throwOnError: true,
-    });
-    const conns = data.connections;
-    const chatgptConn = conns.find(
-      (c) => c.name === "chatgpt-subscription" || c.name === "openai-chatgpt",
-    );
-    const connection =
-      chatgptConn ??
-      ({
-        name: "chatgpt-subscription",
-        provider: "openai",
-        auth: {
-          type: "oauth_subscription",
-          credential: "credential/chatgpt/access_token",
-        },
-        label: "ChatGPT Subscription",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        baseUrl: null,
-        models: null,
-        isManaged: false,
-      } satisfies ProviderConnection);
+    let conns: ProviderConnection[] = [];
+    let connection: ProviderConnection | undefined;
+    for (
+      let attempt = 0;
+      attempt < CONNECTION_VERIFICATION_ATTEMPTS;
+      attempt++
+    ) {
+      const { data } = await inferenceProviderconnectionsGet({
+        path: { assistant_id: assistantId },
+        throwOnError: true,
+      });
+      conns = data.connections;
+      connection = conns.find((candidate) =>
+        CHATGPT_CONNECTION_NAMES.has(candidate.name),
+      );
+      if (connection) break;
+      if (attempt < CONNECTION_VERIFICATION_ATTEMPTS - 1) {
+        await waitForConnectionVerificationRetry();
+      }
+    }
+    if (!connection) {
+      throw new ChatgptConnectionVerificationError();
+    }
 
     const repair = await ensureRunnableProfileForConnection(
       assistantId,
       connection,
-      { activateConnection: true },
+      {
+        activateConnection: true,
+        connections: conns,
+        routeInteractiveCallSites: !managedInferenceConfigured,
+      },
     );
     if (repair.repaired) {
       void queryClient.invalidateQueries({
@@ -197,7 +221,7 @@ export function ChatgptOAuthSection({
     }
 
     await onConnected(connection);
-  }, [assistantId, onConnected, queryClient]);
+  }, [assistantId, managedInferenceConfigured, onConnected, queryClient]);
 
   const finishConnectionSetup = useCallback(async () => {
     setOauthState("activating");
@@ -205,10 +229,12 @@ export function ChatgptOAuthSection({
     try {
       await notifyConnectedConnection();
       setOauthState("completed");
-    } catch {
+    } catch (error) {
       setOauthState("activation_failed");
       setOauthError(
-        "ChatGPT is connected, but Worklin could not finish setting it up for this assistant. Retry setup; you will not need to sign in again.",
+        error instanceof ChatgptConnectionVerificationError
+          ? "ChatGPT sign-in finished, but Worklin could not verify the saved connection. Retry setup; if it still cannot be verified, start a new ChatGPT sign-in."
+          : "ChatGPT is connected, but Worklin could not finish setting it up for this assistant. Retry setup; you will not need to sign in again.",
       );
     }
   }, [notifyConnectedConnection]);
