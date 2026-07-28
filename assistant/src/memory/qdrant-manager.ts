@@ -37,6 +37,33 @@ export interface QdrantManagerConfig {
   shutdownGraceMs?: number;
 }
 
+interface QdrantSpawnEnvOptions {
+  host: string;
+  port: number;
+  storagePath: string;
+}
+
+/** @internal Exported for focused regression coverage. */
+export function buildQdrantSpawnEnv(
+  options: QdrantSpawnEnvOptions,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    QDRANT__SERVICE__HOST: options.host,
+    QDRANT__SERVICE__HTTP_PORT: String(options.port),
+    QDRANT__SERVICE__GRPC_PORT: "0", // disable gRPC
+    QDRANT__TELEMETRY_DISABLED: "true",
+    QDRANT__STORAGE__STORAGE_PATH: options.storagePath,
+    // Qdrant otherwise resolves snapshots relative to the daemon's working
+    // directory. Container runtimes launch the daemon from the read-only
+    // application image, so the unprivileged assistant user cannot create
+    // `./snapshots/tmp` and Qdrant exits before readiness.
+    QDRANT__STORAGE__SNAPSHOTS_PATH: join(options.storagePath, "snapshots"),
+    QDRANT__LOG_LEVEL: "WARN",
+  };
+}
+
 /**
  * Manages the Qdrant sidecar process lifecycle.
  *
@@ -107,15 +134,11 @@ export class QdrantManager {
 
     const proc = Bun.spawn({
       cmd: [spawnPath],
-      env: {
-        ...process.env,
-        QDRANT__SERVICE__HOST: this.host,
-        QDRANT__SERVICE__HTTP_PORT: String(this.port),
-        QDRANT__SERVICE__GRPC_PORT: "0", // disable gRPC
-        QDRANT__TELEMETRY_DISABLED: "true",
-        QDRANT__STORAGE__STORAGE_PATH: this.storagePath,
-        QDRANT__LOG_LEVEL: "WARN",
-      },
+      env: buildQdrantSpawnEnv({
+        host: this.host,
+        port: this.port,
+        storagePath: this.storagePath,
+      }),
       stdout: "ignore",
       stderr: "pipe",
     });
