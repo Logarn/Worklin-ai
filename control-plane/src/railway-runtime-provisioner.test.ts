@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   BoundedKeyedTaskScheduler,
   provisionRailwayRuntime,
+  RailwayRuntimeRetirementError,
+  retireRailwayRuntime,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
   railwayRuntimeCapacityError,
@@ -10,6 +12,8 @@ import {
   railwayRuntimeServiceName,
   type RailwayProvisioningPersistence,
   type RailwayProvisionerConfig,
+  type RailwayRuntimeRetirementPersistence,
+  type RetireRailwayRuntimeOptions,
 } from "./railway-runtime-provisioner.js";
 import type { AssistantRuntimeRow, RuntimeStackRow } from "./runtime-stacks.js";
 
@@ -212,6 +216,320 @@ describe("railwayRuntimeWorkspaceCapacityError", () => {
   });
 });
 
+type RetirementRailwayState = {
+  services: Map<string, string>;
+  volumes: Set<string>;
+  mounts: Map<string, Set<string>>;
+  variables: Map<string, Record<string, string>>;
+  operations: string[];
+  failServiceDelete: boolean;
+};
+
+const retirementServiceName = railwayRuntimeServiceName(assistant.id, "rt-1");
+const ownershipVariables = {
+  WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
+  WORKLIN_RUNTIME_STACK_ID: "rt-1",
+  WORKLIN_RUNTIME_OWNERSHIP: "worklin-isolated-runtime-v1",
+};
+
+function retirementRailway(
+  overrides: Partial<RetirementRailwayState> = {},
+): RetirementRailwayState & { fetch: typeof fetch } {
+  const state: RetirementRailwayState = {
+    services: new Map([
+      ["service-1", retirementServiceName],
+      ["control-plane-service", "control-plane"],
+    ]),
+    volumes: new Set(["volume-1"]),
+    mounts: new Map([["service-1", new Set(["volume-1"])]]),
+    variables: new Map([["service-1", { ...ownershipVariables }]]),
+    operations: [],
+    failServiceDelete: false,
+    ...overrides,
+  };
+  const fetchImpl = (async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as {
+      query: string;
+      variables: Record<string, any>;
+    };
+    expect(new Headers(init?.headers).get("Project-Access-Token")).toBe(
+      "project-token",
+    );
+    if (request.query.includes("runtimeRetirementResources")) {
+      state.operations.push("inventory");
+      return jsonResponse({
+        data: {
+          project: {
+            services: {
+              edges: [...state.services].map(([id, name]) => ({
+                node: { id, name },
+              })),
+            },
+            volumes: {
+              edges: [...state.volumes].map((id) => ({ node: { id } })),
+            },
+          },
+        },
+      });
+    }
+    if (request.query.includes("runtimeEnvironmentConfig")) {
+      state.operations.push("environment");
+      return jsonResponse({
+        data: {
+          environment: {
+            config: {
+              services: Object.fromEntries(
+                [...state.services.keys()].map((serviceId) => [
+                  serviceId,
+                  {
+                    volumeMounts: Object.fromEntries(
+                      [...(state.mounts.get(serviceId) ?? [])].map((id) => [
+                        id,
+                        { mountPath: "/data" },
+                      ]),
+                    ),
+                  },
+                ]),
+              ),
+            },
+          },
+        },
+      });
+    }
+    if (request.query.includes("runtimeOwnershipVariables")) {
+      state.operations.push("variables");
+      return jsonResponse({
+        data: { variables: state.variables.get(request.variables.serviceId) ?? {} },
+      });
+    }
+    if (request.query.includes("variableCollectionUpsert")) {
+      state.operations.push("markOwnership");
+      const input = request.variables.input as {
+        serviceId: string;
+        variables: Record<string, string>;
+      };
+      state.variables.set(input.serviceId, {
+        ...(state.variables.get(input.serviceId) ?? {}),
+        ...input.variables,
+      });
+      return jsonResponse({ data: { variableCollectionUpsert: true } });
+    }
+    if (request.query.includes("mutation volumeDelete")) {
+      state.operations.push("volumeDelete");
+      const volumeId = String(request.variables.volumeId);
+      state.volumes.delete(volumeId);
+      for (const mounts of state.mounts.values()) mounts.delete(volumeId);
+      return jsonResponse({ data: { volumeDelete: true } });
+    }
+    if (request.query.includes("mutation serviceDelete")) {
+      state.operations.push("serviceDelete");
+      if (state.failServiceDelete) {
+        return jsonResponse({ errors: [{ message: "service delete failed" }] });
+      }
+      state.services.delete(String(request.variables.id));
+      return jsonResponse({ data: { serviceDelete: true } });
+    }
+    throw new Error("Unexpected Railway operation.");
+  }) as typeof fetch;
+  return Object.assign(state, { fetch: fetchImpl });
+}
+
+function retirementPersistence(
+  events: string[],
+  overrides: Partial<RailwayRuntimeRetirementPersistence> = {},
+): RailwayRuntimeRetirementPersistence {
+  return {
+    renewLease: () => {},
+    recordService: (id) => events.push(`recordService:${id}`),
+    recordVolume: (id) => events.push(`recordVolume:${id}`),
+    confirmVolumeCleanup: () => events.push("confirmVolume"),
+    confirmServiceCleanup: () => events.push("confirmService"),
+    ...overrides,
+  };
+}
+
+function retirementOptions(
+  railway: ReturnType<typeof retirementRailway>,
+  events: string[],
+  overrides: Partial<RetireRailwayRuntimeOptions> = {},
+): RetireRailwayRuntimeOptions {
+  return {
+    assistantId: assistant.id,
+    stackId: "rt-1",
+    serviceId: "service-1",
+    volumeId: "volume-1",
+    serviceCreateAttempted: false,
+    volumeCreateAttempted: false,
+    serviceCleanupConfirmed: false,
+    volumeCleanupConfirmed: false,
+    config: config({ controlPlaneServiceId: "control-plane-service" }),
+    persistence: retirementPersistence(events),
+    fetchImpl: railway.fetch,
+    ...overrides,
+  };
+}
+
+describe("retireRailwayRuntime", () => {
+  test("deletes only an exact owned volume and service", async () => {
+    const railway = retirementRailway();
+    const events: string[] = [];
+
+    await retireRailwayRuntime(retirementOptions(railway, events));
+
+    expect(railway.operations.filter((value) => value.endsWith("Delete"))).toEqual([
+      "volumeDelete",
+      "serviceDelete",
+    ]);
+    expect(events).toEqual(["confirmVolume", "confirmService"]);
+    expect(railway.services.has("control-plane-service")).toBe(true);
+  });
+
+  test("rejects mismatched names, markers, and volume associations", async () => {
+    const cases = [
+      retirementRailway({
+        services: new Map([["service-1", "shared-service"]]),
+      }),
+      retirementRailway({
+        variables: new Map([
+          ["service-1", { ...ownershipVariables, WORKLIN_RUNTIME_STACK_ID: "other" }],
+        ]),
+      }),
+      retirementRailway({
+        mounts: new Map([["service-1", new Set(["other-volume"])]]),
+      }),
+    ];
+
+    for (const railway of cases) {
+      await expect(
+        retireRailwayRuntime(retirementOptions(railway, [])),
+      ).rejects.toMatchObject({ code: "ownership_unverified" });
+      expect(railway.operations).not.toContain("volumeDelete");
+      expect(railway.operations).not.toContain("serviceDelete");
+    }
+  });
+
+  test("reconciles exact service and volume attempts before cleanup", async () => {
+    const railway = retirementRailway({
+      variables: new Map([["service-1", {}]]),
+    });
+    const events: string[] = [];
+
+    await retireRailwayRuntime(
+      retirementOptions(railway, events, {
+        serviceId: null,
+        volumeId: null,
+        serviceCreateAttempted: true,
+        volumeCreateAttempted: true,
+      }),
+    );
+
+    expect(events).toEqual([
+      "recordService:service-1",
+      "recordVolume:volume-1",
+      "confirmVolume",
+      "confirmService",
+    ]);
+    expect(railway.operations).toContain("markOwnership");
+  });
+
+  test("resolves pre-request attempt markers to confirmed absence", async () => {
+    const railway = retirementRailway({
+      services: new Map([["control-plane-service", "control-plane"]]),
+      volumes: new Set(),
+      mounts: new Map(),
+      variables: new Map(),
+    });
+    const events: string[] = [];
+
+    await retireRailwayRuntime(
+      retirementOptions(railway, events, {
+        serviceId: null,
+        volumeId: null,
+        serviceCreateAttempted: true,
+        serviceCleanupConfirmed: false,
+        volumeCleanupConfirmed: true,
+      }),
+    );
+
+    expect(events).toEqual(["confirmService"]);
+    expect(railway.operations).not.toContain("serviceDelete");
+  });
+
+  test("preserves partial cleanup and reconciles an absent service on retry", async () => {
+    const railway = retirementRailway({ failServiceDelete: true });
+    const events: string[] = [];
+    await expect(
+      retireRailwayRuntime(retirementOptions(railway, events)),
+    ).rejects.toMatchObject({ code: "cleanup_unconfirmed" });
+    expect(events).toEqual(["confirmVolume"]);
+
+    railway.failServiceDelete = false;
+    await retireRailwayRuntime(
+      retirementOptions(railway, events, {
+        volumeCleanupConfirmed: true,
+        volumeId: "volume-1",
+      }),
+    );
+    expect(events).toEqual(["confirmVolume", "confirmService"]);
+  });
+
+  test("fails safely when the retirement lease is lost in every cleanup phase", async () => {
+    for (const failAt of [1, 3, 5, 7, 8, 9]) {
+      const railway = retirementRailway();
+      const events: string[] = [];
+      let renewals = 0;
+      const persistence = retirementPersistence(events, {
+        renewLease: () => {
+          renewals += 1;
+          if (renewals === failAt) throw new Error("lease lost");
+        },
+      });
+      await expect(
+        retireRailwayRuntime(
+          retirementOptions(railway, events, { persistence }),
+        ),
+      ).rejects.toThrow("lease lost");
+      expect(events.at(-1)).not.toBe("confirmService");
+    }
+  });
+
+  test("reconciles deletion when confirmation loses the lease", async () => {
+    const railway = retirementRailway();
+    let failConfirmation = true;
+    const events: string[] = [];
+    const persistence = retirementPersistence(events, {
+      confirmVolumeCleanup: () => {
+        if (failConfirmation) throw new Error("lease lost after volume delete");
+        events.push("confirmVolume");
+      },
+    });
+    await expect(
+      retireRailwayRuntime(
+        retirementOptions(railway, events, { persistence }),
+      ),
+    ).rejects.toThrow("lease lost after volume delete");
+    expect(railway.volumes.has("volume-1")).toBe(false);
+
+    failConfirmation = false;
+    await retireRailwayRuntime(
+      retirementOptions(railway, events, { persistence }),
+    );
+    expect(events).toEqual(["confirmVolume", "confirmService"]);
+  });
+
+  test("refuses the control-plane service before making a Railway request", async () => {
+    const railway = retirementRailway();
+    await expect(
+      retireRailwayRuntime(
+        retirementOptions(railway, [], {
+          serviceId: "control-plane-service",
+        }),
+      ),
+    ).rejects.toBeInstanceOf(RailwayRuntimeRetirementError);
+    expect(railway.operations).toHaveLength(0);
+  });
+});
+
 describe("provisionRailwayRuntime", () => {
   test("creates an isolated service, volume, variables, deployment, and health route", async () => {
     const graphqlOperations: Array<{
@@ -243,6 +561,9 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("serviceCreate")) {
         return jsonResponse({ data: { serviceCreate: { id: "service-1" } } });
       }
+      if (request.query.includes("variableCollectionUpsert")) {
+        return jsonResponse({ data: { variableCollectionUpsert: true } });
+      }
       if (request.query.includes("runtimeEnvironmentConfig")) {
         return jsonResponse({
           data: { environment: { config: { services: {} } } },
@@ -250,9 +571,6 @@ describe("provisionRailwayRuntime", () => {
       }
       if (request.query.includes("volumeCreate")) {
         return jsonResponse({ data: { volumeCreate: { id: "volume-1" } } });
-      }
-      if (request.query.includes("variableCollectionUpsert")) {
-        return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
       if (request.query.includes("serviceInstanceDeployV2")) {
         return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
@@ -292,7 +610,7 @@ describe("provisionRailwayRuntime", () => {
     expect(events).toEqual([
       "service:service-1",
       "volume:volume-1",
-      "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
+      `active:http://${railwayRuntimeServiceName(assistant.id, "rt-1")}.railway.internal:8080:200`,
     ]);
     expect(deploymentPolls).toBe(2);
     expect(healthPolls).toBe(2);
@@ -308,6 +626,8 @@ describe("provisionRailwayRuntime", () => {
     expect(input.variables).toMatchObject({
       WORKLIN_RUNTIME_MODE: "isolated",
       WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
+      WORKLIN_RUNTIME_STACK_ID: "rt-1",
+      WORKLIN_RUNTIME_OWNERSHIP: "worklin-isolated-runtime-v1",
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
       WORKLIN_RUNTIME_ROOT: "/runtime/customer",
@@ -347,9 +667,9 @@ describe("provisionRailwayRuntime", () => {
     ).toEqual([
       "service-lookup",
       "service",
+      "variables",
       "volume-lookup",
       "volume",
-      "variables",
       "deploy",
       "status",
       "status",
@@ -379,7 +699,7 @@ describe("provisionRailwayRuntime", () => {
                       {
                         node: {
                           id: "service-recovered",
-                          name: railwayRuntimeServiceName(assistant.id),
+                          name: railwayRuntimeServiceName(assistant.id, "rt-1"),
                         },
                       },
                     ]
@@ -411,13 +731,13 @@ describe("provisionRailwayRuntime", () => {
           },
         });
       }
+      if (request.query.includes("variableCollectionUpsert")) {
+        return jsonResponse({ data: { variableCollectionUpsert: true } });
+      }
       if (request.query.includes("volumeCreate")) {
         volumeCreateCalls += 1;
         volumeCreated = true;
         throw new TypeError("simulated response loss");
-      }
-      if (request.query.includes("variableCollectionUpsert")) {
-        return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
       if (request.query.includes("serviceInstanceDeployV2")) {
         return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
@@ -450,7 +770,7 @@ describe("provisionRailwayRuntime", () => {
     expect(events).toEqual([
       "service:service-recovered",
       "volume:volume-recovered",
-      "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
+      `active:http://${railwayRuntimeServiceName(assistant.id, "rt-1")}.railway.internal:8080:200`,
     ]);
   });
 
@@ -545,6 +865,9 @@ describe("provisionRailwayRuntime", () => {
           },
         });
       }
+      if (request.query.includes("variableCollectionUpsert")) {
+        return jsonResponse({ data: { variableCollectionUpsert: true } });
+      }
       if (request.query.includes("volumeCreate")) {
         volumeCreateCalls += 1;
         throw new Error("a second volume create must never be issued");
@@ -590,7 +913,7 @@ describe("provisionRailwayRuntime", () => {
                   {
                     node: {
                       id: "service-orphaned",
-                      name: railwayRuntimeServiceName(assistant.id),
+                      name: railwayRuntimeServiceName(assistant.id, "rt-1"),
                     },
                   },
                 ],
@@ -653,7 +976,7 @@ describe("provisionRailwayRuntime", () => {
     expect(events).toEqual([
       "service:service-orphaned",
       "volume:volume-orphaned",
-      "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
+      `active:http://${railwayRuntimeServiceName(assistant.id, "rt-1")}.railway.internal:8080:200`,
     ]);
   });
 

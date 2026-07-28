@@ -24,6 +24,7 @@ import {
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
   getRuntimeStackById,
+  getRuntimeStackForAssistant,
   isRuntimeStackRoutable,
   markRuntimeStackActive,
   markRuntimeStackFailed,
@@ -54,6 +55,9 @@ import {
 import {
   BoundedKeyedTaskScheduler,
   provisionRailwayRuntime,
+  RailwayRuntimeRetirementError,
+  retireRailwayRuntime,
+  railwayRuntimeRetirementConfigurationError,
   railwayRuntimeWorkspaceCapacityError,
   railwayProvisionerConfigurationError,
   railwayProvisionerConfigFromEnv,
@@ -181,6 +185,18 @@ import {
   RuntimeWorkerCoordinatorOwnershipGuard,
   RuntimeWorkerCoordinatorRequestAbortRegistry,
 } from "./runtime-worker-coordinator-ownership.js";
+import {
+  claimAssistantRetirementLease,
+  confirmAssistantRetirementResourceCleanup,
+  ensureAssistantRetirementSchema,
+  finalizeAssistantRetirement,
+  markAssistantRetirementReconciliationRequired,
+  recordAssistantRetirementResource,
+  releaseAssistantRetirementLease,
+  renewAssistantRetirementLease,
+  suspendAssistantForRetirement,
+  type AssistantRetirementRow,
+} from "./assistant-retirement-store.js";
 
 const SESSION_COOKIE = "worklin_session";
 const SECURE_CSRF_COOKIE = "__Secure-csrftoken";
@@ -375,6 +391,7 @@ ensureAssistantStoreSchema(db);
 ensureRuntimeStackSchema(db);
 ensureBrandResearchRunSchema(db);
 ensureWorkspaceManagementSchema(db);
+ensureAssistantRetirementSchema(db);
 ensureTenantRuntimeAdmissionSchema(db);
 ensureTenantRuntimeOperationsSchema(db);
 const pooledModelKeyVault = new PooledModelKeyVault(
@@ -2182,9 +2199,10 @@ async function handleBrandResearchRuns(
 function accessibleAssistantsForUser(
   req: Request,
   user: UserRow,
+  createOwnerDefault = true,
 ): AssistantRow[] {
   const workspace = workspaceContext(req, user);
-  if (workspace.org.user_id === user.id) {
+  if (createOwnerDefault && workspace.org.user_id === user.id) {
     const existing = db
       .query<AssistantRow, [string]>(
         "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
@@ -2206,6 +2224,295 @@ function accessibleAssistantsForUser(
     )
     .all(workspace.org.id)
     .filter((assistant) => accessibleIds.has(assistant.id));
+}
+
+function preprovisionedRetirementIsConfigured(
+  stack: RuntimeStackRow,
+): boolean {
+  return runtimeStackConfig.preprovisionedRuntimeSlots.some(
+    (slot) =>
+      slot.serviceRef === stack.service_ref &&
+      slot.workspaceVolumeRef === stack.workspace_volume_ref,
+  );
+}
+
+async function handleAssistantRetirement(
+  req: Request,
+  res: Response,
+  assistant: AssistantRow,
+  user: UserRow,
+): Promise<void> {
+  const stack =
+    getRuntimeStackForAssistant(db, assistant) ?? runtimeStackForPayload(assistant);
+  if (stack.provider === "legacy_shared") {
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "This assistant uses shared legacy infrastructure and cannot be retired automatically. No changes were made.",
+        code: "legacy_shared_retirement_unsupported",
+        runtime_status: stack.status,
+        runtime_stack_id: stack.id,
+      },
+      409,
+    );
+    return;
+  }
+  if (stack.provider !== "railway" && stack.provider !== "preprovisioned") {
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "This runtime provider has no verified automated retirement path. No changes were made.",
+        code: "runtime_retirement_unsupported",
+        runtime_status: stack.status,
+        runtime_stack_id: stack.id,
+      },
+      409,
+    );
+    return;
+  }
+  if (
+    stack.provider === "preprovisioned" &&
+    !preprovisionedRetirementIsConfigured(stack)
+  ) {
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "This preprovisioned runtime does not match an exact configured slot. No changes were made.",
+        code: "preprovisioned_retirement_unverified",
+        runtime_status: stack.status,
+        runtime_stack_id: stack.id,
+      },
+      409,
+    );
+    return;
+  }
+  if (
+    stack.service_ref &&
+    stack.service_ref === railwayProvisionerConfig.controlPlaneServiceId
+  ) {
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "The persisted runtime points at a protected control-plane service. No changes were made.",
+        code: "runtime_retirement_protected_service",
+        runtime_status: stack.status,
+        runtime_stack_id: stack.id,
+      },
+      409,
+    );
+    return;
+  }
+  const cleanupMayBeRequired =
+    stack.service_ref !== null ||
+    stack.workspace_volume_ref !== null ||
+    stack.service_create_attempted_at !== null ||
+    stack.volume_create_attempted_at !== null;
+  const cleanupConfigurationError = cleanupMayBeRequired
+    ? railwayRuntimeRetirementConfigurationError(railwayProvisionerConfig)
+    : null;
+  if (cleanupConfigurationError) {
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "Runtime cleanup is not configured safely, so the assistant was left unchanged.",
+        code: "runtime_retirement_configuration_required",
+        runtime_status: stack.status,
+        runtime_stack_id: stack.id,
+      },
+      503,
+    );
+    return;
+  }
+  let retirement: AssistantRetirementRow;
+  try {
+    retirement = suspendAssistantForRetirement(
+      db,
+      assistant,
+      stack,
+      user.id,
+      nowIso,
+    );
+  } catch (error) {
+    const stillExists = db
+      .query<{ id: string }, [string, string]>(
+        "SELECT id FROM assistants WHERE id = ? AND org_id = ?",
+      )
+      .get(assistant.id, assistant.org_id);
+    if (!stillExists) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return;
+    }
+    throw error;
+  }
+
+  const leaseToken = randomUUID();
+  const leaseClaim = claimAssistantRetirementLease(
+    db,
+    stack.id,
+    leaseToken,
+    Date.now(),
+    railwayProvisionerConfig.provisioningLeaseTtlMs,
+    nowIso,
+  );
+  if (!leaseClaim.leaseAcquired || !leaseClaim.retirement || !leaseClaim.stack) {
+    if (leaseClaim.retryAfterMs !== null) {
+      res.setHeader(
+        "Retry-After",
+        String(Math.max(1, Math.ceil(leaseClaim.retryAfterMs / 1_000))),
+      );
+    }
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          leaseClaim.blockedBy === "provisioning"
+            ? "Assistant routing is blocked while an in-flight provisioning operation settles. Retry retirement after the indicated delay."
+            : "Assistant retirement cleanup is already in progress. Retry after the indicated delay.",
+        code:
+          leaseClaim.blockedBy === "provisioning"
+            ? "runtime_provisioning_settling"
+            : "runtime_retirement_in_progress",
+        runtime_status: "suspended",
+        runtime_stack_id: stack.id,
+      },
+      409,
+    );
+    return;
+  }
+
+  let finalized = false;
+  try {
+    const claimedRetirement = leaseClaim.retirement;
+    const claimedStack = leaseClaim.stack;
+    await retireRailwayRuntime({
+      assistantId: assistant.id,
+      stackId: stack.id,
+      serviceId: claimedRetirement.service_ref,
+      volumeId: claimedRetirement.workspace_volume_ref,
+      serviceCreateAttempted:
+        claimedStack.service_create_attempted_at !== null,
+      volumeCreateAttempted: claimedStack.volume_create_attempted_at !== null,
+      serviceCleanupConfirmed:
+        claimedRetirement.service_cleanup_confirmed === 1,
+      volumeCleanupConfirmed:
+        claimedRetirement.volume_cleanup_confirmed === 1,
+      config: railwayProvisionerConfig,
+      persistence: {
+        renewLease: () =>
+          renewAssistantRetirementLease(
+            db,
+            stack.id,
+            leaseToken,
+            Date.now(),
+            railwayProvisionerConfig.provisioningLeaseTtlMs,
+            nowIso,
+          ),
+        recordService: (serviceId) =>
+          recordAssistantRetirementResource(
+            db,
+            stack.id,
+            "service",
+            serviceId,
+            leaseToken,
+            nowIso,
+          ),
+        recordVolume: (volumeId) =>
+          recordAssistantRetirementResource(
+            db,
+            stack.id,
+            "volume",
+            volumeId,
+            leaseToken,
+            nowIso,
+          ),
+        confirmVolumeCleanup: () =>
+          confirmAssistantRetirementResourceCleanup(
+            db,
+            stack.id,
+            "volume",
+            leaseToken,
+            nowIso,
+          ),
+        confirmServiceCleanup: () =>
+          confirmAssistantRetirementResourceCleanup(
+            db,
+            stack.id,
+            "service",
+            leaseToken,
+            nowIso,
+          ),
+      },
+    });
+    finalizeAssistantRetirement(db, stack.id, leaseToken, nowIso);
+    finalized = true;
+    res.status(204).end();
+  } catch (error) {
+    console.error("assistant_retirement_cleanup_failed", {
+      assistantId: assistant.id,
+      runtimeStackId: stack.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    const configurationFailure =
+      error instanceof RailwayRuntimeRetirementError &&
+      (error.code === "configuration" || error.code === "protected_service");
+    const ownershipFailure =
+      error instanceof RailwayRuntimeRetirementError &&
+      error.code === "ownership_unverified";
+    if (ownershipFailure) {
+      try {
+        markAssistantRetirementReconciliationRequired(
+          db,
+          stack.id,
+          leaseToken,
+          error.message,
+          nowIso,
+        );
+      } catch (auditError) {
+        console.error("assistant_retirement_reconciliation_audit_failed", {
+          assistantId: assistant.id,
+          runtimeStackId: stack.id,
+          error:
+            auditError instanceof Error
+              ? auditError.message
+              : String(auditError),
+        });
+      }
+    }
+    sendJson(
+      req,
+      res,
+      {
+        detail: ownershipFailure
+          ? "Assistant routing is blocked and capacity remains reserved because exact Railway ownership could not be proven. Reconcile the recorded resources and ownership markers before retrying."
+          : configurationFailure
+          ? "Assistant routing is blocked and capacity remains reserved. Verify the Railway cleanup configuration and persisted resource ownership before retrying."
+          : "Assistant routing is blocked and capacity remains reserved because Railway cleanup could not be confirmed. Retry retirement after Railway API connectivity is restored.",
+        code: ownershipFailure
+          ? "runtime_retirement_reconciliation_required"
+          : configurationFailure
+          ? "runtime_retirement_configuration_required"
+          : "runtime_retirement_cleanup_failed",
+        runtime_status: "suspended",
+        runtime_stack_id: stack.id,
+      },
+      ownershipFailure ? 409 : 502,
+    );
+  } finally {
+    if (!finalized) {
+      releaseAssistantRetirementLease(db, stack.id, leaseToken, nowIso);
+    }
+  }
 }
 
 interface RuntimeActionRoute {
@@ -2339,6 +2646,69 @@ async function handleAssistants(
       previous: null,
       results,
     });
+    return true;
+  }
+
+  const legacyRetirementRoute = pathEquals(
+    url.pathname,
+    "/v1/assistants/retire/",
+  );
+  const retirementMatch =
+    /^\/v1\/assistants\/([^/]+)\/retire\/?$/.exec(url.pathname);
+  if (legacyRetirementRoute) {
+    if (req.method !== "DELETE") {
+      res.setHeader("Allow", "DELETE");
+      sendJson(req, res, { detail: "Method not allowed." }, 405);
+      return true;
+    }
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "An exact assistant ID is required for retirement. No assistant was changed.",
+        code: "assistant_retirement_id_required",
+      },
+      409,
+    );
+    return true;
+  }
+  if (retirementMatch) {
+    if (req.method !== "DELETE") {
+      res.setHeader("Allow", "DELETE");
+      sendJson(req, res, { detail: "Method not allowed." }, 405);
+      return true;
+    }
+    const workspace = workspaceContext(req, user);
+    const assistants = accessibleAssistantsForUser(req, user, false);
+    const assistant = assistants.find(
+      (candidate) => candidate.id === retirementMatch[1],
+    );
+    if (!assistant || assistant.org_id !== workspace.org.id) {
+      sendJson(req, res, { detail: "Assistant not found." }, 404);
+      return true;
+    }
+    if (
+      assistant.user_id !== user.id &&
+      workspace.membership.role !== "admin"
+    ) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "Only the assistant owner or a workspace admin can retire it.",
+          code: "assistant_retirement_forbidden",
+        },
+        403,
+      );
+      return true;
+    }
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    await handleAssistantRetirement(req, res, assistant, user);
     return true;
   }
 
