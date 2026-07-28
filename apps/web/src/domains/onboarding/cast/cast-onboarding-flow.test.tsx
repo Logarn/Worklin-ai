@@ -30,6 +30,13 @@ const startMock = mock(() => {});
 const seedAvatarMock = mock(async (_avatar?: unknown) => {});
 let awaitReadyImpl: () => Promise<string> = async () => "asst-ready";
 const awaitReadyMock = mock(() => awaitReadyImpl());
+const completeAccountOnboardingMock = mock(async () => ({
+  id: "asst-ready",
+  name: "Worklin",
+  status: "active",
+  is_local: false,
+  created: "2026-07-28T00:00:00.000Z",
+}));
 
 mock.module("@/domains/onboarding/cast/use-background-hatch", () => ({
   useBackgroundHatch: () => ({
@@ -40,6 +47,10 @@ mock.module("@/domains/onboarding/cast/use-background-hatch", () => ({
     error: null,
     awaitReady: awaitReadyMock,
   }),
+}));
+
+mock.module("@/domains/onboarding/complete-account-onboarding", () => ({
+  completeAccountOnboarding: completeAccountOnboardingMock,
 }));
 
 // --- prechat handoff ---------------------------------------------------------
@@ -195,6 +206,7 @@ beforeEach(() => {
   startMock.mockClear();
   seedAvatarMock.mockClear();
   awaitReadyMock.mockClear();
+  completeAccountOnboardingMock.mockClear();
   setPendingPreChatContextMock.mockClear();
   setPendingAssistantNameMock.mockClear();
   markExpectingFirstMessageMock.mockClear();
@@ -278,6 +290,13 @@ describe("CastOnboardingFlow handoff", () => {
 
     // Retrying re-arms the hatch and, once it succeeds, completes the handoff.
     awaitReadyImpl = async () => "asst-retry";
+    completeAccountOnboardingMock.mockResolvedValueOnce({
+      id: "asst-retry",
+      name: "Worklin",
+      status: "active",
+      is_local: false,
+      created: "2026-07-28T00:00:00.000Z",
+    });
     fireEvent.click(screen.getByRole("button", { name: /try again/i }));
 
     await waitFor(() => expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1));

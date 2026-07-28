@@ -18,7 +18,7 @@ describe("onboardingCompletedMiddleware", () => {
 
     const result = await onboardingCompletedMiddleware(
       {
-        request: makeRequest(`${routes.onboarding.privacy}?preview=true`),
+        request: makeRequest(`${routes.onboarding.prechat}?preview=true`),
       } as Parameters<typeof onboardingCompletedMiddleware>[0],
       next,
     );

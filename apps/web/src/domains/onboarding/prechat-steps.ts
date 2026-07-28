@@ -137,8 +137,8 @@ export function resolveWebSteps(caps: WebStepCapabilities): PreChatStep[] {
 }
 
 /**
- * The native iOS flow: name → vibe, then a route to the privacy screen handled
- * by the caller. Not instrumented into the web funnel.
+ * The native iOS flow: name → vibe, then the caller completes setup.
+ * Not instrumented into the web funnel.
  */
 export function resolveNativeSteps(): PreChatStep[] {
   return [

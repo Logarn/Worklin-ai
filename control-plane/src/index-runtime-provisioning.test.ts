@@ -444,7 +444,7 @@ describe("control-plane runtime provisioning guards", () => {
     verificationDb.close();
   });
 
-  test("hatch requires consent and runtime proxying remains fail-closed", async () => {
+  test("onboarding completes without legal consent and runtime failures remain fail-closed", async () => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const dbPath = createTempDbPath();
@@ -473,27 +473,54 @@ describe("control-plane runtime provisioning guards", () => {
       timestamp,
     );
 
-    const blocked = await fetch(`${origin}/v1/assistants/hatch/`, {
-      method: "POST",
-      headers: authenticatedHeaders("session-1"),
-      body: "{}",
+    const session = await fetch(`${origin}/_allauth/browser/v1/auth/session`, {
+      headers: { Cookie: "worklin_session=session-1" },
     });
-    expect(blocked.status).toBe(403);
-    expect(await blocked.json()).toMatchObject({
-      code: "assistant_consent_required",
+    expect(session.status).toBe(200);
+    expect(await session.json()).toMatchObject({
+      data: { user: { onboarding_completed: false } },
+    });
+    const assistant = db
+      .query<AssistantRow, []>("SELECT * FROM assistants LIMIT 1")
+      .get();
+    expect(assistant).not.toBeNull();
+
+    const waiting = await fetch(
+      `${origin}/v1/assistants/${assistant!.id}/operational/status/`,
+      { headers: authenticatedHeaders("session-1") },
+    );
+    expect(waiting.status).toBe(200);
+    expect(await waiting.json()).toMatchObject({
+      state: "initializing",
+      detail_state: "awaiting_onboarding",
+      active_operation: null,
+      detail: {
+        reason: "awaiting_onboarding",
+        message: "Finish setup to prepare your assistant.",
+      },
+    });
+
+    const completed = await fetch(
+      `${origin}/v1/user/onboarding/complete/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-1"),
+        body: "{}",
+      },
+    );
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({
+      user: { onboarding_completed: true, consent: null },
+      assistant: { runtime_status: "failed" },
     });
     expect(
       db
-        .query<{ count: number }, []>(
-          "SELECT COUNT(*) AS count FROM runtime_stacks",
+        .query<{ onboarding_completed_at: string | null }, []>(
+          "SELECT onboarding_completed_at FROM users WHERE id = 'user-1'",
         )
-        .get()?.count,
-    ).toBe(0);
+        .get()?.onboarding_completed_at,
+    ).not.toBeNull();
 
-    db.query("UPDATE users SET consent_json = ? WHERE id = ?").run(
-      ACCEPTED_CONSENT,
-      "user-1",
-    );
     const unavailable = await fetch(`${origin}/v1/assistants/hatch/`, {
       method: "POST",
       headers: authenticatedHeaders("session-1"),
@@ -502,13 +529,9 @@ describe("control-plane runtime provisioning guards", () => {
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toMatchObject({
       code: "platform_hosted_disabled",
-      runtime_status: "provisioning",
+      runtime_status: "failed",
     });
 
-    const assistant = db
-      .query<AssistantRow, []>("SELECT * FROM assistants LIMIT 1")
-      .get();
-    expect(assistant).not.toBeNull();
     const proxyResponse = await fetch(
       `${origin}/v1/assistants/${assistant!.id}/conversations/`,
       {
@@ -676,6 +699,18 @@ describe("control-plane runtime provisioning guards", () => {
       code: "runtime_provisioning",
       runtime_status: "provisioning",
       runtime_stack_id: "rt-retry",
+    });
+    const operational = await fetch(
+      `${origin}/v1/assistants/asst-retry/operational/status/`,
+      { headers: authenticatedHeaders("session-retry") },
+    );
+    expect(await operational.json()).toMatchObject({
+      state: "provisioning",
+      active_operation: {
+        operation: "provision",
+        operation_id: "rt-retry",
+        phase: "deploying",
+      },
     });
 
     const unsupported = await fetch(
@@ -1033,18 +1068,6 @@ describe("control-plane runtime provisioning guards", () => {
       code: "runtime_restart_forbidden",
     });
 
-    const encodedRestartWithoutConsent = await fetch(
-      `${origin}/v1/assistants/asst-restart-collaboration/re%73tart/`,
-      {
-        method: "POST",
-        headers: authenticatedHeaders("session-restart-unconsented"),
-        body: "{}",
-      },
-    );
-    expect(encodedRestartWithoutConsent.status).toBe(403);
-    expect(await encodedRestartWithoutConsent.json()).toEqual({
-      detail: "Assistant consent must be accepted before use.",
-    });
     expect(railwayOperations).toHaveLength(0);
     expect(runtimeGatewayRequests).toEqual([]);
 
@@ -1231,9 +1254,11 @@ describe("control-plane runtime provisioning guards", () => {
       `${origin}/v1/assistants/asst-restart-collaboration/doct%6Fr/history/`,
       { headers: authenticatedHeaders("session-restart-unconsented") },
     );
-    expect(encodedDoctorWithoutConsent.status).toBe(403);
-    expect(await encodedDoctorWithoutConsent.json()).toEqual({
-      detail: "Assistant consent must be accepted before use.",
+    expect(encodedDoctorWithoutConsent.status).toBe(501);
+    expect(await encodedDoctorWithoutConsent.json()).toMatchObject({
+      capability: "doctor",
+      supported: false,
+      code: "runtime_capability_unavailable",
     });
 
     const malformedActionPaths = [

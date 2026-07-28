@@ -49,6 +49,7 @@ import {
   setPendingAssistantName,
   setPendingPreChatContext,
 } from "@/domains/onboarding/prechat";
+import { completeAccountOnboarding } from "@/domains/onboarding/complete-account-onboarding";
 import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import { useAuthStore } from "@/stores/auth-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
@@ -474,6 +475,8 @@ function CastFlowBody({
     try {
       // Wait for the background hatch to report healthy before handing off.
       assistantId = await awaitReady();
+      const completedAssistant = await completeAccountOnboarding();
+      assistantId = completedAssistant.id;
     } catch (err) {
       onHandoffError(
         err instanceof Error
@@ -565,8 +568,8 @@ export function CastOnboardingFlow() {
   // is enabled. The cast arm always reports the deterministic `cast` variant —
   // it is a distinct activation arm, not part of the pared-down/control A/B
   // split. We pass the variant explicitly rather than resolving from stored
-  // state so a value cached under another experiment (e.g. `pared_down` from the
-  // privacy screen) can never leak into cast funnel events.
+  // state so a value cached under another experiment can never leak into cast
+  // funnel events.
   function emitFunnelStep(phase: CastFunnelPhase): void {
     if (isPreview) return;
     emitOnboardingFunnelStepCompleted(CAST_FUNNEL_STEP_BY_PHASE[phase], {

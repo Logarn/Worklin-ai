@@ -78,14 +78,14 @@ export function ApiKeyScreen() {
     }
     void navigate(
       hosting
-        ? `${routes.onboarding.privacy}?hosting=${hosting}`
-        : routes.onboarding.privacy,
+        ? `${routes.onboarding.prechat}?hosting=${hosting}`
+        : routes.onboarding.prechat,
     );
   };
 
   const onBack = () => {
     if (next === "hatching") {
-      void navigate(routes.onboarding.privacy);
+      void navigate(routes.onboarding.prechat);
       return;
     }
     void navigate(routes.onboarding.hosting);
