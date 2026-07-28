@@ -68,6 +68,16 @@ const hatchAssistantMock = mock(async () => ({
     maintenance_mode: { enabled: false },
   },
 }));
+const completeAccountOnboardingMock = mock(async () => {
+  await setSelectedAssistantMock("asst-1");
+  return {
+    id: "asst-1",
+    name: "Worklin",
+    status: "initializing",
+    is_local: false,
+    created: "2026-07-28T00:00:00.000Z",
+  };
+});
 
 const assistantResult = (
   status: string,
@@ -164,6 +174,10 @@ mock.module("@/assistant/api", () => ({
   hatchAssistant: hatchAssistantMock,
   getAssistant: getAssistantMock,
   getAssistantHealthz: getAssistantHealthzMock,
+}));
+
+mock.module("@/domains/onboarding/complete-account-onboarding", () => ({
+  completeAccountOnboarding: completeAccountOnboardingMock,
 }));
 
 mock.module("@/components/ai/chatgpt-oauth-section", () => ({
@@ -547,6 +561,7 @@ beforeEach(() => {
   applyPendingProviderKeyMock.mockClear();
   applyChatgptSubscriptionProviderMock.mockClear();
   hatchAssistantMock.mockClear();
+  completeAccountOnboardingMock.mockClear();
   getAssistantMock.mockClear();
   useAssistantQueryMock.mockClear();
   getAssistantHealthzMock.mockClear();
@@ -911,7 +926,9 @@ describe("onboarding lifecycle sync", () => {
     fireEvent.click(await screen.findByTestId("name-continue"));
     await skipBrandResearchStep();
 
-    await waitFor(() => expect(hatchAssistantMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(completeAccountOnboardingMock).toHaveBeenCalled(),
+    );
     await waitFor(() =>
       expect(setSelectedAssistantMock).toHaveBeenCalledWith("asst-1"),
     );
@@ -926,7 +943,7 @@ describe("onboarding lifecycle sync", () => {
     );
   });
 
-  test("pre-chat uses the selected assistant id when active lifecycle state is stale", async () => {
+  test("pre-chat resolves the canonical server assistant when lifecycle state is stale", async () => {
     activeAssistantQueryResult = undefined;
     resolvedActiveAssistantId = "asst-old";
     resolvedSelectedAssistantId = "asst-selected";
@@ -947,12 +964,12 @@ describe("onboarding lifecycle sync", () => {
 
     await waitFor(() =>
       expect(saveAssistantCharacterProfileMock).toHaveBeenCalledWith(
-        "asst-selected",
+        "asst-1",
         expect.any(Object),
       ),
     );
     await waitFor(() =>
-      expect(checkAssistantMock).toHaveBeenCalledWith("asst-selected"),
+      expect(checkAssistantMock).toHaveBeenCalledWith("asst-1"),
     );
     expect(hatchAssistantMock).not.toHaveBeenCalled();
   });
@@ -1101,13 +1118,13 @@ describe("onboarding lifecycle sync", () => {
     fireEvent.click(await screen.findByTestId("tools-continue"));
 
     expect(screen.queryByTestId("prior-continue")).toBeNull();
-    await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
     await waitFor(() =>
       expect(navigateMock).toHaveBeenCalledWith(
-        `${routes.assistant}?onboarding=1`,
+        routes.onboarding.hatching,
         { replace: true },
       ),
     );
+    expect(checkAssistantMock).not.toHaveBeenCalled();
   });
 
   test("local mode with a platform session shows the prior-assistants step", async () => {

@@ -46,7 +46,6 @@ import {
   getAssistantAdminAccessConsent,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
-  hasAcceptedAssistantConsent,
   setAssistantAdminAccessConsent,
   type AssistantRow,
   type OrganizationRow,
@@ -110,6 +109,10 @@ import {
   type OrganizationMembershipRow,
   type OrganizationRole,
 } from "./organization-membership-store.js";
+import {
+  ensureUserOnboardingSchema,
+  markUserOnboardingCompleted,
+} from "./user-onboarding-store.js";
 import {
   deleteWorkspaceResearchProviderCredential,
   isWorkspaceResearchProviderId,
@@ -341,6 +344,7 @@ db.exec(`
     first_name TEXT NOT NULL DEFAULT '',
     last_name TEXT NOT NULL DEFAULT '',
     consent_json TEXT,
+    onboarding_completed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -373,6 +377,7 @@ db.exec(`
 ensureArtifactSharingSchema(db);
 ensureAssistantStoreSchema(db);
 ensureRuntimeStackSchema(db);
+ensureUserOnboardingSchema(db, nowIso);
 ensureBrandResearchRunSchema(db);
 ensureWorkspaceManagementSchema(db);
 ensureTenantRuntimeAdmissionSchema(db);
@@ -581,6 +586,7 @@ interface UserRow {
   first_name: string;
   last_name: string;
   consent_json: string | null;
+  onboarding_completed_at: string | null;
 }
 
 interface Auth0Claims {
@@ -868,6 +874,7 @@ function userPayload(user: UserRow) {
     is_staff: false,
     first_name: user.first_name,
     last_name: user.last_name,
+    onboarding_completed: user.onboarding_completed_at !== null,
   };
 }
 
@@ -1121,7 +1128,6 @@ function scheduleRuntimeProvisioning(
 ): void {
   if (
     pooledRuntimeEligible(stack) ||
-    !assistantOwnerHasAcceptedConsent(assistant) ||
     stack.provider !== "railway" ||
     (stack.status !== "provisioning" && stack.status !== "failed") ||
     runtimeProvisioningConfigurationError() !== null ||
@@ -1291,15 +1297,6 @@ function scheduleRuntimeProvisioning(
   });
 }
 
-function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
-  const owner = db
-    .query<{ consent_json: string | null }, [string]>(
-      "SELECT consent_json FROM users WHERE id = ?",
-    )
-    .get(assistant.user_id);
-  return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
-}
-
 function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
   const current = runtimeStackForPayload(assistant);
   if (pooledRuntimeEligible(current)) return current;
@@ -1343,12 +1340,28 @@ function operationalStatusPayload(
     ? "active"
     : operationalStateForRuntimeStack(runtimeStack);
   const runtimeReady = pooled || state === "active";
+  const waitingForOnboarding = state === "initializing";
+  const activeOperation =
+    state === "provisioning"
+      ? {
+          operation: "provision",
+          operation_id: runtimeStack.id,
+          phase: runtimeStack.service_ref ? "deploying" : "allocating",
+          started_at: runtimeStack.created_at,
+          updated_at: runtimeStack.updated_at,
+          target: {},
+        }
+      : null;
   return {
     state,
-    detail_state: pooled ? "active" : runtimeStack.status,
+    detail_state: pooled
+      ? "active"
+      : waitingForOnboarding
+        ? "awaiting_onboarding"
+        : runtimeStack.status,
     poll_after_ms: runtimeReady ? 30_000 : 5_000,
     updated_at: updatedAt,
-    active_operation: null,
+    active_operation: activeOperation,
     assistant: {
       id: row.id,
       name: row.name,
@@ -1365,9 +1378,15 @@ function operationalStatusPayload(
       reachable: runtimeReady,
     },
     detail: {
-      reason: runtimeReady ? null : runtimeStack.status,
+      reason: runtimeReady
+        ? null
+        : waitingForOnboarding
+          ? "awaiting_onboarding"
+          : runtimeStack.status,
       message: runtimeReady
         ? null
+        : waitingForOnboarding
+          ? "Finish setup to prepare your assistant."
         : (runtimeStack.last_error ??
           "Your assistant runtime is being prepared."),
     },
@@ -1416,15 +1435,17 @@ function upsertUser(
     first_name: firstName,
     last_name: lastName,
     consent_json: null,
+    onboarding_completed_at: null,
   };
   db.query(
-    "INSERT INTO users (id, email, username, first_name, last_name, consent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO users (id, email, username, first_name, last_name, consent_json, onboarding_completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     user.id,
     user.email,
     user.username,
     user.first_name,
     user.last_name,
+    null,
     null,
     timestamp,
     timestamp,
@@ -1577,6 +1598,41 @@ async function handleUserMe(
   sendJson(req, res, {
     ...userPayload(user),
     consent: user.consent_json ? JSON.parse(user.consent_json) : null,
+  });
+}
+
+function handleOnboardingCompletion(
+  req: Request,
+  res: Response,
+  user: UserRow,
+): void {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
+    return;
+  }
+  if (!checkCsrf(req)) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return;
+  }
+
+  const completedAt = markUserOnboardingCompleted(db, user.id, nowIso);
+  const completedUser = {
+    ...user,
+    onboarding_completed_at: completedAt,
+  };
+  getOrCreateOrganization(completedUser);
+  const assistant = getOrCreateAssistant(completedUser);
+  const runtimeStack = ensureAssistantRuntime(assistant);
+
+  sendJson(req, res, {
+    user: {
+      ...userPayload(completedUser),
+      consent: completedUser.consent_json
+        ? JSON.parse(completedUser.consent_json)
+        : null,
+    },
+    assistant: assistantPayload(assistant, completedUser, runtimeStack),
   });
 }
 
@@ -2249,16 +2305,6 @@ function handleUnavailableRuntimeAction(
     sendJson(req, res, { detail: "CSRF validation failed." }, 403);
     return true;
   }
-  if (!hasAcceptedAssistantConsent(user.consent_json)) {
-    sendJson(
-      req,
-      res,
-      { detail: "Assistant consent must be accepted before use." },
-      403,
-    );
-    return true;
-  }
-
   const runtimeStack = runtimeStackForPayload(assistant);
   const capability = runtimeActionCapabilitiesForStack(
     runtimeStack,
@@ -2448,19 +2494,6 @@ async function handleAssistants(
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
     }
-    if (!hasAcceptedAssistantConsent(user.consent_json)) {
-      sendJson(
-        req,
-        res,
-        {
-          detail:
-            "Accept the current terms, privacy policy, and AI data policy before preparing your assistant.",
-          code: "assistant_consent_required",
-        },
-        403,
-      );
-      return true;
-    }
     const workspace = workspaceContext(req, user);
     const existing =
       workspace.org.user_id === user.id
@@ -2482,13 +2515,7 @@ async function handleAssistants(
       );
       return true;
     }
-    const runtimeStack = claimPreprovisionedRuntimeStack(
-      db,
-      assistant,
-      runtimeStackForPayload(assistant),
-      runtimeStackConfig,
-      nowIso,
-    );
+    const runtimeStack = ensureAssistantRuntime(assistant);
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
       !pooledRuntimeEligible(runtimeStack) &&
@@ -2543,15 +2570,6 @@ async function handleAssistants(
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
     }
-    if (!hasAcceptedAssistantConsent(user.consent_json)) {
-      sendJson(
-        req,
-        res,
-        { detail: "Assistant consent must be accepted before use." },
-        403,
-      );
-      return true;
-    }
     const currentRuntimeStack = runtimeStackForPayload(assistant);
     if (pooledRuntimeEligible(currentRuntimeStack)) {
       sendJson(
@@ -2567,20 +2585,6 @@ async function handleAssistants(
       );
       return true;
     }
-    if (!assistantOwnerHasAcceptedConsent(assistant)) {
-      sendJson(
-        req,
-        res,
-        {
-          detail:
-            "The assistant owner must accept the current consent terms before preparing it.",
-          code: "assistant_owner_consent_required",
-        },
-        409,
-      );
-      return true;
-    }
-
     if (isRuntimeStackRoutable(currentRuntimeStack)) {
       sendJson(req, res, {
         detail: "Assistant runtime is already active.",
@@ -2692,16 +2696,6 @@ async function handleAssistants(
       );
       return true;
     }
-    if (!hasAcceptedAssistantConsent(user.consent_json)) {
-      sendJson(
-        req,
-        res,
-        { detail: "Assistant consent must be accepted before use." },
-        403,
-      );
-      return true;
-    }
-
     const currentRuntimeStack = runtimeStackForPayload(assistant);
     const restartCapability = runtimeActionCapabilitiesForStack(
       currentRuntimeStack,
@@ -3353,19 +3347,8 @@ async function proxyToGateway(
     return;
   }
 
-  if (!hasAcceptedAssistantConsent(user.consent_json)) {
-    sendJson(
-      req,
-      res,
-      { detail: "Assistant consent must be accepted before use." },
-      403,
-    );
-    return;
-  }
-
-  // This is the first real assistant request. Only here do we claim the
-  // stack and start lazy provisioning; list, consent, and hatch calls remain
-  // read-only with respect to Railway capacity.
+  // Runtime-bound requests recover provisioning when an earlier hatch or
+  // onboarding completion was interrupted.
   const runtimeStack = ensureAssistantRuntime(assistant);
   const routingPolicy = selectRuntimeWorkerRoutingPolicy(
     runtimeStack,
@@ -4251,6 +4234,10 @@ app.use(
 
       if (pathEquals(url.pathname, "/v1/user/me/")) {
         await handleUserMe(req, res, user);
+        return;
+      }
+      if (pathEquals(url.pathname, "/v1/user/onboarding/complete/")) {
+        handleOnboardingCompletion(req, res, user);
         return;
       }
       if (pathEquals(url.pathname, "/v1/organizations/")) {

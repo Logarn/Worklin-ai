@@ -247,7 +247,7 @@ export async function startAuthFlow(
       await startNativeLogin({
         returnTo:
           options.intent === "signup"
-            ? routes.onboarding.privacy
+            ? routes.onboarding.prechat
             : options.returnTo ?? null,
         loginHint: options.loginHint,
         providerHint: options.providerHint,
@@ -283,7 +283,7 @@ export async function startAuthFlow(
         await setMenuPlatformSession(true);
         const destination = sanitizeReturnTo(
           options.intent === "signup"
-            ? routes.onboarding.privacy
+            ? routes.onboarding.prechat
             : options.returnTo ?? null,
           DEFAULT_POST_AUTH_DESTINATION,
         );

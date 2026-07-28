@@ -44,7 +44,7 @@ export function DebugControlsPanel({
   const handleReplayOnboarding = useCallback(() => {
     clearConsentForUser(user?.id ?? null);
     toast.success("Onboarding flags cleared.");
-    navigate(routes.onboarding.privacy);
+    navigate(routes.onboarding.prechat);
   }, [navigate, user?.id]);
 
   const fetchAssistant = useCallback(async (force?: boolean) => {
@@ -162,8 +162,8 @@ export function DebugControlsPanel({
               Replay onboarding (Worklin-only)
             </p>
             <p className="text-body-small-default text-[var(--content-tertiary)]">
-              Clear local onboarding flags and re-walk the privacy → hatch
-              screens. Your existing assistant is preserved.
+              Re-walk setup and assistant preparation. Your existing assistant
+              is preserved.
             </p>
           </div>
           <div className="ml-4 shrink-0">

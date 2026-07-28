@@ -140,6 +140,23 @@ describe("api-interceptors / requestInterceptor", () => {
     expect(input.headers.get("X-Vellum-Client-Id")).toBeNull();
     expect(output.headers.get("X-Vellum-Client-Id")).toBe(getClientId());
   });
+
+  test("materializes finite platform mutation bodies for Safari", async () => {
+    const input = new Request(
+      "https://example.test/v1/user/onboarding/complete/",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ complete: true }),
+      },
+    );
+
+    const output = await requestInterceptor(input);
+
+    expect(output.method).toBe("POST");
+    expect(output.headers.get("Content-Type")).toBe("application/json");
+    expect(await output.text()).toBe('{"complete":true}');
+  });
 });
 
 describe("api-interceptors / Electron session-token header", () => {

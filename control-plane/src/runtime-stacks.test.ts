@@ -141,7 +141,14 @@ describe("runtime stack provisioning defaults", () => {
     expect(stack.gateway_url).toBeNull();
     expect(isRuntimeStackRoutable(stack)).toBe(false);
     expect(assistantApiStatusForRuntimeStack(stack)).toBe("initializing");
-    expect(operationalStateForRuntimeStack(stack)).toBe("provisioning");
+    expect(operationalStateForRuntimeStack(stack)).toBe("initializing");
+
+    db.query(
+      "UPDATE runtime_stacks SET service_create_attempted_at = ? WHERE id = ?",
+    ).run(Date.now(), stack.id);
+    expect(
+      operationalStateForRuntimeStack(getRuntimeStackById(db, stack.id)),
+    ).toBe("provisioning");
 
     const row = db
       .query<

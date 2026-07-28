@@ -23,11 +23,10 @@ export const onboardingCompletedMiddleware: MiddlewareFunction = async (
 ) => {
   const url = new URL(request.url);
   // Developer preview mode bypasses the onboarding guard so completed users
-  // can re-walk the privacy/prechat screens without being redirected away.
-  // Restricted to only these two routes to prevent preview from bypassing the
+  // can re-walk pre-chat without being redirected away. Restricted to this
+  // route to prevent preview from bypassing the
   // guard on routes with real side effects (e.g. hatching).
   const previewableRoutes: Set<string> = new Set([
-    routes.onboarding.privacy,
     routes.onboarding.prechat,
   ]);
   const isPreview = url.searchParams.get("preview") === "true";

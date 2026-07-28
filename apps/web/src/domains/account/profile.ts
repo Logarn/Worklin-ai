@@ -28,6 +28,19 @@ export interface UserMe {
   first_name: string;
   last_name: string;
   consent: UserConsent | null;
+  onboarding_completed: boolean;
+}
+
+export interface CompleteOnboardingResponse {
+  user: UserMe;
+  assistant: {
+    id: string;
+    name: string;
+    status: string;
+    is_local: boolean;
+    created: string;
+    [key: string]: unknown;
+  };
 }
 
 export type UsernameErrorCode =
@@ -139,6 +152,29 @@ export async function patchConsent(consent: ConsentPatch): Promise<void> {
     body: { consent },
     throwOnError: true,
   });
+}
+
+export async function completeOnboarding(): Promise<CompleteOnboardingResponse> {
+  const { data, error, response } = await client.post<
+    CompleteOnboardingResponse,
+    unknown
+  >({
+    url: "/v1/user/onboarding/complete/",
+    body: {},
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Setup could not be completed.");
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status,
+      extractErrorMessage(
+        error,
+        response,
+        "Setup could not be completed. Please try again.",
+      ),
+    );
+  }
+  return data;
 }
 
 export async function checkUsernameAvailable(

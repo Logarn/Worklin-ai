@@ -106,7 +106,7 @@ export function HostingScreen() {
       // Cloud is managed — drop any provider key staged from a prior
       // Local/Docker visit so it can't leak into a later local hatch.
       setPendingProviderKey(null);
-      void navigate(routes.onboarding.privacy);
+      void navigate(routes.onboarding.prechat);
     } else {
       void navigate(`${routes.onboarding.apiKey}?hosting=${selected}`);
     }

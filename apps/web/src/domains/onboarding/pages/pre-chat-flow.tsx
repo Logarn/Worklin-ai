@@ -1,11 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
+import { toast } from "sonner";
 
-import { hatchAssistant } from "@/assistant/api";
 import { saveAssistantCharacterProfile } from "@/assistant/avatar-api";
 import { useIsIOSWeb } from "@/runtime/platform-detection";
-import { setSelectedAssistant } from "@/assistant/selection";
 import { readIOSAppDownloaded } from "@/hooks/use-ios-app-nudge";
 import { fetchOnboardingRecipe } from "@/domains/onboarding/recipe-client.js";
 import { enqueueBrandResearchRun } from "@/lib/brand-research";
@@ -48,8 +47,8 @@ import {
 } from "@/domains/onboarding/prechat-steps";
 import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import { GOOGLE_TOOL_IDS } from "@/domains/onboarding/prechat-tools";
-import { usePreChatConsentGate } from "@/domains/onboarding/use-prechat-consent-gate";
 import { usePreChatStepState } from "@/domains/onboarding/use-prechat-step-state";
+import { completeAccountOnboarding } from "@/domains/onboarding/complete-account-onboarding";
 import {
   getPlatformAssistants,
   getSelectedAssistant,
@@ -116,7 +115,6 @@ export function PreChatFlow() {
     ? readLocalPlatformAssistantId()
     : null;
 
-  const consentReady = usePreChatConsentGate();
   const { currentStep, setCurrentStep, clearPersistedStep } =
     usePreChatStepState(userId, isNative);
 
@@ -191,48 +189,42 @@ export function PreChatFlow() {
     setAssistantName(avatar.shortName);
   };
 
-  async function persistSelectedAvatarProfile(): Promise<void> {
-    if (!googleAssistantId || !selectedAvatar) return;
+  async function persistSelectedAvatarProfile(
+    assistantIdOverride?: string,
+  ): Promise<void> {
+    const assistantId = assistantIdOverride ?? googleAssistantId;
+    if (!assistantId || !selectedAvatar) return;
     const nextProfile = {
       ...profileFromCharacter(selectedAvatar),
       assistantName: assistantName.trim() || selectedAvatar.shortName,
     };
     const saved = await saveAssistantCharacterProfile(
-      googleAssistantId,
+      assistantId,
       nextProfile,
     );
     if (!saved) return;
     void queryClient.invalidateQueries({
-      queryKey: avatarQueryKey(googleAssistantId),
+      queryKey: avatarQueryKey(assistantId),
     });
   }
 
   const navigateToChatAfterLifecycleRefresh = async () => {
-    await persistSelectedAvatarProfile();
-
     let handoffAssistantId =
       activeAssistant?.id ??
       selectedAssistantId ??
       activeAssistantId ??
       localPlatformAssistantId;
 
-    // Hosted web onboarding must never hand the user off to `/assistant`
-    // without a resolvable assistant. If the hatch step was skipped,
-    // raced, or failed to persist selection, recover here by resolving the
-    // current assistant through the server-side hatch/ensure path before the
-    // lifecycle refresh. Avoid list-defaulting here: in multi-assistant orgs the
-    // first hosted assistant may be unrelated to this onboarding run.
-    if (!isNative && !localMode && !handoffAssistantId) {
-      try {
-        const resolved = await hatchAssistant();
-        if (resolved.ok) {
-          handoffAssistantId = resolved.data.id;
-          useResolvedAssistantsStore.getState().upsertFromApi(resolved.data);
-          await setSelectedAssistant(resolved.data.id);
-        }
-      } catch (err) {
-        captureError(err, { context: "prechat_ensure_assistant" });
-      }
+    if (!localMode) {
+      const completedAssistant = await completeAccountOnboarding();
+      handoffAssistantId = completedAssistant.id;
+    }
+
+    await persistSelectedAvatarProfile(handoffAssistantId ?? undefined);
+
+    if (localMode && !handoffAssistantId) {
+      void navigate(routes.onboarding.hatching, { replace: true });
+      return;
     }
 
     if (
@@ -315,13 +307,13 @@ export function PreChatFlow() {
     const trimmedAssistant = assistantName.trim();
     if (trimmedAssistant) setPendingAssistantName(trimmedAssistant);
 
-    if (isNative) {
-      await persistSelectedAvatarProfile();
-      clearPersistedStep();
-      void navigate(routes.onboarding.privacy);
-    } else {
+    try {
       lifecycleService.markExpectingFirstMessage();
       await navigateToChatAfterLifecycleRefresh();
+      clearPersistedStep();
+    } catch (err) {
+      captureError(err, { context: "prechat_complete_onboarding" });
+      toast.error("Setup could not be completed. Please try again.");
     }
   }
 
@@ -346,7 +338,7 @@ export function PreChatFlow() {
     if (previous) setCurrentStep(previous);
   };
 
-  if (!consentReady || recipeLoading) {
+  if (recipeLoading) {
     return null;
   }
 

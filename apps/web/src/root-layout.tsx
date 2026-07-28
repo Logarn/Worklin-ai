@@ -195,7 +195,7 @@ export function RootLayout() {
       );
     },
     replayOnboarding: () => {
-      void navigate(`${routes.onboarding.privacy}?preview=true`);
+      void navigate(`${routes.onboarding.prechat}?preview=true`);
     },
     previewPrechat: () => {
       void navigate(`${routes.onboarding.prechat}?preview=true`);

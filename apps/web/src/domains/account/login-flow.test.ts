@@ -24,7 +24,7 @@ describe("login flow routing", () => {
     expect(readAuthCallbackIntent(new URLSearchParams())).toBe("login");
   });
 
-  test("routes completed signups into onboarding instead of chat", () => {
+  test("routes signups into one-time onboarding instead of chat", () => {
     expect(
       resolvePostAuthDestination({
         returnTo: routes.assistant,
@@ -32,7 +32,7 @@ describe("login flow routing", () => {
         authIntent: "signup",
       }),
     ).toEqual({
-      destination: routes.onboarding.privacy,
+      destination: routes.onboarding.prechat,
       requiresFullPageNavigation: false,
     });
   });

@@ -21,10 +21,6 @@ import {
 import { lifecycleService } from "@/assistant/lifecycle-service";
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import {
-  readSelectedVersion,
-  writeSelectedVersion,
-} from "@/domains/onboarding/prefs";
-import {
   applyChatgptSubscriptionProvider,
   applyPendingProviderKey,
   pendingProviderRequiresOAuth,
@@ -195,11 +191,6 @@ export function HatchingScreen() {
   }, []);
 
   const finishReadyVisualState = useCallback(() => {
-    try {
-      writeSelectedVersion("");
-    } catch (err) {
-      captureError(err, { context: "onboarding_mark_completed" });
-    }
     setDisplayProgress(1);
     displayProgressRef.current = 1;
     segmentStartRef.current = 1;
@@ -245,8 +236,6 @@ export function HatchingScreen() {
     //     returning user is never re-seeded.
     let createdFreshAssistant = false;
     let preflightFoundNoAssistant = false;
-
-    const pinnedVersion = readSelectedVersion();
 
     const handleHatchReady = () => {
       finishReadyVisualState();
@@ -473,9 +462,7 @@ export function HatchingScreen() {
 
       try {
         if (!platformHatchPromise) {
-          platformHatchPromise = hatchAssistant(
-            pinnedVersion ? { version: pinnedVersion } : undefined,
-          );
+          platformHatchPromise = hatchAssistant();
         }
         const result = await platformHatchPromise;
         platformHatchPromise = null;
@@ -815,7 +802,7 @@ export function HatchingScreen() {
                 void navigate(
                   useLocalHatch
                     ? routes.onboarding.hosting
-                    : routes.onboarding.privacy,
+                    : routes.onboarding.prechat,
                   { replace: true },
                 )
               }
