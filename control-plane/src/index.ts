@@ -1300,14 +1300,18 @@ function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
   return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
 }
 
-function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
-  const current = runtimeStackForPayload(assistant);
-  if (pooledRuntimeEligible(current)) return current;
+function ensureAssistantRuntime(
+  assistant: AssistantRow,
+  currentRuntimeStack = runtimeStackForPayload(assistant),
+): RuntimeStackRow {
+  // Pooled stacks are routed through the worker coordinator and must never
+  // consume isolated Railway capacity when an assistant is accessed.
+  if (pooledRuntimeEligible(currentRuntimeStack)) return currentRuntimeStack;
 
   const runtimeStack = claimPreprovisionedRuntimeStack(
     db,
     assistant,
-    current,
+    currentRuntimeStack,
     runtimeStackConfig,
     nowIso,
   );
@@ -1325,12 +1329,26 @@ function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
   return getRuntimeStackById(db, runtimeStack.id) ?? runtimeStack;
 }
 
+function runtimeStackForAuthenticatedAssistantRequest(
+  assistant: AssistantRow,
+  user: UserRow,
+): RuntimeStackRow {
+  const runtimeStack = runtimeStackForPayload(assistant);
+  if (
+    runtimeStack.status !== "provisioning" ||
+    !hasAcceptedAssistantConsent(user.consent_json) ||
+    !assistantOwnerHasAcceptedConsent(assistant)
+  ) {
+    return runtimeStack;
+  }
+
+  return ensureAssistantRuntime(assistant, runtimeStack);
+}
+
 function resumeRuntimeProvisioning(): void {
-  // Runtime creation is lazy. Do not turn a process restart into a signup
-  // sweep: assistants whose stacks were only created for a list response must
-  // remain unprovisioned until their first real request. Failed stacks are
-  // retried by the same request path, which also preserves the per-assistant
-  // idempotency boundary.
+  // Runtime creation is request-driven. Do not turn a process restart into a
+  // signup sweep: an authenticated, consented assistant request is what starts
+  // a provisioning stack, and failed stacks require an explicit retry.
 }
 
 function operationalStatusPayload(
@@ -2330,9 +2348,14 @@ async function handleAssistants(
       sendJson(req, res, { count: 0, next: null, previous: null, results: [] });
       return true;
     }
-    const results = assistants.map((assistant) =>
-      assistantPayload(assistant, user, runtimeStackForPayload(assistant)),
-    );
+    const primaryAssistantId = assistants[0]?.id;
+    const results = assistants.map((assistant) => {
+      const runtimeStack =
+        assistant.id === primaryAssistantId
+          ? runtimeStackForAuthenticatedAssistantRequest(assistant, user)
+          : runtimeStackForPayload(assistant);
+      return assistantPayload(assistant, user, runtimeStack);
+    });
     sendJson(req, res, {
       count: results.length,
       next: null,
@@ -2435,7 +2458,10 @@ async function handleAssistants(
       );
       return true;
     }
-    const runtimeStack = runtimeStackForPayload(assistant);
+    const runtimeStack = runtimeStackForAuthenticatedAssistantRequest(
+      assistant,
+      user,
+    );
     sendJson(req, res, assistantPayload(assistant, user, runtimeStack));
     return true;
   }
@@ -2482,12 +2508,9 @@ async function handleAssistants(
       );
       return true;
     }
-    const runtimeStack = claimPreprovisionedRuntimeStack(
-      db,
+    const runtimeStack = runtimeStackForAuthenticatedAssistantRequest(
       assistant,
-      runtimeStackForPayload(assistant),
-      runtimeStackConfig,
-      nowIso,
+      user,
     );
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
@@ -2727,7 +2750,11 @@ async function handleAssistants(
       sendJson(req, res, { detail: "Assistant not found." }, 404);
       return true;
     }
-    sendJson(req, res, operationalStatusPayload(assistant));
+    const runtimeStack = runtimeStackForAuthenticatedAssistantRequest(
+      assistant,
+      user,
+    );
+    sendJson(req, res, operationalStatusPayload(assistant, runtimeStack));
     return true;
   }
 
@@ -2775,7 +2802,11 @@ async function handleAssistants(
       return true;
     }
     if (req.method === "GET") {
-      sendJson(req, res, assistantPayload(assistant, user));
+      const runtimeStack = runtimeStackForAuthenticatedAssistantRequest(
+        assistant,
+        user,
+      );
+      sendJson(req, res, assistantPayload(assistant, user, runtimeStack));
       return true;
     }
   }
@@ -3363,10 +3394,10 @@ async function proxyToGateway(
     return;
   }
 
-  // This is the first real assistant request. Only here do we claim the
-  // stack and start lazy provisioning; list, consent, and hatch calls remain
-  // read-only with respect to Railway capacity.
-  const runtimeStack = ensureAssistantRuntime(assistant);
+  const runtimeStack = runtimeStackForAuthenticatedAssistantRequest(
+    assistant,
+    user,
+  );
   const routingPolicy = selectRuntimeWorkerRoutingPolicy(
     runtimeStack,
     runtimeWorkerCoordinator.config,
