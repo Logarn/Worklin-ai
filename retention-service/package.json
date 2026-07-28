@@ -1,0 +1,21 @@
+{
+  "name": "@worklin/retention-service",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "@vellumai/retention-domain": "file:../packages/retention-domain",
+    "postgres": "3.4.8",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.10",
+    "typescript": "5.9.3"
+  }
+}

@@ -24,6 +24,7 @@ import {
 } from "@/domains/chat/utils/pdf-export";
 
 import { SurfaceContainer } from "@/domains/chat/components/surfaces/surface-container";
+import { getRetentionSourceNotice } from "@/domains/chat/components/surfaces/retention-source-notice";
 
 type ChartRow = Record<string, string | number | boolean | null>;
 
@@ -997,9 +998,7 @@ export function RetentionAuditSurface({
   const [activeMetricKey, setActiveMetricKey] = useState<string | undefined>();
   const [sortMode, setSortMode] = useState<"none" | "asc" | "desc">("desc");
   const sourceMode = data.summary?.sourceMode ?? "unknown";
-  const isFullLiveAudit = sourceMode === "live_readonly";
-  const isKlaviyoL365Audit = sourceMode === "klaviyo_l365";
-  const isKlaviyoInventoryAudit = sourceMode === "klaviyo_inventory";
+  const sourceNotice = getRetentionSourceNotice(sourceMode);
   const activeChart = useMemo(
     () =>
       artifactCharts.find((chart) => chart.chartId === activeChartId) ??
@@ -1059,7 +1058,7 @@ export function RetentionAuditSurface({
           : undefined,
     );
     setSortMode(activeChart?.interaction?.defaultSort ?? "desc");
-  }, [activeChart?.chartId]);
+  }, [activeChart]);
 
   useEffect(
     () => () => {
@@ -1328,33 +1327,25 @@ export function RetentionAuditSurface({
           </div>
         )}
 
-        {!isFullLiveAudit && (
+        {sourceNotice && (
           <div
             className={
-              isKlaviyoL365Audit || isKlaviyoInventoryAudit
+              sourceNotice.tone === "neutral"
                 ? "mt-4 rounded-md border border-[var(--border-base)] bg-[var(--surface-active)] px-3 py-2.5"
                 : "mt-4 rounded-md border border-[var(--system-negative-strong)] bg-[color-mix(in_srgb,var(--system-negative-strong)_12%,transparent)] px-3 py-2.5"
             }
           >
             <p
               className={
-                isKlaviyoL365Audit || isKlaviyoInventoryAudit
+                sourceNotice.tone === "neutral"
                   ? "text-body-small-default font-medium text-[var(--content-strong)]"
                   : "text-body-small-default font-medium text-[var(--system-negative-strong)]"
               }
             >
-              {isKlaviyoL365Audit
-                ? "Live audit: Klaviyo L365 account scope."
-                : isKlaviyoInventoryAudit
-                  ? "Partial live audit: Klaviyo inventory only."
-                : "Source warning: this is not a valid real-client deep audit."}
+              {sourceNotice.title}
             </p>
             <p className="mt-1 text-body-small-default text-[var(--content-secondary)]">
-              {isKlaviyoL365Audit
-                ? "This artifact uses the live read-only Klaviyo L365 snapshot. Shopify is optional commerce enrichment for product, order, LTV, AOV, replenishment, and revenue reconciliation; it is not required for this Klaviyo account audit. No fixture/sample commerce data was used."
-                : isKlaviyoInventoryAudit
-                  ? "This artifact uses the live read-only Klaviyo inventory snapshot. It does not use fixture/sample Shopify, product, revenue, customer, campaign-performance, segment-performance, or flow-performance data. The full commerce audit is blocked until Shopify and deeper Klaviyo history are connected."
-                : `Source mode is ${sourceMode}. Worklin may have used fixture/sample data for missing Shopify, revenue, product, campaign-performance, segment, or flow-performance inputs. Regenerate only after the new source coverage check passes.`}
+              {sourceNotice.body}
             </p>
           </div>
         )}

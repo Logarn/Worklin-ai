@@ -15,6 +15,8 @@
 !packages/**
 !runtime/
 !runtime/**
+!retention-service/
+!retention-service/**
 !skills/
 !skills/**
 
@@ -40,6 +42,9 @@ credential-executor/.env.*
 gateway/node_modules/
 gateway/.env
 gateway/.env.*
+retention-service/node_modules/
+retention-service/.env
+retention-service/.env.*
 packages/*/node_modules/
 packages/*/.env
 packages/*/.env.*

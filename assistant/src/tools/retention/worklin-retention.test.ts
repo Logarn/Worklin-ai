@@ -37,123 +37,33 @@ afterEach(() => {
   tempDir = null;
 });
 
+async function expectLiveDataRequired(
+  resultPromise: Promise<{ content: string; isError?: boolean }>,
+): Promise<void> {
+  const result = await resultPromise;
+  const parsed = JSON.parse(result.content);
+  expect(result.isError).toBe(true);
+  expect(parsed.error.code).toBe("live_data_required");
+  expect(parsed.safety.externalActionTaken).toBe(false);
+}
+
 describe("Worklin Retention tools", () => {
-  test("source status is read-only and not live", async () => {
-    const result = await executeRetentionSourceStatus({}, context);
-    const parsed = JSON.parse(result.content);
-
-    expect(result.isError).toBe(false);
-    expect(parsed.safety.externalActionTaken).toBe(false);
-    expect(parsed.safety.canGoLiveNow).toBe(false);
-  });
-
-  test("source status tolerates conversational onboarding context", async () => {
-    const result = await executeRetentionSourceStatus(
-      {
-        brand_name: "Dr. Rachael Institute",
-        website_url: "https://drrachaelinstitute.com",
-      },
-      context,
-    );
-    const parsed = JSON.parse(result.content);
-
-    expect(result.isError).toBe(false);
-    expect(parsed.safety.externalActionTaken).toBe(false);
-    expect(parsed.safety.canGoLiveNow).toBe(false);
-  });
-
-  test("Brand Brain returns Worklin context and no external action", async () => {
-    const result = await executeRetentionBrandBrain({}, context);
-    const parsed = JSON.parse(result.content);
-
-    expect(parsed.brandName).toContain("Worklin");
-    expect(parsed.rules.length).toBeGreaterThan(0);
-    expect(parsed.readiness.status).toBe("partial");
-    expect(parsed.compliance.forbiddenClaims.length).toBeGreaterThan(0);
-    expect(parsed.sourceProvenance.length).toBeGreaterThan(0);
-    expect(parsed.safety.externalActionTaken).toBe(false);
-  });
-
-  test("Brand Brain accepts onboarding brand name and website URL", async () => {
-    const result = await executeRetentionBrandBrain(
-      {
-        brand_name: "Dr. Rachael Institute",
-        website_url: "https://drrachaelinstitute.com",
-      },
-      context,
-    );
-    const parsed = JSON.parse(result.content);
-
-    expect(parsed.brandName).toBe("Dr. Rachael Institute");
-    expect(parsed.websiteUrl).toBe("https://drrachaelinstitute.com");
-    expect(parsed.readiness.completed).toContain(
-      "Brand website/domain provided in onboarding conversation",
-    );
-    expect(
-      parsed.sourceProvenance.some((source: { label?: string }) =>
-        source.label?.includes("drrachaelinstitute.com"),
-      ),
-    ).toBe(true);
-  });
-
-  test("Shopify and Klaviyo snapshot tools return safe read-only snapshots", async () => {
-    const shopify = JSON.parse(
-      (await executeRetentionShopifySnapshot({}, context)).content,
-    );
-    const klaviyo = JSON.parse(
-      (await executeRetentionKlaviyoSnapshot({}, context)).content,
-    );
-
-    expect(shopify.platform).toBe("shopify");
-    expect(shopify.safety.blockedCapabilities).toContain("shopify_write");
-    expect(klaviyo.platform).toBe("klaviyo");
-    expect(klaviyo.safety.blockedCapabilities).toContain(
-      "klaviyo_send_campaign",
-    );
-  });
-
-  test("unified customer view exposes matched and caveated identities", async () => {
-    const result = await executeRetentionUnifiedCustomerView({}, context);
-    const parsed = JSON.parse(result.content);
-
-    expect(parsed.summary.totalIdentities).toBeGreaterThan(0);
-    expect(parsed.summary.matchedAcrossSources).toBeGreaterThan(0);
-    expect(parsed.summary.shopifyOnly).toBeGreaterThan(0);
-  });
-
-  test("feature computation returns retention labels", async () => {
-    const result = await executeRetentionComputeCustomerFeatures({}, context);
-    const parsed = JSON.parse(result.content);
-
-    expect(parsed.summary.evaluatedCustomers).toBeGreaterThan(0);
-    expect(parsed.summary.highPriorityCustomers).toBeGreaterThan(0);
-  });
-
-  test("missing pieces and opportunities are blocked from live action", async () => {
-    const missingPieces = JSON.parse(
-      (await executeRetentionFindMissingPieces({}, context)).content,
-    );
-    const opportunities = JSON.parse(
-      (await executeRetentionFindCampaignOpportunities({}, context)).content,
-    );
-
-    expect(missingPieces.summary.total).toBeGreaterThan(0);
-    expect(opportunities.summary.draftOnly).toBe(true);
-    expect(opportunities.safety.blockedCapabilities).toContain(
-      "klaviyo_send_campaign",
-    );
-  });
-
-  test("campaign package and QA require approval", async () => {
-    const campaignPackage = JSON.parse(
-      (await executeRetentionGenerateCampaignPackage({}, context)).content,
-    );
-    const qa = JSON.parse((await executeRetentionRunQa({}, context)).content);
-
-    expect(campaignPackage.status).toBe("package_only");
-    expect(campaignPackage.approvalStatus).toBe("required");
-    expect(qa.approvalStatus).toBe("required");
-    expect(qa.safety.canGoLiveNow).toBe(false);
+  test("customer and campaign tools never substitute fixture data", async () => {
+    const operations = [
+      executeRetentionSourceStatus({}, context),
+      executeRetentionBrandBrain({}, context),
+      executeRetentionShopifySnapshot({}, context),
+      executeRetentionKlaviyoSnapshot({}, context),
+      executeRetentionUnifiedCustomerView({}, context),
+      executeRetentionComputeCustomerFeatures({}, context),
+      executeRetentionFindMissingPieces({}, context),
+      executeRetentionFindCampaignOpportunities({}, context),
+      executeRetentionGenerateCampaignPackage({}, context),
+      executeRetentionRunQa({}, context),
+    ];
+    for (const operation of operations) {
+      await expectLiveDataRequired(operation);
+    }
   });
 
   test("real-client audit blocks when live source coverage is incomplete", async () => {
@@ -169,27 +79,19 @@ describe("Worklin Retention tools", () => {
   });
 
   test("audit status reports full-audit readiness blockers", async () => {
-    const result = await executeRetentionAuditStatus({}, context);
-    const parsed = JSON.parse(result.content);
-
-    expect(parsed.status).toBe("blocked");
-    expect(parsed.canRunFullAudit).toBe(false);
-    expect(parsed.readiness.blockers.length).toBeGreaterThan(0);
-    expect(parsed.safety.externalActionTaken).toBe(false);
+    await expectLiveDataRequired(executeRetentionAuditStatus({}, context));
   });
 
-  test("explicit fixture audit produces the first milestone demo result", async () => {
+  test("fixture flags cannot bypass live data requirements", async () => {
     const result = await executeRetentionAudit(
       { allow_fixture_data: true },
       context,
     );
     const parsed = JSON.parse(result.content);
 
-    expect(parsed.title).toBe("Deep Retention Audit");
-    expect(parsed.brandName).toContain("Worklin");
-    expect(parsed.modulePreview.length).toBeGreaterThan(0);
-    expect(parsed.responseGuidance).toContain("Do not paste the full audit");
-    expect(parsed.document.primaryAction).toContain("Worklin audit card");
+    expect(parsed.status).toBe("blocked");
+    expect(parsed.title).toContain("Real Source Data Required");
+    expect(parsed.readiness.canRunFullAudit).toBe(false);
     expect(parsed.safety.externalActionTaken).toBe(false);
     expect(parsed.safety.canGoLiveNow).toBe(false);
   });

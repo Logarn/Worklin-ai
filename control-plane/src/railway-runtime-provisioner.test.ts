@@ -13,17 +13,19 @@ import {
 } from "./railway-runtime-provisioner.js";
 import type { AssistantRuntimeRow, RuntimeStackRow } from "./runtime-stacks.js";
 
+const organizationId = "8ba6407c-39dd-4913-9926-039b1089e7a7";
+
 const assistant: AssistantRuntimeRow = {
   id: "worklin-52d71495-bab5-4567-bcfc-832cc2bb15fe",
   user_id: "user-1",
-  org_id: "org-1",
+  org_id: organizationId,
   runtime_stack_id: "rt-1",
 };
 
 function stack(overrides: Partial<RuntimeStackRow> = {}): RuntimeStackRow {
   return {
     id: "rt-1",
-    org_id: "org-1",
+    org_id: organizationId,
     assistant_id: assistant.id,
     status: "provisioning",
     provider: "railway",
@@ -50,6 +52,9 @@ function config(
 ): RailwayProvisionerConfig {
   return {
     enabled: true,
+    retentionAssistantBridgeEnabled: true,
+    controlPlaneInternalUrl: "http://worklin-control-plane.railway.internal:8082",
+    retentionGatewayIngressSecret: "r".repeat(32),
     apiEndpoint: "https://backboard.railway.test/graphql/v2",
     projectToken: "project-token",
     projectId: "project-1",
@@ -107,6 +112,32 @@ describe("railwayProvisionerConfigFromEnv", () => {
     expect(railwayProvisionerConfigurationError(parsed)).toContain(
       "MAX_RUNTIME_SERVICES",
     );
+  });
+
+  test("fails closed when assistant bridge routing is incomplete", () => {
+    const base = {
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+      WORKLIN_RAILWAY_PROJECT_TOKEN: "token",
+      WORKLIN_RAILWAY_PROJECT_ID: "project",
+      WORKLIN_RAILWAY_ENVIRONMENT_ID: "environment",
+      WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: "5",
+      WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
+    };
+    expect(
+      railwayProvisionerConfigurationError(
+        railwayProvisionerConfigFromEnv(base),
+      ),
+    ).toContain("CONTROL_PLANE_INTERNAL_URL");
+    expect(
+      railwayProvisionerConfigurationError(
+        railwayProvisionerConfigFromEnv({
+          ...base,
+          WORKLIN_CONTROL_PLANE_INTERNAL_URL:
+            "http://control-plane.railway.internal:8082",
+          WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET: "short",
+        }),
+      ),
+    ).toContain("GATEWAY_INGRESS_SECRET");
   });
 });
 
@@ -308,8 +339,13 @@ describe("provisionRailwayRuntime", () => {
     expect(input.variables).toMatchObject({
       WORKLIN_RUNTIME_MODE: "isolated",
       WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
+      PLATFORM_ORGANIZATION_ID: organizationId,
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
+      WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
+      WORKLIN_CONTROL_PLANE_INTERNAL_URL:
+        "http://worklin-control-plane.railway.internal:8082",
+      WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET: "r".repeat(32),
       WORKLIN_RUNTIME_ROOT: "/runtime/customer",
       VELLUM_WORKSPACE_DIR: "/runtime/customer/workspace",
       GATEWAY_SECURITY_DIR: "/runtime/customer/gateway-security",

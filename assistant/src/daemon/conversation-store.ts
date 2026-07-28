@@ -208,6 +208,9 @@ export async function getOrCreateConversation(
       if (options?.trustContext !== undefined) {
         conversation.setTrustContext(options.trustContext);
       }
+      if (options?.authContext !== undefined) {
+        conversation.setAuthContext(options.authContext);
+      }
     }
     _evictor?.touch(conversationId);
   }

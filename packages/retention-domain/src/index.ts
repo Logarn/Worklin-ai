@@ -1,3 +1,5 @@
+export * from "./decisioning-contracts.js";
+
 export const RETENTION_DOMAIN_VERSION = "worklin_retention_v1";
 export * from "./research-providers.js";
 export const BRAND_BRAIN_VERSION = "brand_brain_v1";
