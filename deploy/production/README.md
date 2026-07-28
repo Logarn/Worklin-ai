@@ -165,15 +165,16 @@ curl -I https://api.worklin.ai/healthz
 
 ## Auth0
 
-Create an Auth0 Regular Web Application. The Worklin frontend is not the OAuth
-callback target; the public control-plane backend is.
+Create an Auth0 Regular Web Application. Hosted production uses the canonical
+Worklin web origin for the OAuth callback. Vercel proxies the callback and auth
+routes to the control-plane so the authenticated session remains first-party.
 
 Production Auth0 settings:
 
-- Allowed Callback URLs: `https://<public-backend-domain>/callback`
-- Allowed Logout URLs: `https://<frontend-domain>/account/login`
-- Allowed Web Origins: `https://<frontend-domain>`
-- Allowed Origins (CORS): `https://<frontend-domain>`
+- Allowed Callback URLs: `https://worklin-ai.vercel.app/callback`
+- Allowed Logout URLs: `https://worklin-ai.vercel.app/account/login`
+- Allowed Web Origins: `https://worklin-ai.vercel.app`
+- Allowed Origins (CORS): `https://worklin-ai.vercel.app`
 
 Local smoke-test settings, if you run the control-plane on `19282`:
 
@@ -210,6 +211,17 @@ cookie secrets, writes `control-plane/.env`, and writes
 `deploy/production/backend.env.local`. Do not commit either generated env file.
 
 ## Vercel Frontend
+
+`https://worklin-ai.vercel.app` is the only customer-facing web origin. Add it
+to the Vercel project as an unscoped production domain so every successful
+production deployment updates it automatically. Configure
+`ai-retention-marketer.vercel.app` as a permanent redirect to the canonical
+origin. Generated deployment and branch-preview URLs are build artifacts and
+must not be used in customer links, authentication, invitations, or callbacks.
+
+Do not attach the canonical origin to individual deployments with
+`vercel alias set`. A deployment-level alias remains pinned when later
+production deployments succeed.
 
 Set these in the Vercel project:
 
