@@ -312,6 +312,8 @@ class RailwayGraphqlClient {
           projectId: this.config.projectId,
           environmentId: this.config.environmentId,
           name,
+          source: { repo: this.config.repository },
+          branch: this.config.branch,
           variables,
         },
       },
@@ -674,6 +676,7 @@ export async function provisionRailwayRuntime(
   const serviceName = railwayRuntimeServiceName(options.assistant.id);
   let serviceId = options.stack.service_ref;
   let volumeId = options.stack.workspace_volume_ref;
+  let serviceCreatedWithSource = false;
   const runtimeVariables = {
     WORKLIN_RUNTIME_MODE: "isolated",
     WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
@@ -715,6 +718,7 @@ export async function provisionRailwayRuntime(
       options.persistence.recordServiceCreateAttempt(now());
       try {
         serviceId = await client.createService(serviceName, runtimeVariables);
+        serviceCreatedWithSource = true;
       } catch {
         serviceId = await waitForServiceReconciliation(
           client,
@@ -771,10 +775,22 @@ export async function provisionRailwayRuntime(
   await client.setVariables(serviceId, runtimeVariables);
 
   let initialDeploymentId: string | null = null;
-  if (!(await client.hasExpectedRepositoryConnection(serviceId))) {
+  if (serviceCreatedWithSource) {
+    initialDeploymentId = await waitForInitialDeployment(
+      client,
+      serviceId,
+      options.config,
+      sleep,
+    );
+    if (!initialDeploymentId) {
+      throw new Error(
+        "Railway service was created with its source, but its initial deployment did not appear before the reconciliation deadline.",
+      );
+    }
+  } else if (!(await client.hasExpectedRepositoryConnection(serviceId))) {
     try {
       await client.connectService(serviceId);
-    } catch {
+    } catch (error) {
       initialDeploymentId = await waitForInitialDeployment(
         client,
         serviceId,
@@ -783,7 +799,9 @@ export async function provisionRailwayRuntime(
       );
       if (!initialDeploymentId) {
         throw new Error(
-          "Railway source connection outcome is uncertain; retry will reconcile before another deployment.",
+          `Railway source connection failed and no initial deployment appeared: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
       }
     }
