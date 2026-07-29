@@ -16,8 +16,6 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - The tenant-safe pooled code is present in the production image but every pool gate remains disabled. No pooled worker, tenant-state bucket, paid capacity, or new production secret has been created.
 - The private retention service is deployed, but customer ingestion, assistant access, external provider writes, and sending remain disabled. Do not connect real Shopify or Klaviyo customer data until database backups and point-in-time recovery are enabled and verified.
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
-- Preserve the existing unrelated dirt in `.tmp-worklin-redeploy`: untracked `docs/proposals/brand-intelligence-onboarding-v2.md`.
-
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
 ## 2026-07-29 Customer Decisioning Foundation Deployed
