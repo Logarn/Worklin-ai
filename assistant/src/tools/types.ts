@@ -260,6 +260,14 @@ export interface ToolContext {
   onOutput?: (chunk: string) => void;
   /** Logical assistant scope for multi-assistant routing. */
   assistantId?: string;
+  /** Verified Worklin organization for this turn. Never sourced from tool input. */
+  platformOrganizationId?: string;
+  /** Verified Worklin user for this turn. Never sourced from tool input. */
+  platformUserId?: string;
+  /** Verified public Worklin assistant for this turn. Never sourced from tool input. */
+  platformAssistantId?: string;
+  /** Verified control-plane request id for cross-service correlation. */
+  platformRequestId?: string;
   /** When set, the tool execution is part of a task run. Used to retrieve ephemeral permission rules. */
   taskRunId?: string;
   /**

@@ -179,10 +179,17 @@ export function createToolExecutor(
 
     // Build the context object shared by both the skill_execute interception
     // path and the regular executor path.
+    const platformTenant =
+      ctx.currentTurnAuthContext?.tenantContext ??
+      ctx.authContext?.tenantContext;
     const toolContext: ToolContext = {
       workingDir: ctx.workingDir,
       conversationId: ctx.conversationId,
       assistantId: ctx.assistantId,
+      platformOrganizationId: platformTenant?.organizationId,
+      platformUserId: platformTenant?.userId,
+      platformAssistantId: platformTenant?.assistantId,
+      platformRequestId: platformTenant?.requestId,
       requestId: ctx.currentRequestId,
       taskRunId: ctx.taskRunId,
       trustClass: resolveTrustClass(ctx.trustContext),

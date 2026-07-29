@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "dev:proxy": "bun run src/cli/enable-proxy.ts && bun run --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts --outdir dist --target bun --external drizzle-kit/api",
     "schema": "bun run src/cli/schema.ts",
     "db:generate": "drizzle-kit generate --dialect sqlite --schema src/db/schema.ts --out src/db/migrations",
     "start": "bun run src/index.ts",

@@ -80,6 +80,10 @@ import { createGuardianChannelHandler } from "./http/routes/guardian-channel-cre
 import { createInboundRegisterHandler } from "./http/routes/inbound-register.js";
 import { createMailgunWebhookHandler } from "./http/routes/mailgun-webhook.js";
 import { createResendWebhookHandler } from "./http/routes/resend-webhook.js";
+import {
+  createRetentionProviderWebhookHandler,
+  retentionProviderWebhookConfigFromEnv,
+} from "./http/routes/retention-provider-webhook.js";
 
 import { createOAuthCallbackHandler } from "./http/routes/oauth-callback.js";
 import {
@@ -199,6 +203,10 @@ import { createLogTailRoutes } from "./ipc/log-tail-handlers.js";
 import { slackThreadRoutes } from "./ipc/slack-thread-handlers.js";
 import { thresholdRoutes } from "./ipc/threshold-handlers.js";
 import { trustRulesRoutes } from "./ipc/trust-rules-handlers.js";
+import {
+  createRetentionOperatorRoutes,
+  retentionOperatorBridgeConfigFromEnv,
+} from "./ipc/retention-operator-handlers.js";
 
 import { riskClassificationRoutes } from "./ipc/risk-classification-handlers.js";
 import { createVelayRoutes } from "./ipc/velay-handlers.js";
@@ -535,6 +543,10 @@ async function main() {
       configFile: configFileCache,
     },
   );
+  const handleRetentionProviderWebhook = createRetentionProviderWebhookHandler(
+    config,
+    retentionProviderWebhookConfigFromEnv(process.env),
+  );
   const handleInboundRegister = createInboundRegisterHandler(
     config,
     credentialCache,
@@ -706,6 +718,16 @@ async function main() {
     {
       path: "/webhooks/mailgun",
       handler: (req) => handleMailgunWebhook(req),
+    },
+    {
+      path: /^\/webhooks\/retention\/(shopify|klaviyo)\/([^/]+)\/?$/u,
+      method: "POST",
+      handler: (req, params) =>
+        handleRetentionProviderWebhook(
+          req,
+          params[0] as "shopify" | "klaviyo",
+          params[1]!,
+        ),
     },
 
     // ── BYO provider registration (auto-verify guardian email) ──
@@ -2525,6 +2547,10 @@ async function main() {
     ...riskClassificationRoutes,
     ...createLogTailRoutes(config),
     ...trustRulesRoutes,
+    ...createRetentionOperatorRoutes(
+      config,
+      retentionOperatorBridgeConfigFromEnv(process.env),
+    ),
     ...(sharedGatewayBackgroundServicesEnabled
       ? createVelayRoutes(velayTunnelClient)
       : []),
