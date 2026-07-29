@@ -81,6 +81,10 @@ describe("WorkPage", () => {
       </MemoryRouter>,
     );
 
+    expect(
+      screen.getByRole("link", { name: "Retention" }).getAttribute("href"),
+    ).toBe("/assistant/work/retention");
+
     fireEvent.click(
       screen.getByRole("button", { name: "Create with Worklin" }),
     );

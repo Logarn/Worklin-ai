@@ -137,9 +137,11 @@ export function resolveCallSiteConfig(
     appendCallSiteLayers(layers, callSite, llm, site, opts, biasRef);
   }
 
-  const resolved = finalize(
-    deepMerge(...layers.map(withImpliedProviderForKnownModel)),
-  );
+  const merged = deepMerge(...layers.map(withImpliedProviderForKnownModel));
+  if (merged.provider_connection === CLEAR_INHERITED_PROVIDER_CONNECTION) {
+    delete merged.provider_connection;
+  }
+  const resolved = finalize(merged);
   // `logitBias` is profile-scoped: the winning profile is its only source.
   // Overwrite — or clear — whatever the deep-merge may have copied from a
   // non-profile layer (`llm.default` or a call-site fragment), so a preset set
@@ -159,6 +161,9 @@ type LogitBiasRef = { preset: ProfileEntry["logitBias"] };
 // ---------------------------------------------------------------------------
 
 type Mergeable = Record<string, unknown>;
+const CLEAR_INHERITED_PROVIDER_CONNECTION = Symbol(
+  "clear-inherited-provider-connection",
+);
 
 /**
  * FNV-1a 32-bit string hash → unit float in [0, 1). Deterministic and stable
@@ -354,7 +359,7 @@ function appendCallSiteLayers(
 
 function profileConfigFragment(profile: ProfileEntry): Mergeable {
   const {
-    source: _source,
+    source,
     label: _label,
     description: _description,
     // `mix` never reaches here in practice (a mix expands to a standard
@@ -368,6 +373,16 @@ function profileConfigFragment(profile: ProfileEntry): Mergeable {
     logitBias: _logitBias,
     ...config
   } = profile;
+  if (
+    source === "user" &&
+    profile.provider_connection == null &&
+    (profile.provider != null || profile.model != null)
+  ) {
+    return {
+      ...config,
+      provider_connection: CLEAR_INHERITED_PROVIDER_CONNECTION,
+    };
+  }
   return config as Mergeable;
 }
 

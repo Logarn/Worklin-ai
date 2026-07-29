@@ -146,18 +146,27 @@ import * as retentionAudit from "./bundled-skills/worklin-retention/tools/retent
 import * as retentionAuditStatus from "./bundled-skills/worklin-retention/tools/retention-audit-status.js";
 import * as retentionBrandBrain from "./bundled-skills/worklin-retention/tools/retention-brand-brain.js";
 import * as retentionBuildMicroSegments from "./bundled-skills/worklin-retention/tools/retention-build-micro-segments.js";
+import * as retentionCampaignApprovalPreview from "./bundled-skills/worklin-retention/tools/retention-campaign-approval-preview.js";
+import * as retentionClaimRecipientReasoning from "./bundled-skills/worklin-retention/tools/retention-claim-recipient-reasoning.js";
 import * as retentionComputeCustomerFeatures from "./bundled-skills/worklin-retention/tools/retention-compute-customer-features.js";
 import * as retentionConnectKlaviyo from "./bundled-skills/worklin-retention/tools/retention-connect-klaviyo.js";
 import * as retentionContextPack from "./bundled-skills/worklin-retention/tools/retention-context-pack.js";
+import * as retentionCreateCentralCampaign from "./bundled-skills/worklin-retention/tools/retention-create-central-campaign.js";
 import * as retentionCreateKlaviyoDraft from "./bundled-skills/worklin-retention/tools/retention-create-klaviyo-draft.js";
+import * as retentionCreateSegmentDefinition from "./bundled-skills/worklin-retention/tools/retention-create-segment-definition.js";
 import * as retentionDeepAudit from "./bundled-skills/worklin-retention/tools/retention-deep-audit.js";
 import * as retentionFindCampaignOpportunities from "./bundled-skills/worklin-retention/tools/retention-find-campaign-opportunities.js";
 import * as retentionFindMissingPieces from "./bundled-skills/worklin-retention/tools/retention-find-missing-pieces.js";
+import * as retentionFreezeCampaignAudience from "./bundled-skills/worklin-retention/tools/retention-freeze-campaign-audience.js";
 import * as retentionGenerateAuditArtifact from "./bundled-skills/worklin-retention/tools/retention-generate-audit-artifact.js";
 import * as retentionGenerateCampaignPackage from "./bundled-skills/worklin-retention/tools/retention-generate-campaign-package.js";
 import * as retentionGenerateMicroCampaignPackage from "./bundled-skills/worklin-retention/tools/retention-generate-micro-campaign-package.js";
 import * as retentionKlaviyoSnapshot from "./bundled-skills/worklin-retention/tools/retention-klaviyo-snapshot.js";
 import * as retentionListKlaviyoAccounts from "./bundled-skills/worklin-retention/tools/retention-list-klaviyo-accounts.js";
+import * as retentionPlatformStatus from "./bundled-skills/worklin-retention/tools/retention-platform-status.js";
+import * as retentionPrepareCampaignGeneration from "./bundled-skills/worklin-retention/tools/retention-prepare-campaign-generation.js";
+import * as retentionRecordCampaignMessage from "./bundled-skills/worklin-retention/tools/retention-record-campaign-message.js";
+import * as retentionRecordRecipientDecision from "./bundled-skills/worklin-retention/tools/retention-record-recipient-decision.js";
 import * as retentionRunQa from "./bundled-skills/worklin-retention/tools/retention-run-qa.js";
 import * as retentionRunRetentionQa from "./bundled-skills/worklin-retention/tools/retention-run-retention-qa.js";
 import * as retentionScheduleAudit from "./bundled-skills/worklin-retention/tools/retention-schedule-audit.js";
@@ -338,6 +347,42 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
   ],
 
   // worklin-retention
+  [
+    "worklin-retention:tools/retention-platform-status.ts",
+    retentionPlatformStatus,
+  ],
+  [
+    "worklin-retention:tools/retention-create-segment-definition.ts",
+    retentionCreateSegmentDefinition,
+  ],
+  [
+    "worklin-retention:tools/retention-claim-recipient-reasoning.ts",
+    retentionClaimRecipientReasoning,
+  ],
+  [
+    "worklin-retention:tools/retention-record-recipient-decision.ts",
+    retentionRecordRecipientDecision,
+  ],
+  [
+    "worklin-retention:tools/retention-create-central-campaign.ts",
+    retentionCreateCentralCampaign,
+  ],
+  [
+    "worklin-retention:tools/retention-freeze-campaign-audience.ts",
+    retentionFreezeCampaignAudience,
+  ],
+  [
+    "worklin-retention:tools/retention-prepare-campaign-generation.ts",
+    retentionPrepareCampaignGeneration,
+  ],
+  [
+    "worklin-retention:tools/retention-record-campaign-message.ts",
+    retentionRecordCampaignMessage,
+  ],
+  [
+    "worklin-retention:tools/retention-campaign-approval-preview.ts",
+    retentionCampaignApprovalPreview,
+  ],
   ["worklin-retention:tools/retention-source-status.ts", retentionSourceStatus],
   [
     "worklin-retention:tools/retention-connect-klaviyo.ts",

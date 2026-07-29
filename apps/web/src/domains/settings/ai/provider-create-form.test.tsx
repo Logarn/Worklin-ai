@@ -59,6 +59,8 @@ let createResponseOk = true;
 let createResponseStatus = 200;
 let toastSuccessCalls: string[] = [];
 let configGetData: Record<string, unknown>;
+let connectionInventory: ProviderConnection[] = [];
+let connectionInventoryCalls = 0;
 let availableProviderCredentials: Array<{
   service: string;
   field: string;
@@ -223,11 +225,13 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       response: { ok: createResponseOk, status: createResponseStatus },
     });
   },
-  inferenceProviderconnectionsGet: () =>
-    Promise.resolve({
-      data: { connections: [] },
+  inferenceProviderconnectionsGet: () => {
+    connectionInventoryCalls += 1;
+    return Promise.resolve({
+      data: { connections: connectionInventory },
       response: { ok: true, status: 200 },
-    }),
+    });
+  },
 }));
 
 mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
@@ -358,6 +362,8 @@ beforeEach(() => {
   createResponseOk = true;
   createResponseStatus = 200;
   toastSuccessCalls = [];
+  connectionInventory = [];
+  connectionInventoryCalls = 0;
   availableProviderCredentials = [];
   configGetData = {
     llm: {
@@ -518,6 +524,89 @@ describe("ProviderCreateForm submit sequence", () => {
     // confirms the form initialized on the "bring your own credential" path
     // (instead of the managed-capable provider's default `platform`).
     expect(getInputByPlaceholder("Enter your API key")).toBeDefined();
+  });
+
+  test("does not offer Worklin credits when managed inference is unavailable", () => {
+    const { getByRole, queryByText } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="anthropic"
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    expect(getInputByPlaceholder("Enter your API key")).toBeDefined();
+    fireEvent.click(getByRole("combobox", { name: "Auth type" }));
+    expect(queryByText("Worklin credits")).toBeNull();
+  });
+
+  test("keeps Worklin credits available for assistants with platform auth", () => {
+    const { getAllByText, getByRole } = render(
+      <ModalWrapper>
+        <ProviderCreateForm
+          assistantId={ASSISTANT_ID}
+          existingNames={[]}
+          defaultProviderType="anthropic"
+          managedInferenceConfigured
+          onCreated={() => {}}
+          onCancel={() => {}}
+        />
+      </ModalWrapper>,
+    );
+
+    expect(document.querySelector('input[placeholder="Enter your API key"]')).toBeNull();
+    fireEvent.click(getByRole("combobox", { name: "Auth type" }));
+    expect(getAllByText("Worklin credits").length).toBeGreaterThan(0);
+  });
+
+  test("reconciles a stale platform selection when managed availability disappears", async () => {
+    const props = {
+      assistantId: ASSISTANT_ID,
+      existingNames: [] as string[],
+      defaultAuthType: "platform" as const,
+      defaultProviderType: "anthropic" as const,
+      onCreated: () => {},
+      onCancel: () => {},
+    };
+    const { rerender } = render(
+      <ModalWrapper>
+        <ProviderCreateForm {...props} managedInferenceConfigured />
+      </ModalWrapper>,
+    );
+
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        'button[role="combobox"][aria-label="Auth type"]',
+      )?.textContent,
+    ).toBe("Worklin credits");
+
+    rerender(
+      <ModalWrapper>
+        <ProviderCreateForm {...props} managedInferenceConfigured={false} />
+      </ModalWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(
+        document.querySelector<HTMLButtonElement>(
+          'button[role="combobox"][aria-label="Auth type"]',
+        )?.textContent,
+      ).toBe("API key");
+    });
+    fireEvent.click(
+      document.querySelector<HTMLButtonElement>(
+        'button[role="combobox"][aria-label="Auth type"]',
+      )!,
+    );
+    expect(
+      Array.from(document.querySelectorAll('[role="option"]')).some(
+        (option) => option.textContent?.trim() === "Worklin credits",
+      ),
+    ).toBe(false);
   });
 
   test("a provider without platform auth (e.g. openrouter) seeds api_key, not platform", () => {
@@ -755,7 +844,7 @@ describe("ProviderCreateForm submit sequence", () => {
     expect(getButton("Create").disabled).toBe(true);
   });
 
-  test("creating Kimi while Worklin credits are active switches the assistant to Kimi", async () => {
+  test("creating Kimi after the page repair reroutes interactive calls immediately", async () => {
     configGetData = {
       llm: {
         activeProfile: "balanced",
@@ -765,12 +854,27 @@ describe("ProviderCreateForm submit sequence", () => {
             source: "managed",
             label: "Balanced",
             provider: "anthropic",
+            provider_connection: "anthropic-managed",
             model: "claude-opus-4-8",
+          },
+        },
+        callSites: {
+          replySuggestion: {
+            provider: "openai",
+            model: "gpt-5.4-mini",
           },
         },
       },
     };
     createdConnection = makeConnection("kimi", "kimi");
+    connectionInventory = [
+      {
+        ...makeConnection("anthropic-managed", "anthropic"),
+        auth: { type: "platform" },
+        isManaged: true,
+      },
+      createdConnection,
+    ];
 
     render(
       <ModalWrapper>
@@ -794,6 +898,8 @@ describe("ProviderCreateForm submit sequence", () => {
       expect(configPatchCalls.length).toBe(1);
     });
 
+    expect(connectionInventoryCalls).toBe(1);
+
     expect(secretsPostCalls[0].body).toEqual({
       type: "api_key",
       name: "kimi",
@@ -802,6 +908,16 @@ describe("ProviderCreateForm submit sequence", () => {
     expect(configPatchCalls[0].body).toMatchObject({
       llm: {
         activeProfile: "custom-balanced",
+        callSites: {
+          conversationTitle: { profile: "custom-balanced" },
+          memoryExtraction: { profile: "custom-balanced" },
+          replySuggestion: {
+            profile: "custom-balanced",
+            provider: null,
+            model: null,
+          },
+          subagentSpawn: { profile: "custom-balanced" },
+        },
         profileOrder: ["balanced", "custom-balanced"],
         profiles: {
           "custom-balanced": {

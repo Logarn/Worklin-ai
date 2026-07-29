@@ -5,10 +5,33 @@ import type {
 
 type SecretMetadata = SecretsGetResponse["secrets"][number];
 
+const CHATGPT_SUBSCRIPTION_MODEL_IDS: ReadonlySet<string> = new Set([
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex",
+]);
+
 export function isPersonalProviderConnection(
   connection: ProviderConnection,
 ): boolean {
   return connection.auth.type !== "platform" && !connection.isManaged;
+}
+
+export function canSafelyUseAnyProviderConnection(
+  connections: readonly ProviderConnection[],
+): boolean {
+  return (
+    connections.length > 1 && connections.every(isPersonalProviderConnection)
+  );
+}
+
+export function isProviderConnectionCompatibleWithModel(
+  connection: Pick<ProviderConnection, "auth">,
+  model: string | undefined,
+): boolean {
+  if (connection.auth.type !== "oauth_subscription" || !model) return true;
+  return CHATGPT_SUBSCRIPTION_MODEL_IDS.has(model);
 }
 
 function credentialMetadataMatches(

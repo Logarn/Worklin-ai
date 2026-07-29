@@ -2,6 +2,162 @@
   "version": 1,
   "tools": [
     {
+      "name": "retention_platform_status",
+      "description": "Read the authenticated workspace's central Worklin customer-intelligence status, source freshness, queue posture, and safety switches.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": { "type": "object", "properties": {}, "required": [] },
+      "executor": "tools/retention-platform-status.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_create_segment_definition",
+      "description": "Create a versioned Worklin audience definition. This stores Worklin expressions only and never creates a Klaviyo segment.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "description": "Segment payload with brandId, name, version, and a validated Worklin expression."
+          }
+        },
+        "required": ["payload"]
+      },
+      "executor": "tools/retention-create-segment-definition.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_claim_recipient_reasoning",
+      "description": "Claim one leased per-recipient reasoning task and receive its compact, evidence-bounded customer dossier. Complete only the returned decision, job, lease, and dossier checksum.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": { "type": "object", "properties": {}, "required": [] },
+      "executor": "tools/retention-claim-recipient-reasoning.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_record_recipient_decision",
+      "description": "Complete one leased AI reasoning task for one customer, including the exact job, lease, dossier checksum, evidence, hypotheses, confidence, model version, prompt version, and token/cost usage.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "description": "Complete recipient decision payload returned by the per-recipient reasoning pass."
+          }
+        },
+        "required": ["payload"]
+      },
+      "executor": "tools/retention-record-recipient-decision.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_create_central_campaign",
+      "description": "Create a draft Worklin campaign for a program and delivery mode. This does not approve, release, or send anything.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "description": "Campaign payload with brandId, programId, optional segmentDefinitionId, mode, and name."
+          }
+        },
+        "required": ["payload"]
+      },
+      "executor": "tools/retention-create-central-campaign.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_freeze_campaign_audience",
+      "description": "Freeze a Worklin campaign audience from current eligible recipient decisions and consent. This invalidates stale approval when membership changes.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Worklin campaign UUID."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Audience payload with definitionVersion, evidenceCutoffAt, and customer decision members."
+          }
+        },
+        "required": ["campaign_id", "payload"]
+      },
+      "executor": "tools/retention-freeze-campaign-audience.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_prepare_campaign_generation",
+      "description": "Freeze strategy and model versions, estimate maximum provider cost, enforce spending ceilings, and reserve the estimated campaign amount before generation.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Worklin campaign UUID."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Generation strategy, strategy/model/prompt versions, estimated maximum cost, and optional campaign ceiling."
+          }
+        },
+        "required": ["campaign_id", "payload"]
+      },
+      "executor": "tools/retention-prepare-campaign-generation.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_record_campaign_message",
+      "description": "Store one encrypted recipient message plus quality, sensitive-content, provenance, and model-cost metadata. This never sends it.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Worklin campaign UUID."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Finished recipient message and its quality, model, prompt, timestamp, and usage metadata."
+          }
+        },
+        "required": ["campaign_id", "payload"]
+      },
+      "executor": "tools/retention-record-campaign-message.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "retention_campaign_approval_preview",
+      "description": "Inspect frozen audience, representative message samples, costs, safety checks, and the exact approval checksum. This does not approve or send.",
+      "category": "retention",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "description": "Worklin campaign UUID."
+          }
+        },
+        "required": ["campaign_id"]
+      },
+      "executor": "tools/retention-campaign-approval-preview.ts",
+      "execution_target": "host"
+    },
+    {
       "name": "retention_source_status",
       "description": "Inspect Worklin's Shopify + Klaviyo retention source posture. Returns connector status, freshness caveats, approval posture, and blocked live-action capabilities.",
       "category": "retention",
@@ -444,7 +600,7 @@
     },
     {
       "name": "retention_deep_audit",
-      "description": "Run Worklin's retention audit. With a saved Klaviyo connection, generate a real Klaviyo-only L365 account audit without requiring Shopify. With full Shopify + Klaviyo coverage, generate the commerce/product deep audit. Never invent product, revenue, segment, flow, or opportunity data from fixtures for a real client. Artifact-only and read-only.",
+      "description": "Run Worklin's retention audit from live source data. With a saved Klaviyo connection, generate a real Klaviyo-only L365 delivery audit without requiring Shopify. With Shopify + Klaviyo coverage, generate the commerce and customer-intelligence audit. Return live_data_required instead of inventing missing product, revenue, audience, flow, or opportunity data.",
       "category": "retention",
       "risk": "medium",
       "input_schema": {
@@ -478,14 +634,6 @@
           "website_url": {
             "type": "string",
             "description": "Optional brand website URL to include in audit context and provenance."
-          },
-          "allow_fixture_data": {
-            "type": "boolean",
-            "description": "Internal demo/testing only. Never set this for a real client audit."
-          },
-          "demo_mode": {
-            "type": "boolean",
-            "description": "Alias for allow_fixture_data for explicit sample/demo audits only."
           }
         },
         "required": []
@@ -515,7 +663,7 @@
     },
     {
       "name": "retention_audit",
-      "description": "Compatibility alias for retention_deep_audit. A saved Klaviyo connection can produce the real Klaviyo-only L365 account audit; Shopify is optional commerce enrichment. Fixture/sample data is allowed only with explicit allow_fixture_data:true or demo_mode:true.",
+      "description": "Compatibility alias for retention_deep_audit. A saved Klaviyo connection can produce the live Klaviyo-only L365 delivery audit; Shopify adds commerce and customer-intelligence evidence. Missing live evidence returns live_data_required.",
       "category": "retention",
       "risk": "medium",
       "input_schema": {
@@ -527,14 +675,6 @@
           "klaviyo_connection_id": { "type": "string" },
           "brand_name": { "type": "string" },
           "website_url": { "type": "string" },
-          "allow_fixture_data": {
-            "type": "boolean",
-            "description": "Internal demo/testing only. Never set this for a real client audit."
-          },
-          "demo_mode": {
-            "type": "boolean",
-            "description": "Alias for allow_fixture_data for explicit sample/demo audits only."
-          },
           "cadence": {
             "type": "string",
             "enum": ["first_run", "weekly", "monthly", "quarterly"]

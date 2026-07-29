@@ -25,6 +25,9 @@ export function ApiKeyScreen() {
   const [searchParams] = useSearchParams();
   const hosting = searchParams.get("hosting");
   const next = searchParams.get("next");
+  const afterHatch = searchParams.get("afterHatch");
+  const handoffAssistantId =
+    searchParams.get("assistantId")?.trim() || undefined;
   const electron = isElectron();
   const userId = useAuthStore.use.user()?.id ?? null;
   const providerKeyScope = { userId };
@@ -72,20 +75,22 @@ export function ApiKeyScreen() {
     if (next === "hatching") {
       const params = new URLSearchParams();
       if (hosting) params.set("hosting", hosting);
+      if (afterHatch === "chat") params.set("next", "chat");
+      if (handoffAssistantId) params.set("assistantId", handoffAssistantId);
       const qs = params.toString();
       void navigate(`${routes.onboarding.hatching}${qs ? `?${qs}` : ""}`);
       return;
     }
     void navigate(
       hosting
-        ? `${routes.onboarding.privacy}?hosting=${hosting}`
-        : routes.onboarding.privacy,
+        ? `${routes.onboarding.prechat}?hosting=${hosting}`
+        : routes.onboarding.prechat,
     );
   };
 
   const onBack = () => {
     if (next === "hatching") {
-      void navigate(routes.onboarding.privacy);
+      void navigate(routes.onboarding.prechat);
       return;
     }
     void navigate(routes.onboarding.hosting);

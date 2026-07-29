@@ -7,7 +7,7 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 import { useEffect } from "react";
-import { Link, Navigate, useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
@@ -19,6 +19,7 @@ import { createDraftConversationId } from "@/utils/conversation-selection";
 import { routes } from "@/utils/routes";
 
 import { useWorkData } from "./use-work-data";
+import { WorkSectionNav } from "./work-section-nav";
 
 const LAST_BRAND_KEY = "worklin:last-artifact-brand";
 
@@ -58,15 +59,12 @@ export function WorkPage() {
     );
   }
 
-  if (brands.length === 1) {
-    return <Navigate replace to={routes.work.brandArtifacts(brands[0].id)} />;
-  }
-
   return (
     <PageShell className="overflow-auto">
       <div className="mx-auto flex w-full max-w-5xl flex-col py-2">
+        <WorkSectionNav active="content" />
         <div className="border-b border-[var(--border-base)] pb-6">
-          <p className="text-label-small text-[var(--content-tertiary)]">
+          <p className="mt-6 text-label-small text-[var(--content-tertiary)]">
             WORK
           </p>
           <h1 className="mt-2 text-title-large text-[var(--content-emphasised)]">

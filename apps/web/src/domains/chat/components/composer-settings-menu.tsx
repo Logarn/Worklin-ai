@@ -8,6 +8,10 @@ import {
     visibleProfilesForPicker,
     type ProfilePickerEntry,
 } from "@/assistant/profile-pickers";
+import {
+    useManagedInferenceCapability,
+} from "@/assistant/managed-inference-availability";
+import { profilesAvailableForManagedInference } from "@/assistant/managed-inference";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
 import { useProfileQuickAdd } from "@/components/profile-quick-add-provider";
 import {
@@ -15,6 +19,7 @@ import {
     configGetQueryKey,
     conversationsByIdGetOptions,
     conversationsByIdGetQueryKey,
+    inferenceProviderconnectionsGetOptions,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import { isDraftConversationId } from "@/domains/chat/utils/conversation-selection";
 import { conversationsByIdInferenceprofilePut } from "@/generated/daemon/sdk.gen";
@@ -47,6 +52,8 @@ export function ComposerSettingsMenu({ assistantId, conversationId }: Props) {
   const isMobile = useIsMobile();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const { configured: managedInferenceConfigured } =
+    useManagedInferenceCapability(assistantId);
   const hasServerConversation =
     !!conversationId && !isDraftConversationId(conversationId);
 
@@ -57,6 +64,14 @@ export function ComposerSettingsMenu({ assistantId, conversationId }: Props) {
 
   const configQuery = useQuery({
     ...configGetOptions({ path: { assistant_id: assistantId } }),
+    enabled: !!assistantId,
+    staleTime: 30_000,
+  });
+
+  const connectionsQuery = useQuery({
+    ...inferenceProviderconnectionsGetOptions({
+      path: { assistant_id: assistantId },
+    }),
     enabled: !!assistantId,
     staleTime: 30_000,
   });
@@ -366,8 +381,17 @@ export function ComposerSettingsMenu({ assistantId, conversationId }: Props) {
     const extras = Object.keys(profiles)
       .filter((name) => !profileOrder.includes(name))
       .map((name) => ({ name, ...profiles[name]! }));
-    return [...ordered, ...extras];
-  }, [profiles, profileOrder]);
+    return profilesAvailableForManagedInference(
+      [...ordered, ...extras],
+      connectionsQuery.data?.connections ?? [],
+      managedInferenceConfigured,
+    );
+  }, [
+    profiles,
+    profileOrder,
+    connectionsQuery.data?.connections,
+    managedInferenceConfigured,
+  ]);
 
   const queryComplexityRoutingEnabled =
     useAssistantFeatureFlagStore.use.queryComplexityRouting();

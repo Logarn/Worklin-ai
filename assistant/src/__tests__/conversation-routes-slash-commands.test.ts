@@ -478,6 +478,33 @@ describe("handleSendMessage slash command interception", () => {
     expect(loopContent).toBe("hello there");
   });
 
+  test("binds the verified request auth context to the turn", async () => {
+    const { conversation } = makeConversation();
+    const getOrCreateConversation = mock(async () => conversation);
+    await handleSendMessage(
+      {
+        body: {
+          conversationKey: "tenant-auth-test",
+          content: "hello there",
+          sourceChannel: "vellum",
+          interface: "macos",
+        },
+        headers: {},
+        authContext: _testAuthContext,
+      },
+      {
+        sendMessageDeps: {
+          ...makeDeps(conversation).sendMessageDeps,
+          getOrCreateConversation,
+        },
+      },
+    );
+    expect(getOrCreateConversation).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ authContext: _testAuthContext }),
+    );
+  });
+
   test("keeps a pooled POST pending until its agent loop settles", async () => {
     pooledRuntime = true;
     const { conversation, runAgentLoop } = makeConversation();

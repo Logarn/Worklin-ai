@@ -1,23 +1,170 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-07-22
+Last refreshed: 2026-07-29
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
 ## Start Here
 
 - Repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current production runtime source: `0d037e9` (`Repair stale assistant schema checkpoints`), merged through PR `#149` after every mandatory check passed. Later handoff-only commits do not change the runtime source reported by production `/healthz`.
-- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; final schema-checkpoint PR `#149` merged as `0d037e9`.
+- Current production runtime source: `65a02bb` (`Build real-time customer decisioning foundation`), merged through PR `#158` after every mandatory PR check passed.
+- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `0d037e9bc498cfb8735dbe6e5c34fee14151a18b`. Public `/healthz` reports that exact SHA; `/readyz` reports the control plane ready.
+- Current production application commit: `65a02bbe74b2ec85135a3413d6ac896e25556f0f`. Public `/healthz` reports that exact SHA; `/readyz` reports the control plane and provisioner ready.
 - The tenant-safe pooled code is present in the production image but every pool gate remains disabled. No pooled worker, tenant-state bucket, paid capacity, or new production secret has been created.
+- The private retention service is deployed, but customer ingestion, assistant access, external provider writes, and sending remain disabled. Do not connect real Shopify or Klaviyo customer data until database backups and point-in-time recovery are enabled and verified.
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
-- Preserve the existing unrelated dirt in `.tmp-worklin-redeploy`: modified `control-plane/src/runtime-provisioning-five-user.test.ts`, deleted `control-plane/src/runtime-provisioning-ten-user.test.ts`, and untracked `docs/proposals/brand-intelligence-onboarding-v2.md`.
-
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-07-29 Customer Decisioning Foundation Deployed
+
+PR `#158` merged as
+`65a02bbe74b2ec85135a3413d6ac896e25556f0f` after every mandatory PR check
+passed. It adds the tenant-isolated retention service, central customer-memory
+schema, Shopify and Klaviyo connector contracts, durable ingestion jobs,
+customer reasoning and campaign records, approval and dispatch controls,
+operator-facing Work surfaces, and the updated bundled retention skill.
+
+Production deployment succeeded on all three release surfaces:
+
+- Vercel deployed the canonical Worklin web application;
+- the Railway control plane deployed the merge commit; and
+- the private Railway `retention-service` switched from the feature branch to
+  `main`, deployed the merge commit, passed its `/readyz` healthcheck, and is
+  active without a public domain.
+
+Public control-plane verification returned HTTP 200:
+
+- `/healthz` reported release SHA
+  `65a02bbe74b2ec85135a3413d6ac896e25556f0f`; and
+- `/readyz` returned `ok: true`, `runtimeMode: "control-plane"`, and
+  `provisionerReady: true`.
+
+The private retention deployment started successfully on port 8080 and
+explicitly logged `externalWritesEnabled: false` and `sendEnabled: false`.
+Its PostgreSQL migrations `001` through `004` are applied. The runtime database
+role is non-superuser, cannot bypass row-level security, owns no retention
+tables, and all 34 organization-scoped tables force row-level security. The raw
+payload bucket is private and empty, and the database public TCP proxy has been
+removed.
+
+The control plane has the retention-service connection variables preloaded,
+but the retention-service proxy and assistant bridge remain disabled. No
+Shopify or Klaviyo customer data has been imported, no provider profile
+intelligence has been written, and no message can be sent.
+
+The remaining production gate is Railway database protection. Do not enable
+customer ingestion until the `adequate-possibility` workspace exposes backups
+and point-in-time recovery, both are enabled, and a first restore point is
+verified. After that gate, connect Shopify and Klaviyo in read-only mode before
+enabling any external write or send path.
+
+The post-merge macOS workflow failed before checkout because its GitHub App
+token action had no `appId`. It did not compile or test application code and is
+separate from the successful Vercel and Railway production deployments. Repair
+the repository or organization macOS signing-app credentials before relying on
+that packaging workflow.
+
+## 2026-07-28 One-Time Onboarding And Runtime Storage Recovered
+
+PR `#156` merged as
+`8538177e379686523ea0f91c68ec293c651c94a6` after every mandatory check
+passed. It makes onboarding account-scoped and one-time, removes the recurring
+terms/privacy acceptance route, pins lifecycle polling to the selected
+assistant, and starts the real provisioner for a new account rather than
+opening an unprovisioned chat shell.
+
+Production browser acceptance passed for the existing authenticated account:
+
+- `/assistant` opened the persisted `B2B Email Campaign Plan` conversation;
+- `/assistant/review-terms` redirected to that conversation without presenting
+  a legal acceptance screen;
+- `/assistant/onboarding/prechat` redirected to that conversation instead of
+  replaying onboarding; and
+- Work opened the Unassigned artifacts collection, listed the saved calculator
+  app and retention-audit document, and rendered the calculator artifact.
+
+This proves returning-user behavior and persisted production reads. A complete
+fresh-account acceptance run with a newly created external Gmail identity is
+still required before declaring arbitrary new-user onboarding accepted.
+
+During the rollout, the private runtime's SQLite file was found to be malformed
+only in the `llm_request_logs` table. Railway had no native volume snapshot,
+and all available local Worklin backups contained the same corruption. The
+database was recovered in place through SQLite's recovery path, analyzed, and
+atomically switched only after `PRAGMA integrity_check` returned `ok`.
+Conversations, messages, documents, artifacts, activation state, provider
+connections, and other customer records retained their pre-recovery counts.
+Three of nineteen internal model-request log rows were recoverable; sixteen
+internal request-log rows were lost. The original database, WAL, SHM, and
+recovery SQL remain preserved under
+`/data/workspace/data/db/recovery-20260728T140504Z/`.
+
+PR `#157` merged as
+`00f624b42e6ca86c976a67afc42d4c0efdbe5e37` after the full serialized
+1,548-file assistant suite passed in `17m47s`. Qdrant had been resolving its
+snapshot temp directory relative to the container working directory, where the
+unprivileged assistant user could not remove it. The runtime now places
+snapshots beneath the configured writable Qdrant storage path while preserving
+the inherited process environment.
+
+Railway runtime deployment `cb9d02fc-53b0-4ccd-a3d6-6fe964ae6392` reached
+`SUCCESS`. Internal `/readyz` returned `{"status":"ok"}`, logs recorded
+`Qdrant is ready` on port 6333, and no Qdrant permission exit recurred. The
+active database's `PRAGMA quick_check` returned `ok`, with 24 conversations,
+186 messages, one document, one registered artifact, and three recovered
+model-request log rows. Two startup cleanup jobs briefly lost a SQLite write
+lock while other initialization was active; no lock or error repeated after
+startup, and the integrity check remained clean. Dense embedding backends
+remain deliberately disabled by runtime configuration, so their seed warnings
+are not a Qdrant startup failure.
+
+## 2026-07-28 Canonical Web Origin Repaired
+
+`https://worklin-ai.vercel.app` is the only customer-facing Worklin web
+origin. Vercel project-domain inspection showed that only the legacy
+`ai-retention-marketer.vercel.app` address was configured as a production
+domain. The canonical address had been attached manually to individual
+deployments, so successful production releases did not move it automatically.
+At the time of diagnosis it still served a 2026-07-26 deployment while newer
+2026-07-27 production deployments were Ready.
+
+The Vercel project configuration is repaired:
+
+- `worklin-ai.vercel.app` is a verified, unscoped production project domain;
+- `ai-retention-marketer.vercel.app` returns HTTP 308 to the canonical origin;
+- the canonical origin now resolves to the latest Ready production deployment;
+- `/assistant`, `/account/login?returnTo=%2Fassistant`, and the proxied auth
+  configuration route return HTTP 200; and
+- an in-app browser request to the legacy login URL landed on the canonical
+  Worklin sign-in page with the path and query preserved.
+
+PR `#155` merged to `main` as
+`5f2d37e6d0dec9c89c94dc60b532d5965ffe91a0` after every required check passed.
+It adds the repository safeguard: Worklin-generated Vercel deployment and
+branch-preview addresses redirect to the canonical origin before the app
+boots, the redirect resolver is centralized and covered by six focused tests,
+and the production Auth0/domain documentation is corrected. The resulting
+production deployment
+`https://worklin-8jnhh7cb7-sautionlineai-3596s-projects.vercel.app` reached
+Ready and Vercel automatically promoted `https://worklin-ai.vercel.app` to it.
+The canonical assistant, login, and proxied auth-configuration routes returned
+HTTP 200; the legacy origin returned HTTP 308; and the in-app browser reached
+the canonical page headed `Sign in to Worklin AI` with the login return path
+preserved.
+
+Local verification passed six focused tests, touched-file ESLint, web
+TypeScript, `git diff --check`, and the production-equivalent Vite build with
+4,801 modules transformed. The default Vite runner reproduced the known local
+`Vite module runner has been closed` failure; the documented bundle loader
+passed after installing the linked local-mode package dependencies.
+
+Do not use `vercel alias set` for the canonical origin. Keep it configured as a
+project production domain so Vercel promotes it automatically. Generated
+deployment URLs remain technical build artifacts and must never be shared as
+customer, login, invitation, or callback links.
 
 ## 2026-07-22 Runtime Transport And Schema Recovery Verified
 

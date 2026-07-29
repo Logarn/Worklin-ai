@@ -15,9 +15,14 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <title>Worklin AI</title>
   <script>
-    if (window.location.hostname === "ai-retention-marketer.vercel.app") {
+    const hostname = window.location.hostname.toLowerCase();
+    const isWorklinVercelAddress =
+      hostname === "ai-retention-marketer.vercel.app" ||
+      (hostname.endsWith(".vercel.app") && hostname.startsWith("worklin-"));
+    if (isWorklinVercelAddress && hostname !== "worklin-ai.vercel.app") {
       const canonicalUrl = new URL(window.location.href);
       canonicalUrl.hostname = "worklin-ai.vercel.app";
+      canonicalUrl.port = "";
       window.location.replace(canonicalUrl.toString());
     }
   </script>

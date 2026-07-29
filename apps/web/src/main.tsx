@@ -10,6 +10,7 @@ import { RouterProvider } from "react-router";
 
 import { AppProviders } from "@/components/providers";
 import { WindowDragRegion } from "@/components/window-drag-region";
+import { resolveCanonicalWorklinWebUrl } from "@/lib/canonical-web-origin";
 import { isChunkLoadError } from "@/lib/chunk-errors";
 import { isLocalMode, loadLockfile } from "@/lib/local-mode";
 import { initSentry } from "@/lib/sentry/sentry-init";
@@ -23,21 +24,16 @@ import "./index.css";
 import { initSafeAreaBridge } from "@/runtime/native-safe-area";
 import { initInputModality } from "@vellumai/design-library";
 
-const CANONICAL_WEB_HOST = "worklin-ai.vercel.app";
-const LEGACY_WEB_HOST = "ai-retention-marketer.vercel.app";
-
-function redirectLegacyHostedDomain(): boolean {
+function redirectToCanonicalHostedDomain(): boolean {
   if (typeof window === "undefined") return false;
-  if (window.location.hostname !== LEGACY_WEB_HOST) return false;
-
-  const canonicalUrl = new URL(window.location.href);
-  canonicalUrl.hostname = CANONICAL_WEB_HOST;
-  window.location.replace(canonicalUrl.toString());
+  const canonicalUrl = resolveCanonicalWorklinWebUrl(window.location.href);
+  if (!canonicalUrl) return false;
+  window.location.replace(canonicalUrl);
   return true;
 }
 
 async function boot() {
-  if (redirectLegacyHostedDomain()) return;
+  if (redirectToCanonicalHostedDomain()) return;
 
   initInputModality();
   await initSafeAreaBridge();

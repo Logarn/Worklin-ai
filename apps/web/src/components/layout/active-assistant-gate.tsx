@@ -5,6 +5,8 @@ import { Typography } from "@vellumai/design-library";
 import { Button } from "@vellumai/design-library/components/button";
 
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
+import { lifecycleService } from "@/assistant/lifecycle-service";
+import type { AssistantState } from "@/assistant/types";
 import { handleLogout } from "@/lib/auth/handle-logout";
 import { isLocalMode } from "@/lib/local-mode";
 import { useHasPlatformSession } from "@/stores/auth-store";
@@ -38,7 +40,10 @@ export function ActiveAssistantGate() {
     (s) => s.assistantState.kind,
   );
 
-  if (!assistantId || (assistantStateKind !== "active" && assistantStateKind !== "self_hosted")) {
+  if (
+    !assistantId ||
+    (assistantStateKind !== "active" && assistantStateKind !== "self_hosted")
+  ) {
     return <ActiveAssistantPlaceholder />;
   }
 
@@ -47,10 +52,43 @@ export function ActiveAssistantGate() {
 
 function ActiveAssistantPlaceholder() {
   const navigate = useNavigate();
+  const assistantState = useAssistantLifecycleStore.use.assistantState();
   // Keep an escape hatch reachable while the assistant lifecycle is
   // unresolved: hide in pure local mode unless a platform session exists.
   const hasPlatformSession = useHasPlatformSession();
   const showLogout = !isLocalMode() || hasPlatformSession;
+
+  if (assistantState.kind === "error") {
+    return (
+      <div
+        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-[var(--app-spacing-md)] px-6 text-center text-[var(--content-default)]"
+        role="alert"
+      >
+        <Typography variant="title-small" as="h1">
+          Worklin couldn&apos;t finish connecting
+        </Typography>
+        <Typography
+          variant="body-medium-default"
+          className="max-w-md text-[var(--content-tertiary)]"
+        >
+          {assistantState.message}
+        </Typography>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button
+            variant="primary"
+            onClick={() => void lifecycleService.retryAssistant()}
+          >
+            Try again
+          </Button>
+          {showLogout && (
+            <Button variant="ghost" onClick={() => void handleLogout(navigate)}>
+              Log Out
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -60,7 +98,7 @@ function ActiveAssistantPlaceholder() {
     >
       <Loader2 className="size-6 animate-spin" aria-hidden="true" />
       <Typography variant="body-medium-default">
-        Connecting to your assistant…
+        {assistantLoadingMessage(assistantState)}
       </Typography>
       {showLogout && (
         <Button variant="ghost" onClick={() => void handleLogout(navigate)}>
@@ -69,4 +107,15 @@ function ActiveAssistantPlaceholder() {
       )}
     </div>
   );
+}
+
+function assistantLoadingMessage(state: AssistantState): string {
+  switch (state.kind) {
+    case "cleaning_up":
+      return "Finishing a workspace update…";
+    case "initializing":
+      return "Preparing your Worklin…";
+    default:
+      return "Connecting to your Worklin…";
+  }
 }

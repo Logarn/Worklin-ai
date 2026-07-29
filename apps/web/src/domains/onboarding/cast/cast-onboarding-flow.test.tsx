@@ -30,6 +30,16 @@ const startMock = mock(() => {});
 const seedAvatarMock = mock(async (_avatar?: unknown) => {});
 let awaitReadyImpl: () => Promise<string> = async () => "asst-ready";
 const awaitReadyMock = mock(() => awaitReadyImpl());
+const completeAccountOnboardingMock = mock(async () => ({
+  completed: true,
+  assistant: {
+    id: "asst-ready",
+    name: "Worklin",
+    status: "active",
+    is_local: false,
+    created: "2026-07-28T00:00:00.000Z",
+  },
+}));
 
 mock.module("@/domains/onboarding/cast/use-background-hatch", () => ({
   useBackgroundHatch: () => ({
@@ -42,6 +52,10 @@ mock.module("@/domains/onboarding/cast/use-background-hatch", () => ({
   }),
 }));
 
+mock.module("@/domains/onboarding/complete-account-onboarding", () => ({
+  completeAccountOnboarding: completeAccountOnboardingMock,
+}));
+
 // --- prechat handoff ---------------------------------------------------------
 interface CapturedPreChatContext {
   occupation?: string;
@@ -49,9 +63,7 @@ interface CapturedPreChatContext {
   assistantName?: string;
   tasks: string[];
 }
-const setPendingPreChatContextMock = mock(
-  (_ctx: CapturedPreChatContext) => {},
-);
+const setPendingPreChatContextMock = mock((_ctx: CapturedPreChatContext) => {});
 const setPendingAssistantNameMock = mock((_name: string) => {});
 
 mock.module("@/domains/onboarding/prechat", () => ({
@@ -88,15 +100,16 @@ const setSearchParamsMock = mock(() => {});
 let searchParamsValue = new URLSearchParams();
 mock.module("react-router", () => ({
   useNavigate: () => navigateMock,
-  useSearchParams: () =>
-    [searchParamsValue, setSearchParamsMock] as const,
+  useSearchParams: () => [searchParamsValue, setSearchParamsMock] as const,
 }));
 
 // --- cast screens (driven via testid buttons) --------------------------------
 mock.module("@/domains/onboarding/cast/cast.css", () => ({}));
 
 mock.module("@/domains/onboarding/cast/cast-shell", () => ({
-  SetupShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SetupShell: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   MemoryList: () => null,
 }));
 
@@ -172,9 +185,8 @@ mock.module("@/domains/onboarding/cast/screens/done-screen", () => ({
   ),
 }));
 
-const { CastOnboardingFlow } = await import(
-  "@/domains/onboarding/cast/cast-onboarding-flow"
-);
+const { CastOnboardingFlow } =
+  await import("@/domains/onboarding/cast/cast-onboarding-flow");
 
 function drainMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -195,6 +207,7 @@ beforeEach(() => {
   startMock.mockClear();
   seedAvatarMock.mockClear();
   awaitReadyMock.mockClear();
+  completeAccountOnboardingMock.mockClear();
   setPendingPreChatContextMock.mockClear();
   setPendingAssistantNameMock.mockClear();
   markExpectingFirstMessageMock.mockClear();
@@ -224,7 +237,9 @@ describe("CastOnboardingFlow handoff", () => {
     render(<CastOnboardingFlow />);
     await completeFlow();
 
-    await waitFor(() => expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1),
+    );
 
     const ctx = setPendingPreChatContextMock.mock.calls[0]![0];
     expect(ctx.occupation).toBe("Software Engineer");
@@ -259,7 +274,9 @@ describe("CastOnboardingFlow handoff", () => {
 
     act(() => resolveReady("asst-ready"));
 
-    await waitFor(() => expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1),
+    );
     await waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
     expect(setActiveAssistantIdMock).toHaveBeenCalledWith("asst-ready");
   });
@@ -278,9 +295,21 @@ describe("CastOnboardingFlow handoff", () => {
 
     // Retrying re-arms the hatch and, once it succeeds, completes the handoff.
     awaitReadyImpl = async () => "asst-retry";
+    completeAccountOnboardingMock.mockResolvedValueOnce({
+      completed: true,
+      assistant: {
+        id: "asst-retry",
+        name: "Worklin",
+        status: "active",
+        is_local: false,
+        created: "2026-07-28T00:00:00.000Z",
+      },
+    });
     fireEvent.click(screen.getByRole("button", { name: /try again/i }));
 
-    await waitFor(() => expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(setPendingPreChatContextMock).toHaveBeenCalledTimes(1),
+    );
     await waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
     expect(setActiveAssistantIdMock).toHaveBeenCalledWith("asst-retry");
   });

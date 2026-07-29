@@ -46,7 +46,6 @@ import {
   getAssistantAdminAccessConsent,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
-  hasAcceptedAssistantConsent,
   setAssistantAdminAccessConsent,
   type AssistantRow,
   type OrganizationRow,
@@ -110,6 +109,10 @@ import {
   type OrganizationMembershipRow,
   type OrganizationRole,
 } from "./organization-membership-store.js";
+import {
+  ensureUserOnboardingSchema,
+  markUserOnboardingCompleted,
+} from "./user-onboarding-store.js";
 import {
   deleteWorkspaceResearchProviderCredential,
   isWorkspaceResearchProviderId,
@@ -175,6 +178,28 @@ import {
   runtimeWorkerOperatorRecoveryConfigFromEnv,
   RUNTIME_WORKER_OPERATOR_RECOVERY_PATH,
 } from "./runtime-worker-operator-recovery.js";
+import { parseRetentionServiceConfig } from "./retention-service-config.js";
+import {
+  forwardRetentionProviderWebhook,
+  proxyAuthenticatedRetentionRequest,
+} from "./retention-service-proxy.js";
+import {
+  createRetentionIntegrationBinding,
+  deletePendingRetentionIntegrationBinding,
+  ensureRetentionControlSchema,
+  getActiveRetentionIntegrationBinding,
+  listRetentionAccessGrants,
+  listActiveRetentionWakeTargets,
+  replaceRetentionAccessGrants,
+  retentionIntegrationConnectionPayload,
+  retentionRolesForUser,
+  setRetentionIntegrationBindingStatus,
+} from "./retention-control-store.js";
+import { wakeRetentionTenantJobs } from "./retention-job-waker.js";
+import {
+  parseRetentionAssistantOperatorRequest,
+  retentionAssistantOperatorProxyRequest,
+} from "./retention-assistant-bridge.js";
 import {
   acquireRuntimeWorkerCoordinatorOwnership,
   runtimeWorkerCoordinatorOwnershipConfigFromEnv,
@@ -317,6 +342,17 @@ const runtimeWorkerOperatorRecoveryConfig =
     process.env,
     runtimeWorkerPoolConfig.enabled,
   );
+const retentionServiceConfig = parseRetentionServiceConfig(process.env);
+const retentionGatewayIngressSecret =
+  process.env.WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET?.trim() ?? "";
+if (
+  retentionServiceConfig.enabled &&
+  Buffer.byteLength(retentionGatewayIngressSecret, "utf8") < 32
+) {
+  throw new Error(
+    "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when the retention service is enabled.",
+  );
+}
 
 if (!env.sessionSecret || env.sessionSecret.length < 32) {
   throw new Error(
@@ -341,6 +377,7 @@ db.exec(`
     first_name TEXT NOT NULL DEFAULT '',
     last_name TEXT NOT NULL DEFAULT '',
     consent_json TEXT,
+    onboarding_completed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -373,10 +410,12 @@ db.exec(`
 ensureArtifactSharingSchema(db);
 ensureAssistantStoreSchema(db);
 ensureRuntimeStackSchema(db);
+ensureUserOnboardingSchema(db, nowIso);
 ensureBrandResearchRunSchema(db);
 ensureWorkspaceManagementSchema(db);
 ensureTenantRuntimeAdmissionSchema(db);
 ensureTenantRuntimeOperationsSchema(db);
+ensureRetentionControlSchema(db);
 const pooledModelKeyVault = new PooledModelKeyVault(
   db,
   pooledModelKeyVaultConfigFromEnv(process.env),
@@ -581,6 +620,7 @@ interface UserRow {
   first_name: string;
   last_name: string;
   consent_json: string | null;
+  onboarding_completed_at: string | null;
 }
 
 interface Auth0Claims {
@@ -868,6 +908,7 @@ function userPayload(user: UserRow) {
     is_staff: false,
     first_name: user.first_name,
     last_name: user.last_name,
+    onboarding_completed: user.onboarding_completed_at !== null,
   };
 }
 
@@ -1125,7 +1166,6 @@ function scheduleRuntimeProvisioning(
 ): void {
   if (
     pooledRuntimeEligible(stack) ||
-    !assistantOwnerHasAcceptedConsent(assistant) ||
     stack.provider !== "railway" ||
     (stack.status !== "provisioning" && stack.status !== "failed") ||
     runtimeProvisioningConfigurationError() !== null ||
@@ -1295,15 +1335,6 @@ function scheduleRuntimeProvisioning(
   });
 }
 
-function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
-  const owner = db
-    .query<{ consent_json: string | null }, [string]>(
-      "SELECT consent_json FROM users WHERE id = ?",
-    )
-    .get(assistant.user_id);
-  return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
-}
-
 function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
   const current = runtimeStackForPayload(assistant);
   if (pooledRuntimeEligible(current)) return current;
@@ -1347,12 +1378,28 @@ function operationalStatusPayload(
     ? "active"
     : operationalStateForRuntimeStack(runtimeStack);
   const runtimeReady = pooled || state === "active";
+  const waitingForOnboarding = state === "initializing";
+  const activeOperation =
+    state === "provisioning"
+      ? {
+          operation: "provision",
+          operation_id: runtimeStack.id,
+          phase: runtimeStack.service_ref ? "deploying" : "allocating",
+          started_at: runtimeStack.created_at,
+          updated_at: runtimeStack.updated_at,
+          target: {},
+        }
+      : null;
   return {
     state,
-    detail_state: pooled ? "active" : runtimeStack.status,
+    detail_state: pooled
+      ? "active"
+      : waitingForOnboarding
+        ? "awaiting_onboarding"
+        : runtimeStack.status,
     poll_after_ms: runtimeReady ? 30_000 : 5_000,
     updated_at: updatedAt,
-    active_operation: null,
+    active_operation: activeOperation,
     assistant: {
       id: row.id,
       name: row.name,
@@ -1369,11 +1416,17 @@ function operationalStatusPayload(
       reachable: runtimeReady,
     },
     detail: {
-      reason: runtimeReady ? null : runtimeStack.status,
+      reason: runtimeReady
+        ? null
+        : waitingForOnboarding
+          ? "awaiting_onboarding"
+          : runtimeStack.status,
       message: runtimeReady
         ? null
-        : (runtimeStack.last_error ??
-          "Your assistant runtime is being prepared."),
+        : waitingForOnboarding
+          ? "Finish setup to prepare your assistant."
+          : (runtimeStack.last_error ??
+            "Your assistant runtime is being prepared."),
     },
   };
 }
@@ -1420,15 +1473,17 @@ function upsertUser(
     first_name: firstName,
     last_name: lastName,
     consent_json: null,
+    onboarding_completed_at: null,
   };
   db.query(
-    "INSERT INTO users (id, email, username, first_name, last_name, consent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO users (id, email, username, first_name, last_name, consent_json, onboarding_completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     user.id,
     user.email,
     user.username,
     user.first_name,
     user.last_name,
+    null,
     null,
     timestamp,
     timestamp,
@@ -1581,6 +1636,46 @@ async function handleUserMe(
   sendJson(req, res, {
     ...userPayload(user),
     consent: user.consent_json ? JSON.parse(user.consent_json) : null,
+  });
+}
+
+function handleOnboardingCompletion(
+  req: Request,
+  res: Response,
+  user: UserRow,
+): void {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
+    return;
+  }
+  if (!checkCsrf(req)) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return;
+  }
+
+  getOrCreateOrganization(user);
+  const assistant = getOrCreateAssistant(user);
+  const runtimeStack = ensureAssistantRuntime(assistant);
+  const runtimeReady =
+    pooledRuntimeEligible(runtimeStack) ||
+    operationalStateForRuntimeStack(runtimeStack) === "active";
+  const completedAt = runtimeReady
+    ? markUserOnboardingCompleted(db, user.id, nowIso)
+    : user.onboarding_completed_at;
+  const completedUser = {
+    ...user,
+    onboarding_completed_at: completedAt,
+  };
+
+  sendJson(req, res, {
+    user: {
+      ...userPayload(completedUser),
+      consent: completedUser.consent_json
+        ? JSON.parse(completedUser.consent_json)
+        : null,
+    },
+    assistant: assistantPayload(assistant, completedUser, runtimeStack),
   });
 }
 
@@ -2018,9 +2113,10 @@ async function handleWorkspace(
       parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
     const assistant = body.assistantId
       ? db
-          .query<AssistantRow, [string, string]>(
-            "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
-          )
+          .query<
+            AssistantRow,
+            [string, string]
+          >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
           .get(body.assistantId, context.org.id)
       : null;
     const member = body.userId
@@ -2190,9 +2286,10 @@ function accessibleAssistantsForUser(
   const workspace = workspaceContext(req, user);
   if (workspace.org.user_id === user.id) {
     const existing = db
-      .query<AssistantRow, [string]>(
-        "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
-      )
+      .query<
+        AssistantRow,
+        [string]
+      >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
       .all(workspace.org.id);
     if (existing.length === 0) getOrCreateAssistant(user);
   }
@@ -2253,16 +2350,6 @@ function handleUnavailableRuntimeAction(
     sendJson(req, res, { detail: "CSRF validation failed." }, 403);
     return true;
   }
-  if (!hasAcceptedAssistantConsent(user.consent_json)) {
-    sendJson(
-      req,
-      res,
-      { detail: "Assistant consent must be accepted before use." },
-      403,
-    );
-    return true;
-  }
-
   const runtimeStack = runtimeStackForPayload(assistant);
   const capability = runtimeActionCapabilitiesForStack(
     runtimeStack,
@@ -2452,26 +2539,14 @@ async function handleAssistants(
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
     }
-    if (!hasAcceptedAssistantConsent(user.consent_json)) {
-      sendJson(
-        req,
-        res,
-        {
-          detail:
-            "Accept the current terms, privacy policy, and AI data policy before preparing your assistant.",
-          code: "assistant_consent_required",
-        },
-        403,
-      );
-      return true;
-    }
     const workspace = workspaceContext(req, user);
     const existing =
       workspace.org.user_id === user.id
         ? db
-            .query<AssistantRow, [string]>(
-              "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
-            )
+            .query<
+              AssistantRow,
+              [string]
+            >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
             .get(workspace.org.id)
         : accessibleAssistantsForUser(req, user)[0];
     const assistant =
@@ -2486,13 +2561,7 @@ async function handleAssistants(
       );
       return true;
     }
-    const runtimeStack = claimPreprovisionedRuntimeStack(
-      db,
-      assistant,
-      runtimeStackForPayload(assistant),
-      runtimeStackConfig,
-      nowIso,
-    );
+    const runtimeStack = ensureAssistantRuntime(assistant);
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
       !pooledRuntimeEligible(runtimeStack) &&
@@ -2547,15 +2616,6 @@ async function handleAssistants(
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return true;
     }
-    if (!hasAcceptedAssistantConsent(user.consent_json)) {
-      sendJson(
-        req,
-        res,
-        { detail: "Assistant consent must be accepted before use." },
-        403,
-      );
-      return true;
-    }
     const currentRuntimeStack = runtimeStackForPayload(assistant);
     if (pooledRuntimeEligible(currentRuntimeStack)) {
       sendJson(
@@ -2571,20 +2631,6 @@ async function handleAssistants(
       );
       return true;
     }
-    if (!assistantOwnerHasAcceptedConsent(assistant)) {
-      sendJson(
-        req,
-        res,
-        {
-          detail:
-            "The assistant owner must accept the current consent terms before preparing it.",
-          code: "assistant_owner_consent_required",
-        },
-        409,
-      );
-      return true;
-    }
-
     if (isRuntimeStackRoutable(currentRuntimeStack)) {
       sendJson(req, res, {
         detail: "Assistant runtime is already active.",
@@ -2696,16 +2742,6 @@ async function handleAssistants(
       );
       return true;
     }
-    if (!hasAcceptedAssistantConsent(user.consent_json)) {
-      sendJson(
-        req,
-        res,
-        { detail: "Assistant consent must be accepted before use." },
-        403,
-      );
-      return true;
-    }
-
     const currentRuntimeStack = runtimeStackForPayload(assistant);
     const restartCapability = runtimeActionCapabilitiesForStack(
       currentRuntimeStack,
@@ -2866,9 +2902,10 @@ async function handleArtifactInvitations(
       return true;
     }
     const assistant = db
-      .query<AssistantRow, [string, string]>(
-        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
-      )
+      .query<
+        AssistantRow,
+        [string, string]
+      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
       .get(createMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
@@ -3357,19 +3394,8 @@ async function proxyToGateway(
     return;
   }
 
-  if (!hasAcceptedAssistantConsent(user.consent_json)) {
-    sendJson(
-      req,
-      res,
-      { detail: "Assistant consent must be accepted before use." },
-      403,
-    );
-    return;
-  }
-
-  // This is the first real assistant request. Only here do we claim the
-  // stack and start lazy provisioning; list, consent, and hatch calls remain
-  // read-only with respect to Railway capacity.
+  // Runtime-bound requests recover provisioning when an earlier hatch or
+  // onboarding completion was interrupted.
   const runtimeStack = ensureAssistantRuntime(assistant);
   const routingPolicy = selectRuntimeWorkerRoutingPolicy(
     runtimeStack,
@@ -3990,6 +4016,406 @@ function asyncHandler(
   };
 }
 
+function retentionProxyRequest(
+  req: Request,
+  url: URL,
+  bodyOverride?: unknown,
+): globalThis.Request {
+  const headers = copyProxyHeaders(req);
+  const method = req.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const body = bodyOverride
+    ? Buffer.from(JSON.stringify(bodyOverride))
+    : Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(parseTextBody(req));
+  if (bodyOverride) headers.set("content-type", "application/json");
+  return new globalThis.Request(url, {
+    method,
+    headers,
+    ...(hasBody ? { body: new Uint8Array(body) } : {}),
+  });
+}
+
+function retentionAssistantForRequest(
+  req: Request,
+  user: UserRow,
+): AssistantRow | null {
+  const assistantId = req.get("X-Worklin-Assistant-Id")?.trim();
+  if (!assistantId) return null;
+  return (
+    accessibleAssistantsForUser(req, user).find(
+      (assistant) => assistant.id === assistantId,
+    ) ?? null
+  );
+}
+
+async function handleRetentionAccess(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  if (!pathIsOrStartsWith(url.pathname, "/v1/retention/access/")) {
+    return false;
+  }
+  const workspace = workspaceContext(req, user);
+  if (workspace.org.user_id !== user.id) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Only the workspace owner can manage retention access.",
+        code: "retention_access_owner_required",
+      },
+      403,
+    );
+    return true;
+  }
+  if (
+    pathEquals(url.pathname, "/v1/retention/access/") &&
+    req.method === "GET"
+  ) {
+    sendJson(req, res, {
+      grants: listRetentionAccessGrants(db, workspace.org.id),
+    });
+    return true;
+  }
+  const match = /^\/v1\/retention\/access\/([^/]+)\/?$/u.exec(url.pathname);
+  if (!match || req.method !== "PUT") {
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
+    return true;
+  }
+  if (!checkCsrf(req)) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return true;
+  }
+  const targetUserId = decodeURIComponent(match[1]!);
+  const member = listWorkspaceMembers(db, workspace.org.id).find(
+    (candidate) =>
+      candidate.user_id === targetUserId && candidate.status === "active",
+  );
+  if (!member || targetUserId === workspace.org.user_id) {
+    sendJson(req, res, { detail: "Workspace member not found." }, 404);
+    return true;
+  }
+  const body = parseJsonBody<{ roles?: unknown }>(req);
+  if (
+    !body ||
+    !Array.isArray(body.roles) ||
+    body.roles.some((role) => typeof role !== "string")
+  ) {
+    sendJson(req, res, { detail: "Retention roles are invalid." }, 400);
+    return true;
+  }
+  try {
+    const roles = replaceRetentionAccessGrants(db, {
+      organizationId: workspace.org.id,
+      userId: targetUserId,
+      grantedByUserId: user.id,
+      roles: body.roles as string[],
+      nowIso: nowIso(),
+    });
+    sendJson(req, res, { userId: targetUserId, roles });
+  } catch {
+    sendJson(req, res, { detail: "Retention roles are invalid." }, 400);
+  }
+  return true;
+}
+
+async function handleRetentionProxy(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  if (!pathIsOrStartsWith(url.pathname, "/v1/retention/")) return false;
+  if (await handleRetentionAccess(req, res, url, user)) return true;
+  if (
+    req.method !== "GET" &&
+    req.method !== "HEAD" &&
+    !checkCsrf(req)
+  ) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return true;
+  }
+  const assistant = retentionAssistantForRequest(req, user);
+  if (!assistant) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Choose an assistant before opening retention work.",
+        code: "retention_assistant_context_required",
+      },
+      400,
+    );
+    return true;
+  }
+  const workspace = workspaceContext(req, user);
+  const roles = retentionRolesForUser(db, {
+    organizationId: workspace.org.id,
+    userId: user.id,
+    organizationOwnerId: workspace.org.user_id,
+    workspaceRole: workspace.membership.role,
+  });
+
+  let bindingId: string | null = null;
+  let bindingProvider: "shopify" | "klaviyo" | null = null;
+  let bodyOverride: unknown;
+  if (
+    req.method === "POST" &&
+    pathEquals(url.pathname, "/v1/retention/integrations/")
+  ) {
+    const body = parseJsonBody<Record<string, unknown>>(req);
+    const provider = body?.provider;
+    if (provider !== "shopify" && provider !== "klaviyo") {
+      sendJson(req, res, { detail: "Retention provider is invalid." }, 400);
+      return true;
+    }
+    const binding = createRetentionIntegrationBinding(db, {
+      organizationId: workspace.org.id,
+      assistantId: assistant.id,
+      userId: user.id,
+      provider,
+      nowIso: nowIso(),
+    });
+    bindingId = binding.id;
+    bindingProvider = provider;
+    bodyOverride = {
+      ...body,
+      controlPlaneConnectionId: binding.id,
+    };
+  }
+
+  const response = await proxyAuthenticatedRetentionRequest(
+    retentionServiceConfig,
+    retentionProxyRequest(req, url, bodyOverride),
+    {
+      organizationId: workspace.org.id,
+      userId: user.id,
+      assistantId: assistant.id,
+      roles,
+    },
+  );
+  if (bindingId) {
+    if (!response.ok) {
+      deletePendingRetentionIntegrationBinding(db, bindingId);
+      await streamRuntimeResponse(req, res, response);
+      return true;
+    }
+    let upstreamBody: unknown;
+    try {
+      upstreamBody = JSON.parse(
+        (await readBoundedRuntimeResponse(response)).toString("utf8"),
+      ) as unknown;
+    } catch {
+      deletePendingRetentionIntegrationBinding(db, bindingId);
+      sendJson(
+        req,
+        res,
+        {
+          detail: "The retention connector returned an invalid response.",
+          code: "retention_connector_response_invalid",
+        },
+        502,
+      );
+      return true;
+    }
+    const sanitized = bindingProvider
+      ? retentionIntegrationConnectionPayload(upstreamBody, {
+          id: bindingId,
+          provider: bindingProvider,
+        })
+      : null;
+    if (!sanitized) {
+      deletePendingRetentionIntegrationBinding(db, bindingId);
+      sendJson(
+        req,
+        res,
+        {
+          detail: "The retention connector returned an invalid response.",
+          code: "retention_connector_response_invalid",
+        },
+        502,
+      );
+      return true;
+    }
+    setRetentionIntegrationBindingStatus(db, bindingId, "active", nowIso());
+    sendJson(req, res, sanitized, response.status);
+    return true;
+  }
+  await streamRuntimeResponse(req, res, response);
+  return true;
+}
+
+async function handleRetentionProviderWebhookIngress(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (
+    !retentionServiceConfig.enabled ||
+    req.method !== "POST" ||
+    !retentionGatewayIngressSecret
+  ) {
+    sendJson(req, res, { detail: "Not found." }, 404);
+    return;
+  }
+  const authorization = req.headers.authorization ?? "";
+  const match = /^Bearer (.+)$/u.exec(authorization);
+  if (
+    !match ||
+    !safeEqual(match[1]!, retentionGatewayIngressSecret)
+  ) {
+    sendJson(req, res, { detail: "Invalid gateway authorization." }, 401);
+    return;
+  }
+  const route =
+    /^\/internal\/retention\/webhooks\/(shopify|klaviyo)\/([^/]+)\/?$/u.exec(
+      req.path,
+    );
+  if (!route) {
+    sendJson(req, res, { detail: "Not found." }, 404);
+    return;
+  }
+  const provider = route[1] as "shopify" | "klaviyo";
+  const connectionId = decodeURIComponent(route[2]!);
+  const binding = getActiveRetentionIntegrationBinding(db, {
+    id: connectionId,
+    provider,
+  });
+  if (!binding) {
+    sendJson(req, res, { detail: "Integration not found." }, 404);
+    return;
+  }
+  const response = await forwardRetentionProviderWebhook(
+    retentionServiceConfig,
+    retentionProxyRequest(
+      req,
+      new URL(req.originalUrl, env.apiOrigin),
+    ),
+    {
+      organizationId: binding.org_id,
+      userId: binding.created_by_user_id,
+      assistantId: binding.assistant_id,
+      integrationConnectionId: binding.id,
+      provider: binding.provider,
+    },
+  );
+  await streamRuntimeResponse(req, res, response);
+}
+
+async function handleRetentionAssistantOperatorIngress(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (
+    !retentionServiceConfig.enabled ||
+    req.method !== "POST" ||
+    !retentionGatewayIngressSecret
+  ) {
+    sendJson(req, res, { detail: "Not found." }, 404);
+    return;
+  }
+  const authorization = req.headers.authorization ?? "";
+  const match = /^Bearer (.+)$/u.exec(authorization);
+  if (!match || !safeEqual(match[1]!, retentionGatewayIngressSecret)) {
+    sendJson(req, res, { detail: "Invalid gateway authorization." }, 401);
+    return;
+  }
+  const operatorRequest = parseRetentionAssistantOperatorRequest(
+    parseJsonBody<unknown>(req),
+    retentionServiceConfig.maxRequestBodyBytes,
+  );
+  if (!operatorRequest) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Retention operator request is invalid.",
+        code: "retention_operator_request_invalid",
+      },
+      400,
+    );
+    return;
+  }
+
+  const user = db
+    .query<UserRow, [string]>("SELECT * FROM users WHERE id = ?")
+    .get(operatorRequest.userId);
+  const organization = db
+    .query<OrganizationRow, [string]>(
+      "SELECT * FROM organizations WHERE id = ?",
+    )
+    .get(operatorRequest.organizationId);
+  const membership = getOrganizationMembership(
+    db,
+    operatorRequest.organizationId,
+    operatorRequest.userId,
+  );
+  const assistant = db
+    .query<AssistantRow, [string, string]>(
+      "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
+    )
+    .get(operatorRequest.assistantId, operatorRequest.organizationId);
+  if (
+    !user ||
+    !organization ||
+    !membership ||
+    membership.status !== "active" ||
+    !assistant
+  ) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Retention tenant access was not found.",
+        code: "retention_tenant_access_denied",
+      },
+      403,
+    );
+    return;
+  }
+  const accessibleAssistantIds = new Set(
+    listAccessibleAssistantIds(
+      db,
+      organization.id,
+      user.id,
+      membership.role,
+    ),
+  );
+  if (!accessibleAssistantIds.has(assistant.id)) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Retention assistant access was denied.",
+        code: "retention_assistant_access_denied",
+      },
+      403,
+    );
+    return;
+  }
+
+  const roles = retentionRolesForUser(db, {
+    organizationId: organization.id,
+    userId: user.id,
+    organizationOwnerId: organization.user_id,
+    workspaceRole: membership.role,
+  });
+  const response = await proxyAuthenticatedRetentionRequest(
+    retentionServiceConfig,
+    retentionAssistantOperatorProxyRequest(operatorRequest),
+    {
+      organizationId: organization.id,
+      userId: user.id,
+      assistantId: assistant.id,
+      roles,
+    },
+  );
+  await streamRuntimeResponse(req, res, response);
+}
+
 const app = express();
 app.set("trust proxy", true);
 app.use(corsMiddleware);
@@ -4056,6 +4482,16 @@ app.post(
 );
 
 app.use(express.raw({ type: "*/*", limit: "50mb" }));
+
+app.post(
+  "/internal/retention/webhooks/:provider/:connectionId",
+  asyncHandler(handleRetentionProviderWebhookIngress),
+);
+
+app.post(
+  "/internal/retention/operator",
+  asyncHandler(handleRetentionAssistantOperatorIngress),
+);
 
 app.get(
   RUNTIME_WORKER_OPERATOR_RECOVERY_PATH,
@@ -4251,10 +4687,15 @@ app.use(
     if (!user) return;
 
     try {
+      if (await handleRetentionProxy(req, res, url, user)) return;
       if (await handleWorkspace(req, res, url, user)) return;
 
       if (pathEquals(url.pathname, "/v1/user/me/")) {
         await handleUserMe(req, res, user);
+        return;
+      }
+      if (pathEquals(url.pathname, "/v1/user/onboarding/complete/")) {
+        handleOnboardingCompletion(req, res, user);
         return;
       }
       if (pathEquals(url.pathname, "/v1/organizations/")) {
@@ -4311,6 +4752,36 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 const server = app.listen(env.port, env.host, () => {
   console.log(`Worklin control plane listening on ${env.host}:${env.port}`);
 });
+
+let retentionTenantWakeSweep: ReturnType<typeof setInterval> | null = null;
+let retentionTenantWakeSweepInFlight = false;
+async function runRetentionTenantWakeSweep(): Promise<void> {
+  if (retentionTenantWakeSweepInFlight || !retentionServiceConfig.enabled) {
+    return;
+  }
+  retentionTenantWakeSweepInFlight = true;
+  try {
+    const result = await wakeRetentionTenantJobs(
+      retentionServiceConfig,
+      listActiveRetentionWakeTargets(db),
+    );
+    if (result.failed > 0) {
+      console.error("retention_tenant_wake_sweep_incomplete", result);
+    }
+  } catch {
+    console.error("retention_tenant_wake_sweep_failed");
+  } finally {
+    retentionTenantWakeSweepInFlight = false;
+  }
+}
+if (retentionServiceConfig.enabled) {
+  void runRetentionTenantWakeSweep();
+  retentionTenantWakeSweep = setInterval(
+    () => void runRetentionTenantWakeSweep(),
+    5 * 60_000,
+  );
+  retentionTenantWakeSweep.unref();
+}
 
 const runtimeProvisionerError = runtimeProvisioningConfigurationError();
 if (runtimeProvisionerError) {
@@ -4413,6 +4884,7 @@ process.once("SIGTERM", closeForShutdown);
 process.once("SIGINT", closeForShutdown);
 server.on("close", () => {
   clearInterval(keepAlive);
+  if (retentionTenantWakeSweep) clearInterval(retentionTenantWakeSweep);
   if (runtimeWorkerHealthMonitor) clearInterval(runtimeWorkerHealthMonitor);
   if (runtimeCapacityMonitor) clearInterval(runtimeCapacityMonitor);
   if (runtimeWorkerCoordinatorHeartbeat) {

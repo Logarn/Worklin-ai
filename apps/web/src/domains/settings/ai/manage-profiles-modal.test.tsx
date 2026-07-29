@@ -18,7 +18,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
-import type { ProfileEntry, ProviderConnection } from "@/generated/daemon/types.gen";
+import type {
+  ConfigPatchRequest,
+  ProfileEntry,
+  ProviderConnection,
+} from "@/generated/daemon/types.gen";
 import * as daemonQueryGen from "@/generated/daemon/@tanstack/react-query.gen";
 
 // ---------------------------------------------------------------------------
@@ -27,7 +31,9 @@ import * as daemonQueryGen from "@/generated/daemon/@tanstack/react-query.gen";
 
 let toastSuccessCalls: string[] = [];
 let configPatchCalled = false;
+let configPatchBodies: ConfigPatchRequest[] = [];
 let profilesState: Record<string, ProfileEntry> = {};
+let activeProfileState: string | null = null;
 
 mock.module("@vellumai/design-library/components/toast", () => ({
   toast: {
@@ -46,19 +52,24 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
       llm: {
         profiles: profilesState,
         profileOrder: Object.keys(profilesState),
-        activeProfile: null,
+        activeProfile: activeProfileState,
         callSites: {},
       },
     },
   })),
-  configPatch: async () => {
+  configPatch: async (options: { body: ConfigPatchRequest }) => {
     configPatchCalled = true;
+    configPatchBodies.push(options.body);
+    const nextActiveProfile = options.body.llm?.activeProfile;
+    if (typeof nextActiveProfile === "string") {
+      activeProfileState = nextActiveProfile;
+    }
     return {
       data: {
         llm: {
           profiles: profilesState,
           profileOrder: Object.keys(profilesState),
-          activeProfile: null,
+          activeProfile: activeProfileState,
           callSites: {},
         },
       },
@@ -121,7 +132,7 @@ function Wrapper({ children }: { children: ReactNode }) {
     llm: {
       profiles: profilesState,
       profileOrder: Object.keys(profilesState),
-      activeProfile: null,
+      activeProfile: activeProfileState,
       callSites: {},
     },
   });
@@ -195,7 +206,9 @@ function selectModel(label: string): void {
 beforeEach(() => {
   toastSuccessCalls = [];
   configPatchCalled = false;
+  configPatchBodies = [];
   profilesState = {};
+  activeProfileState = null;
 });
 
 afterEach(() => {
@@ -240,6 +253,53 @@ describe("ManageProfilesModal — profile-create success toast (Settings surface
     });
     await waitFor(() => {
       expect(toastSuccessCalls).toEqual(['Profile "My Profile" created']);
+    });
+  });
+
+  test("offers an explicit choice when more than one personal setup exists", async () => {
+    activeProfileState = "openai";
+    profilesState = {
+      openai: {
+        source: "user",
+        label: "OpenAI",
+        provider: "openai",
+        model: "gpt-5.4",
+      },
+      anthropic: {
+        source: "user",
+        label: "Anthropic",
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+      },
+    };
+
+    const { getByRole, getByText } = render(
+      <Wrapper>
+        <ManageProfilesModal isOpen assistantId="asst-1" onClose={() => {}} />
+      </Wrapper>,
+    );
+
+    expect(getByText("In use")).toBeTruthy();
+    fireEvent.click(getByRole("button", { name: "Use Anthropic" }));
+
+    await waitFor(() => {
+      const selectionPatch = configPatchBodies.find(
+        (body) => body.llm?.activeProfile === "anthropic",
+      );
+      expect(selectionPatch).toMatchObject({
+        expectedActiveProfile: "openai",
+        llm: {
+          activeProfile: "anthropic",
+          callSites: {
+            conversationTitle: { profile: "anthropic" },
+            memoryExtraction: { profile: "anthropic" },
+            subagentSpawn: { profile: "anthropic" },
+          },
+        },
+      });
+      expect(selectionPatch?.llm?.callSites).not.toHaveProperty(
+        "heartbeatAgent",
+      );
     });
   });
 });

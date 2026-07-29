@@ -90,6 +90,16 @@ function shouldBufferRewrittenBody(
   return isLocalMode() || usesPublicControlPlaneProxy;
 }
 
+async function bufferPlatformMutationBody(
+  request: Request,
+): Promise<Request> {
+  if (!request.body || !MUTATING_METHODS.has(request.method)) {
+    return request;
+  }
+  const body = await request.arrayBuffer();
+  return new Request(request, { body });
+}
+
 /**
  * Rewrites a request bound for `/v1/assistants/{id}/{runtime-segment}/...`
  * to the registered self-hosted ingress, swapping platform session/CSRF
@@ -251,6 +261,13 @@ function createInterceptor({ skipSegmentAllowlist = false } = {}) {
     if (selfHosted) {
       return selfHosted;
     }
+
+    // Generated clients hand `fetch` a Request whose finite JSON/form body is
+    // exposed as a ReadableStream. Safari does not support streaming request
+    // uploads, so materialize platform/auth mutations before dispatch. Direct
+    // HTTPS runtime traffic returns through the self-hosted branch above and
+    // keeps its streaming behavior for large uploads.
+    newRequest = await bufferPlatformMutationBody(newRequest);
 
     // Platform path — Django session auth.
     if (isElectron() && MUTATING_METHODS.has(request.method)) {

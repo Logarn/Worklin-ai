@@ -9,6 +9,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVisibleViewport } from "@/hooks/use-visible-viewport";
 import { useAssistantLifecycle } from "@/assistant/use-lifecycle";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
+import { useManagedProviderProfileRepair } from "@/assistant/use-managed-provider-profile-repair";
 import {
   useAuthStore,
   useHasPlatformSession,
@@ -100,6 +101,7 @@ export function RootLayout() {
     (s) => s.assistantState.kind,
   );
   const isAssistantActive = assistantStateKind === "active";
+  useManagedProviderProfileRepair(assistantId, isAssistantActive);
   useAssistantFeatureFlagSync(assistantId);
   useAssistantResourceSync(assistantId, isAssistantActive);
   useConversationSync(assistantId, isAssistantActive);
@@ -193,7 +195,7 @@ export function RootLayout() {
       );
     },
     replayOnboarding: () => {
-      void navigate(`${routes.onboarding.privacy}?preview=true`);
+      void navigate(`${routes.onboarding.prechat}?preview=true`);
     },
     previewPrechat: () => {
       void navigate(`${routes.onboarding.prechat}?preview=true`);

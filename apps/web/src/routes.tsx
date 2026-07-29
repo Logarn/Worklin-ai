@@ -349,12 +349,9 @@ export const routeTree = [
           },
           {
             path: "review-terms",
-            lazy: {
-              Component: () =>
-                import("@/domains/onboarding/pages/review-terms-screen").then(
-                  (m) => m.ReviewTermsScreen,
-                ),
-            },
+            Component: () => (
+              <Navigate to={routes.onboarding.prechat} replace />
+            ),
           },
           {
             path: "invitations/:token",
@@ -384,7 +381,7 @@ export const routeTree = [
             },
           },
 
-          // Onboarding funnel — new-user setup flow (privacy → prechat → hatching).
+          // Onboarding funnel — new-user setup flow (prechat → hatching).
           {
             middleware: [onboardingCompletedMiddleware],
             children: [
@@ -413,12 +410,9 @@ export const routeTree = [
               },
               {
                 path: "onboarding/privacy",
-                lazy: {
-                  Component: () =>
-                    import("@/domains/onboarding/pages/privacy-screen").then(
-                      (m) => m.PrivacyScreen,
-                    ),
-                },
+                Component: () => (
+                  <Navigate to={routes.onboarding.prechat} replace />
+                ),
               },
               {
                 path: "onboarding/provider",
@@ -869,6 +863,15 @@ export const routeTree = [
                             import("@/domains/work/work-page").then(
                               (m) => m.WorkPage,
                             ),
+                        },
+                      },
+                      {
+                        path: "work/retention",
+                        lazy: {
+                          Component: () =>
+                            import(
+                              "@/domains/work/retention/retention-work-page"
+                            ).then((m) => m.RetentionWorkPage),
                         },
                       },
                       {

@@ -1297,6 +1297,7 @@ export function assistantApiStatusForRuntimeStack(
 export function operationalStateForRuntimeStack(
   stack: RuntimeStackRow | null,
 ):
+  | "initializing"
   | "provisioning"
   | "active"
   | "maintenance_mode"
@@ -1313,8 +1314,13 @@ export function operationalStateForRuntimeStack(
     case "deleted":
       return "not_found";
     case "provisioning":
+      return stack.service_ref === null &&
+        stack.service_create_attempted_at === null &&
+        stack.provisioning_lease_token === null
+        ? "initializing"
+        : "provisioning";
     case undefined:
-      return "provisioning";
+      return "initializing";
   }
 }
 

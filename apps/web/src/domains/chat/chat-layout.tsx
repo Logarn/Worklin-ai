@@ -485,12 +485,7 @@ export function ChatLayout() {
   });
 
   const handleOpenWork = useCallback(() => {
-    const lastBrandId = window.localStorage.getItem(
-      "worklin:last-artifact-brand",
-    );
-    navigate(
-      lastBrandId ? routes.work.brandArtifacts(lastBrandId) : routes.work.root,
-    );
+    navigate(routes.work.root);
   }, [navigate]);
 
   const isWorkActive =

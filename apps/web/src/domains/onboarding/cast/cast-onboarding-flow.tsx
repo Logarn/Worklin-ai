@@ -49,6 +49,7 @@ import {
   setPendingAssistantName,
   setPendingPreChatContext,
 } from "@/domains/onboarding/prechat";
+import { completeAccountOnboarding } from "@/domains/onboarding/complete-account-onboarding";
 import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import { useAuthStore } from "@/stores/auth-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
@@ -228,7 +229,10 @@ function InteractiveCastFlow({
   }, []);
 
   const name = selected ? (names[selected.id] ?? selected.name) : "";
-  const leftPanelBox: Rect = { ...boxes.top, left: boxes.w / 4 - boxes.top.size / 2 };
+  const leftPanelBox: Rect = {
+    ...boxes.top,
+    left: boxes.w / 4 - boxes.top.size / 2,
+  };
 
   const resume: StarterResume | null = selected
     ? {
@@ -293,7 +297,8 @@ function InteractiveCastFlow({
     setPhase("done");
   }
 
-  const isShellPhase = phase === "preamble" || phase === "starter" || phase === "dialogue";
+  const isShellPhase =
+    phase === "preamble" || phase === "starter" || phase === "dialogue";
 
   return (
     <div className="cast-panel" ref={panelRef}>
@@ -356,7 +361,9 @@ function InteractiveCastFlow({
                 if (credits > 0) setEarnedCredits((prev) => prev + credits);
                 recordMemory(
                   "reach",
-                  connected.length > 0 ? `Connected: ${connected.join(", ")}` : "Tools: skipped",
+                  connected.length > 0
+                    ? `Connected: ${connected.join(", ")}`
+                    : "Tools: skipped",
                 );
               }}
               onComplete={finishDialogue}
@@ -381,18 +388,17 @@ function InteractiveCastFlow({
       {phase === "done" && selected && (
         <DoneScreen
           character={selected}
-          box={{ ...leftPanelBox, top: leftPanelBox.top + Math.round(leftPanelBox.size * 0.7) }}
+          box={{
+            ...leftPanelBox,
+            top: leftPanelBox.top + Math.round(leftPanelBox.size * 0.7),
+          }}
           ascended={false}
           assistantId={null}
-          onAdvance={() =>
-            completeHandoff(completionData(selected))
-          }
+          onAdvance={() => completeHandoff(completionData(selected))}
           onAction={() => {
             /* proof action — no orchestrator state to capture here */
           }}
-          onEndpoint={() =>
-            completeHandoff(completionData(selected))
-          }
+          onEndpoint={() => completeHandoff(completionData(selected))}
           onBack={() => setPhase("dialogue")}
         />
       )}
@@ -410,9 +416,10 @@ function InteractiveCastFlow({
 // ---------------------------------------------------------------------------
 
 /** Build the handoff context from the flow's collected completion data. */
-export function buildHandoffFromCompletion(
-  data: CastCompletionData,
-): { context: ReturnType<typeof buildCastPreChatContext>; assistantName: string } {
+export function buildHandoffFromCompletion(data: CastCompletionData): {
+  context: ReturnType<typeof buildCastPreChatContext>;
+  assistantName: string;
+} {
   const selections: CastSelections = {
     firstName: data.firstName || undefined,
     lastName: data.lastName || undefined,
@@ -474,6 +481,13 @@ function CastFlowBody({
     try {
       // Wait for the background hatch to report healthy before handing off.
       assistantId = await awaitReady();
+      const onboarding = await completeAccountOnboarding();
+      if (!onboarding.completed) {
+        throw new Error(
+          "Your assistant is ready, but Worklin could not finish setup. Please try again.",
+        );
+      }
+      assistantId = onboarding.assistant.id;
     } catch (err) {
       onHandoffError(
         err instanceof Error
@@ -565,8 +579,8 @@ export function CastOnboardingFlow() {
   // is enabled. The cast arm always reports the deterministic `cast` variant —
   // it is a distinct activation arm, not part of the pared-down/control A/B
   // split. We pass the variant explicitly rather than resolving from stored
-  // state so a value cached under another experiment (e.g. `pared_down` from the
-  // privacy screen) can never leak into cast funnel events.
+  // state so a value cached under another experiment can never leak into cast
+  // funnel events.
   function emitFunnelStep(phase: CastFunnelPhase): void {
     if (isPreview) return;
     emitOnboardingFunnelStepCompleted(CAST_FUNNEL_STEP_BY_PHASE[phase], {

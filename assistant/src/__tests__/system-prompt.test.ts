@@ -1589,6 +1589,36 @@ describe("ensurePromptFiles", () => {
     expect(content.length).toBeGreaterThan(0);
   });
 
+  test("uses the Worklin bootstrap for a fresh managed assistant", () => {
+    const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+    const originalAssistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+    process.env.WORKLIN_RUNTIME_MODE = "isolated";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "assistant-managed";
+
+    try {
+      ensurePromptFiles();
+
+      const content = readFileSync(join(TEST_DIR, "BOOTSTRAP.md"), "utf-8");
+      expect(content).toContain("The product onboarding flow has already");
+      expect(content).toContain("Do not repeat onboarding,");
+      expect(content).toContain("introduce another setup interview");
+      expect(content).toContain(
+        "persist it to the product's document or artifact",
+      );
+    } finally {
+      if (originalRuntimeMode === undefined) {
+        delete process.env.WORKLIN_RUNTIME_MODE;
+      } else {
+        process.env.WORKLIN_RUNTIME_MODE = originalRuntimeMode;
+      }
+      if (originalAssistantId === undefined) {
+        delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+      } else {
+        process.env.WORKLIN_PLATFORM_ASSISTANT_ID = originalAssistantId;
+      }
+    }
+  });
+
   test("does not seed bundled system prompt sections into the workspace", () => {
     // Bundled `templates/system/*.md` files are the source of default truth.
     // The renderer reads them directly; the workspace dir is an optional

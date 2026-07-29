@@ -115,6 +115,7 @@ export const routes = {
 
   work: {
     root: r("/assistant/work"),
+    retention: r("/assistant/work/retention"),
     brandArtifacts: (brandId: string) =>
       `${r("/assistant/work/brands")}/${brandId}/artifacts`,
     app: (brandId: string, appId: string) =>

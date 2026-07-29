@@ -3,6 +3,13 @@ import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 type DeepLink =
   | { kind: "send"; message: string }
   | { kind: "openThread"; threadId: string }
+  | {
+      kind: "oauthComplete";
+      requestId: string;
+      oauthStatus: string | null;
+      oauthProvider: string;
+      oauthCode: string | null;
+    }
   | { kind: "unknown"; url: string };
 
 let activeCallback: ((link: DeepLink) => void) | null = null;
@@ -69,11 +76,27 @@ describe("publishElectronDeepLinksSource", () => {
 
     activeCallback!({ kind: "send", message: "hi" });
     activeCallback!({ kind: "openThread", threadId: "t-1" });
+    activeCallback!({
+      kind: "oauthComplete",
+      requestId: "req-desktop",
+      oauthStatus: "denied",
+      oauthProvider: "github",
+      oauthCode: "access_denied",
+    });
     activeCallback!({ kind: "unknown", url: "javascript:alert(1)" });
 
     expect(publishSpy.mock.calls).toEqual([
       ["deeplink.send", { message: "hi" }],
       ["deeplink.openThread", { threadId: "t-1" }],
+      [
+        "oauth.complete",
+        {
+          requestId: "req-desktop",
+          oauthStatus: "denied",
+          oauthProvider: "github",
+          oauthCode: "access_denied",
+        },
+      ],
       ["deeplink.unknown", { url: "javascript:alert(1)" }],
     ]);
   });

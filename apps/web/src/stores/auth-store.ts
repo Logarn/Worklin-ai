@@ -77,6 +77,7 @@ export interface AuthUser {
   isStaff: boolean;
   firstName: string;
   lastName: string;
+  onboardingCompleted?: boolean;
 }
 
 interface RawSessionUser {
@@ -86,6 +87,7 @@ interface RawSessionUser {
   is_staff?: boolean;
   first_name?: string;
   last_name?: string;
+  onboarding_completed?: boolean;
 }
 
 function resolveUserId(user: RawSessionUser | null): string | null {
@@ -101,6 +103,7 @@ function toAuthUser(raw: RawSessionUser | null): AuthUser | null {
     isStaff: raw.is_staff ?? false,
     firstName: raw.first_name ?? "",
     lastName: raw.last_name ?? "",
+    onboardingCompleted: raw.onboarding_completed === true,
   };
 }
 
@@ -140,6 +143,7 @@ const GATEWAY_LOCAL_USER: AuthUser = {
   isStaff: false,
   firstName: "Local",
   lastName: "User",
+  onboardingCompleted: true,
 };
 
 /**

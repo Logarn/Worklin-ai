@@ -6,9 +6,11 @@ import { getDbPath } from "../util/platform.js";
 import { pruneRuns } from "../workflows/journal-store.js";
 import { getMemoryCheckpoint, setMemoryCheckpoint } from "./checkpoints.js";
 import { getLastUserMessageTimestamp } from "./conversation-crud.js";
-import { runAsyncSqlite } from "./db-async-query.js";
 import { getSqlite } from "./db-connection.js";
-import { protectDatabaseDuringMaintenance } from "./db-protection.js";
+import {
+  checkDatabaseHealth,
+  protectDatabaseDuringMaintenance,
+} from "./db-protection.js";
 
 const log = getLogger("db-maintenance");
 
@@ -42,7 +44,16 @@ function getDbStats(): DbStats {
 }
 
 async function runDbMaintenance(): Promise<void> {
-  await protectDatabaseDuringMaintenance();
+  const healthBefore = checkDatabaseHealth();
+  if (!healthBefore.ok) {
+    throw new Error(
+      `Database health check failed before maintenance: ${healthBefore.errors.join("; ")}`,
+    );
+  }
+  const backup = await protectDatabaseDuringMaintenance();
+  if (!backup) {
+    throw new Error("Database backup failed before maintenance.");
+  }
 
   const before = getDbStats();
   const freelistPct =
@@ -60,12 +71,9 @@ async function runDbMaintenance(): Promise<void> {
     "Starting database maintenance",
   );
 
-  // Prune finished workflow runs (and their journals) past the retention
-  // window BEFORE VACUUM so the freed pages are reclaimed in the same pass.
-  // This is a fast bounded DELETE on the small workflow tables, so it runs on
-  // the main connection (`rawRun`) — unlike VACUUM/optimize it doesn't need the
-  // async/subprocess path. The maintenance scheduler below already defers this
-  // whole routine to an idle window.
+  // Prune finished workflow runs and their journals past the retention window.
+  // This is a fast bounded DELETE on the small workflow tables and runs on the
+  // main connection during the idle maintenance window.
   try {
     const deletedRuns = pruneRuns(getConfig().workflows.journalRetentionDays);
     if (deletedRuns > 0) {
@@ -75,27 +83,18 @@ async function runDbMaintenance(): Promise<void> {
     log.warn({ err }, "Workflow run pruning failed (non-fatal)");
   }
 
-  // VACUUM is the long-running one — minutes on a multi-GB DB. PRAGMA
-  // optimize is fast but routed through the same async path for
-  // consistency and to keep both off the main thread when the CLI
-  // backend is available.
-  const vacuumResult = await runAsyncSqlite("VACUUM");
-  if (!vacuumResult.ok) {
-    log.warn(
-      { error: vacuumResult.error, backend: vacuumResult.backend },
-      "VACUUM failed (non-fatal)",
-    );
-  }
-
-  const optimizeResult = await runAsyncSqlite("PRAGMA optimize");
-  if (!optimizeResult.ok) {
-    log.warn(
-      { error: optimizeResult.error, backend: optimizeResult.backend },
-      "PRAGMA optimize failed (non-fatal)",
-    );
-  }
+  // Automatic maintenance stays on the daemon's single long-lived
+  // connection. File-rewriting operations such as VACUUM require an explicit
+  // offline maintenance window where no background writer can be active.
+  getSqlite().exec("PRAGMA optimize");
 
   const after = getDbStats();
+  const healthAfter = checkDatabaseHealth();
+  if (!healthAfter.ok) {
+    throw new Error(
+      `Database health check failed after maintenance: ${healthAfter.errors.join("; ")}`,
+    );
+  }
   const reclaimedPages = before.pageCount - after.pageCount;
   const reclaimedBytes =
     before.fileSizeBytes != null && after.fileSizeBytes != null
@@ -104,11 +103,6 @@ async function runDbMaintenance(): Promise<void> {
 
   log.info(
     {
-      backend: vacuumResult.backend,
-      vacuumOk: vacuumResult.ok,
-      optimizeOk: optimizeResult.ok,
-      vacuumElapsedMs: vacuumResult.elapsedMs,
-      optimizeElapsedMs: optimizeResult.elapsedMs,
       beforePageCount: before.pageCount,
       afterPageCount: after.pageCount,
       reclaimedPages,
@@ -129,17 +123,14 @@ export async function maybeRunDbMaintenance(nowMs = Date.now()): Promise<void> {
   );
   if (nowMs - lastRun < intervalMs) return;
 
-  // VACUUM holds an exclusive lock on the database for its full duration —
-  // minutes on a multi-GB DB — during which every other write fails with
-  // SQLITE_BUSY ("database is locked"). Defer maintenance until the user has
-  // been quiet for `quietPeriodMs` so that lock never lands mid-conversation.
-  // The checkpoint below is only written once maintenance actually runs, so a
-  // deferred run is simply retried on a later (still-idle) worker tick.
-  if (quietPeriodMs > 0) {
-    const lastUserMessageAt = getLastUserMessageTimestamp();
-    if (lastUserMessageAt > 0 && nowMs - lastUserMessageAt < quietPeriodMs) {
-      return;
-    }
+  // A fresh workspace has nothing worth compacting. Waiting for real customer
+  // activity also prevents startup workers from beginning maintenance while
+  // the runtime is still creating its first tables and health backup.
+  const lastUserMessageAt = getLastUserMessageTimestamp();
+  if (lastUserMessageAt === 0) return;
+
+  if (quietPeriodMs > 0 && nowMs - lastUserMessageAt < quietPeriodMs) {
+    return;
   }
 
   try {

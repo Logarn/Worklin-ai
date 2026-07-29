@@ -4,6 +4,7 @@ type MockSessionUser = {
   id?: string;
   username?: string;
   email?: string;
+  onboarding_completed?: boolean;
 };
 
 let sessionUser: MockSessionUser | null = null;
@@ -276,6 +277,37 @@ beforeEach(() => {
 });
 
 describe("auth store onboarding flag reconciliation", () => {
+  test("uses the server-owned onboarding completion flag", async () => {
+    sessionUser = {
+      id: "user-1",
+      email: "user@example.com",
+      onboarding_completed: true,
+    };
+
+    await useAuthStore.getState().initSession();
+
+    expect(useAuthStore.getState().user?.onboardingCompleted).toBe(true);
+  });
+
+  test("a new account cannot inherit a prior account's completion", async () => {
+    sessionUser = {
+      id: "user-1",
+      email: "user@example.com",
+      onboarding_completed: true,
+    };
+    await useAuthStore.getState().refreshSession();
+
+    sessionUser = {
+      id: "user-2",
+      email: "user-two@example.com",
+      onboarding_completed: false,
+    };
+    await useAuthStore.getState().refreshSession();
+
+    expect(useAuthStore.getState().user?.id).toBe("user-2");
+    expect(useAuthStore.getState().user?.onboardingCompleted).toBe(false);
+  });
+
   test("initSession uses server consent when server has a consent record", async () => {
     sessionUser = { id: "user-1", email: "user@example.com" };
     mockFetchMeResult = {

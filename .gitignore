@@ -101,6 +101,7 @@ yarn-error.log*
 *.env.*
 *.env.local
 *.local.env
+!**/.env.example
 
 # vercel
 .vercel

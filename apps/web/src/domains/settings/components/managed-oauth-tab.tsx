@@ -3,6 +3,7 @@ import { ExternalLink, Loader2, Plus, Trash2 } from "lucide-react";
 import { IntegrationIcon } from "@/components/integrations/integration-icon";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import { Button } from "@vellumai/design-library/components/button";
+import { Notice } from "@vellumai/design-library/components/notice";
 
 export interface ManagedTabProps {
   displayName: string;
@@ -12,9 +13,12 @@ export interface ManagedTabProps {
   connectionsLoading: boolean;
   startPending: boolean;
   oauthInProgress: boolean;
+  connectError: string | null;
+  managedUnsupported: boolean;
   disconnectingId: string | null;
   onConnect: () => void;
   onDisconnect: (connection: OAuthConnection) => void;
+  onUseYourOwn: () => void;
 }
 
 export function ManagedTab({
@@ -25,9 +29,12 @@ export function ManagedTab({
   connectionsLoading,
   startPending,
   oauthInProgress,
+  connectError,
+  managedUnsupported,
   disconnectingId,
   onConnect,
   onDisconnect,
+  onUseYourOwn,
 }: ManagedTabProps) {
   if (connectionsLoading) {
     return (
@@ -62,24 +69,43 @@ export function ManagedTab({
           logoUrl={logoUrl}
           size={48}
         />
-        <p className="text-body-medium-default text-[var(--content-secondary)]">
-          Connect Account to continue
-        </p>
-        <Button
-          variant="primary"
-          size="compact"
-          leftIcon={<Plus />}
-          onClick={onConnect}
-          disabled={startPending || oauthInProgress}
-        >
-          Connect Account
-        </Button>
+        {connectError ? (
+          <ManagedOAuthErrorNotice
+            displayName={displayName}
+            message={connectError}
+            onUseYourOwn={onUseYourOwn}
+          />
+        ) : (
+          <p className="text-body-medium-default text-[var(--content-secondary)]">
+            Connect Account to continue
+          </p>
+        )}
+        {!managedUnsupported ? (
+          <Button
+            variant="primary"
+            size="compact"
+            leftIcon={<Plus />}
+            onClick={onConnect}
+            disabled={startPending || oauthInProgress}
+          >
+            {connectError ? "Try again" : "Connect Account"}
+          </Button>
+        ) : null}
       </div>
     );
   }
 
   return (
     <div className="rounded-lg border border-[var(--border-base)]">
+      {connectError ? (
+        <div className="p-3">
+          <ManagedOAuthErrorNotice
+            displayName={displayName}
+            message={connectError}
+            onUseYourOwn={onUseYourOwn}
+          />
+        </div>
+      ) : null}
       <ul className="divide-y divide-[var(--border-base)]">
         {connections.map((connection) => {
           const isDisconnecting = disconnectingId === connection.id;
@@ -100,7 +126,13 @@ export function ManagedTab({
               <Button
                 variant="dangerOutline"
                 size="compact"
-                iconOnly={isDisconnecting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                iconOnly={
+                  isDisconnecting ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )
+                }
                 onClick={() => onDisconnect(connection)}
                 disabled={isDisconnecting}
                 aria-label={`Disconnect ${connection.account_label ?? `${displayName} account`}`}
@@ -115,7 +147,7 @@ export function ManagedTab({
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Waiting for authorization...
           </div>
-        ) : (
+        ) : !managedUnsupported ? (
           <Button
             variant="primary"
             size="compact"
@@ -125,8 +157,38 @@ export function ManagedTab({
           >
             Connect account
           </Button>
-        )}
+        ) : null}
       </div>
     </div>
+  );
+}
+
+function ManagedOAuthErrorNotice({
+  displayName,
+  message,
+  onUseYourOwn,
+}: {
+  displayName: string;
+  message: string;
+  onUseYourOwn: () => void;
+}) {
+  return (
+    <Notice
+      tone="error"
+      title={`Could not connect ${displayName}`}
+      className="text-left"
+      actions={
+        <Button
+          type="button"
+          variant="outlined"
+          size="compact"
+          onClick={onUseYourOwn}
+        >
+          Use Your Own
+        </Button>
+      }
+    >
+      {message}
+    </Notice>
   );
 }
