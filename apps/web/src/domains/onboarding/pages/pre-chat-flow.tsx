@@ -54,6 +54,7 @@ import {
   getSelectedAssistant,
   isLocalMode,
 } from "@/lib/local-mode";
+import { peekPendingProviderKey } from "@/domains/onboarding/provider-key";
 import { useClientFeatureFlagStore } from "@/stores/client-feature-flag-store";
 import { useIsNativePlatform } from "@/runtime/native-auth.js";
 import {
@@ -244,6 +245,18 @@ export function PreChatFlow() {
     }
 
     if (!accountOnboardingCompleted && handoffAssistantId) {
+      if (!peekPendingProviderKey({ userId })) {
+        const providerQuery = new URLSearchParams({
+          next: "hatching",
+          afterHatch: "chat",
+          assistantId: handoffAssistantId,
+        });
+        void navigate(
+          `${routes.onboarding.provider}?${providerQuery.toString()}`,
+          { replace: true },
+        );
+        return;
+      }
       const query = new URLSearchParams({
         next: "chat",
         assistantId: handoffAssistantId,
