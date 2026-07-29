@@ -237,10 +237,9 @@ async function waitForProvisioningToSettle(
   for (let attempt = 0; attempt < 500; attempt += 1) {
     const db = new Database(dbPath, { readonly: true });
     const stacks = db
-      .query<
-        RuntimeStackRow,
-        []
-      >("SELECT * FROM runtime_stacks ORDER BY assistant_id")
+      .query<RuntimeStackRow, []>(
+        "SELECT * FROM runtime_stacks ORDER BY assistant_id",
+      )
       .all();
     db.close();
     if (
@@ -308,8 +307,7 @@ describe("five-customer isolated runtime launch", () => {
         const operation = (await request.json()) as RailwayOperation;
         railwayOperations.push(operation);
         const input = operation.variables.input as
-          | Record<string, unknown>
-          | undefined;
+          Record<string, unknown> | undefined;
 
         if (operation.query.includes("runtimeProjectServices")) {
           return Response.json({
@@ -352,6 +350,25 @@ describe("five-customer isolated runtime launch", () => {
           );
           return Response.json({
             data: { variableCollectionUpsert: true },
+          });
+        }
+        if (operation.query.includes("runtimeServiceDeployments")) {
+          const serviceId = String(
+            (operation.variables.input as Record<string, unknown>).serviceId,
+          );
+          return Response.json({
+            data: {
+              deployments: {
+                edges: [
+                  {
+                    node: {
+                      id: `deploy-${serviceId}`,
+                      createdAt: "2026-07-29T00:00:00.000Z",
+                    },
+                  },
+                ],
+              },
+            },
           });
         }
         if (operation.query.includes("serviceInstanceDeployV2")) {
@@ -450,9 +467,14 @@ describe("five-customer isolated runtime launch", () => {
     );
     expect(
       railwayOperations.filter((operation) =>
-        operation.query.includes("serviceInstanceDeployV2"),
+        operation.query.includes("runtimeServiceDeployments"),
       ),
     ).toHaveLength(CUSTOMER_COUNT);
+    expect(
+      railwayOperations.filter((operation) =>
+        operation.query.includes("serviceInstanceDeployV2"),
+      ),
+    ).toHaveLength(0);
     for (const stack of settledStacks) {
       expect(stack.last_error).toContain(
         "Railway runtime health check timed out",
