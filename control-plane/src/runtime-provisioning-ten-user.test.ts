@@ -352,10 +352,29 @@ describe("ten-customer isolated runtime launch", () => {
             data: { variableCollectionUpsert: true },
           });
         }
-        if (operation.query.includes("serviceInstanceDeploy")) {
+        if (operation.query.includes("runtimeServiceDeployments")) {
+          const serviceId = String(
+            (operation.variables.input as Record<string, unknown>).serviceId,
+          );
           return Response.json({
             data: {
-              serviceInstanceDeploy: `deploy-${String(
+              deployments: {
+                edges: [
+                  {
+                    node: {
+                      id: `deploy-${serviceId}`,
+                      createdAt: "2026-07-29T00:00:00.000Z",
+                    },
+                  },
+                ],
+              },
+            },
+          });
+        }
+        if (operation.query.includes("serviceInstanceDeployV2")) {
+          return Response.json({
+            data: {
+              serviceInstanceDeployV2: `deploy-${String(
                 operation.variables.serviceId,
               )}`,
             },

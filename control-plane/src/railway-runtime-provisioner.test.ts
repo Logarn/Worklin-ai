@@ -58,6 +58,7 @@ function config(
     branch: "main",
     commitSha: "f".repeat(40),
     region: null,
+    platformUrl: "https://worklin.example.com",
     mountPath: "/data",
     runtimePort: 8080,
     maxRuntimeServices: 2,
@@ -347,6 +348,7 @@ describe("provisionRailwayRuntime", () => {
     expect(input.variables).toMatchObject({
       WORKLIN_RUNTIME_MODE: "isolated",
       WORKLIN_PLATFORM_ASSISTANT_ID: assistant.id,
+      VELLUM_PLATFORM_URL: "https://worklin.example.com",
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
       WORKLIN_RUNTIME_ROOT: "/runtime/customer",
@@ -356,6 +358,7 @@ describe("provisionRailwayRuntime", () => {
       CREDENTIAL_SECURITY_DIR: "/runtime/customer/ces-data/security",
     });
     expect(input.variables.CES_SERVICE_TOKEN).toHaveLength(64);
+    expect(input.variables.ASSISTANT_API_KEY).toMatch(/^[0-9a-f]{64}$/);
     const serviceMutation = graphqlOperations.find((operation) =>
       operation.query.includes("serviceCreate"),
     );

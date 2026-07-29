@@ -149,6 +149,13 @@ import {
   getRuntimeWorkerCapacityTelemetry,
   runtimeWorkerPoolConfigFromEnv,
 } from "./runtime-worker-dispatcher.js";
+import {
+  deriveManagedOAuthServiceKey,
+  ManagedGoogleOAuthService,
+  managedGoogleOAuthConfigFromEnv,
+  serviceKeyMatches,
+  type ManagedOAuthTenant,
+} from "./managed-google-oauth.js";
 import { createRuntimeWorkerProductionCoordinatorFromEnv } from "./runtime-worker-production-coordinator.js";
 import { isRuntimeWorkerBootstrapInferenceProvider } from "./runtime-worker-production-transport.js";
 import {
@@ -382,6 +389,10 @@ ensureBrandResearchRunSchema(db);
 ensureWorkspaceManagementSchema(db);
 ensureTenantRuntimeAdmissionSchema(db);
 ensureTenantRuntimeOperationsSchema(db);
+const managedGoogleOAuth = new ManagedGoogleOAuthService(
+  db,
+  managedGoogleOAuthConfigFromEnv(process.env),
+);
 const pooledModelKeyVault = new PooledModelKeyVault(
   db,
   pooledModelKeyVaultConfigFromEnv(process.env),
@@ -2075,10 +2086,9 @@ async function handleWorkspace(
       parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
     const assistant = body.assistantId
       ? db
-          .query<
-            AssistantRow,
-            [string, string]
-          >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
+          .query<AssistantRow, [string, string]>(
+            "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
+          )
           .get(body.assistantId, context.org.id)
       : null;
     const member = body.userId
@@ -2248,10 +2258,9 @@ function accessibleAssistantsForUser(
   const workspace = workspaceContext(req, user);
   if (workspace.org.user_id === user.id) {
     const existing = db
-      .query<
-        AssistantRow,
-        [string]
-      >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
+      .query<AssistantRow, [string]>(
+        "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+      )
       .all(workspace.org.id);
     if (existing.length === 0) getOrCreateAssistant(user);
   }
@@ -2269,6 +2278,308 @@ function accessibleAssistantsForUser(
     )
     .all(workspace.org.id)
     .filter((assistant) => accessibleIds.has(assistant.id));
+}
+
+function managedOAuthTenant(
+  assistant: AssistantRow,
+  user: UserRow,
+): ManagedOAuthTenant {
+  return {
+    assistantId: assistant.id,
+    organizationId: assistant.org_id,
+    userId: user.id,
+  };
+}
+
+function managedOAuthAssistantForUser(
+  req: Request,
+  user: UserRow,
+  assistantId: string,
+): AssistantRow | null {
+  return (
+    accessibleAssistantsForUser(req, user).find(
+      (assistant) => assistant.id === assistantId,
+    ) ?? null
+  );
+}
+
+function managedOAuthApiKey(req: Request): string | null {
+  const value = req.headers.authorization ?? "";
+  const match = /^Api-Key ([0-9a-f]{64})$/iu.exec(value);
+  return match?.[1] ?? null;
+}
+
+function authenticateManagedOAuthRuntime(
+  assistantId: string,
+  apiKey: string,
+): boolean {
+  const assistant = db
+    .query<AssistantRow, [string]>("SELECT * FROM assistants WHERE id = ?")
+    .get(assistantId);
+  if (!assistant?.runtime_stack_id) return false;
+  const stack = getRuntimeStackById(db, assistant.runtime_stack_id);
+  if (!stack || stack.assistant_id !== assistant.id) return false;
+  const runtimeActorSigningKey = deriveRuntimeActorSigningKey(
+    env.actorSigningKey,
+    stack.actor_signing_key_scope,
+  );
+  return serviceKeyMatches(
+    apiKey,
+    deriveManagedOAuthServiceKey(runtimeActorSigningKey, assistant.id),
+  );
+}
+
+function oauthConnectionsPath(
+  pathname: string,
+): { assistantId: string } | null {
+  const match = /^\/v1\/assistants\/([^/]+)\/oauth\/connections\/?$/u.exec(
+    pathname,
+  );
+  return match ? { assistantId: match[1]! } : null;
+}
+
+function oauthStartPath(
+  pathname: string,
+): { assistantId: string; provider: string } | null {
+  const match = /^\/v1\/assistants\/([^/]+)\/oauth\/([^/]+)\/start\/?$/u.exec(
+    pathname,
+  );
+  return match ? { assistantId: match[1]!, provider: match[2]! } : null;
+}
+
+function oauthDisconnectPath(
+  pathname: string,
+): { assistantId: string; connectionId: string } | null {
+  const match =
+    /^\/v1\/assistants\/([^/]+)\/oauth\/connections\/([^/]+)\/disconnect\/?$/u.exec(
+      pathname,
+    );
+  return match ? { assistantId: match[1]!, connectionId: match[2]! } : null;
+}
+
+function oauthProxyPath(
+  pathname: string,
+): { assistantId: string; connectionId: string } | null {
+  const match =
+    /^\/v1\/assistants\/([^/]+)\/external-provider-proxy\/([^/]+)\/?$/u.exec(
+      pathname,
+    );
+  return match ? { assistantId: match[1]!, connectionId: match[2]! } : null;
+}
+
+async function handleManagedOAuthRuntimeRequest(
+  req: Request,
+  res: Response,
+  url: URL,
+): Promise<boolean> {
+  const apiKey = managedOAuthApiKey(req);
+  if (!apiKey) return false;
+  const connections = oauthConnectionsPath(url.pathname);
+  const proxy = oauthProxyPath(url.pathname);
+  const route = connections ?? proxy;
+  if (!route) return false;
+  if (!authenticateManagedOAuthRuntime(route.assistantId, apiKey)) {
+    sendJson(req, res, { detail: "Invalid assistant authorization." }, 401);
+    return true;
+  }
+  if (connections) {
+    if (req.method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(req, res, { detail: "Method not allowed." }, 405);
+      return true;
+    }
+    sendJson(
+      req,
+      res,
+      managedGoogleOAuth.list({
+        assistantId: connections.assistantId,
+        provider: url.searchParams.get("provider"),
+        status: url.searchParams.get("status"),
+        accountIdentifier: url.searchParams.get("account_identifier"),
+      }),
+    );
+    return true;
+  }
+  if (!proxy || req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
+    return true;
+  }
+  const result = await managedGoogleOAuth.proxy(
+    proxy.assistantId,
+    proxy.connectionId,
+    parseJsonBody(req) ?? {},
+  );
+  if (!result.ok) {
+    sendJson(req, res, { detail: result.detail }, result.status);
+    return true;
+  }
+  sendJson(req, res, {
+    status: result.status,
+    headers: result.headers,
+    body: result.body,
+  });
+  return true;
+}
+
+async function handleManagedOAuthUserRequest(
+  req: Request,
+  res: Response,
+  url: URL,
+  user: UserRow,
+): Promise<boolean> {
+  const connections = oauthConnectionsPath(url.pathname);
+  const start = oauthStartPath(url.pathname);
+  const disconnect = oauthDisconnectPath(url.pathname);
+  const route = connections ?? start ?? disconnect;
+  if (!route) return false;
+  const assistant = managedOAuthAssistantForUser(req, user, route.assistantId);
+  if (!assistant) {
+    sendJson(
+      req,
+      res,
+      { detail: "Assistant not found.", code: "assistant_not_found" },
+      404,
+    );
+    return true;
+  }
+
+  if (connections) {
+    if (req.method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(req, res, { detail: "Method not allowed." }, 405);
+      return true;
+    }
+    sendJson(
+      req,
+      res,
+      managedGoogleOAuth.list({
+        assistantId: assistant.id,
+        userId: user.id,
+        provider: url.searchParams.get("provider"),
+        status: url.searchParams.get("status"),
+        accountIdentifier: url.searchParams.get("account_identifier"),
+      }),
+    );
+    return true;
+  }
+
+  if (!userCanRestartAssistant(assistant, user)) {
+    sendJson(
+      req,
+      res,
+      {
+        detail:
+          "Only the assistant owner or a workspace admin can change connected accounts.",
+      },
+      403,
+    );
+    return true;
+  }
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    sendJson(req, res, { detail: "Method not allowed." }, 405);
+    return true;
+  }
+  if (!checkCsrf(req)) {
+    sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+    return true;
+  }
+
+  if (start) {
+    if (start.provider !== "google") {
+      sendJson(
+        req,
+        res,
+        {
+          success: false,
+          code: "unsupported_provider",
+          detail: "This managed connection is not available yet.",
+        },
+        501,
+      );
+      return true;
+    }
+    const configurationError = managedGoogleOAuth.configurationError();
+    if (configurationError) {
+      sendJson(
+        req,
+        res,
+        {
+          success: false,
+          code: "managed_google_unavailable",
+          detail:
+            "Worklin's Google connection is temporarily unavailable. Please try again shortly.",
+        },
+        503,
+      );
+      return true;
+    }
+    const body =
+      parseJsonBody<{
+        redirect_after_connect?: unknown;
+        requested_scopes?: unknown;
+      }>(req) ?? {};
+    if (typeof body.redirect_after_connect !== "string") {
+      sendJson(
+        req,
+        res,
+        {
+          success: false,
+          code: "invalid_redirect",
+          detail: "The Google completion address is missing.",
+        },
+        400,
+      );
+      return true;
+    }
+    const requestedScopes = Array.isArray(body.requested_scopes)
+      ? body.requested_scopes.filter(
+          (scope): scope is string => typeof scope === "string",
+        )
+      : undefined;
+    try {
+      sendJson(
+        req,
+        res,
+        managedGoogleOAuth.start({
+          tenant: managedOAuthTenant(assistant, user),
+          redirectAfterConnect: body.redirect_after_connect,
+          requestedScopes,
+        }),
+      );
+    } catch (error) {
+      sendJson(
+        req,
+        res,
+        {
+          success: false,
+          code: "invalid_google_connection_request",
+          detail:
+            error instanceof Error
+              ? error.message
+              : "The Google connection request is invalid.",
+        },
+        400,
+      );
+    }
+    return true;
+  }
+
+  if (disconnect) {
+    const disconnected = await managedGoogleOAuth.disconnect({
+      tenant: managedOAuthTenant(assistant, user),
+      connectionId: disconnect.connectionId,
+    });
+    if (!disconnected) {
+      sendJson(req, res, { detail: "Google connection not found." }, 404);
+      return true;
+    }
+    sendJson(req, res, { success: true });
+    return true;
+  }
+
+  return false;
 }
 
 interface RuntimeActionRoute {
@@ -2505,10 +2816,9 @@ async function handleAssistants(
     const existing =
       workspace.org.user_id === user.id
         ? db
-            .query<
-              AssistantRow,
-              [string]
-            >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
+            .query<AssistantRow, [string]>(
+              "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
+            )
             .get(workspace.org.id)
         : accessibleAssistantsForUser(req, user)[0];
     const assistant =
@@ -2864,10 +3174,9 @@ async function handleArtifactInvitations(
       return true;
     }
     const assistant = db
-      .query<
-        AssistantRow,
-        [string, string]
-      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
+      .query<AssistantRow, [string, string]>(
+        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
+      )
       .get(createMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
@@ -4210,6 +4519,41 @@ app.delete("/_allauth/browser/v1/auth/session", asyncHandler(handleSession));
 app.get("/_allauth/browser/v1/config", (req, res) =>
   sendJson(req, res, authConfigPayload()),
 );
+app.get(
+  ["/v1/oauth/google/callback", "/v1/oauth/google/callback/"],
+  asyncHandler(async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const code =
+      typeof req.query.code === "string" ? req.query.code : undefined;
+    const providerError =
+      typeof req.query.error === "string" ? req.query.error : undefined;
+    if (!state) {
+      res
+        .status(400)
+        .type("text/plain")
+        .send(
+          "This Google connection has expired. Return to Worklin and try again.",
+        );
+      return;
+    }
+    const redirect = await managedGoogleOAuth.complete({
+      state,
+      code,
+      providerError,
+    });
+    if (!redirect) {
+      res
+        .status(400)
+        .type("text/plain")
+        .send(
+          "This Google connection has expired. Return to Worklin and try again.",
+        );
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.redirect(302, redirect);
+  }),
+);
 
 app.use(
   asyncHandler(async (req, res) => {
@@ -4235,10 +4579,13 @@ app.use(
       return;
     }
 
+    if (await handleManagedOAuthRuntimeRequest(req, res, url)) return;
+
     const user = requireUser(req, res);
     if (!user) return;
 
     try {
+      if (await handleManagedOAuthUserRequest(req, res, url, user)) return;
       if (await handleWorkspace(req, res, url, user)) return;
 
       if (pathEquals(url.pathname, "/v1/user/me/")) {
