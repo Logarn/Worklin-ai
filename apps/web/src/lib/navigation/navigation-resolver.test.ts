@@ -26,10 +26,8 @@ const WAIT: NavigationDecision = { action: "wait" };
 
 describe("resolveNavigation", () => {
   describe("route guard", () => {
-    const guard = (
-      current: NavigationState,
-      pathname = "/assistant",
-    ) => resolveNavigation(current, { kind: "route-guard", pathname });
+    const guard = (current: NavigationState, pathname = "/assistant") =>
+      resolveNavigation(current, { kind: "route-guard", pathname });
 
     test("waits for session resolution and protects signed-out routes", () => {
       expect(guard(state({ sessionSettled: false }))).toEqual(WAIT);
@@ -64,9 +62,10 @@ describe("resolveNavigation", () => {
     });
 
     test("keeps completed accounts out of prechat unless previewing", () => {
-      expect(
-        guard(state(), "/assistant/onboarding/prechat"),
-      ).toEqual({ action: "redirect", to: "/assistant" });
+      expect(guard(state(), "/assistant/onboarding/prechat")).toEqual({
+        action: "redirect",
+        to: "/assistant",
+      });
       expect(
         guard(state(), "/assistant/onboarding/prechat?preview=true"),
       ).toEqual(ALLOW);
@@ -82,15 +81,22 @@ describe("resolveNavigation", () => {
         action: "redirect",
         to: "/assistant/onboarding/prechat",
       });
-      expect(
-        guard(state(), "/assistant/review-terms"),
-      ).toEqual({ action: "redirect", to: "/assistant" });
+      expect(guard(state(), "/assistant/review-terms")).toEqual({
+        action: "redirect",
+        to: "/assistant",
+      });
     });
 
-    test("does not allow incomplete accounts to jump directly to hatching", () => {
+    test("allows an incomplete account with an allocated assistant to resume hatching", () => {
       expect(
         guard(
           state({ onboardingCompleted: false }),
+          "/assistant/onboarding/hatching",
+        ),
+      ).toEqual(ALLOW);
+      expect(
+        guard(
+          state({ onboardingCompleted: false, hasAssistants: false }),
           "/assistant/onboarding/hatching",
         ),
       ).toEqual({
@@ -141,10 +147,7 @@ describe("resolveNavigation", () => {
   });
 
   describe("onboarding intercept", () => {
-    const intercept = (
-      current: NavigationState,
-      intendedDestination: string,
-    ) =>
+    const intercept = (current: NavigationState, intendedDestination: string) =>
       resolveNavigation(current, {
         kind: "onboarding-intercept",
         intendedDestination,
@@ -162,10 +165,7 @@ describe("resolveNavigation", () => {
 
     test("allows destinations outside the assistant", () => {
       expect(
-        intercept(
-          state({ onboardingCompleted: false }),
-          "/account/login",
-        ),
+        intercept(state({ onboardingCompleted: false }), "/account/login"),
       ).toEqual(ALLOW);
     });
   });
@@ -174,17 +174,18 @@ describe("resolveNavigation", () => {
     const hatch = (current: NavigationState) =>
       resolveNavigation(current, { kind: "hatch-gate" });
 
-    test("requires authentication and completed onboarding", () => {
+    test("requires authentication and an allocated assistant before incomplete onboarding can hatch", () => {
       expect(hatch(state({ sessionSettled: false }))).toEqual(WAIT);
       expect(
         hatch(state({ isAuthenticated: false, isLocalMode: false })),
       ).toEqual({ action: "redirect", to: "/account/login" });
       expect(
-        hatch(state({ onboardingCompleted: false })),
+        hatch(state({ onboardingCompleted: false, hasAssistants: false })),
       ).toEqual({
         action: "redirect",
         to: "/assistant/onboarding/prechat",
       });
+      expect(hatch(state({ onboardingCompleted: false }))).toEqual(ALLOW);
       expect(hatch(state())).toEqual(ALLOW);
     });
   });

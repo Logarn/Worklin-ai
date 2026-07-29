@@ -20,6 +20,7 @@ import {
 } from "@/assistant/lifecycle";
 import { lifecycleService } from "@/assistant/lifecycle-service";
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
+import { completeAccountOnboarding } from "@/domains/onboarding/complete-account-onboarding";
 import {
   applyChatgptSubscriptionProvider,
   applyPendingProviderKey,
@@ -74,7 +75,8 @@ let platformHatchPromise: Promise<
 
 type HatchPhase = "initializing" | "provisioning" | "connecting" | "ready";
 type ProviderSetupState =
-  { kind: "idle" } | { kind: "chatgpt"; assistantId: string };
+  | { kind: "idle" }
+  | { kind: "chatgpt"; assistantId: string };
 
 const PHASE_TARGET: Record<HatchPhase, number> = {
   initializing: 0,
@@ -142,7 +144,9 @@ export function interpolateSegmentProgress(
 }
 
 export type HatchGateDecision =
-  { kind: "proceed" } | { kind: "wait" } | { kind: "redirect"; to: string };
+  | { kind: "proceed" }
+  | { kind: "wait" }
+  | { kind: "redirect"; to: string };
 
 export function decideHatchGate(): HatchGateDecision {
   const decision = resolveNavigation(buildNavigationState(), {
@@ -160,6 +164,9 @@ export function HatchingScreen() {
   const [searchParams] = useSearchParams();
   const hostingParam = searchParams.get("hosting");
   const failParam = searchParams.get("fail");
+  const completeAfterHatch = searchParams.get("next") === "chat";
+  const handoffAssistantIdParam =
+    searchParams.get("assistantId")?.trim() || undefined;
   const electron = isElectron();
   const useLocalHatch =
     isLocalMode() && hostingParam !== null && hostingParam !== "vellum-cloud";
@@ -222,7 +229,7 @@ export function HatchingScreen() {
     let navigateTimer: ReturnType<typeof setTimeout> | null = null;
     let readyPollTimer: ReturnType<typeof setTimeout> | null = null;
     const pollStartMs = Date.now();
-    let hatchedAssistantId: string | undefined;
+    let hatchedAssistantId: string | undefined = handoffAssistantIdParam;
     // Two independent signals that the assistant the poll discovers is THIS
     // run's brand-new hatch (and so may be seeded with a random avatar) rather
     // than a returning user's existing one (which might carry an uploaded/AI
@@ -244,6 +251,29 @@ export function HatchingScreen() {
         void (async () => {
           await lifecycleService.checkAssistant();
           if (cancelled) return;
+          if (completeAfterHatch) {
+            try {
+              const onboarding = await completeAccountOnboarding();
+              if (!onboarding.completed) {
+                setError(
+                  "Your assistant is ready, but Worklin could not finish setup. Please try again.",
+                );
+                return;
+              }
+              lifecycleService.markExpectingFirstMessage();
+              void navigate(`${routes.assistant}?onboarding=1`, {
+                replace: true,
+              });
+            } catch (err) {
+              captureError(err, {
+                context: "onboarding_finalize_after_hatch",
+              });
+              setError(
+                "Your assistant is ready, but Worklin could not finish setup. Please try again.",
+              );
+            }
+            return;
+          }
           if (isNativePlatform()) {
             // Native flow skips the pre-chat screen, so there's no
             // typed message to drive the auto-greet gate. Mark the
@@ -303,7 +333,7 @@ export function HatchingScreen() {
       // create the local daemon, even when a cloud assistant exists.
       if (!useLocalHatch) {
         try {
-          const existing = await getAssistant();
+          const existing = await getAssistant(hatchedAssistantId);
           const preflightState = resolveAssistantLifecycleState(existing);
           if (
             !cancelled &&
@@ -333,6 +363,12 @@ export function HatchingScreen() {
             );
             if (!providerReady) return;
             handleHatchReady();
+            return;
+          }
+          if (!cancelled && existing.ok && hatchedAssistantId) {
+            useResolvedAssistantsStore.getState().upsertFromApi(existing.data);
+            void setSelectedAssistant(existing.data.id);
+            scheduleNextPoll(0);
             return;
           }
           // A clean 404 (`auto_hatch`) means no assistant existed yet, so the
@@ -628,6 +664,8 @@ export function HatchingScreen() {
     navigate,
     queryClient,
     finishReadyVisualState,
+    completeAfterHatch,
+    handoffAssistantIdParam,
     hostingParam,
     transitionPhase,
     useLocalHatch,

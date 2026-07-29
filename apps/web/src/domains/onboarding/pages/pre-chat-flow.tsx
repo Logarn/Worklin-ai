@@ -198,10 +198,7 @@ export function PreChatFlow() {
       ...profileFromCharacter(selectedAvatar),
       assistantName: assistantName.trim() || selectedAvatar.shortName,
     };
-    const saved = await saveAssistantCharacterProfile(
-      assistantId,
-      nextProfile,
-    );
+    const saved = await saveAssistantCharacterProfile(assistantId, nextProfile);
     if (!saved) return;
     void queryClient.invalidateQueries({
       queryKey: avatarQueryKey(assistantId),
@@ -214,10 +211,12 @@ export function PreChatFlow() {
       selectedAssistantId ??
       activeAssistantId ??
       localPlatformAssistantId;
+    let accountOnboardingCompleted = localMode;
 
     if (!localMode) {
-      const completedAssistant = await completeAccountOnboarding();
-      handoffAssistantId = completedAssistant.id;
+      const onboarding = await completeAccountOnboarding();
+      handoffAssistantId = onboarding.assistant.id;
+      accountOnboardingCompleted = onboarding.completed;
     }
 
     await persistSelectedAvatarProfile(handoffAssistantId ?? undefined);
@@ -242,6 +241,17 @@ export function PreChatFlow() {
       }).catch((err) => {
         captureError(err, { context: "onboarding_queue_brand_research" });
       });
+    }
+
+    if (!accountOnboardingCompleted && handoffAssistantId) {
+      const query = new URLSearchParams({
+        next: "chat",
+        assistantId: handoffAssistantId,
+      });
+      void navigate(`${routes.onboarding.hatching}?${query.toString()}`, {
+        replace: true,
+      });
+      return;
     }
 
     await lifecycleService.checkAssistant(handoffAssistantId ?? undefined);
