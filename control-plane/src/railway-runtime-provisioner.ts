@@ -1,9 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { deriveManagedOAuthServiceKey } from "./managed-google-oauth.js";
 import type { AssistantRuntimeRow, RuntimeStackRow } from "./runtime-stacks.js";
 
 const DEFAULT_API_ENDPOINT = "https://backboard.railway.com/graphql/v2";
 const DEFAULT_REPOSITORY = "Logarn/Worklin-ai";
+const DEFAULT_PLATFORM_URL = "https://worklin-ai.vercel.app";
 const SUCCESSFUL_DEPLOYMENT_STATUSES = new Set(["SUCCESS"]);
 const FAILED_DEPLOYMENT_STATUSES = new Set([
   "CANCELLED",
@@ -29,6 +31,7 @@ export interface RailwayProvisionerConfig {
   branch: string;
   commitSha: string | null;
   region: string | null;
+  platformUrl: string;
   mountPath: string;
   runtimePort: number;
   maxRuntimeServices: number;
@@ -117,6 +120,11 @@ export function railwayProvisionerConfigFromEnv(
     branch: rawEnv.WORKLIN_RAILWAY_RUNTIME_BRANCH?.trim() || "main",
     commitSha: /^[0-9a-f]{7,64}$/i.test(rawCommitSha) ? rawCommitSha : null,
     region: rawEnv.WORKLIN_RAILWAY_RUNTIME_REGION?.trim() || null,
+    platformUrl: trimTrailingSlash(
+      rawEnv.WORKLIN_PUBLIC_PLATFORM_URL?.trim() ||
+        rawEnv.WORKLIN_WEB_ORIGIN?.trim() ||
+        DEFAULT_PLATFORM_URL,
+    ),
     mountPath: rawEnv.WORKLIN_RAILWAY_RUNTIME_MOUNT_PATH?.trim() || "/data",
     runtimePort: positiveIntegerEnv(rawEnv.WORKLIN_RAILWAY_RUNTIME_PORT, 8080),
     maxRuntimeServices: positiveIntegerEnv(
@@ -718,6 +726,11 @@ export async function provisionRailwayRuntime(
     WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
     WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
     PLATFORM_ORGANIZATION_ID: options.assistant.org_id,
+    VELLUM_PLATFORM_URL: options.config.platformUrl,
+    ASSISTANT_API_KEY: deriveManagedOAuthServiceKey(
+      options.runtimeActorSigningKey,
+      options.assistant.id,
+    ),
     RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
     DEFAULT_ASSISTANT_ID: "self",
     UNMAPPED_POLICY: "default",

@@ -120,6 +120,32 @@ WORKLIN_RAILWAY_SERVICE_RECONCILE_TIMEOUT_MS=30000
 WORKLIN_RAILWAY_PROVISIONING_LEASE_TTL_MS=120000
 ```
 
+### Managed Google connections
+
+Worklin's one-click Google connection requires one company-owned Google OAuth
+web client. Users should never be asked to create a Google Cloud project or
+paste OAuth credentials into onboarding.
+
+Configure the control-plane service with:
+
+```env
+WORKLIN_GOOGLE_OAUTH_CLIENT_ID=<Google web OAuth client ID>
+WORKLIN_GOOGLE_OAUTH_CLIENT_CREDENTIAL=<private Google client credential>
+WORKLIN_OAUTH_TOKEN_ENCRYPTION_KEY=<64 hexadecimal characters>
+WORKLIN_PUBLIC_PLATFORM_URL=https://worklin-ai.vercel.app
+```
+
+Register this exact authorized redirect URI on the Google OAuth client:
+
+```text
+https://worklin-ai.vercel.app/v1/oauth/google/callback/
+```
+
+The control plane encrypts access and refresh tokens before writing them to its
+database. Isolated assistant runtimes receive a scoped service credential and
+the canonical Worklin platform URL; raw Google tokens are never sent to the
+browser or assistant process.
+
 For each assistant, the provisioner creates one GitHub-backed service and one
 persistent volume, applies assistant-scoped runtime variables, deploys the
 service, waits for Railway deployment success and `/readyz`, then stores its

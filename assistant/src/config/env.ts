@@ -157,10 +157,16 @@ export function getPlatformBaseUrl(): string {
   } else {
     defaultUrl = "https://dev-platform.vellum.ai";
   }
+  const isolatedWorklinUrl =
+    str("WORKLIN_RUNTIME_MODE")?.toLowerCase() === "isolated" &&
+    Boolean(str("WORKLIN_PLATFORM_ASSISTANT_ID"))
+      ? "https://worklin-ai.vercel.app"
+      : undefined;
   return (
     configUrl ||
     str("VELLUM_PLATFORM_URL") ||
     _platformBaseUrlOverride ||
+    isolatedWorklinUrl ||
     defaultUrl
   );
 }

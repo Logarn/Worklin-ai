@@ -14,6 +14,9 @@ mock.module("../util/logger.js", () => ({
 let mockPlatformBaseUrl = "";
 let mockAssistantApiKey: string | null = null;
 const originalAssistantApiKey = process.env.ASSISTANT_API_KEY;
+const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
+const originalPlatformAssistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+const originalActorTokenSigningKey = process.env.ACTOR_TOKEN_SIGNING_KEY;
 
 afterAll(() => {
   if (originalAssistantApiKey === undefined) {
@@ -21,10 +24,28 @@ afterAll(() => {
   } else {
     process.env.ASSISTANT_API_KEY = originalAssistantApiKey;
   }
+  if (originalRuntimeMode === undefined) {
+    delete process.env.WORKLIN_RUNTIME_MODE;
+  } else {
+    process.env.WORKLIN_RUNTIME_MODE = originalRuntimeMode;
+  }
+  if (originalPlatformAssistantId === undefined) {
+    delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+  } else {
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = originalPlatformAssistantId;
+  }
+  if (originalActorTokenSigningKey === undefined) {
+    delete process.env.ACTOR_TOKEN_SIGNING_KEY;
+  } else {
+    process.env.ACTOR_TOKEN_SIGNING_KEY = originalActorTokenSigningKey;
+  }
 });
 
 beforeEach(() => {
   delete process.env.ASSISTANT_API_KEY;
+  delete process.env.WORKLIN_RUNTIME_MODE;
+  delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+  delete process.env.ACTOR_TOKEN_SIGNING_KEY;
 });
 
 mock.module("../config/env.js", () => ({
@@ -52,6 +73,9 @@ describe("resolveManagedProxyContext", () => {
     mockPlatformBaseUrl = "";
     mockAssistantApiKey = null;
     delete process.env.ASSISTANT_API_KEY;
+    delete process.env.WORKLIN_RUNTIME_MODE;
+    delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
+    delete process.env.ACTOR_TOKEN_SIGNING_KEY;
   });
 
   test("returns disabled when platform URL is empty", async () => {
@@ -105,6 +129,30 @@ describe("resolveManagedProxyContext", () => {
     const ctx = await resolveManagedProxyContext();
     expect(ctx.enabled).toBe(true);
     expect(ctx.assistantApiKey).toBe("stored-key");
+  });
+
+  test("derives a scoped key inside an existing isolated Worklin runtime", async () => {
+    mockPlatformBaseUrl = "https://worklin-ai.vercel.app";
+    process.env.WORKLIN_RUNTIME_MODE = "isolated";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "worklin-assistant-123";
+    process.env.ACTOR_TOKEN_SIGNING_KEY = "ab".repeat(32);
+
+    const ctx = await resolveManagedProxyContext();
+    expect(ctx.enabled).toBe(true);
+    expect(ctx.assistantApiKey).toHaveLength(64);
+    expect(ctx.assistantApiKey).toBe(
+      "549cfe391115ba16fa3fbde47f800751f3a3bc4dbfa260edbdc0a0d3d61f3d76",
+    );
+  });
+
+  test("does not derive a key outside an isolated runtime", async () => {
+    mockPlatformBaseUrl = "https://worklin-ai.vercel.app";
+    process.env.WORKLIN_RUNTIME_MODE = "pooled";
+    process.env.WORKLIN_PLATFORM_ASSISTANT_ID = "worklin-assistant-123";
+    process.env.ACTOR_TOKEN_SIGNING_KEY = "ab".repeat(32);
+
+    const ctx = await resolveManagedProxyContext();
+    expect(ctx.enabled).toBe(false);
   });
 
   test("strips trailing slashes from platform URL", async () => {

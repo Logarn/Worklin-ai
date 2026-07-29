@@ -9,6 +9,8 @@
  * base URL instead of calling the upstream provider directly.
  */
 
+import { createHmac } from "node:crypto";
+
 import { getPlatformBaseUrl } from "../../config/env.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { getSecureKeyAsync } from "../../security/secure-keys.js";
@@ -19,6 +21,28 @@ const ASSISTANT_API_KEY_STORAGE_KEY = credentialKey(
   "vellum",
   "assistant_api_key",
 );
+const WORKLIN_SERVICE_KEY_CONTEXT =
+  "worklin/managed-oauth/runtime-service-key/v1";
+
+function deriveIsolatedWorklinServiceKey(): string {
+  if (process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() !== "isolated") {
+    return "";
+  }
+  const assistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID?.trim() || "";
+  const runtimeActorSigningKey =
+    process.env.ACTOR_TOKEN_SIGNING_KEY?.trim() || "";
+  if (
+    !assistantId ||
+    assistantId.length > 256 ||
+    /[\u0000-\u001f\u007f]/u.test(assistantId) ||
+    !/^[0-9a-f]{64}$/iu.test(runtimeActorSigningKey)
+  ) {
+    return "";
+  }
+  return createHmac("sha256", Buffer.from(runtimeActorSigningKey, "hex"))
+    .update(`${WORKLIN_SERVICE_KEY_CONTEXT}\0${assistantId}`)
+    .digest("hex");
+}
 
 export interface ManagedProxyContext {
   /** Whether managed proxy prerequisites are satisfied. */
@@ -48,6 +72,7 @@ export async function resolveManagedProxyContext(): Promise<ManagedProxyContext>
   const assistantApiKey =
     (await getSecureKeyAsync(ASSISTANT_API_KEY_STORAGE_KEY))?.trim() ||
     process.env.ASSISTANT_API_KEY?.trim() ||
+    deriveIsolatedWorklinServiceKey() ||
     "";
   const enabled = !!platformBaseUrl && !!assistantApiKey;
   _managedProxyEnabled = enabled;
