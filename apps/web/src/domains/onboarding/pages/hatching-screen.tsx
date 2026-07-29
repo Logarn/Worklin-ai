@@ -30,7 +30,7 @@ import {
   pendingProviderRequiresOAuth,
   peekPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
-import { isPooledRuntimeProvider } from "@/assistant/pooled-model-provider";
+import { isPlatformManagedRuntimeProvider } from "@/assistant/pooled-model-provider";
 import { ChatgptOAuthSection } from "@/components/ai/chatgpt-oauth-section";
 import {
   getLocalGatewayUrl,
@@ -286,7 +286,7 @@ export function HatchingScreen() {
       const pendingProvider = peekPendingProviderKey(providerKeyScope);
       if (
         pendingProviderRequiresOAuth(pendingProvider) &&
-        !isPooledRuntimeProvider(runtimeProvider)
+        !isPlatformManagedRuntimeProvider(runtimeProvider)
       ) {
         setProviderSetup({ kind: "chatgpt", assistantId });
         return false;

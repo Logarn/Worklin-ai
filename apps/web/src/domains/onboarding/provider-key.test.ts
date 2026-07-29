@@ -293,6 +293,24 @@ describe("pending provider key", () => {
     },
   );
 
+  test("concurrent assistants discard the pending key and use the managed model", async () => {
+    setPendingProviderKey({
+      provider: "openai",
+      authType: "api_key",
+      key: "test-provider-key",
+    });
+
+    await applyPendingProviderKey(
+      "asst-concurrent",
+      "concurrent_service",
+    );
+
+    expect(peekPendingProviderKey()).toBeNull();
+    expect(secretsPostCalls).toHaveLength(0);
+    expect(connectionPostCalls).toHaveLength(0);
+    expect(configPatchCalls).toHaveLength(0);
+  });
+
   test.each([
     {
       label: "xAI/OpenAI-compatible",

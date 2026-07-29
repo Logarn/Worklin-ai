@@ -510,6 +510,82 @@ describe("runtime proxy auth enforcement", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("tenant-context mode accepts different signed assistants without process-global claims", async () => {
+    const captured: Array<{ url: string; headers: Headers }> = [];
+    fetchMock = mock(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        captured.push({
+          url:
+            input instanceof Request
+              ? input.url
+              : input instanceof URL
+                ? input.toString()
+                : input,
+          headers: init?.headers as Headers,
+        });
+        return Response.json({ ok: true });
+      },
+    );
+    const handler = createRuntimeProxyHandler(
+      makeConfig({ runtimeAssistantScopeMode: "tenant_context" }),
+    );
+
+    const first = await handler(
+      new Request(
+        "http://localhost:7830/v1/assistants/test-assistant/messages",
+        { headers: platformHeaders() },
+      ),
+    );
+    const otherContext = {
+      ...PLATFORM_TENANT_CONTEXT,
+      assistant_id: "assistant-other",
+      request_id: "request-other",
+    };
+    const otherToken = mintToken({
+      aud: "vellum-gateway",
+      sub: "actor:assistant-other:vellum-principal-test-user",
+      scope_profile: "actor_client_v1",
+      policy_epoch: CURRENT_POLICY_EPOCH,
+      ttlSeconds: 300,
+      tenant_context: otherContext,
+    });
+    const otherHeaders = {
+      authorization: `Bearer ${otherToken}`,
+      "x-worklin-tenant-context-version": "1",
+      "x-worklin-org-id": otherContext.organization_id,
+      "x-worklin-user-id": otherContext.user_id,
+      "x-worklin-assistant-id": otherContext.assistant_id,
+      "x-worklin-actor-id": otherContext.actor_id,
+      "x-worklin-request-id": otherContext.request_id,
+    };
+    const second = await handler(
+      new Request(
+        "http://localhost:7830/v1/assistants/assistant-other/messages",
+        { headers: otherHeaders },
+      ),
+    );
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(captured.map((entry) => new URL(entry.url).pathname)).toEqual([
+      "/v1/messages",
+      "/v1/messages",
+    ]);
+    const exchangeClaims = captured.map((entry) => {
+      const token = entry.headers.get("authorization")!.replace(/^Bearer /, "");
+      const verified = verifyToken(token, "vellum-daemon");
+      if (!verified.ok) throw new Error(verified.reason);
+      return verified.claims;
+    });
+    expect(
+      exchangeClaims.map((claims) => claims.tenant_context?.assistant_id),
+    ).toEqual(["test-assistant", "assistant-other"]);
+    expect(exchangeClaims.map((claims) => claims.sub)).toEqual([
+      "actor:self:vellum-principal-test-user",
+      "actor:self:vellum-principal-test-user",
+    ]);
+  });
+
   test("assistant-scoped URL binds a legacy platform actor when stack enforcement is off", async () => {
     let capturedHeaders: Headers | undefined;
     fetchMock = mock(

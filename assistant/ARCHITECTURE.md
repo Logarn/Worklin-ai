@@ -64,6 +64,26 @@ key-bearing provider adapter.
 See [`../docs/pooled-runtime-workers.md`](../docs/pooled-runtime-workers.md) for
 the cross-service lease, state, route, deployment, and canary contract.
 
+#### Concurrent runtime request boundary
+
+`WORKLIN_RUNTIME_MODE=concurrent_service` starts the chat-only kernel in
+`src/concurrent-runtime/` instead of the single-assistant process. One replica
+can execute multiple tenants concurrently, but it has no process-global
+assistant identity or shared workspace. The gateway verifies that the signed
+actor token, assistant-scoped route, and canonical tenant headers agree before
+forwarding a flat runtime request.
+
+Repository calls require an immutable `TenantExecutionContext`. PostgreSQL
+tables use compound organization/assistant ownership keys, explicit predicates,
+transaction-local tenant settings, and forced row-level security. Message
+acceptance is idempotent, turns serialize per conversation, scheduling is fair
+across tenants, and run leases fence replica crashes. Unsupported capabilities
+return `requires_dedicated_runtime`.
+
+See
+[`../docs/concurrent-runtime-service.md`](../docs/concurrent-runtime-service.md)
+for placement, persistence, deployment, and release gates.
+
 **Token schema (JWT claims):**
 
 | Claim           | Type                                    | Description                                                        |

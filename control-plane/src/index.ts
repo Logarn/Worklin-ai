@@ -1021,6 +1021,7 @@ function assistantPayload(
 ) {
   const tenantContext = createRuntimeTenantContext(row, user.id, runtimeStack);
   const pooled = pooledRuntimeEligible(runtimeStack);
+  const concurrent = runtimeStack.provider === "concurrent_service";
   const runtimeActionCapabilities = runtimeActionCapabilitiesForStack(
     runtimeStack,
     !pooled && runtimeProvisioningConfigurationError() === null,
@@ -1043,6 +1044,9 @@ function assistantPayload(
     runtime_status: pooled ? "active" : runtimeStack.status,
     runtime_stack_id: runtimeStack.id,
     runtime_provider: pooled ? "pooled_worker" : runtimeStack.provider,
+    runtime_state: concurrent ? "ready" : undefined,
+    runtime_capabilities: concurrent ? ["interactive_chat"] : undefined,
+    runtime_migration_state: concurrent ? null : undefined,
     runtime_last_health_status: pooled
       ? "ready"
       : runtimeStack.last_health_status,

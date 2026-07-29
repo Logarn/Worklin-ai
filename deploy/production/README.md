@@ -6,12 +6,18 @@ real container backend.
 ## Production Shape
 
 - `apps/web` runs on Vercel.
-- Railway runs one public control-plane container plus one private runtime
-  container per customer assistant. Both use `runtime/Dockerfile`.
+- Railway runs one public control-plane container plus private runtime
+  containers. Dedicated assistants keep one isolated container each. An
+  optional concurrent chat service can serve allowlisted new assistants.
+  Every shape uses `runtime/Dockerfile`.
 - The public container uses `WORKLIN_RUNTIME_MODE=control-plane`; it starts
   only the control plane and public edge on a clean volume.
 - Each customer container uses `WORKLIN_RUNTIME_MODE=isolated`; it starts its
   own assistant, gateway, and credential executor on a dedicated volume.
+- The optional shared chat container uses
+  `WORKLIN_RUNTIME_MODE=concurrent_service`; it starts a tenant-context gateway,
+  credential executor, and stateless chat kernel backed by PostgreSQL, with no
+  customer workspace volume.
 - The control plane is the only browser-facing HTTP surface. Customer gateways
   stay private and are selected only after ownership verification.
 
@@ -49,6 +55,14 @@ can only be used when `WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=true` and
 `WORKLIN_REQUIRE_ISOLATED_RUNTIME=false` are set together for a local smoke
 test.
 
+Concurrent placement is disabled by default. Enabling it only affects eligible
+runtime-stack rows created after the placement setting changes. Existing
+isolated or pooled assistants are not converted automatically. The concurrent
+service supports managed-model chat only; unsupported routes require dedicated
+placement. See
+[`../../docs/concurrent-runtime-service.md`](../../docs/concurrent-runtime-service.md)
+for its configuration and mandatory production release gates.
+
 ## Backend
 
 For Railway, the repo-root `railway.json` builds both service shapes:
@@ -63,6 +77,19 @@ The public service listens through the control plane and must set
 `WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME=false`. Its readiness check validates the
 isolated provisioner configuration without depending on a co-located gateway.
 The old combined volume remains detached and quarantined.
+
+### Concurrent chat service
+
+Deploy a separate private runtime service with
+`WORKLIN_RUNTIME_MODE=concurrent_service`, an explicit shared actor-token
+signing key, and application/migration PostgreSQL URLs. Configure the public
+control plane with the private gateway URL and start with `internal` or
+`canary` placement plus an explicit assistant or user allowlist.
+
+Do not enable `new_assistants` for production until the RLS integration,
+interleaved tenant, cancellation, replica-crash, load, backup/restore,
+deletion, drain, rollback, and security-review gates in the architecture
+document have passed.
 
 ### Isolated Railway runtime provisioning
 

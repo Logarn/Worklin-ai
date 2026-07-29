@@ -43,7 +43,9 @@ Already present:
   runtime stack metadata, fail-closed runtime proxy routing, and a gated
   Railway per-assistant provisioner. It also contains an inert-by-default
   pooled-worker path with generation-fenced tenant leases, encrypted BYOK
-  storage, durable state transport, health gates, and adversarial reuse tests.
+  storage, durable state transport, health gates, and adversarial reuse tests,
+  plus an opt-in concurrent chat placement path that avoids per-assistant
+  Railway provisioning.
 - Retention domain package and Worklin retention skill surfaces.
 
 Still required for broader multi-tenant production:
@@ -56,6 +58,9 @@ Still required for broader multi-tenant production:
 - Provisioned pooled-worker services, persistent control-plane storage, an
   object-storage bucket and signing identity, and a live two-tenant network
   canary before the pool is enabled.
+- Managed PostgreSQL roles, RLS integration tests, load tests, security review,
+  and operational drills before the concurrent runtime handles production
+  traffic.
 
 Do not expose one concurrently shared assistant workspace to multiple brands.
 That would mix conversations, documents, memory, API keys, Klaviyo data,
@@ -68,6 +73,13 @@ request-scoped model credentials, and cannot be reassigned until export,
 sanitization, and authority revocation succeed. It remains disabled unless all
 startup and health gates pass. See
 [`pooled-runtime-workers.md`](pooled-runtime-workers.md).
+
+The concurrent runtime is a second deployment boundary for managed-model chat:
+one service accepts immutable tenant contexts, stores compound tenant keys in
+PostgreSQL with forced RLS, and never switches a process-global workspace.
+Unsupported routes fall back to dedicated placement. It is disabled by default
+and does not migrate existing assistants. See
+[`concurrent-runtime-service.md`](concurrent-runtime-service.md).
 
 ## Backend Contract Required By The Web App
 
@@ -104,13 +116,17 @@ Minimum runtime-backed surfaces:
 4. Deploy the control plane with Postgres and Google OAuth.
 5. Deploy gateway, assistant runtime, and credential executor as private
    services behind the control plane. For pooled capacity, create separate
-   `pooled_worker` services instead of converting customer-bound runtimes.
+   `pooled_worker` services instead of converting customer-bound runtimes. For
+   a concurrent chat canary, deploy one separate `concurrent_service` image
+   backed by managed PostgreSQL and point only allowlisted new assistants at
+   its private gateway.
 6. Configure Vercel with the `VITE_*_API_BASE_URL` values that point at the
    public API origin.
 7. Smoke-test signup, assistant provisioning, Klaviyo connection, audit run,
    artifact viewing, and PDF export with an isolated test tenant.
 8. Run the sequential two-tenant pooled-worker canary when pooled capacity is
-   enabled.
+   enabled, or the concurrent runtime's RLS, interleaving, cancellation,
+   crash-recovery, and load gates when concurrent placement is enabled.
 9. Only then invite real users.
 
 ## Required Production Inputs

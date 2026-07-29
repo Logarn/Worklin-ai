@@ -5,6 +5,16 @@
  * and the normalized AuthContext that downstream code consumes.
  */
 
+import type {
+  RuntimeServiceTenantContextClaim,
+  RuntimeTenantContextClaim,
+} from "@vellumai/service-contracts/tenant-context";
+
+export type {
+  RuntimeServiceTenantContextClaim,
+  RuntimeTenantContextClaim,
+} from "@vellumai/service-contracts/tenant-context";
+
 // ---------------------------------------------------------------------------
 // Scope profiles — named bundles of permissions
 // ---------------------------------------------------------------------------
@@ -58,23 +68,6 @@ export type TokenAudience = "vellum-gateway" | "vellum-daemon";
 // ---------------------------------------------------------------------------
 // JWT claims — the payload inside the token
 // ---------------------------------------------------------------------------
-
-export interface RuntimeTenantContextClaim {
-  version: 1;
-  organization_id: string;
-  user_id: string;
-  assistant_id: string;
-  actor_id: string;
-  request_id: string;
-}
-
-export interface RuntimeServiceTenantContextClaim {
-  version: 1;
-  assistant_id: string;
-  service_id: "gateway";
-  request_id: string;
-  organization_id?: string;
-}
 
 export interface RuntimeWorkerLeaseClaim {
   version: 1;

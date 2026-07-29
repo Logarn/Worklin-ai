@@ -27,3 +27,4 @@ export * from "./rendering.js";
 export * from "./trust-rules.js";
 export * from "./ingress.js";
 export * from "./twilio-ingress.js";
+export * from "./tenant-context.js";

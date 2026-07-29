@@ -10,6 +10,15 @@ lease, one immutable worker identity, and one monotonically increasing lease
 generation. Reassignment is permitted only after the previous tenant has been
 drained, exported, sanitized, and deauthorized.
 
+For stateless, managed-model chat, the separate concurrent runtime tier can
+serve multiple tenant contexts in one process without restoring or swapping a
+workspace. It persists only explicitly tenant-keyed chat state in PostgreSQL
+and fails closed for workspace, memory, tools, credentials, channels, and
+other stateful capabilities. See
+[`concurrent-runtime-service.md`](concurrent-runtime-service.md). Pooled workers
+remain the reusable isolation boundary for capabilities that need an assistant
+workspace but do not require a permanently dedicated service.
+
 ## Request Flow
 
 ```mermaid

@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
+import type { RuntimeTenantContextClaim } from "@vellumai/service-contracts/tenant-context";
+
 import type { AssistantRow } from "./assistant-store.js";
 import { platformOwnerPrincipalId } from "./platform-owner-principal.js";
 import type { RuntimeStackRow } from "./runtime-stacks.js";
@@ -16,14 +18,7 @@ export interface RuntimeTenantContext {
   requestId: string;
 }
 
-export interface RuntimeTenantContextClaim {
-  version: typeof RUNTIME_TENANT_CONTEXT_VERSION;
-  organization_id: string;
-  user_id: string;
-  assistant_id: string;
-  actor_id: string;
-  request_id: string;
-}
+export type { RuntimeTenantContextClaim };
 
 export class RuntimeTenantContextError extends Error {
   constructor(message: string) {

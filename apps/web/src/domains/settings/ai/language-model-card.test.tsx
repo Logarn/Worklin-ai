@@ -158,4 +158,31 @@ describe("LanguageModelCard", () => {
     expect(queryByText("Use Worklin credits")).toBeNull();
     expect(queryByText("Manage providers")).toBeNull();
   });
+
+  test("shows the managed model surface for concurrent assistants", () => {
+    useResolvedAssistantsStore.setState({
+      assistants: [
+        {
+          id: "asst-1",
+          name: "Concurrent assistant",
+          isLocal: false,
+          isPlatformHosted: true,
+          runtimeProvider: "concurrent_service",
+        },
+      ],
+    });
+
+    const { getByText, queryByText } = render(
+      <Wrapper>
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(getByText("Worklin managed model")).toBeTruthy();
+    expect(
+      getByText(/personal API keys and custom model endpoints require/i),
+    ).toBeTruthy();
+    expect(queryByText("Use my API key")).toBeNull();
+    expect(queryByText("Replace API key")).toBeNull();
+  });
 });

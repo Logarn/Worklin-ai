@@ -30,10 +30,14 @@ import {
   type ProviderConnectionPreset,
 } from "@/assistant/provider-connection-presets";
 import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
-import { isPooledRuntimeProvider } from "@/assistant/pooled-model-provider";
+import {
+  isConcurrentRuntimeProvider,
+  isPooledRuntimeProvider,
+} from "@/assistant/pooled-model-provider";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
 import { CallSiteOverridesModal } from "@/domains/settings/ai/call-site-overrides-modal";
+import { ConcurrentLanguageModelCard } from "@/domains/settings/ai/concurrent-language-model-card";
 import { ManageProfilesModal } from "@/domains/settings/ai/manage-profiles-modal";
 import { PooledLanguageModelCard } from "@/domains/settings/ai/pooled-language-model-card";
 import {
@@ -300,6 +304,9 @@ export function LanguageModelCard() {
 
   if (isPooledRuntimeProvider(runtimeProvider)) {
     return <PooledLanguageModelCard assistantId={assistantId} />;
+  }
+  if (isConcurrentRuntimeProvider(runtimeProvider)) {
+    return <ConcurrentLanguageModelCard />;
   }
 
   return <DedicatedLanguageModelCard assistantId={assistantId} />;

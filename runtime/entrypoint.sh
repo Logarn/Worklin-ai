@@ -53,6 +53,25 @@ if [[ "${WORKLIN_RUNTIME_MODE}" == "pooled" ||
     echo "ACTOR_TOKEN_SIGNING_KEY must be the explicit 64-hex derived key for this pooled worker" >&2
     exit 1
   fi
+elif [[ "${WORKLIN_RUNTIME_MODE}" == "concurrent_service" ]]; then
+  : "${GATEWAY_IPC_SOCKET_DIR:=/run/worklin-runtime-ipc}"
+  : "${RUNTIME_ASSISTANT_SCOPE_MODE:=tenant_context}"
+  if [[ "${RUNTIME_ASSISTANT_SCOPE_MODE}" != "tenant_context" ]]; then
+    echo "RUNTIME_ASSISTANT_SCOPE_MODE must be tenant_context for the concurrent service" >&2
+    exit 1
+  fi
+  if [[ -n "${WORKLIN_PLATFORM_ASSISTANT_ID:-}" ]]; then
+    echo "WORKLIN_PLATFORM_ASSISTANT_ID must be unset for the concurrent service" >&2
+    exit 1
+  fi
+  if [[ -z "${CONCURRENT_RUNTIME_DATABASE_URL:-}" ]]; then
+    echo "CONCURRENT_RUNTIME_DATABASE_URL is required for the concurrent service" >&2
+    exit 1
+  fi
+  if [[ ! "${ACTOR_TOKEN_SIGNING_KEY:-}" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+    echo "ACTOR_TOKEN_SIGNING_KEY must be the explicit shared 64-hex key for the concurrent service" >&2
+    exit 1
+  fi
 else
   : "${GATEWAY_IPC_SOCKET_DIR:=${VELLUM_WORKSPACE_DIR%/}/runtime-ipc}"
   : "${WORKLIN_CONTROL_PLANE_INTERNAL_URL:=http://127.0.0.1:${WORKLIN_CONTROL_PLANE_PORT}}"
@@ -77,7 +96,8 @@ fi
 
 if [[ "${WORKLIN_RUNTIME_MODE}" == "isolated" ||
       "${WORKLIN_RUNTIME_MODE}" == "pooled" ||
-      "${WORKLIN_RUNTIME_MODE}" == "pooled_worker" ]]; then
+      "${WORKLIN_RUNTIME_MODE}" == "pooled_worker" ||
+      "${WORKLIN_RUNTIME_MODE}" == "concurrent_service" ]]; then
   : "${GATEWAY_PORT:=${PORT}}"
 else
   : "${GATEWAY_PORT:=7830}"
@@ -118,6 +138,7 @@ export IS_CONTAINERIZED
 export CES_MODE
 export WORKLIN_REQUIRE_ISOLATED_RUNTIME
 export WORKLIN_RUNTIME_MODE
+export RUNTIME_ASSISTANT_SCOPE_MODE
 export VELLUM_DISABLE_EMBEDDINGS
 export WORKLIN_RUNTIME_WORKER_LEASE_AUTHORITY_FILE
 export WORKLIN_GATEWAY_URL="${GATEWAY_INTERNAL_URL}"
@@ -284,7 +305,11 @@ fi
 
 chmod 660 "${gateway_socket_path}"
 
-start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
+if [[ "${WORKLIN_RUNTIME_MODE}" == "concurrent_service" ]]; then
+  start_as assistant bash -lc "cd /app/assistant && exec bun run src/concurrent-runtime/main.ts"
+else
+  start_as assistant bash -lc "cd /app/assistant && exec /app/assistant/docker-entrypoint.sh"
+fi
 if [[ "${WORKLIN_RUNTIME_MODE}" == "combined" ]]; then
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/index.ts"
   start_as assistant bash -lc "cd /app/control-plane && exec bun run src/public-edge.ts"

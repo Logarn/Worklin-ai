@@ -5386,7 +5386,28 @@ components:
           readOnly: true
           description: Runtime transport provider selected by the Worklin control
             plane. Pooled workers use bounded request polling instead of an
-            assistant-scoped long-lived event stream.
+            assistant-scoped long-lived event stream. Concurrent services use
+            the normal event contract while isolating logical assistants in a
+            shared chat-only runtime.
+        runtime_state:
+          type: string
+          nullable: true
+          readOnly: true
+          description: Logical runtime readiness for providers that do not provision
+            one infrastructure stack per assistant.
+        runtime_capabilities:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          description: Explicit capabilities available on the selected runtime
+            provider. Unknown or omitted capabilities fail closed.
+        runtime_migration_state:
+          type: string
+          nullable: true
+          readOnly: true
+          description: Current fenced migration phase, or null when no migration is
+            active.
         created:
           type: string
           format: date-time

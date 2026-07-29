@@ -60,6 +60,14 @@ export interface RuntimeStackConfig {
   legacySharedRuntimeUserEmailHashes: readonly string[];
   pooledRuntimeCanaryAssistantIds: readonly string[];
   pooledRuntimeCanaryUserEmailHashes: readonly string[];
+  concurrentRuntimeMode:
+    | "disabled"
+    | "internal"
+    | "canary"
+    | "new_assistants";
+  concurrentRuntimeGatewayUrl: string | null;
+  concurrentRuntimeAssistantIds: readonly string[];
+  concurrentRuntimeUserIds: readonly string[];
   runtimeStackUrlTemplate: string | null;
   runtimeStackProvider: string;
   runtimeRoot: string | null;
@@ -167,6 +175,56 @@ function parseCommaSeparatedList(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function parseConcurrentRuntimeMode(
+  value: string | undefined,
+): RuntimeStackConfig["concurrentRuntimeMode"] {
+  const mode = value?.trim().toLowerCase() || "disabled";
+  if (
+    mode === "disabled" ||
+    mode === "internal" ||
+    mode === "canary" ||
+    mode === "new_assistants"
+  ) {
+    return mode;
+  }
+  throw new Error(
+    "WORKLIN_CONCURRENT_RUNTIME_MODE must be disabled, internal, canary, or new_assistants.",
+  );
+}
+
+function parseRuntimeGatewayUrl(
+  value: string | undefined,
+  required: boolean,
+): string | null {
+  const raw = value?.trim();
+  if (!raw) {
+    if (required) {
+      throw new Error(
+        "WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL is required when concurrent runtime placement is enabled.",
+      );
+    }
+    return null;
+  }
+  try {
+    const url = new URL(raw);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (url.pathname !== "/" && url.pathname !== "")
+    ) {
+      throw new Error();
+    }
+    return trimTrailingSlash(url.toString());
+  } catch {
+    throw new Error(
+      "WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL must be an HTTP origin.",
+    );
+  }
+}
+
 export function runtimeStackConfigFromEnv(
   rawEnv: EnvLike,
   gatewayUrl: string,
@@ -192,6 +250,9 @@ export function runtimeStackConfigFromEnv(
   const pooledRuntimeCanaryAssistantIds = parseCommaSeparatedList(
     rawEnv.WORKLIN_POOLED_RUNTIME_CANARY_ASSISTANT_IDS,
   );
+  const concurrentRuntimeMode = parseConcurrentRuntimeMode(
+    rawEnv.WORKLIN_CONCURRENT_RUNTIME_MODE,
+  );
   const template = rawEnv.WORKLIN_RUNTIME_STACK_URL_TEMPLATE?.trim() || null;
   return {
     gatewayUrl,
@@ -202,6 +263,17 @@ export function runtimeStackConfigFromEnv(
     legacySharedRuntimeUserEmailHashes,
     pooledRuntimeCanaryAssistantIds,
     pooledRuntimeCanaryUserEmailHashes,
+    concurrentRuntimeMode,
+    concurrentRuntimeGatewayUrl: parseRuntimeGatewayUrl(
+      rawEnv.WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL,
+      concurrentRuntimeMode !== "disabled",
+    ),
+    concurrentRuntimeAssistantIds: parseCommaSeparatedList(
+      rawEnv.WORKLIN_CONCURRENT_RUNTIME_ASSISTANT_IDS,
+    ),
+    concurrentRuntimeUserIds: parseCommaSeparatedList(
+      rawEnv.WORKLIN_CONCURRENT_RUNTIME_USER_IDS,
+    ),
     runtimeStackUrlTemplate: template,
     runtimeStackProvider:
       rawEnv.WORKLIN_RUNTIME_STACK_PROVIDER?.trim() ||
@@ -211,6 +283,23 @@ export function runtimeStackConfigFromEnv(
       rawEnv.WORKLIN_PREPROVISIONED_RUNTIME_SLOTS,
     ),
   };
+}
+
+function shouldUseConcurrentRuntime(
+  config: RuntimeStackConfig,
+  assistant: AssistantRuntimeRow,
+): boolean {
+  if (
+    config.concurrentRuntimeMode === "disabled" ||
+    !config.concurrentRuntimeGatewayUrl
+  ) {
+    return false;
+  }
+  if (config.concurrentRuntimeMode === "new_assistants") return true;
+  return (
+    config.concurrentRuntimeAssistantIds.includes(assistant.id) ||
+    config.concurrentRuntimeUserIds.includes(assistant.user_id)
+  );
 }
 
 function isLegacySharedRuntimeAllowedForAssistant(
@@ -390,6 +479,19 @@ function nextRuntimeStackSeed(
   | "last_health_status"
   | "last_error"
 > {
+  if (shouldUseConcurrentRuntime(config, assistant)) {
+    return {
+      status: "active",
+      provider: "concurrent_service",
+      gateway_url: config.concurrentRuntimeGatewayUrl,
+      public_ingress_url: config.publicIngressUrl,
+      workspace_volume_ref: null,
+      service_ref: "concurrent-runtime",
+      last_health_status: "ready",
+      last_error: null,
+    };
+  }
+
   if (config.runtimeStackUrlTemplate) {
     return {
       status: "active",

@@ -135,6 +135,17 @@ describe("config: hardcoded defaults", () => {
     }
   });
 
+  test("tenant-context assistant scope is explicitly configurable", () => {
+    const saved = process.env.RUNTIME_ASSISTANT_SCOPE_MODE;
+    process.env.RUNTIME_ASSISTANT_SCOPE_MODE = "tenant_context";
+    try {
+      expect(loadConfig().runtimeAssistantScopeMode).toBe("tenant_context");
+    } finally {
+      if (saved !== undefined) process.env.RUNTIME_ASSISTANT_SCOPE_MODE = saved;
+      else delete process.env.RUNTIME_ASSISTANT_SCOPE_MODE;
+    }
+  });
+
   test("runtimeTimeoutMs rejects invalid env var", () => {
     const saved = process.env.RUNTIME_TIMEOUT_MS;
     process.env.RUNTIME_TIMEOUT_MS = "0";

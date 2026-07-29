@@ -89,6 +89,10 @@ function config(
     legacySharedRuntimeUserEmailHashes: [],
     pooledRuntimeCanaryAssistantIds: [],
     pooledRuntimeCanaryUserEmailHashes: [],
+    concurrentRuntimeMode: "disabled",
+    concurrentRuntimeGatewayUrl: null,
+    concurrentRuntimeAssistantIds: [],
+    concurrentRuntimeUserIds: [],
     runtimeStackUrlTemplate: null,
     runtimeStackProvider: "railway",
     runtimeRoot: "/data",
@@ -100,6 +104,58 @@ function config(
 const NOW = () => "2026-07-11T12:00:00.000Z";
 
 describe("runtime stack provisioning defaults", () => {
+  test("creates an eligible assistant as an active logical concurrent tenant", () => {
+    const db = setupDb();
+    const stack = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config({
+        concurrentRuntimeMode: "canary",
+        concurrentRuntimeGatewayUrl:
+          "http://concurrent-runtime.railway.internal:8080",
+        concurrentRuntimeAssistantIds: ["asst-1"],
+      }),
+      NOW,
+    );
+
+    expect(stack).toMatchObject({
+      status: "active",
+      provider: "concurrent_service",
+      gateway_url: "http://concurrent-runtime.railway.internal:8080",
+      workspace_volume_ref: null,
+      service_ref: "concurrent-runtime",
+      actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      last_health_status: "ready",
+    });
+    expect(isRuntimeStackRoutable(stack)).toBe(true);
+    expect(assistantApiStatusForRuntimeStack(stack)).toBe("active");
+  });
+
+  test("does not move existing dedicated assistants when concurrent placement is enabled", () => {
+    const db = setupDb();
+    const existing = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+
+    const unchanged = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: existing.id }),
+      config({
+        concurrentRuntimeMode: "new_assistants",
+        concurrentRuntimeGatewayUrl:
+          "http://concurrent-runtime.railway.internal:8080",
+      }),
+      NOW,
+    );
+
+    expect(unchanged.id).toBe(existing.id);
+    expect(unchanged.provider).toBe("railway");
+    expect(unchanged.status).toBe("provisioning");
+  });
+
   test("supports explicit suspend and delete lifecycle transitions", () => {
     const db = setupDb();
     const stack = ensureRuntimeStackForAssistant(
@@ -1064,8 +1120,46 @@ describe("runtimeStackConfigFromEnv", () => {
       legacySharedRuntimeUserEmailHashes: [],
       pooledRuntimeCanaryAssistantIds: [],
       pooledRuntimeCanaryUserEmailHashes: [],
+      concurrentRuntimeMode: "disabled",
+      concurrentRuntimeGatewayUrl: null,
+      concurrentRuntimeAssistantIds: [],
+      concurrentRuntimeUserIds: [],
       runtimeStackUrlTemplate: null,
       preprovisionedRuntimeSlots: [],
+    });
+  });
+
+  test("requires a shared gateway origin when concurrent placement is enabled", () => {
+    expect(() =>
+      runtimeStackConfigFromEnv(
+        { WORKLIN_CONCURRENT_RUNTIME_MODE: "canary" },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ),
+    ).toThrow(
+      "WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL is required",
+    );
+  });
+
+  test("parses concurrent new-assistant placement and allowlists", () => {
+    expect(
+      runtimeStackConfigFromEnv(
+        {
+          WORKLIN_CONCURRENT_RUNTIME_MODE: "new_assistants",
+          WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL:
+            "http://concurrent-runtime.railway.internal:8080/",
+          WORKLIN_CONCURRENT_RUNTIME_ASSISTANT_IDS: "asst-1, asst-2",
+          WORKLIN_CONCURRENT_RUNTIME_USER_IDS: "user-1, user-2",
+        },
+        "http://gateway.test",
+        "https://worklin.example.com",
+      ),
+    ).toMatchObject({
+      concurrentRuntimeMode: "new_assistants",
+      concurrentRuntimeGatewayUrl:
+        "http://concurrent-runtime.railway.internal:8080",
+      concurrentRuntimeAssistantIds: ["asst-1", "asst-2"],
+      concurrentRuntimeUserIds: ["user-1", "user-2"],
     });
   });
 

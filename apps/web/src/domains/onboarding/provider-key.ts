@@ -12,6 +12,7 @@ import type {
   OnboardingProviderOptionId,
 } from "@/domains/onboarding/provider-catalog";
 import {
+  isConcurrentRuntimeProvider,
   isPooledApiKeyProvider,
   isPooledRuntimeProvider,
 } from "@/assistant/pooled-model-provider";
@@ -335,6 +336,10 @@ export async function applyPendingProviderKey(
   const pending = peekPendingProviderKey(scope);
   if (!pending) return;
   const authType = pendingProviderAuthType(pending);
+  if (isConcurrentRuntimeProvider(runtimeProvider)) {
+    setPendingProviderKey(null);
+    return;
+  }
   if (isPooledRuntimeProvider(runtimeProvider)) {
     if (!isPooledApiKeyProvider(pending.provider)) {
       throw new PooledProviderSetupError(

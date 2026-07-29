@@ -81,6 +81,9 @@ async function resolveStackAssistantId(
   requestedAssistantId?: string,
 ): Promise<string | null> {
   if (config.platformAssistantId) return config.platformAssistantId;
+  if (config.runtimeAssistantScopeMode === "tenant_context") {
+    return requestedAssistantId ?? null;
+  }
   const fromCredential = await readCredential(
     credentialKey("vellum", "platform_assistant_id"),
   );
@@ -89,6 +92,14 @@ async function resolveStackAssistantId(
   if (!requestedAssistantId) return readRuntimeAssistantClaim();
   const claim = claimRuntimeAssistant(requestedAssistantId);
   return claim.ok ? claim.assistantId : readRuntimeAssistantClaim();
+}
+
+function enforcesAssistantScope(config: GatewayConfig): boolean {
+  return (
+    config.runtimeAssistantScopeMode === "enforce" ||
+    config.runtimeAssistantScopeMode === "claim_once" ||
+    config.runtimeAssistantScopeMode === "tenant_context"
+  );
 }
 
 function requestedAssistantId(
@@ -174,6 +185,7 @@ export function createRuntimeProxyHandler(
     let platformOwnerBound = false;
     let tenantContext: RuntimeTenantContextClaim | null = null;
     let pooledWorkerLease: RuntimeWorkerLeaseClaim | null = null;
+    let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
     const authHeader = req.headers.get("authorization");
 
     if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
@@ -247,11 +259,7 @@ export function createRuntimeProxyHandler(
         }
       }
       let exchangeClaims = result.claims;
-      let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
-      if (
-        config.runtimeAssistantScopeMode === "enforce" ||
-        config.runtimeAssistantScopeMode === "claim_once"
-      ) {
+      if (enforcesAssistantScope(config)) {
         let expectedAssistantId: string | null = null;
         if (pooledWorkerLease) {
           expectedAssistantId = pooledWorkerLease.assistant_id;
@@ -318,10 +326,7 @@ export function createRuntimeProxyHandler(
         req.headers,
         exchangeClaims,
         {
-          required:
-            !pooledWorkerLease &&
-            (config.runtimeAssistantScopeMode === "enforce" ||
-              config.runtimeAssistantScopeMode === "claim_once"),
+          required: !pooledWorkerLease && enforcesAssistantScope(config),
           expectedAssistantId: actorScopeAssistantId,
           requestedAssistantId: assistantScopedPath?.assistantId,
         },
@@ -350,12 +355,9 @@ export function createRuntimeProxyHandler(
     // /v1/assistants/:assistantId/... requests from clients to flat paths.
     let upstreamPath = url.pathname;
     if (assistantScopedPath) {
-      if (
-        config.runtimeAssistantScopeMode === "enforce" ||
-        config.runtimeAssistantScopeMode === "claim_once"
-      ) {
+      if (enforcesAssistantScope(config)) {
         let expectedAssistantId: string | null =
-          pooledWorkerLease?.assistant_id ?? null;
+          pooledWorkerLease?.assistant_id ?? actorScopeAssistantId;
         if (!expectedAssistantId) {
           try {
             expectedAssistantId = await resolveStackAssistantId(config);

@@ -32,3 +32,18 @@ export function isPooledRuntimeProvider(
 ): boolean {
   return runtimeProvider === "pooled_worker";
 }
+
+export function isConcurrentRuntimeProvider(
+  runtimeProvider: string | null | undefined,
+): boolean {
+  return runtimeProvider === "concurrent_service";
+}
+
+export function isPlatformManagedRuntimeProvider(
+  runtimeProvider: string | null | undefined,
+): boolean {
+  return (
+    isPooledRuntimeProvider(runtimeProvider) ||
+    isConcurrentRuntimeProvider(runtimeProvider)
+  );
+}
