@@ -366,6 +366,23 @@ export function HatchingScreen() {
             return;
           }
           if (!cancelled && existing.ok && hatchedAssistantId) {
+            const providerKeyScope = {
+              userId: useAuthStore.getState().user?.id ?? null,
+            };
+            if (!peekPendingProviderKey(providerKeyScope)) {
+              const providerQuery = new URLSearchParams({
+                next: "hatching",
+                assistantId: existing.data.id,
+              });
+              if (completeAfterHatch) {
+                providerQuery.set("afterHatch", "chat");
+              }
+              void navigate(
+                `${routes.onboarding.provider}?${providerQuery.toString()}`,
+                { replace: true },
+              );
+              return;
+            }
             useResolvedAssistantsStore.getState().upsertFromApi(existing.data);
             void setSelectedAssistant(existing.data.id);
             scheduleNextPoll(0);
@@ -387,9 +404,12 @@ export function HatchingScreen() {
             userId: useAuthStore.getState().user?.id ?? null,
           })
         ) {
-          void navigate(`${routes.onboarding.provider}?next=hatching`, {
-            replace: true,
-          });
+          const providerQuery = new URLSearchParams({ next: "hatching" });
+          if (completeAfterHatch) providerQuery.set("afterHatch", "chat");
+          void navigate(
+            `${routes.onboarding.provider}?${providerQuery.toString()}`,
+            { replace: true },
+          );
           return;
         }
       }
