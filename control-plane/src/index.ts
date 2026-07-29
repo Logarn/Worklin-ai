@@ -1387,8 +1387,8 @@ function operationalStatusPayload(
         ? null
         : waitingForOnboarding
           ? "Finish setup to prepare your assistant."
-        : (runtimeStack.last_error ??
-          "Your assistant runtime is being prepared."),
+          : (runtimeStack.last_error ??
+            "Your assistant runtime is being prepared."),
     },
   };
 }
@@ -1616,14 +1616,19 @@ function handleOnboardingCompletion(
     return;
   }
 
-  const completedAt = markUserOnboardingCompleted(db, user.id, nowIso);
+  getOrCreateOrganization(user);
+  const assistant = getOrCreateAssistant(user);
+  const runtimeStack = ensureAssistantRuntime(assistant);
+  const runtimeReady =
+    pooledRuntimeEligible(runtimeStack) ||
+    operationalStateForRuntimeStack(runtimeStack) === "active";
+  const completedAt = runtimeReady
+    ? markUserOnboardingCompleted(db, user.id, nowIso)
+    : user.onboarding_completed_at;
   const completedUser = {
     ...user,
     onboarding_completed_at: completedAt,
   };
-  getOrCreateOrganization(completedUser);
-  const assistant = getOrCreateAssistant(completedUser);
-  const runtimeStack = ensureAssistantRuntime(assistant);
 
   sendJson(req, res, {
     user: {
@@ -2070,9 +2075,10 @@ async function handleWorkspace(
       parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
     const assistant = body.assistantId
       ? db
-          .query<AssistantRow, [string, string]>(
-            "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
-          )
+          .query<
+            AssistantRow,
+            [string, string]
+          >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
           .get(body.assistantId, context.org.id)
       : null;
     const member = body.userId
@@ -2242,9 +2248,10 @@ function accessibleAssistantsForUser(
   const workspace = workspaceContext(req, user);
   if (workspace.org.user_id === user.id) {
     const existing = db
-      .query<AssistantRow, [string]>(
-        "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
-      )
+      .query<
+        AssistantRow,
+        [string]
+      >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
       .all(workspace.org.id);
     if (existing.length === 0) getOrCreateAssistant(user);
   }
@@ -2498,9 +2505,10 @@ async function handleAssistants(
     const existing =
       workspace.org.user_id === user.id
         ? db
-            .query<AssistantRow, [string]>(
-              "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
-            )
+            .query<
+              AssistantRow,
+              [string]
+            >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
             .get(workspace.org.id)
         : accessibleAssistantsForUser(req, user)[0];
     const assistant =
@@ -2856,9 +2864,10 @@ async function handleArtifactInvitations(
       return true;
     }
     const assistant = db
-      .query<AssistantRow, [string, string]>(
-        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
-      )
+      .query<
+        AssistantRow,
+        [string, string]
+      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
       .get(createMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);

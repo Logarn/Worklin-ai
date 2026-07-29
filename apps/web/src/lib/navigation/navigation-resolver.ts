@@ -62,7 +62,10 @@ const LOCAL_ONLY_STANDALONE_PATHS: Set<string> = new Set([
 ]);
 
 function isOnboardingPath(pathname: string): boolean {
-  return pathname.startsWith(`${ONBOARDING_PREFIX}/`) || pathname === ONBOARDING_PREFIX;
+  return (
+    pathname.startsWith(`${ONBOARDING_PREFIX}/`) ||
+    pathname === ONBOARDING_PREFIX
+  );
 }
 
 function onboardingEntrypoint(isLocalMode: boolean): string {
@@ -161,7 +164,8 @@ function resolveRouteGuard(
   pathnameWithSearch: string,
 ): NavigationDecision {
   const qIdx = pathnameWithSearch.indexOf("?");
-  const path = qIdx >= 0 ? pathnameWithSearch.slice(0, qIdx) : pathnameWithSearch;
+  const path =
+    qIdx >= 0 ? pathnameWithSearch.slice(0, qIdx) : pathnameWithSearch;
 
   for (const step of ROUTE_GUARD_PIPELINE) {
     const decision = step(state, path, pathnameWithSearch);
@@ -185,7 +189,10 @@ function requireAuth(
 ): NavigationDecision | null {
   if (state.isAuthenticated) return null;
 
-  if (state.isLocalMode && (isOnboardingPath(path) || LOCAL_ONLY_STANDALONE_PATHS.has(path))) {
+  if (
+    state.isLocalMode &&
+    (isOnboardingPath(path) || LOCAL_ONLY_STANDALONE_PATHS.has(path))
+  ) {
     if (path === routes.selectAssistant && !state.hasAssistants) {
       return { action: "redirect", to: routes.onboarding.hosting };
     }
@@ -229,10 +236,7 @@ function allowSetupRoutes(
   path: string,
   pathnameWithSearch: string,
 ): NavigationDecision | null {
-  if (
-    path === routes.reviewTerms ||
-    path === routes.onboarding.privacy
-  ) {
+  if (path === routes.reviewTerms || path === routes.onboarding.privacy) {
     return {
       action: "redirect",
       to: hasCompletedOnboarding(state)
@@ -250,8 +254,15 @@ function allowSetupRoutes(
     ) {
       return { action: "redirect", to: routes.assistant };
     }
-    if (path === routes.onboarding.hatching && !hasCompletedOnboarding(state)) {
-      return { action: "redirect", to: onboardingEntrypoint(state.isLocalMode) };
+    if (
+      path === routes.onboarding.hatching &&
+      !hasCompletedOnboarding(state) &&
+      !state.hasAssistants
+    ) {
+      return {
+        action: "redirect",
+        to: onboardingEntrypoint(state.isLocalMode),
+      };
     }
     return { action: "allow" };
   }
@@ -259,9 +270,7 @@ function allowSetupRoutes(
   return null;
 }
 
-function requireOnboarding(
-  state: NavigationState,
-): NavigationDecision | null {
+function requireOnboarding(state: NavigationState): NavigationDecision | null {
   if (state.isLocalMode || hasCompletedOnboarding(state)) return null;
   return { action: "redirect", to: onboardingEntrypoint(false) };
 }
@@ -293,7 +302,8 @@ function resolveOnboardingIntercept(
 
   const path = extractPathname(intendedDestination);
   if (!path.startsWith(routes.assistant)) return { action: "allow" };
-  if (path.startsWith(`${routes.assistant}/onboarding`)) return { action: "allow" };
+  if (path.startsWith(`${routes.assistant}/onboarding`))
+    return { action: "allow" };
 
   return {
     action: "redirect",
@@ -310,7 +320,7 @@ function resolveHatchGate(state: NavigationState): NavigationDecision {
   if (!state.isAuthenticated && !state.isLocalMode) {
     return { action: "redirect", to: routes.account.login };
   }
-  if (!hasCompletedOnboarding(state)) {
+  if (!hasCompletedOnboarding(state) && !state.hasAssistants) {
     return { action: "redirect", to: onboardingEntrypoint(state.isLocalMode) };
   }
   return { action: "allow" };

@@ -1,15 +1,9 @@
 /**
- * Tests for `db-maintenance.ts` (orchestration) and the underlying
- * `db-async-query.ts` abstraction.
+ * Tests for safe online `db-maintenance.ts` orchestration.
  *
  * The contract this PR locks in:
- *   1. `runDbMaintenance` runs `VACUUM` through the async abstraction
- *      — when the `sqlite3` CLI is available, that means a subprocess
- *      and the daemon's main event loop keeps ticking. (The structural
- *      anti-block assertion lives in
- *      `db-async-query.test.ts`; here we focus on orchestration.)
- *   2. The subprocess actually shrinks the on-disk page count when
- *      there's reclaimable space.
+ *   1. Automatic maintenance waits for real customer activity.
+ *   2. Maintenance remains on the daemon's coordinated connection.
  *   3. `maybeRunDbMaintenance` is genuinely async — callers can `await`
  *      it and observe completion.
  *   4. The 24 h interval guard short-circuits a recent re-run.
@@ -17,7 +11,6 @@
  * The per-file temp workspace is set up by `test-preload.ts`; tests just
  * dynamic-import the DB modules so they resolve paths under that temp dir.
  */
-import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 
 const { getSqlite } = await import("../db-connection.js");
@@ -26,7 +19,6 @@ const { deleteMemoryCheckpoint, getMemoryCheckpoint } =
   await import("../checkpoints.js");
 const { maybeRunDbMaintenance } = await import("../db-maintenance.js");
 const { getLastUserMessageTimestamp } = await import("../conversation-crud.js");
-const { getDbPath } = await import("../../util/platform.js");
 
 initializeDb();
 
@@ -56,29 +48,6 @@ function insertMessage(role: "user" | "assistant", createdAt: number): void {
     .run(`msg-${createdAt}-${role}`, convId, role, "[]", createdAt);
 }
 
-/** Inflate the test DB with bloat that VACUUM can reclaim. */
-function inflateAndDelete(byteTarget: number): void {
-  const sqlite = getSqlite();
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS bloat (id INTEGER PRIMARY KEY, payload BLOB)",
-  );
-  const pageSize = (
-    sqlite.query("PRAGMA page_size").get() as { page_size: number }
-  ).page_size;
-  const rowsTarget = Math.max(1, Math.ceil(byteTarget / pageSize));
-  const payload = new Uint8Array(Math.max(1, pageSize - 64));
-  const insert = sqlite.prepare("INSERT INTO bloat (payload) VALUES (?)");
-  sqlite.exec("BEGIN");
-  for (let i = 0; i < rowsTarget; i++) {
-    insert.run(payload);
-  }
-  sqlite.exec("COMMIT");
-  sqlite.exec("DELETE FROM bloat");
-  sqlite.exec("DROP TABLE bloat");
-  // Force the WAL onto the main DB file so the bloat is visible on disk.
-  sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-}
-
 describe("maybeRunDbMaintenance", () => {
   test("returns a Promise that resolves", async () => {
     const result = maybeRunDbMaintenance();
@@ -101,42 +70,14 @@ describe("maybeRunDbMaintenance", () => {
 
   test("stamps the checkpoint after a maintenance run", async () => {
     const now = Date.now();
+    insertMessage("user", now - (QUIET_PERIOD_MS + 60_000));
     await maybeRunDbMaintenance(now);
 
     expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
   });
 
-  test("VACUUM reclaims pages on a bloated DB", async () => {
-    const sqlite = getSqlite();
-    sqlite.exec("DROP TABLE IF EXISTS bloat");
-    sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-
-    inflateAndDelete(8 * 1024 * 1024);
-
-    const dbPath = getDbPath();
-    // Read page_count from a fresh connection so we observe post-write
-    // ground truth without snapshot caching on the main test connection.
-    const readPageCount = (): number => {
-      const probe = new Database(dbPath, { readonly: true });
-      try {
-        return (
-          probe.query("PRAGMA page_count").get() as { page_count: number }
-        ).page_count;
-      } finally {
-        probe.close();
-      }
-    };
-    const pagesBefore = readPageCount();
-
-    await maybeRunDbMaintenance();
-
-    const pagesAfter = readPageCount();
-    expect(pagesAfter).toBeLessThan(pagesBefore);
-  }, 60_000);
-
   test("defers maintenance while the last user message is within the quiet period", async () => {
-    /** VACUUM must not fire while the user is active, so a recent user
-     *  message keeps maintenance deferred. */
+    /** Maintenance must not run while the user is active. */
     // GIVEN the user sent a message one minute ago (well within the quiet period)
     const now = Date.now();
     insertMessage("user", now - 60_000);
@@ -163,17 +104,15 @@ describe("maybeRunDbMaintenance", () => {
     expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
   });
 
-  test("ignores quiet period when no user message exists", async () => {
-    /** A fresh install with no user messages must not be blocked from ever
-     *  running maintenance. */
+  test("defers maintenance when no user message exists", async () => {
     // GIVEN no user messages exist
     const now = Date.now();
 
     // WHEN maintenance is considered
     await maybeRunDbMaintenance(now);
 
-    // THEN it runs and stamps the checkpoint
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
+    // THEN startup stays free of automatic database maintenance
+    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBeNull();
   });
 
   test("a recent assistant message does not keep maintenance deferred", async () => {

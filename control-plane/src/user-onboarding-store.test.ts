@@ -6,12 +6,6 @@ import {
   markUserOnboardingCompleted,
 } from "./user-onboarding-store.js";
 
-const ACCEPTED_CONSENT = JSON.stringify({
-  tos_accepted_version: "2026-06-08",
-  privacy_policy_accepted_version: "2026-06-08",
-  ai_data_sharing_accepted_version: "2026-06-08",
-});
-
 function createDatabase(): Database {
   const db = new Database(":memory:");
   db.exec(`
@@ -36,15 +30,15 @@ function createDatabase(): Database {
 }
 
 describe("user onboarding store", () => {
-  test("backfills only accounts with reliable prior-completion evidence", () => {
+  test("does not infer onboarding completion from legal consent or runtime attempts", () => {
     const db = createDatabase();
     db.query(
       `INSERT INTO users (id, consent_json, created_at, updated_at)
        VALUES
          ('new-user', NULL, '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000Z'),
-         ('accepted-user', ?, '2026-07-01T10:00:00.000Z', '2026-07-01T11:00:00.000Z'),
+         ('accepted-user', '{"tos_accepted_version":"2026-06-08"}', '2026-07-01T10:00:00.000Z', '2026-07-01T11:00:00.000Z'),
          ('active-user', NULL, '2026-07-01T10:00:00.000Z', '2026-07-01T12:00:00.000Z')`,
-    ).run(ACCEPTED_CONSENT);
+    ).run();
     db.query(
       "INSERT INTO assistants (id, user_id) VALUES ('assistant-active', 'active-user')",
     ).run();
@@ -65,11 +59,11 @@ describe("user onboarding store", () => {
     expect(rows).toEqual([
       {
         id: "accepted-user",
-        onboarding_completed_at: "2026-07-01T11:00:00.000Z",
+        onboarding_completed_at: null,
       },
       {
         id: "active-user",
-        onboarding_completed_at: "2026-07-01T12:00:00.000Z",
+        onboarding_completed_at: null,
       },
       { id: "new-user", onboarding_completed_at: null },
     ]);
