@@ -18,9 +18,9 @@ import { useNudgeStore } from "@/stores/nudge-store";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Public GitHub repository for Vellum Assistant. */
+/** Public GitHub repository for Worklin. */
 export const GITHUB_REPO_URL =
-  "https://github.com/vellum-ai/vellum-assistant";
+  "https://github.com/Logarn/Worklin-ai";
 
 /** Minimum account age (ms since first observation) before the nudge is eligible. */
 export const GITHUB_MIN_AGE_MS = 5 * 60 * 1000; // 5 minutes

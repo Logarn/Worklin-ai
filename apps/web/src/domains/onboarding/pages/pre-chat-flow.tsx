@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useLayoutEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
@@ -31,7 +31,6 @@ import {
   profileFromCharacter,
   type AssistantCharacter,
 } from "@/components/avatar/assistant-character-packs";
-import { usePrefilledInput } from "@/hooks/use-prefilled-input.js";
 import {
   setPendingAssistantName,
   setPendingPreChatContext,
@@ -47,7 +46,7 @@ import {
 } from "@/domains/onboarding/prechat-steps";
 import { DEFAULT_GROUP_ID } from "@/domains/onboarding/prechat-names";
 import { GOOGLE_TOOL_IDS } from "@/domains/onboarding/prechat-tools";
-import { usePreChatStepState } from "@/domains/onboarding/use-prechat-step-state";
+import { usePreChatDraftStore } from "@/domains/onboarding/prechat-draft-store";
 import { completeAccountOnboarding } from "@/domains/onboarding/complete-account-onboarding";
 import {
   getPlatformAssistants,
@@ -116,34 +115,60 @@ export function PreChatFlow() {
     ? readLocalPlatformAssistantId()
     : null;
 
-  const { currentStep, setCurrentStep, clearPersistedStep } =
-    usePreChatStepState(userId, isNative);
-
   const platformSession = useAuthStore.use.platformSession();
   const hasPlatformSession = hasLivePlatformSession(platformSession);
-  const [selectedTools, setSelectedTools] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [selectedTasks, setSelectedTasks] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [selectedPriorAssistants, setSelectedPriorAssistants] = useState<
-    Set<string>
-  >(() => new Set());
-  const [brandName, setBrandName] = useState("");
-  const [websiteUrl, setWebsiteUrl] = useState("");
-  const { value: userName, onChange: handleUserNameChange } = usePrefilledInput(
-    localMode && !hasPlatformSession ? "" : firstName || lastName,
-  );
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [selectedAvatarId, setSelectedAvatarId] = useState<string>(
-    () => WORKLIN_AVATAR_CHOICES[0]?.id ?? "",
-  );
-  const [assistantName, setAssistantName] = useState<string>(
-    () => WORKLIN_AVATAR_CHOICES[0]?.shortName ?? "",
-  );
-  const [googleConnected, setGoogleConnected] = useState(false);
-  const [googleScopes, setGoogleScopes] = useState<string[]>([]);
+  const hydratedUserId = usePreChatDraftStore.use.hydratedUserId();
+  const isDraftHydrated = usePreChatDraftStore.use.isHydrated();
+  const currentStep = usePreChatDraftStore.use.currentStep();
+  const selectedTools = usePreChatDraftStore.use.selectedTools();
+  const selectedTasks = usePreChatDraftStore.use.selectedTasks();
+  const selectedPriorAssistants =
+    usePreChatDraftStore.use.selectedPriorAssistants();
+  const brandName = usePreChatDraftStore.use.brandName();
+  const websiteUrl = usePreChatDraftStore.use.websiteUrl();
+  const userName = usePreChatDraftStore.use.userName();
+  const selectedGroupId = usePreChatDraftStore.use.selectedGroupId();
+  const selectedAvatarId = usePreChatDraftStore.use.selectedAvatarId();
+  const assistantName = usePreChatDraftStore.use.assistantName();
+  const googleConnected = usePreChatDraftStore.use.googleConnected();
+  const googleScopes = usePreChatDraftStore.use.googleScopes();
+  const setCurrentStep = usePreChatDraftStore.use.setCurrentStep();
+  const setSelectedTools = usePreChatDraftStore.use.setSelectedTools();
+  const setSelectedTasks = usePreChatDraftStore.use.setSelectedTasks();
+  const setSelectedPriorAssistants =
+    usePreChatDraftStore.use.setSelectedPriorAssistants();
+  const setBrandName = usePreChatDraftStore.use.setBrandName();
+  const setWebsiteUrl = usePreChatDraftStore.use.setWebsiteUrl();
+  const setUserName = usePreChatDraftStore.use.setUserName();
+  const setSelectedGroupId = usePreChatDraftStore.use.setSelectedGroupId();
+  const setSelectedAvatarId = usePreChatDraftStore.use.setSelectedAvatarId();
+  const setAssistantName = usePreChatDraftStore.use.setAssistantName();
+  const setGoogleConnection =
+    usePreChatDraftStore.use.setGoogleConnection();
+  const clearPersistedDraft =
+    usePreChatDraftStore.use.clearPersistedDraft();
+
+  useLayoutEffect(() => {
+    usePreChatDraftStore.getState().hydrateDraft({
+      userId,
+      defaults: {
+        userName:
+          localMode && !hasPlatformSession ? "" : firstName || lastName,
+        selectedAvatarId: WORKLIN_AVATAR_CHOICES[0]?.id ?? "",
+        assistantName: WORKLIN_AVATAR_CHOICES[0]?.shortName ?? "",
+        isNative,
+      },
+      persistenceEnabled: !isPreview,
+    });
+  }, [
+    firstName,
+    hasPlatformSession,
+    isNative,
+    isPreview,
+    lastName,
+    localMode,
+    userId,
+  ]);
 
   const { data: activeAssistantResult } = useAssistantQuery({
     enabled:
@@ -206,7 +231,7 @@ export function PreChatFlow() {
     });
   }
 
-  const navigateToChatAfterLifecycleRefresh = async () => {
+  const navigateToChatAfterLifecycleRefresh = async (): Promise<boolean> => {
     let handoffAssistantId =
       activeAssistant?.id ??
       selectedAssistantId ??
@@ -224,7 +249,7 @@ export function PreChatFlow() {
 
     if (localMode && !handoffAssistantId) {
       void navigate(routes.onboarding.hatching, { replace: true });
-      return;
+      return false;
     }
 
     if (
@@ -255,7 +280,7 @@ export function PreChatFlow() {
           `${routes.onboarding.provider}?${providerQuery.toString()}`,
           { replace: true },
         );
-        return;
+        return false;
       }
       const query = new URLSearchParams({
         next: "chat",
@@ -264,11 +289,12 @@ export function PreChatFlow() {
       void navigate(`${routes.onboarding.hatching}?${query.toString()}`, {
         replace: true,
       });
-      return;
+      return false;
     }
 
     await lifecycleService.checkAssistant(handoffAssistantId ?? undefined);
     void navigate(`${routes.assistant}?onboarding=1`, { replace: true });
+    return true;
   };
 
   function emitWebFunnelStep(
@@ -332,8 +358,8 @@ export function PreChatFlow() {
 
     try {
       lifecycleService.markExpectingFirstMessage();
-      await navigateToChatAfterLifecycleRefresh();
-      clearPersistedStep();
+      const onboardingCompleted = await navigateToChatAfterLifecycleRefresh();
+      if (onboardingCompleted) clearPersistedDraft();
     } catch (err) {
       captureError(err, { context: "prechat_complete_onboarding" });
       toast.error("Setup could not be completed. Please try again.");
@@ -361,7 +387,11 @@ export function PreChatFlow() {
     if (previous) setCurrentStep(previous);
   };
 
-  if (recipeLoading) {
+  if (
+    recipeLoading ||
+    !isDraftHydrated ||
+    hydratedUserId !== userId
+  ) {
     return null;
   }
 
@@ -376,7 +406,7 @@ export function PreChatFlow() {
         userName={userName}
         assistantName={assistantName}
         selectedAvatarId={selectedAvatarId}
-        onUserNameChange={handleUserNameChange}
+        onUserNameChange={setUserName}
         onAssistantNameChange={setAssistantName}
         onAssistantAvatarChange={handleAssistantAvatarChange}
         onContinue={() => advance(activeStep)}
@@ -408,7 +438,7 @@ export function PreChatFlow() {
         assistantName={assistantName}
         selectedAvatarId={selectedAvatarId}
         selectedGroupId={selectedGroupId}
-        onUserNameChange={handleUserNameChange}
+        onUserNameChange={setUserName}
         onAssistantNameChange={setAssistantName}
         onAssistantAvatarChange={handleAssistantAvatarChange}
         onGroupChange={setSelectedGroupId}
@@ -487,8 +517,7 @@ export function PreChatFlow() {
         assistantId={googleAssistantId}
         assistantName={assistantName}
         onConnect={(scopes) => {
-          setGoogleConnected(true);
-          setGoogleScopes(scopes);
+          setGoogleConnection(true, scopes);
           advance(activeStep, { connectedScopes: scopes });
         }}
         onSkip={() => advance(activeStep)}
