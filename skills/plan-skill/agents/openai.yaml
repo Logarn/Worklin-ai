@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Skill"
+  short_description: "Create grounded implementation plans"
+  default_prompt: "Use $plan-skill to create a grounded implementation plan for this feature."
