@@ -21,6 +21,7 @@ import {
 import { lifecycleService } from "@/assistant/lifecycle-service";
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import { completeAccountOnboarding } from "@/domains/onboarding/complete-account-onboarding";
+import { clearPreChatDraftForUser } from "@/domains/onboarding/prechat-draft-store";
 import {
   applyChatgptSubscriptionProvider,
   applyPendingProviderKey,
@@ -260,6 +261,9 @@ export function HatchingScreen() {
                 );
                 return;
               }
+              clearPreChatDraftForUser(
+                useAuthStore.getState().user?.id ?? null,
+              );
               lifecycleService.markExpectingFirstMessage();
               void navigate(`${routes.assistant}?onboarding=1`, {
                 replace: true,
@@ -275,6 +279,9 @@ export function HatchingScreen() {
             return;
           }
           if (isNativePlatform()) {
+            clearPreChatDraftForUser(
+              useAuthStore.getState().user?.id ?? null,
+            );
             // Native flow skips the pre-chat screen, so there's no
             // typed message to drive the auto-greet gate. Mark the
             // lifecycle one-shot so the destination chat mount shows
@@ -763,6 +770,9 @@ export function HatchingScreen() {
                   setProviderSetup({ kind: "idle" });
                   finishReadyVisualState();
                   if (isNativePlatform()) {
+                    clearPreChatDraftForUser(
+                      useAuthStore.getState().user?.id ?? null,
+                    );
                     lifecycleService.markExpectingFirstMessage();
                     void navigate(`${routes.assistant}?onboarding=1`, {
                       replace: true,

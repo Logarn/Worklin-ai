@@ -25,6 +25,10 @@ import {
   ACTIVATION_FLOW_COHORT,
   ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE,
 } from "@/domains/onboarding/prechat-context";
+import {
+  preChatDraftTesting,
+  usePreChatDraftStore,
+} from "@/domains/onboarding/prechat-draft-store";
 import type { PlatformSessionStatus } from "@/stores/session-status";
 import { routes } from "@/utils/routes";
 
@@ -455,13 +459,6 @@ mock.module("@/generated/api/@tanstack/react-query.gen", () => ({
   }),
 }));
 
-mock.module("@/hooks/use-prefilled-input", () => ({
-  usePrefilledInput: (initial: string) => ({
-    value: initial,
-    onChange: mock(() => {}),
-  }),
-}));
-
 mock.module("@/runtime/platform-detection", () => ({
   useIsIOSWeb: () => isIOSWeb,
   useIsMacOSWeb: () => isMacOSWeb,
@@ -560,6 +557,7 @@ beforeEach(() => {
   randomSpy = spyOn(Math, "random").mockReturnValue(0);
   sessionStorage.clear();
   localStorage.clear();
+  preChatDraftTesting.reset();
   pendingProviderKey = null;
   applyPendingProviderKeyImpl = async () => {};
   applyChatgptSubscriptionProviderImpl = async () => {};
@@ -891,6 +889,17 @@ describe("onboarding lifecycle sync", () => {
 
   test("a resumed platform hatch finalizes onboarding before entering chat", async () => {
     searchParams = new URLSearchParams("next=chat&assistantId=asst-1");
+    usePreChatDraftStore.getState().hydrateDraft({
+      userId: "user-1",
+      defaults: {
+        userName: "Alice",
+        selectedAvatarId: "spiky_spark",
+        assistantName: "Sunny",
+        isNative: false,
+      },
+      persistenceEnabled: true,
+    });
+    usePreChatDraftStore.getState().setCurrentStep("google");
     getAssistantImpl = async () =>
       assistantResult("active", {
         id: "asst-1",
@@ -915,6 +924,9 @@ describe("onboarding lifecycle sync", () => {
     expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
       replace: true,
     });
+    expect(
+      localStorage.getItem(preChatDraftTesting.storageKey("user-1")),
+    ).toBeNull();
   });
 
   test("pre-chat completion refreshes the root assistant lifecycle before entering chat", async () => {
@@ -968,6 +980,48 @@ describe("onboarding lifecycle sync", () => {
     );
   });
 
+  test("pre-chat resumes the saved web step after a full page reload", async () => {
+    preChatOnboardingExperiment = "control";
+
+    const firstRender = render(<PreChatFlow />);
+    fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
+    fireEvent.click(await screen.findByTestId("task-continue"));
+    expect(await screen.findByTestId("tools-continue")).toBeTruthy();
+
+    const saved = JSON.parse(
+      localStorage.getItem(preChatDraftTesting.storageKey("user-1")) ??
+        "null",
+    ) as { currentStep?: string } | null;
+    expect(saved?.currentStep).toBe("tools");
+
+    firstRender.unmount();
+    preChatDraftTesting.reset();
+    render(<PreChatFlow />);
+
+    expect(await screen.findByTestId("tools-continue")).toBeTruthy();
+    expect(screen.queryByTestId("name-continue")).toBeNull();
+  });
+
+  test("pre-chat completion removes the saved account draft", async () => {
+    render(<PreChatFlow />);
+
+    fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
+    fireEvent.click(await screen.findByText("Skip for now"));
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.assistant}?onboarding=1`,
+        { replace: true },
+      ),
+    );
+    expect(
+      localStorage.getItem(preChatDraftTesting.storageKey("user-1")),
+    ).toBeNull();
+    expect(usePreChatDraftStore.getState().currentStep).toBe("google");
+  });
+
   test("pre-chat sends an unfinished account through provider selection before the resumable hatch", async () => {
     completeAccountOnboardingMock.mockResolvedValueOnce({
       completed: false,
@@ -997,6 +1051,9 @@ describe("onboarding lifecycle sync", () => {
       `${routes.assistant}?onboarding=1`,
       { replace: true },
     );
+    expect(
+      localStorage.getItem(preChatDraftTesting.storageKey("user-1")),
+    ).not.toBeNull();
   });
 
   test("pre-chat resumes hatching immediately when provider selection is already pending", async () => {
