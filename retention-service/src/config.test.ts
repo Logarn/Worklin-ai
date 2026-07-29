@@ -23,7 +23,7 @@ describe("retention service configuration", () => {
     expect(config.sendEnabled).toBe(false);
     expect(config.runMigrations).toBe(false);
     expect(config.migrationDatabaseUrl).toBeNull();
-    expect(config.bucket.virtualHostedStyle).toBe(false);
+    expect(config.bucket.virtualHostedStyle).toBe(true);
   });
 
   test("requires a separate admin connection for startup migrations", () => {

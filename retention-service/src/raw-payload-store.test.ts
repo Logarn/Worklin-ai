@@ -1,8 +1,28 @@
 import { describe, expect, test } from "bun:test";
 
-import { S3RawPayloadStore } from "./raw-payload-store.js";
+import {
+  rawPayloadEndpointForBun,
+  S3RawPayloadStore,
+} from "./raw-payload-store.js";
 
 describe("encrypted raw payload storage", () => {
+  test("builds Bun's virtual-hosted endpoint from Railway bucket metadata", () => {
+    expect(
+      rawPayloadEndpointForBun({
+        endpoint: "https://t3.storageapi.dev",
+        bucket: "worklin-retention-test",
+        virtualHostedStyle: true,
+      }),
+    ).toBe("https://worklin-retention-test.t3.storageapi.dev");
+    expect(
+      rawPayloadEndpointForBun({
+        endpoint: "https://worklin-retention-test.t3.storageapi.dev",
+        bucket: "worklin-retention-test",
+        virtualHostedStyle: true,
+      }),
+    ).toBe("https://worklin-retention-test.t3.storageapi.dev");
+  });
+
   test("uses a tenant-scoped replay key and never receives plaintext", async () => {
     const writes: Array<{ key: string; value: string }> = [];
     const deletes: string[] = [];

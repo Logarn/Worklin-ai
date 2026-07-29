@@ -22,6 +22,21 @@ interface RawObjectClient {
   delete(key: string): Promise<void>;
 }
 
+export function rawPayloadEndpointForBun(input: {
+  endpoint: string;
+  bucket: string;
+  virtualHostedStyle: boolean;
+}): string {
+  const endpoint = new URL(input.endpoint);
+  if (
+    input.virtualHostedStyle &&
+    !endpoint.hostname.startsWith(`${input.bucket}.`)
+  ) {
+    endpoint.hostname = `${input.bucket}.${endpoint.hostname}`;
+  }
+  return endpoint.toString().replace(/\/$/, "");
+}
+
 export function rawPayloadReference(input: {
   organizationId: string;
   integrationId: string;
@@ -53,7 +68,7 @@ export class S3RawPayloadStore implements RawPayloadStore {
     this.client =
       input.client ??
       new S3Client({
-        endpoint: input.endpoint,
+        endpoint: rawPayloadEndpointForBun(input),
         bucket: input.bucket,
         accessKeyId: input.accessKeyId,
         secretAccessKey: input.secretAccessKey,

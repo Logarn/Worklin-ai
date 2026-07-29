@@ -154,7 +154,7 @@ Map Railway bucket references to service variables:
 | `WORKLIN_RETENTION_BUCKET_REGION` | `REGION` |
 | `WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID` | `ACCESS_KEY_ID` |
 | `WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY` | `SECRET_ACCESS_KEY` |
-| `WORKLIN_RETENTION_BUCKET_VIRTUAL_HOSTED_STYLE` | `false` for Railway's generic endpoint plus separate `BUCKET` value |
+| `WORKLIN_RETENTION_BUCKET_VIRTUAL_HOSTED_STYLE` | `true`; the service combines Railway's generic endpoint with the `BUCKET` hostname for Bun |
 
 The application encrypts raw payloads before upload. Bucket privacy does not
 replace application encryption. Do not expose presigned URLs for these objects.
