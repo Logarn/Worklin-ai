@@ -20,6 +20,9 @@ type Sleep = (delayMs: number) => Promise<void>;
 
 export interface RailwayProvisionerConfig {
   enabled: boolean;
+  retentionAssistantBridgeEnabled: boolean;
+  controlPlaneInternalUrl: string;
+  retentionGatewayIngressSecret: string;
   apiEndpoint: string;
   projectToken: string;
   projectId: string;
@@ -98,6 +101,14 @@ export function railwayProvisionerConfigFromEnv(
     "";
   return {
     enabled: boolEnv(rawEnv.WORKLIN_RAILWAY_PROVISIONING_ENABLED),
+    retentionAssistantBridgeEnabled: boolEnv(
+      rawEnv.WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED,
+    ),
+    controlPlaneInternalUrl: trimTrailingSlash(
+      rawEnv.WORKLIN_CONTROL_PLANE_INTERNAL_URL?.trim() || "",
+    ),
+    retentionGatewayIngressSecret:
+      rawEnv.WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET?.trim() || "",
     apiEndpoint: trimTrailingSlash(
       rawEnv.WORKLIN_RAILWAY_API_ENDPOINT?.trim() || DEFAULT_API_ENDPOINT,
     ),
@@ -169,10 +180,34 @@ export function railwayProvisionerConfigurationError(
   if (config.maxRuntimeServices < 1) {
     return "WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES must be explicitly set above zero.";
   }
+  if (config.retentionAssistantBridgeEnabled) {
+    if (!isHttpOrigin(config.controlPlaneInternalUrl)) {
+      return "WORKLIN_CONTROL_PLANE_INTERNAL_URL must be an HTTP(S) origin when the retention assistant bridge is enabled.";
+    }
+    if (
+      Buffer.byteLength(config.retentionGatewayIngressSecret, "utf8") < 32
+    ) {
+      return "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when the retention assistant bridge is enabled.";
+    }
+  }
   if (config.provisioningLeaseTtlMs <= config.requestTimeoutMs) {
     return "WORKLIN_RAILWAY_PROVISIONING_LEASE_TTL_MS must exceed WORKLIN_RAILWAY_REQUEST_TIMEOUT_MS.";
   }
   return null;
+}
+
+function isHttpOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.origin === value &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function railwayRuntimeCapacityError(
@@ -690,6 +725,7 @@ export async function provisionRailwayRuntime(
     WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
     WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
     WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
+    PLATFORM_ORGANIZATION_ID: options.assistant.org_id,
     VELLUM_PLATFORM_URL: options.config.platformUrl,
     ASSISTANT_API_KEY: deriveManagedOAuthServiceKey(
       options.runtimeActorSigningKey,
@@ -705,6 +741,15 @@ export async function provisionRailwayRuntime(
     GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
     CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
     CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
+    ...(options.config.retentionAssistantBridgeEnabled
+      ? {
+          WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
+          WORKLIN_CONTROL_PLANE_INTERNAL_URL:
+            options.config.controlPlaneInternalUrl,
+          WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET:
+            options.config.retentionGatewayIngressSecret,
+        }
+      : {}),
   };
 
   if (!serviceId) {

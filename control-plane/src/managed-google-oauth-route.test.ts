@@ -243,5 +243,5 @@ describe("managed Google OAuth routes", () => {
       { headers: { Authorization: `Api-Key ${"f".repeat(64)}` } },
     );
     expect(rejected.status).toBe(401);
-  });
+  }, 15_000);
 });

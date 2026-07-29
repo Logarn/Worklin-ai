@@ -70,16 +70,6 @@ function stringInput(
   return undefined;
 }
 
-function booleanInput(
-  input: Record<string, unknown>,
-  ...keys: string[]
-): boolean {
-  return keys.some((key) => {
-    const value = input[key];
-    return value === true || value === "true" || value === 1 || value === "1";
-  });
-}
-
 function retentionOptions(
   input: Record<string, unknown>,
 ): ComputeRetentionOptions {
@@ -132,16 +122,6 @@ function klaviyoSelector(
 async function retentionDatasetForInput(input: Record<string, unknown>) {
   return buildLiveReadonlyKlaviyoDatasetFromStoredConnection(
     klaviyoSelector(input),
-  );
-}
-
-function fixtureDataAllowed(input: Record<string, unknown>): boolean {
-  return booleanInput(
-    input,
-    "allow_fixture_data",
-    "allowFixtureData",
-    "demo_mode",
-    "demoMode",
   );
 }
 
@@ -201,10 +181,9 @@ function sourceInventory(dataset: RetentionDataset | undefined) {
 }
 
 function deepAuditReadiness(
-  input: Record<string, unknown>,
+  _input: Record<string, unknown>,
   dataset: RetentionDataset | undefined,
 ) {
-  const allowFixtureData = fixtureDataAllowed(input);
   const sourceMode = dataset?.sourceMode ?? "none";
   const blockers: string[] = [];
 
@@ -239,17 +218,15 @@ function deepAuditReadiness(
   }
 
   return {
-    canRunFullAudit: allowFixtureData || blockers.length === 0,
-    allowFixtureData,
+    canRunFullAudit: blockers.length === 0,
     sourceMode,
-    blockers: allowFixtureData ? [] : blockers,
+    blockers,
     availableSourceData: sourceInventory(dataset),
     nextSteps: [
       "Connect a live read-only Shopify source for customers, orders, products, revenue, cohorts, and product performance.",
       "Upgrade or run the Klaviyo connector in full-read mode for 365-day campaign, flow, revenue, profile, and engagement history.",
       "Complete Brand Brain setup for voice, positioning, offers, product rules, CTAs, forbidden language, and campaign memory.",
       "Run retention_deep_audit again after the source coverage check passes.",
-      "Use allow_fixture_data:true only for internal demos, never for a real client audit.",
     ],
   };
 }
@@ -3983,6 +3960,26 @@ function retentionConnectionErrorToolResult(
   };
 }
 
+function liveDataRequiredToolResult(operation: string): ToolExecutionResult {
+  return {
+    content: JSON.stringify(
+      {
+        error: {
+          code: "live_data_required",
+          message: `${operation} requires a connected live Worklin customer data source.`,
+        },
+        safety: createRetentionSafetyMetadata([
+          "No fixture customers, campaigns, revenue, or profile data were substituted.",
+          "No external action was taken.",
+        ]),
+      },
+      null,
+      2,
+    ),
+    isError: true,
+  };
+}
+
 function unsupportedExternalActionToolResult(
   action: string,
 ): ToolExecutionResult {
@@ -4023,9 +4020,8 @@ export async function executeRetentionSourceStatus(
 ): Promise<ToolExecutionResult> {
   try {
     const dataset = await retentionDatasetForInput(input);
-    return asJsonToolResult(
-      dataset ? getRetentionSourceStatus(dataset) : getRetentionSourceStatus(),
-    );
+    if (!dataset) return liveDataRequiredToolResult("Source status");
+    return asJsonToolResult(getRetentionSourceStatus(dataset));
   } catch (error) {
     return retentionConnectionErrorToolResult(error);
   }
@@ -4054,10 +4050,9 @@ export async function executeRetentionBrandBrain(
       return asJsonToolResult(stored.brain);
     }
     const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Brand Brain");
     return asJsonToolResult(
-      dataset
-        ? getRetentionBrandBrain(dataset, retentionOptions(input))
-        : getRetentionBrandBrain(undefined, retentionOptions(input)),
+      getRetentionBrandBrain(dataset, retentionOptions(input)),
     );
   } catch (error) {
     return retentionConnectionErrorToolResult(error);
@@ -4068,7 +4063,15 @@ export async function executeRetentionShopifySnapshot(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(getRetentionShopifySnapshot(retentionOptions(input)));
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Shopify snapshot");
+    return asJsonToolResult(
+      getRetentionShopifySnapshot(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionKlaviyoSnapshot(
@@ -4077,6 +4080,7 @@ export async function executeRetentionKlaviyoSnapshot(
 ): Promise<ToolExecutionResult> {
   try {
     const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Klaviyo snapshot");
     return asJsonToolResult(
       getRetentionKlaviyoSnapshot(retentionOptions(input), dataset),
     );
@@ -4089,55 +4093,109 @@ export async function executeRetentionUnifiedCustomerView(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(buildUnifiedCustomerView(retentionOptions(input)));
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) {
+      return liveDataRequiredToolResult("Unified customer view");
+    }
+    return asJsonToolResult(
+      buildUnifiedCustomerView(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionComputeCustomerFeatures(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(
-    computeRetentionCustomerFeatures(retentionOptions(input)),
-  );
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Customer features");
+    return asJsonToolResult(
+      computeRetentionCustomerFeatures(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionScoreCustomers(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(scoreRetentionCustomers(retentionOptions(input)));
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Customer scoring");
+    return asJsonToolResult(
+      scoreRetentionCustomers(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionBuildMicroSegments(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(buildRetentionMicroSegments(retentionOptions(input)));
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Audience definitions");
+    return asJsonToolResult(
+      buildRetentionMicroSegments(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionFindMissingPieces(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(findRetentionMissingPieces(retentionOptions(input)));
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Retention gap analysis");
+    return asJsonToolResult(
+      findRetentionMissingPieces(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionFindCampaignOpportunities(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(
-    findRetentionCampaignOpportunities(retentionOptions(input)),
-  );
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) {
+      return liveDataRequiredToolResult("Campaign opportunity analysis");
+    }
+    return asJsonToolResult(
+      findRetentionCampaignOpportunities(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionGenerateCampaignPackage(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(
-    generateRetentionCampaignPackage(retentionOptions(input)),
-  );
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Campaign generation");
+    return asJsonToolResult(
+      generateRetentionCampaignPackage(retentionOptions(input), dataset),
+    );
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionGenerateMicroCampaignPackage(
@@ -4151,7 +4209,13 @@ export async function executeRetentionRunQa(
   input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  return asJsonToolResult(runRetentionQa(retentionOptions(input)));
+  try {
+    const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Campaign QA");
+    return asJsonToolResult(runRetentionQa(retentionOptions(input), dataset));
+  } catch (error) {
+    return retentionConnectionErrorToolResult(error);
+  }
 }
 
 export async function executeRetentionRunRetentionQa(
@@ -4174,6 +4238,7 @@ export async function executeRetentionContextPack(
 ): Promise<ToolExecutionResult> {
   try {
     const dataset = await retentionDatasetForInput(input);
+    if (!dataset) return liveDataRequiredToolResult("Retention context");
     return asJsonToolResult(
       buildRetentionContextPack(retentionOptions(input), dataset),
     );
@@ -4322,9 +4387,8 @@ export async function executeRetentionAuditStatus(
   try {
     const dataset = await retentionDatasetForInput(input);
     const readiness = deepAuditReadiness(input, dataset);
-    const status = dataset
-      ? getRetentionAuditStatus(dataset)
-      : getRetentionAuditStatus();
+    if (!dataset) return liveDataRequiredToolResult("Retention audit status");
+    const status = getRetentionAuditStatus(dataset);
     return asJsonToolResult(
       readiness.canRunFullAudit
         ? { ...status, canRunFullAudit: true, readiness }
@@ -4409,7 +4473,7 @@ export async function executeRetentionListKlaviyoAccounts(
 export const retentionAuditTool = {
   name: "retention_audit",
   description:
-    "Compatibility alias for Worklin's deep Shopify + Klaviyo retention audit. Real Klaviyo L365 audits run through Worklin's section-agent audit swarm, then merge data-trust, campaign, creative, flow, forms, audience, opportunity, artifact, QA, and final-editor handoffs into one artifact. It refuses to generate a real-client full commerce audit unless live source coverage is sufficient; fixture data is allowed only when allow_fixture_data:true is explicitly set for demos. Returns visual artifact chart specs, modules, swarm, visible auditTrace reasoning, opportunity backlog, freshness caveats, blocked capabilities, externalActionTaken:false, and canGoLiveNow:false.",
+    "Compatibility alias for Worklin's deep Shopify + Klaviyo retention audit. Real Klaviyo L365 audits run through Worklin's section-agent audit swarm, then merge data-trust, campaign, creative, flow, forms, audience, opportunity, artifact, QA, and final-editor handoffs into one artifact. It refuses to generate a client audit unless live source coverage is sufficient and never substitutes fixture data. Returns visual artifact chart specs, modules, swarm, visible auditTrace reasoning, opportunity backlog, freshness caveats, blocked capabilities, externalActionTaken:false, and canGoLiveNow:false.",
   category: "retention",
   executionTarget: "sandbox",
   defaultRiskLevel: RiskLevel.Low,
@@ -4440,16 +4504,6 @@ export const retentionAuditTool = {
         type: "string",
         description:
           "Optional brand website URL to include in audit context and provenance.",
-      },
-      allow_fixture_data: {
-        type: "boolean",
-        description:
-          "Internal demo/testing only. When true, Worklin may use fixture/sample data; never set this for a real client audit.",
-      },
-      demo_mode: {
-        type: "boolean",
-        description:
-          "Alias for allow_fixture_data for explicit internal demo audits only.",
       },
     },
     required: [],

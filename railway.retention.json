@@ -1,0 +1,19 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "retention-service/Dockerfile",
+    "watchPatterns": [
+      ".dockerignore",
+      "railway.retention.json",
+      "packages/retention-domain/**",
+      "retention-service/**"
+    ]
+  },
+  "deploy": {
+    "healthcheckPath": "/readyz",
+    "healthcheckTimeout": 30,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}

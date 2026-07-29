@@ -866,6 +866,15 @@ export const routeTree = [
                         },
                       },
                       {
+                        path: "work/retention",
+                        lazy: {
+                          Component: () =>
+                            import(
+                              "@/domains/work/retention/retention-work-page"
+                            ).then((m) => m.RetentionWorkPage),
+                        },
+                      },
+                      {
                         path: "work/brands/:brandId/artifacts",
                         lazy: {
                           Component: () =>

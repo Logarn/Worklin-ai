@@ -1101,7 +1101,7 @@ export function persistOnboardingArtifacts(onboarding: {
 }
 
 export async function handleSendMessage(
-  { body: rawBody, headers, abortSignal }: RouteHandlerArgs,
+  { body: rawBody, headers, authContext, abortSignal }: RouteHandlerArgs,
   deps: {
     sendMessageDeps?: SendMessageDeps;
     approvalConversationGenerator?: ApprovalConversationGenerator;
@@ -1381,7 +1381,7 @@ export async function handleSendMessage(
 
   const conversation = await smDeps.getOrCreateConversation(
     mapping.conversationId,
-    { transport },
+    { transport, authContext },
   );
 
   // Store pre-chat onboarding context on the conversation when this is the
@@ -1661,6 +1661,7 @@ export async function handleSendMessage(
       transport,
       inferenceProfile: requestedInferenceProfile,
       clientMessageId,
+      authContext,
     });
     if (enqueueResult.rejected) {
       return new RouteResponse(
