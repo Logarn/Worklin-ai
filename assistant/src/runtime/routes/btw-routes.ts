@@ -20,6 +20,7 @@ import { readNowScratchpad } from "../../daemon/now-scratchpad.js";
 import { getConversationByKey } from "../../memory/conversation-key-store.js";
 import { getAllToolDefinitions } from "../../tools/registry.js";
 import { getLogger } from "../../util/logger.js";
+import { getIdentityChangeEpoch } from "../../workspace/identity-change-invalidation.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { runBtwSidechain } from "../btw-sidechain.js";
 import {
@@ -122,6 +123,8 @@ async function handleBtw({
     throw new ServiceUnavailableError("Message processing is not available");
   }
 
+  const identityEpoch = getIdentityChangeEpoch();
+
   return new ReadableStream({
     start(controller) {
       (async () => {
@@ -155,8 +158,9 @@ async function handleBtw({
 
           if (isIntroRequest && result.text) {
             try {
-              setCachedIntro([result.text]);
-              log.debug("Cached identity intro text");
+              if (setCachedIntro([result.text], identityEpoch)) {
+                log.debug("Cached identity intro text");
+              }
             } catch {
               // Non-fatal — next request will regenerate.
             }
@@ -164,8 +168,9 @@ async function handleBtw({
 
           if (isGreeting && result.text) {
             // setCachedEmptyStateGreeting is a no-op when the TTL is 0.
-            setCachedEmptyStateGreeting(result.text);
-            log.debug("Cached empty-state greeting text");
+            if (setCachedEmptyStateGreeting(result.text, identityEpoch)) {
+              log.debug("Cached empty-state greeting text");
+            }
           }
 
           controller.enqueue(sseEvent("btw_complete", {}));

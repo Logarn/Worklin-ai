@@ -14,12 +14,18 @@
 
 import { getConfig } from "../../config/loader.js";
 import {
+  deleteMemoryCheckpoint,
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../../memory/checkpoints.js";
+import {
+  getIdentityChangeEpoch,
+  onIdentityChange,
+} from "../../workspace/identity-change-invalidation.js";
 
 const CHECKPOINT_KEY_TEXT = "empty_state:greeting:text";
 const CHECKPOINT_KEY_TIMESTAMP = "empty_state:greeting:cached_at";
+const CHECKPOINT_KEY_IDENTITY_EPOCH = "empty_state:greeting:identity_epoch";
 
 function cacheTtlMs(): number {
   return getConfig().ui.emptyStateGreetingCacheTtlMs;
@@ -37,7 +43,9 @@ export function getCachedEmptyStateGreeting(): string | null {
   try {
     const text = getMemoryCheckpoint(CHECKPOINT_KEY_TEXT);
     const timestampStr = getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
-    if (!text || !timestampStr) return null;
+    const identityEpochStr = getMemoryCheckpoint(CHECKPOINT_KEY_IDENTITY_EPOCH);
+    if (!text || !timestampStr || !identityEpochStr) return null;
+    if (Number(identityEpochStr) !== getIdentityChangeEpoch()) return null;
 
     const cachedAt = Number(timestampStr);
     if (Number.isNaN(cachedAt) || Date.now() - cachedAt > ttl) return null;
@@ -53,13 +61,39 @@ export function getCachedEmptyStateGreeting(): string | null {
  * No-ops when caching is disabled (TTL <= 0) so a zero-TTL workspace never
  * writes a stale entry.
  */
-export function setCachedEmptyStateGreeting(text: string): void {
-  if (cacheTtlMs() <= 0) return; // caching disabled — skip write
+export function setCachedEmptyStateGreeting(
+  text: string,
+  expectedIdentityEpoch = getIdentityChangeEpoch(),
+): boolean {
+  if (cacheTtlMs() <= 0) return false;
+  if (expectedIdentityEpoch !== getIdentityChangeEpoch()) return false;
 
   try {
     setMemoryCheckpoint(CHECKPOINT_KEY_TEXT, text);
     setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, String(Date.now()));
+    setMemoryCheckpoint(
+      CHECKPOINT_KEY_IDENTITY_EPOCH,
+      String(expectedIdentityEpoch),
+    );
+    if (expectedIdentityEpoch !== getIdentityChangeEpoch()) {
+      clearCachedEmptyStateGreeting();
+      return false;
+    }
+    return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.
+    return false;
   }
 }
+
+export function clearCachedEmptyStateGreeting(): void {
+  try {
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_TEXT);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    deleteMemoryCheckpoint(CHECKPOINT_KEY_IDENTITY_EPOCH);
+  } catch {
+    // Cache invalidation is best-effort; epoch validation still rejects it.
+  }
+}
+
+onIdentityChange(clearCachedEmptyStateGreeting);

@@ -136,7 +136,10 @@ export const hostFileWriteTool = {
 
     const ops = new FileSystemOps(hostPolicy);
 
-    const result = ops.writeFileSafe({ path: rawPath, content: fileContent });
+    const result = await ops.writeFileSafeCoordinated({
+      path: rawPath,
+      content: fileContent,
+    });
 
     if (!result.ok) {
       const { error } = result;
@@ -153,6 +156,9 @@ export const hostFileWriteTool = {
           content: `Error writing file "${rawPath}"${hint}: ${msg}`,
           isError: true,
         };
+      }
+      if (error.code === "CONFLICT") {
+        return { content: `Error: ${error.message}`, isError: true };
       }
       return { content: `Error: ${error.message}`, isError: true };
     }

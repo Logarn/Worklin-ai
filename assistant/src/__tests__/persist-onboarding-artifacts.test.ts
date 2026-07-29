@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -90,10 +91,12 @@ describe("persistOnboardingArtifacts", () => {
   afterEach(() => {
     const p = workspacePath("IDENTITY.md");
     if (existsSync(p)) rmSync(p, { force: true });
+    const target = workspacePath("identity-target.md");
+    if (existsSync(target)) rmSync(target, { force: true });
   });
 
-  test("seeds IDENTITY.md with assistant name when file does not exist", () => {
-    persistOnboardingArtifacts({
+  test("seeds IDENTITY.md with assistant name when file does not exist", async () => {
+    await persistOnboardingArtifacts({
       tools: ["slack"],
       tasks: ["email"],
       tone: "balanced",
@@ -104,8 +107,8 @@ describe("persistOnboardingArtifacts", () => {
     expect(content).toBe("# Identity\n\n- **Name:** Nova\n");
   });
 
-  test("seeds IDENTITY.md when both names are provided", () => {
-    persistOnboardingArtifacts({
+  test("seeds IDENTITY.md when both names are provided", async () => {
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "professional",
@@ -118,13 +121,30 @@ describe("persistOnboardingArtifacts", () => {
     );
   });
 
-  test("updates Name field in existing IDENTITY.md template", () => {
+  test("propagates an identity persistence failure to onboarding", async () => {
+    const targetPath = workspacePath("identity-target.md");
+    writeFileSync(targetPath, "target identity");
+    symlinkSync(targetPath, workspacePath("IDENTITY.md"));
+
+    await expect(
+      persistOnboardingArtifacts({
+        tools: [],
+        tasks: [],
+        tone: "professional",
+        assistantName: "Pax",
+      }),
+    ).rejects.toThrow("Could not safely resolve identity write target");
+    expect(readFileSync(targetPath, "utf-8")).toBe("target identity");
+    expect(writeOnboardingSectionPayload).toBeNull();
+  });
+
+  test("updates Name field in existing IDENTITY.md template", async () => {
     writeFileSync(
       workspacePath("IDENTITY.md"),
       "# Identity\n\n- **Name:** _(not yet chosen)_\n- **Role:** _(not yet established)_\n",
     );
 
-    persistOnboardingArtifacts({
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "casual",
@@ -137,13 +157,13 @@ describe("persistOnboardingArtifacts", () => {
     );
   });
 
-  test("updates old-format Name field in existing IDENTITY.md", () => {
+  test("preserves an old-format Name example and inserts canonical metadata", async () => {
     writeFileSync(
       workspacePath("IDENTITY.md"),
       "# Identity\n\n- Name: OldFormat\n",
     );
 
-    persistOnboardingArtifacts({
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "casual",
@@ -151,16 +171,18 @@ describe("persistOnboardingArtifacts", () => {
     });
 
     const content = readFileSync(workspacePath("IDENTITY.md"), "utf-8");
-    expect(content).toBe("# Identity\n\n- **Name:** NewName\n");
+    expect(content).toBe(
+      "# Identity\n\n- **Name:** NewName\n\n- Name: OldFormat\n",
+    );
   });
 
-  test("does not touch existing file without Name field", () => {
+  test("inserts canonical Name before existing prose", async () => {
     writeFileSync(
       workspacePath("IDENTITY.md"),
       "# Identity\n\nCustom content here\n",
     );
 
-    persistOnboardingArtifacts({
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "casual",
@@ -168,11 +190,13 @@ describe("persistOnboardingArtifacts", () => {
     });
 
     const content = readFileSync(workspacePath("IDENTITY.md"), "utf-8");
-    expect(content).toBe("# Identity\n\nCustom content here\n");
+    expect(content).toBe(
+      "# Identity\n\n- **Name:** NewName\n\nCustom content here\n",
+    );
   });
 
-  test("skips IDENTITY.md when assistantName is missing", () => {
-    persistOnboardingArtifacts({
+  test("skips IDENTITY.md when assistantName is missing", async () => {
+    await persistOnboardingArtifacts({
       tools: ["notion"],
       tasks: ["project-management"],
       tone: "balanced",
@@ -182,8 +206,8 @@ describe("persistOnboardingArtifacts", () => {
     expect(existsSync(workspacePath("IDENTITY.md"))).toBe(false);
   });
 
-  test("skips IDENTITY.md when assistantName is whitespace-only", () => {
-    persistOnboardingArtifacts({
+  test("skips IDENTITY.md when assistantName is whitespace-only", async () => {
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "balanced",
@@ -193,8 +217,8 @@ describe("persistOnboardingArtifacts", () => {
     expect(existsSync(workspacePath("IDENTITY.md"))).toBe(false);
   });
 
-  test("trims whitespace from assistantName before writing", () => {
-    persistOnboardingArtifacts({
+  test("trims whitespace from assistantName before writing", async () => {
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "balanced",
@@ -206,7 +230,7 @@ describe("persistOnboardingArtifacts", () => {
     );
   });
 
-  test("passes onboarding payload to writeOnboardingSidecar", () => {
+  test("passes onboarding payload to writeOnboardingSidecar", async () => {
     const payload = {
       tools: ["slack", "linear"],
       tasks: ["code-building", "writing"],
@@ -215,13 +239,13 @@ describe("persistOnboardingArtifacts", () => {
       assistantName: "Nova",
     };
 
-    persistOnboardingArtifacts(payload);
+    await persistOnboardingArtifacts(payload);
 
     expect(sidecarPayload).toEqual(payload);
   });
 
-  test("triggers writeRelationshipState fire-and-forget", () => {
-    persistOnboardingArtifacts({
+  test("triggers writeRelationshipState fire-and-forget", async () => {
+    await persistOnboardingArtifacts({
       tools: [],
       tasks: [],
       tone: "balanced",
@@ -230,7 +254,7 @@ describe("persistOnboardingArtifacts", () => {
     expect(writeRelationshipStateCalled).toBe(true);
   });
 
-  test("calls writeOnboardingSection with normalized data", () => {
+  test("calls writeOnboardingSection with normalized data", async () => {
     const payload = {
       tools: ["slack", "linear"],
       tasks: ["code-building", "writing"],
@@ -239,7 +263,7 @@ describe("persistOnboardingArtifacts", () => {
       assistantName: "Nova",
     };
 
-    persistOnboardingArtifacts(payload);
+    await persistOnboardingArtifacts(payload);
 
     expect(writeOnboardingSectionPayload).toEqual(payload);
   });

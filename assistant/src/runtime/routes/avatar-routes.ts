@@ -120,9 +120,10 @@ function handleRenderFromTraits({ body, headers }: RouteHandlerArgs) {
     }
   }
 
-  updateIdentityAvatarSection(null, log);
-  publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
-  return { ok: true };
+  return updateIdentityAvatarSection(null, log).then(() => {
+    publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
+    return { ok: true };
+  });
 }
 
 async function handleGenerateAvatar({ body, headers }: RouteHandlerArgs) {
@@ -153,7 +154,7 @@ async function handleGenerateAvatar({ body, headers }: RouteHandlerArgs) {
   // character sidecars (traits + ASCII), and records an AI-sourced manifest.
   setImage(result.pngBuffer, "ai");
 
-  updateIdentityAvatarSection(null, log);
+  await updateIdentityAvatarSection(null, log);
   publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
   return { ok: true, message: result.content };
 }
@@ -202,9 +203,10 @@ function handleUploadAvatarImage({ body, headers }: RouteHandlerArgs) {
   // character sidecars (traits + ASCII), and records an uploaded-image manifest.
   setImage(buffer, "upload");
 
-  updateIdentityAvatarSection(null, log);
-  publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
-  return { ok: true };
+  return updateIdentityAvatarSection(null, log).then(() => {
+    publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
+    return { ok: true };
+  });
 }
 
 function handleSetAvatar({ body, headers }: RouteHandlerArgs) {
@@ -235,9 +237,10 @@ function handleSetAvatar({ body, headers }: RouteHandlerArgs) {
   // recorded as an uploaded image atomically (no more stale both-files state).
   setImage(readFileSync(normalized), "upload");
 
-  updateIdentityAvatarSection(null, log);
-  publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
-  return { ok: true };
+  return updateIdentityAvatarSection(null, log).then(() => {
+    publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
+    return { ok: true };
+  });
 }
 
 function handleRemoveAvatar({ headers }: RouteHandlerArgs) {
@@ -255,12 +258,13 @@ function handleRemoveAvatar({ headers }: RouteHandlerArgs) {
   // CLI/host.
   clearAvatar();
 
-  updateIdentityAvatarSection(
+  return updateIdentityAvatarSection(
     "Default character avatar (no custom image set)",
     log,
-  );
-  publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
-  return { ok: true, hadAvatar };
+  ).then(() => {
+    publishAvatarChanged(headers?.["x-vellum-client-id"]?.trim() || undefined);
+    return { ok: true, hadAvatar };
+  });
 }
 
 function handleGetAvatar({ queryParams, body }: RouteHandlerArgs) {

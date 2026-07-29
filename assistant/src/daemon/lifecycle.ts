@@ -476,7 +476,7 @@ export async function runDaemon(): Promise<void> {
 
     log.info("Daemon startup: initializing DB");
     if (!pooledInteractiveOnly) {
-      ensurePromptFiles();
+      await ensurePromptFiles();
     }
 
     // DB must be initialized before workspace migrations because some

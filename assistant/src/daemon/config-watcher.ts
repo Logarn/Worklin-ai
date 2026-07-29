@@ -34,6 +34,7 @@ import {
   getWorkspaceDir,
   getWorkspaceSkillsDir,
 } from "../util/platform.js";
+import { reconcileObservedIdentityChange } from "../workspace/identity-change-invalidation.js";
 import { reloadMcpServers } from "./mcp-reload-service.js";
 
 const log = getLogger("config-watcher");
@@ -225,10 +226,12 @@ export class ConfigWatcher {
         }
       },
       "SOUL.md": () => {
+        reconcileObservedIdentityChange();
         onConversationEvict();
         onIdentityIntroChanged?.();
       },
       "IDENTITY.md": () => {
+        reconcileObservedIdentityChange();
         onConversationEvict();
         onIdentityChanged?.();
       },

@@ -123,7 +123,10 @@ export const fileWriteTool = {
       { beforeWrite: assertPooledWorkspaceFileMutationWithinQuota },
     );
 
-    const result = ops.writeFileSafe({ path: rawPath, content: fileContent });
+    const result = await ops.writeFileSafeCoordinated({
+      path: rawPath,
+      content: fileContent,
+    });
 
     if (!result.ok) {
       const { error } = result;
@@ -140,6 +143,9 @@ export const fileWriteTool = {
           content: `Error writing file "${rawPath}"${hint}: ${msg}`,
           isError: true,
         };
+      }
+      if (error.code === "CONFLICT") {
+        return { content: `Error: ${error.message}`, isError: true };
       }
       return { content: `Error: ${error.message}`, isError: true };
     }

@@ -12,6 +12,7 @@ export type FsErrorCode =
   | "SIZE_LIMIT_EXCEEDED"
   | "MATCH_NOT_FOUND"
   | "MATCH_AMBIGUOUS"
+  | "CONFLICT"
   | "IO_ERROR";
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,10 @@ export function matchAmbiguous(path: string, count: number): FsError {
     message: `old_string appears ${count} times in ${path}. Provide more surrounding context to make it unique, or set replace_all to true.`,
     path,
   };
+}
+
+export function conflict(path: string, detail: string): FsError {
+  return { code: "CONFLICT", message: detail, path };
 }
 
 export function ioError(path: string, detail: string): FsError {

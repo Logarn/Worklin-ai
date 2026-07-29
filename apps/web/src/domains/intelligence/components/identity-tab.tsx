@@ -8,18 +8,28 @@ import { AvatarManagementModal } from "@/components/avatar/avatar-management-mod
 import { resolveAssistantCharacter } from "@/components/avatar/assistant-character-packs";
 import { ChatAvatar } from "@/components/avatar/chat-avatar";
 import { ConstellationView } from "@/domains/intelligence/components/constellation-view/constellation-view";
+import { resolveIdentityCardFields } from "@/domains/intelligence/components/identity-card-fields";
+import {
+  type EditableIdentityField,
+  IdentityEditorDialog,
+} from "@/domains/intelligence/components/identity-editor-dialog";
+import { applySavedIdentity } from "@/domains/intelligence/components/identity-save-cache";
 import { SkillDetail } from "@/domains/intelligence/components/skills/skill-detail";
 import { installSkill } from "@/domains/intelligence/skills/install";
 import type { SkillInfo } from "@/domains/intelligence/skills/types";
 import {
-    skillsGetOptions,
-    skillsGetQueryKey,
-    useSkillsByIdDeleteMutation,
+  skillsGetOptions,
+  skillsGetQueryKey,
+  useSkillsByIdDeleteMutation,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import { type Options } from "@/generated/daemon/sdk.gen";
-import type { IdentityGetResponse, SkillsGetData } from "@/generated/daemon/types.gen";
+import type {
+  IdentityGetResponse,
+  SkillsGetData,
+} from "@/generated/daemon/types.gen";
 import { useAssistantAvatar } from "@/hooks/use-assistant-avatar";
 import { captureError } from "@/lib/sentry/capture-error";
+import { assistantIdentityQueryKey } from "@/lib/sync/query-tags";
 import type { AssistantCharacterProfile } from "@/types/assistant-character-profile";
 import type { CharacterComponents, CharacterTraits } from "@/types/avatar";
 import { Button, ConfirmDialog } from "@vellumai/design-library";
@@ -34,7 +44,7 @@ export interface IdentityCardProps {
   traits: CharacterTraits | null;
   customImageUrl: string | null;
   characterProfile: AssistantCharacterProfile | null;
-  onOpenThread?: (message: string) => void;
+  onEditIdentity: (field: EditableIdentityField) => void;
   onOpenModal: () => void;
 }
 
@@ -48,7 +58,7 @@ export function IdentityCard({
   traits,
   customImageUrl,
   characterProfile,
-  onOpenThread,
+  onEditIdentity,
   onOpenModal,
 }: IdentityCardProps) {
   return (
@@ -81,8 +91,7 @@ export function IdentityCard({
           type="button"
           variant="ghost"
           iconOnly={<Pencil aria-hidden />}
-          onClick={() => onOpenThread?.("I would like to change your name")}
-          disabled={!onOpenThread}
+          onClick={() => onEditIdentity("name")}
           aria-label="Edit identity"
           title="Edit Name"
           className="absolute right-6 top-6"
@@ -113,17 +122,17 @@ export function IdentityCard({
         </Button>
       </div>
 
-      <div
-        className="border-t"
-        style={{ borderColor: "var(--border-base)" }}
-      />
+      <div className="border-t" style={{ borderColor: "var(--border-base)" }} />
 
       <div
         className="flex items-center justify-between border-b px-4 py-3"
         style={{ borderColor: "var(--border-base)" }}
       >
         <div>
-          <p className="text-body-small-default" style={{ color: "var(--content-tertiary)" }}>
+          <p
+            className="text-body-small-default"
+            style={{ color: "var(--content-tertiary)" }}
+          >
             Role
           </p>
           <p
@@ -137,8 +146,7 @@ export function IdentityCard({
           type="button"
           variant="ghost"
           iconOnly={<Pencil aria-hidden />}
-          onClick={() => onOpenThread?.("I would like to change your role description")}
-          disabled={!onOpenThread}
+          onClick={() => onEditIdentity("role")}
           aria-label="Edit role"
           title="Edit Role"
           tintColor="var(--content-tertiary)"
@@ -150,7 +158,10 @@ export function IdentityCard({
         style={{ borderColor: "var(--border-base)" }}
       >
         <div className="min-w-0 flex-1">
-          <p className="text-body-small-default" style={{ color: "var(--content-tertiary)" }}>
+          <p
+            className="text-body-small-default"
+            style={{ color: "var(--content-tertiary)" }}
+          >
             Personality
           </p>
           <p
@@ -165,8 +176,7 @@ export function IdentityCard({
           type="button"
           variant="ghost"
           iconOnly={<Pencil aria-hidden />}
-          onClick={() => onOpenThread?.("I would like to change your personality")}
-          disabled={!onOpenThread}
+          onClick={() => onEditIdentity("personality")}
           aria-label="Edit personality"
           title="Edit Personality"
           tintColor="var(--content-tertiary)"
@@ -174,7 +184,10 @@ export function IdentityCard({
       </div>
 
       <div className="px-4 py-3">
-        <p className="text-body-small-default" style={{ color: "var(--content-tertiary)" }}>
+        <p
+          className="text-body-small-default"
+          style={{ color: "var(--content-tertiary)" }}
+        >
           Hatched
         </p>
         <p
@@ -203,41 +216,57 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
     isLoading: isAvatarLoading,
     invalidate: invalidateAvatar,
   } = useAssistantAvatar(assistantId);
-  const [identity, setIdentity] = useState<IdentityGetResponse | null>(null);
-  const [assistantCreatedAt, setAssistantCreatedAt] = useState<string | null>(null);
-  const [loadedAssistantId, setLoadedAssistantId] = useState<string | null>(null);
+  const identityQuery = useQuery({
+    queryKey: assistantIdentityQueryKey(assistantId),
+    queryFn: () => fetchAssistantIdentity(assistantId),
+    staleTime: 30_000,
+  });
+  const identity = identityQuery.data ?? null;
+  const [assistantCreatedAt, setAssistantCreatedAt] = useState<string | null>(
+    null,
+  );
+  const [loadedAssistantId, setLoadedAssistantId] = useState<string | null>(
+    null,
+  );
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingField, setEditingField] =
+    useState<EditableIdentityField | null>(null);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
-  const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
+  const [installingSkillId, setInstallingSkillId] = useState<string | null>(
+    null,
+  );
   const [removingSkillId, setRemovingSkillId] = useState<string | null>(null);
-  const [skillPendingRemoval, setSkillPendingRemoval] = useState<SkillInfo | null>(null);
+  const [skillPendingRemoval, setSkillPendingRemoval] =
+    useState<SkillInfo | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setAssistantCreatedAt(null);
+    setLoadedAssistantId(null);
 
-    Promise.all([
-      fetchAssistantIdentity(assistantId),
-      getAssistant(assistantId).catch(() => ({ ok: false as const, status: 0, error: {} })),
-    ]).then(([identityData, assistantResult]) => {
-      if (cancelled) return;
-      setIdentity(identityData);
-      if (assistantResult.ok) {
-        setAssistantCreatedAt(assistantResult.data.created);
-      } else {
-        setAssistantCreatedAt(null);
-      }
-      setLoadedAssistantId(assistantId);
-    }).catch((err) => {
-      if (cancelled) return;
-      captureError(err, { context: "identity_tab_load" });
-    });
+    void getAssistant(assistantId)
+      .then((assistantResult) => {
+        if (cancelled) return;
+        setAssistantCreatedAt(
+          assistantResult.ok ? assistantResult.data.created : null,
+        );
+        setLoadedAssistantId(assistantId);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadedAssistantId(assistantId);
+        captureError(err, { context: "identity_tab_load" });
+      });
 
     return () => {
       cancelled = true;
     };
   }, [assistantId]);
 
-  const isLoading = loadedAssistantId !== assistantId || isAvatarLoading;
+  const isLoading =
+    identityQuery.isPending ||
+    loadedAssistantId !== assistantId ||
+    isAvatarLoading;
   const [constellationFullscreen, setConstellationFullscreen] = useState(false);
 
   const skillsQuery = useQuery({
@@ -248,7 +277,10 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
     select: (data): SkillInfo[] => data.skills,
     enabled: Boolean(assistantId),
   });
-  const installedSkills = useMemo(() => skillsQuery.data ?? [], [skillsQuery.data]);
+  const installedSkills = useMemo(
+    () => skillsQuery.data ?? [],
+    [skillsQuery.data],
+  );
 
   const handleAvatarChange = useCallback(() => {
     invalidateAvatar();
@@ -257,6 +289,17 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
   const handleOpenModal = useCallback(() => {
     setModalOpen(true);
   }, []);
+
+  const handleIdentitySaved = useCallback(
+    (savedAssistantId: string, updatedIdentity: IdentityGetResponse) => {
+      applySavedIdentity({
+        identity: updatedIdentity,
+        queryClient,
+        savedAssistantId,
+      });
+    },
+    [queryClient],
+  );
 
   const handleCloseModal = useCallback(() => {
     setModalOpen(false);
@@ -344,7 +387,9 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
           onBack={() => setSelectedSkillId(null)}
           onInstall={() => handleInstall(selectedSkill)}
           onRemove={() => handleRemove(selectedSkill)}
-          isInstalling={installingSkillId === (selectedSkill.slug ?? selectedSkill.id)}
+          isInstalling={
+            installingSkillId === (selectedSkill.slug ?? selectedSkill.id)
+          }
           isRemoving={removingSkillId === selectedSkill.id}
         />
         {removalDialog}
@@ -366,8 +411,11 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
     );
   }
 
-  const assistantName =
-    characterProfile?.assistantName || identity?.name || "Assistant";
+  const {
+    name: assistantName,
+    personality: assistantPersonality,
+    role: assistantRole,
+  } = resolveIdentityCardFields(identity, characterProfile);
   const resolvedCharacter = resolveAssistantCharacter(characterProfile);
   const assistantIdentityLabel =
     characterProfile?.avatarStyle === "abstract"
@@ -377,9 +425,6 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
           ? resolvedCharacter.subtitle
           : `${resolvedCharacter.shortName} • ${resolvedCharacter.subtitle}`
         : null;
-  const assistantPersonality =
-    characterProfile?.personalityText || identity?.personality || "";
-  const assistantRole = characterProfile?.role || identity?.role || "Not set";
   const hatchedDate = assistantCreatedAt
     ? new Date(assistantCreatedAt).toLocaleDateString("en-GB", {
         day: "numeric",
@@ -405,7 +450,7 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
           traits={traits}
           customImageUrl={customImageUrl}
           characterProfile={characterProfile}
-          onOpenThread={onOpenThread}
+          onEditIdentity={setEditingField}
           onOpenModal={handleOpenModal}
         />
       </div>
@@ -433,6 +478,24 @@ export function IdentityTab({ assistantId, onOpenThread }: IdentityTabProps) {
         onSaveProfile={handleAvatarChange}
         onGenerateWithAI={onOpenThread ? handleGenerateWithAI : undefined}
       />
+      {editingField ? (
+        <IdentityEditorDialog
+          key={`${assistantId}:${editingField}`}
+          assistantId={assistantId}
+          field={editingField}
+          initialValue={
+            editingField === "name"
+              ? assistantName
+              : editingField === "role"
+                ? assistantRole === "Not set"
+                  ? ""
+                  : assistantRole
+                : assistantPersonality
+          }
+          onClose={() => setEditingField(null)}
+          onSaved={handleIdentitySaved}
+        />
+      ) : null}
       {removalDialog}
     </div>
   );

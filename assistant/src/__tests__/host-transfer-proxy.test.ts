@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { link, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 
+import { getIdentityChangeEpoch } from "../workspace/identity-change-invalidation.js";
+
 const sentMessages: unknown[] = [];
 let mockHasClient = false;
+const originalWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
 
 mock.module("../runtime/assistant-event-hub.js", () => ({
   broadcastMessage: (msg: unknown) => {
@@ -20,7 +23,9 @@ mock.module("../runtime/assistant-event-hub.js", () => ({
     getMostRecentClientByCapability: (cap: string) =>
       cap === "host_file" && mockHasClient ? { id: "mock-client" } : null,
     listClientsByCapability: (_cap: string) =>
-      mockHasClient ? [{ clientId: "mock-client", capabilities: ["host_file"] }] : [],
+      mockHasClient
+        ? [{ clientId: "mock-client", capabilities: ["host_file"] }]
+        : [],
     getClientById: (_id: string) => null,
   },
 }));
@@ -67,6 +72,11 @@ describe("HostTransferProxy", () => {
     pendingInteractions.clear();
     if (tempDir) {
       await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (originalWorkspaceDir === undefined) {
+      delete process.env.VELLUM_WORKSPACE_DIR;
+    } else {
+      process.env.VELLUM_WORKSPACE_DIR = originalWorkspaceDir;
     }
   });
 
@@ -224,6 +234,39 @@ describe("HostTransferProxy", () => {
       // Verify the file was written
       const written = await readFile(destPath, "utf-8");
       expect(written).toBe("received content");
+    });
+
+    test("rejects a received hard-link identity write without splitting it", async () => {
+      setup();
+      tempDir = await mkdtemp(join(tmpdir(), "htp-test-"));
+      process.env.VELLUM_WORKSPACE_DIR = tempDir;
+      const identityPath = join(tempDir, "IDENTITY.md");
+      const hardLinkPath = join(tempDir, "identity-hard-link.md");
+      await globalThis.Bun.write(identityPath, "original identity");
+      await link(identityPath, hardLinkPath);
+
+      const fileData = Buffer.from("received identity");
+      const sha256 = createHash("sha256").update(fileData).digest("hex");
+      const beforeEpoch = getIdentityChangeEpoch();
+      const resultPromise = proxy.requestToSandbox({
+        sourcePath: "/host/source.txt",
+        destPath: hardLinkPath,
+        overwrite: true,
+        conversationId: "conv-identity",
+      });
+      const sent = sentMessages[0] as Record<string, unknown>;
+
+      const receiveResult = await proxy.receiveTransferContent(
+        sent.transferId as string,
+        fileData,
+        sha256,
+      );
+
+      expect(receiveResult.accepted).toBe(false);
+      await expect(resultPromise).resolves.toMatchObject({ isError: true });
+      expect(await readFile(identityPath, "utf-8")).toBe("original identity");
+      expect(await readFile(hardLinkPath, "utf-8")).toBe("original identity");
+      expect(getIdentityChangeEpoch()).toBe(beforeEpoch);
     });
 
     test("rejects with SHA-256 mismatch", async () => {
@@ -442,9 +485,7 @@ describe("HostTransferProxy", () => {
       proxy.getTransferContent(transferId);
 
       // Different transferId should still return null
-      expect(
-        proxy.takeJustConsumedTransferMetadata("other-id"),
-      ).toBeNull();
+      expect(proxy.takeJustConsumedTransferMetadata("other-id")).toBeNull();
 
       const requestId = sent.requestId as string;
       proxy.resolveTransferResult(requestId, { isError: false });

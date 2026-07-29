@@ -1530,8 +1530,8 @@ describe("ensurePromptFiles", () => {
     }
   });
 
-  test("creates SOUL.md and IDENTITY.md from templates when none exist", () => {
-    ensurePromptFiles();
+  test("creates SOUL.md and IDENTITY.md from templates when none exist", async () => {
+    await ensurePromptFiles();
 
     for (const file of ["SOUL.md", "IDENTITY.md"]) {
       const dest = join(TEST_DIR, file);
@@ -1541,17 +1541,17 @@ describe("ensurePromptFiles", () => {
     }
   });
 
-  test("does not seed USER.md", () => {
+  test("does not seed USER.md", async () => {
     // USER.md is no longer part of the seeded prompt files — persona
     // content lives in users/<slug>.md and is resolved via the guardian
     // persona path.
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     expect(existsSync(join(TEST_DIR, "USER.md"))).toBe(false);
   });
 
-  test("seeds users/default.md persona template", () => {
-    ensurePromptFiles();
+  test("seeds users/default.md persona template", async () => {
+    await ensurePromptFiles();
 
     const defaultPersonaPath = join(TEST_DIR, "users", "default.md");
     expect(existsSync(defaultPersonaPath)).toBe(true);
@@ -1559,11 +1559,11 @@ describe("ensurePromptFiles", () => {
     expect(content.length).toBeGreaterThan(0);
   });
 
-  test("does not overwrite existing files", () => {
+  test("does not overwrite existing files", async () => {
     const customContent = "My custom identity";
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), customContent);
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     const content = readFileSync(join(TEST_DIR, "IDENTITY.md"), "utf-8");
     expect(content).toBe(customContent);
@@ -1572,16 +1572,16 @@ describe("ensurePromptFiles", () => {
     expect(existsSync(join(TEST_DIR, "SOUL.md"))).toBe(true);
   });
 
-  test("handles missing template gracefully (warn, no crash)", () => {
+  test("handles missing template gracefully (warn, no crash)", async () => {
     // ensurePromptFiles resolves templates from the actual templates/ dir.
     // Since templates exist in the repo this test verifies the function
     // doesn't crash. A true "missing template" scenario would require
     // mocking the filesystem, but the important contract is: no throw.
-    expect(() => ensurePromptFiles()).not.toThrow();
+    await expect(ensurePromptFiles()).resolves.toBeUndefined();
   });
 
-  test("creates BOOTSTRAP.md on first run when no prompt files exist", () => {
-    ensurePromptFiles();
+  test("creates BOOTSTRAP.md on first run when no prompt files exist", async () => {
+    await ensurePromptFiles();
 
     const bootstrapPath = join(TEST_DIR, "BOOTSTRAP.md");
     expect(existsSync(bootstrapPath)).toBe(true);
@@ -1589,42 +1589,42 @@ describe("ensurePromptFiles", () => {
     expect(content.length).toBeGreaterThan(0);
   });
 
-  test("does not seed bundled system prompt sections into the workspace", () => {
+  test("does not seed bundled system prompt sections into the workspace", async () => {
     // Bundled `templates/system/*.md` files are the source of default truth.
     // The renderer reads them directly; the workspace dir is an optional
     // override layer.  On first run we must not pre-populate the workspace
     // with bundled section copies — leaving the workspace empty keeps the
     // override layer purely opt-in and lets bundled defaults flow through
     // automatically as the daemon ships updates.
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     const sectionsDir = join(TEST_DIR, "prompts", "system");
     expect(existsSync(sectionsDir)).toBe(false);
   });
 
-  test("does not recreate BOOTSTRAP.md when other prompt files already exist", () => {
+  test("does not recreate BOOTSTRAP.md when other prompt files already exist", async () => {
     // Simulate a workspace where onboarding completed: core files exist,
     // BOOTSTRAP.md was deleted by the user.
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "My identity");
     writeFileSync(join(TEST_DIR, "SOUL.md"), "My soul");
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     const bootstrapPath = join(TEST_DIR, "BOOTSTRAP.md");
     expect(existsSync(bootstrapPath)).toBe(false);
   });
 
-  test("does not recreate BOOTSTRAP.md when at least one prompt file exists", () => {
+  test("does not recreate BOOTSTRAP.md when at least one prompt file exists", async () => {
     // Even if only one core file exists, it's not a fresh install.
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "My identity");
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     const bootstrapPath = join(TEST_DIR, "BOOTSTRAP.md");
     expect(existsSync(bootstrapPath)).toBe(false);
   });
 
-  test("does not treat a workspace with populated users/ as a first run", () => {
+  test("does not treat a workspace with populated users/ as a first run", async () => {
     // Upgraded workspaces may have dropped USER.md but still carry a
     // populated users/ directory.  Presence of users/<slug>.md signals an
     // existing install, so BOOTSTRAP.md must not be re-seeded even when
@@ -1633,13 +1633,13 @@ describe("ensurePromptFiles", () => {
     mkdirSync(join(TEST_DIR, "users"), { recursive: true });
     writeFileSync(join(TEST_DIR, "users", "alice.md"), "# Alice persona");
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     const bootstrapPath = join(TEST_DIR, "BOOTSTRAP.md");
     expect(existsSync(bootstrapPath)).toBe(false);
   });
 
-  test("auto-deletes stale BOOTSTRAP.md when prior conversations exist", () => {
+  test("auto-deletes stale BOOTSTRAP.md when prior conversations exist", async () => {
     // Simulate a non-first-run workspace: core files + BOOTSTRAP.md still present
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "My identity");
     writeFileSync(join(TEST_DIR, "SOUL.md"), "My soul");
@@ -1650,12 +1650,12 @@ describe("ensurePromptFiles", () => {
     mkdirSync(convDir, { recursive: true });
     writeFileSync(join(convDir, "conv-001.json"), "{}");
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     expect(existsSync(join(TEST_DIR, "BOOTSTRAP.md"))).toBe(false);
   });
 
-  test("does not seed BOOTSTRAP.md when conversations exist even if core files are missing", () => {
+  test("does not seed BOOTSTRAP.md when conversations exist even if core files are missing", async () => {
     // An upgraded workspace might have dropped SOUL.md/IDENTITY.md (they
     // will be re-seeded from templates) but still carries prior
     // conversations.  Existing conversation history signals a non-fresh
@@ -1664,17 +1664,17 @@ describe("ensurePromptFiles", () => {
     mkdirSync(convDir, { recursive: true });
     writeFileSync(join(convDir, "conv-001.json"), "{}");
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     expect(existsSync(join(TEST_DIR, "BOOTSTRAP.md"))).toBe(false);
   });
 
-  test("keeps BOOTSTRAP.md when no conversations exist yet", () => {
+  test("keeps BOOTSTRAP.md when no conversations exist yet", async () => {
     // Non-first-run but no conversations — user hasn't chatted yet
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "My identity");
     writeFileSync(join(TEST_DIR, "BOOTSTRAP.md"), "# Bootstrap");
 
-    ensurePromptFiles();
+    await ensurePromptFiles();
 
     expect(existsSync(join(TEST_DIR, "BOOTSTRAP.md"))).toBe(true);
   });

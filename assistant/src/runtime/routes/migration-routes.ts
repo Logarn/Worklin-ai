@@ -40,6 +40,7 @@ import {
 import { getLogger } from "../../util/logger.js";
 import { getWorkspaceDir, getWorkspaceHooksDir } from "../../util/platform.js";
 import { APP_VERSION } from "../../version.js";
+import { withCoordinatedIdentityPublication } from "../../workspace/identity-publication.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import {
@@ -903,13 +904,17 @@ export async function handleMigrationImport(
     // The singleton will be lazily reopened on the next getDb() call.
     resetDb();
 
-    const result = commitImport({
-      archiveData: fileData,
-      pathResolver,
-      preValidatedManifest: validation.manifest,
-      preValidatedEntries: validation.entries,
-      workspaceDir: getWorkspaceDir(),
-    });
+    const result = await withCoordinatedIdentityPublication(
+      () =>
+        commitImport({
+          archiveData: fileData,
+          pathResolver,
+          preValidatedManifest: validation.manifest,
+          preValidatedEntries: validation.entries,
+          workspaceDir: getWorkspaceDir(),
+        }),
+      { didCommit: (commitResult) => commitResult.ok },
+    );
 
     if (!result.ok) {
       throwImportCommitFailure(result);
@@ -1305,20 +1310,24 @@ async function runGcsImport(
   const credentialImportWarningSink: CredentialWarningSink = { warnings: [] };
 
   try {
-    result = await streamCommitImport({
-      source: taggedSource,
-      pathResolver,
-      workspaceDir: getWorkspaceDir(),
-      importCredentials: async (bundleCredentials) => {
-        // We can't mutate `result.report.warnings` in place here — the
-        // streaming importer hasn't returned its report yet. Accumulate
-        // into a sidecar and merge into the final report below.
-        credentialsImported = await importBundleCredentialsIntoCes(
-          bundleCredentials,
-          credentialImportWarningSink,
-        );
-      },
-    });
+    result = await withCoordinatedIdentityPublication(
+      () =>
+        streamCommitImport({
+          source: taggedSource,
+          pathResolver,
+          workspaceDir: getWorkspaceDir(),
+          importCredentials: async (bundleCredentials) => {
+            // We can't mutate `result.report.warnings` in place here — the
+            // streaming importer hasn't returned its report yet. Accumulate
+            // into a sidecar and merge into the final report below.
+            credentialsImported = await importBundleCredentialsIntoCes(
+              bundleCredentials,
+              credentialImportWarningSink,
+            );
+          },
+        }),
+      { didCommit: (commitResult) => commitResult.ok },
+    );
   } catch (err) {
     if (isFetchBodyError(err)) {
       log.error(

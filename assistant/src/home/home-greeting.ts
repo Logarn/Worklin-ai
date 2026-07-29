@@ -19,6 +19,7 @@ import { buildSystemPrompt } from "../prompts/system-prompt.js";
 import { getConfiguredProvider } from "../providers/provider-send-message.js";
 import { runBtwSidechain } from "../runtime/btw-sidechain.js";
 import { getLogger } from "../util/logger.js";
+import { getIdentityChangeEpoch } from "../workspace/identity-change-invalidation.js";
 import {
   getCachedHomeGreeting,
   setCachedHomeGreeting,
@@ -48,6 +49,8 @@ export async function refreshPersonalizedGreeting(): Promise<boolean> {
   if (cached) {
     return false;
   }
+
+  const identityEpoch = getIdentityChangeEpoch();
 
   try {
     const config = getConfig();
@@ -80,7 +83,7 @@ export async function refreshPersonalizedGreeting(): Promise<boolean> {
 
     const text = result.text.trim();
     if (text) {
-      return setCachedHomeGreeting(text);
+      return setCachedHomeGreeting(text, identityEpoch);
     }
   } catch (err) {
     log.warn({ err }, "Failed to generate personalized home greeting");
