@@ -53,6 +53,12 @@ if (
   !tenantIsolationReady ||
   !rawPayloadStoreReady
 ) {
+  console.error("retention_service_startup_prerequisites_failed", {
+    databaseReady,
+    migrationsReady,
+    tenantIsolationReady,
+    rawPayloadStoreReady,
+  });
   await database.close();
   throw new Error("Retention service startup prerequisites are unsafe.");
 }

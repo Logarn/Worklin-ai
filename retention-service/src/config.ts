@@ -40,7 +40,7 @@ const configSchema = z
     WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     WORKLIN_RETENTION_BUCKET_VIRTUAL_HOSTED_STYLE: z
       .enum(["true", "false"])
-      .default("true")
+      .default("false")
       .transform((value) => value === "true"),
   })
   .superRefine((value, context) => {
