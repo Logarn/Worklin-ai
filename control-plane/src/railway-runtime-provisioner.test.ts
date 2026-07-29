@@ -362,13 +362,13 @@ describe("provisionRailwayRuntime", () => {
     const serviceInput = serviceMutation?.variables.input as {
       environmentId: string;
       variables: Record<string, string>;
-      source?: unknown;
-      branch?: unknown;
+      source?: { repo: string };
+      branch?: string;
     };
     expect(serviceInput.environmentId).toBe("environment-1");
     expect(serviceInput.variables).toMatchObject(input.variables);
-    expect(serviceInput.source).toBeUndefined();
-    expect(serviceInput.branch).toBeUndefined();
+    expect(serviceInput.source).toEqual({ repo: "Logarn/Worklin-ai" });
+    expect(serviceInput.branch).toBe("main");
     const volumeMutation = graphqlOperations.find((operation) =>
       operation.query.includes("volumeCreate"),
     );
@@ -404,8 +404,6 @@ describe("provisionRailwayRuntime", () => {
       "volume-lookup",
       "volume",
       "variables",
-      "repository-lookup",
-      "connect",
       "deployment-lookup",
       "status",
       "status",
