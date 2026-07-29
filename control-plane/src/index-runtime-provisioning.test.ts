@@ -181,21 +181,10 @@ function seedAuthenticatedUser(
       id, email, username, first_name, last_name, consent_json, created_at,
       updated_at
     ) VALUES (?, ?, ?, '', '', NULL, ?, ?)`,
-  ).run(
-    userId,
-    `${userId}@example.com`,
-    userId,
-    timestamp,
-    timestamp,
-  );
+  ).run(userId, `${userId}@example.com`, userId, timestamp, timestamp);
   db.query(
     "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-  ).run(
-    sessionId,
-    userId,
-    Math.floor(Date.now() / 1000) + 3_600,
-    timestamp,
-  );
+  ).run(sessionId, userId, Math.floor(Date.now() / 1000) + 3_600, timestamp);
   db.close();
 }
 
@@ -379,9 +368,10 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<{ id: string }, []>(
-          "SELECT id FROM sessions WHERE id = 'session-logout'",
-        )
+        .query<
+          { id: string },
+          []
+        >("SELECT id FROM sessions WHERE id = 'session-logout'")
         .get(),
     ).toBeNull();
     verificationDb.close();
@@ -436,15 +426,16 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<{ id: string }, []>(
-          "SELECT id FROM sessions WHERE id = 'session-logout-failure'",
-        )
+        .query<
+          { id: string },
+          []
+        >("SELECT id FROM sessions WHERE id = 'session-logout-failure'")
         .get(),
     ).not.toBeNull();
     verificationDb.close();
   });
 
-  test("onboarding completes without legal consent and runtime failures remain fail-closed", async () => {
+  test("onboarding starts without legal consent but completes only after runtime readiness", async () => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const dbPath = createTempDbPath();
@@ -500,26 +491,24 @@ describe("control-plane runtime provisioning guards", () => {
       },
     });
 
-    const completed = await fetch(
-      `${origin}/v1/user/onboarding/complete/`,
-      {
-        method: "POST",
-        headers: authenticatedHeaders("session-1"),
-        body: "{}",
-      },
-    );
+    const completed = await fetch(`${origin}/v1/user/onboarding/complete/`, {
+      method: "POST",
+      headers: authenticatedHeaders("session-1"),
+      body: "{}",
+    });
     expect(completed.status).toBe(200);
     expect(await completed.json()).toMatchObject({
-      user: { onboarding_completed: true, consent: null },
+      user: { onboarding_completed: false, consent: null },
       assistant: { runtime_status: "failed" },
     });
     expect(
       db
-        .query<{ onboarding_completed_at: string | null }, []>(
-          "SELECT onboarding_completed_at FROM users WHERE id = 'user-1'",
-        )
+        .query<
+          { onboarding_completed_at: string | null },
+          []
+        >("SELECT onboarding_completed_at FROM users WHERE id = 'user-1'")
         .get()?.onboarding_completed_at,
-    ).not.toBeNull();
+    ).toBeNull();
 
     const unavailable = await fetch(`${origin}/v1/assistants/hatch/`, {
       method: "POST",
@@ -1826,9 +1815,10 @@ describe("control-plane runtime provisioning guards", () => {
     const verificationDb = new Database(dbPath);
     expect(
       verificationDb
-        .query<{ count: number }, []>(
-          "SELECT COUNT(*) AS count FROM runtime_stacks",
-        )
+        .query<
+          { count: number },
+          []
+        >("SELECT COUNT(*) AS count FROM runtime_stacks")
         .get()?.count,
     ).toBe(0);
     verificationDb.close();

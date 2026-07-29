@@ -61,6 +61,7 @@ function config(
     environmentId: "environment-1",
     repository: "Logarn/Worklin-ai",
     branch: "main",
+    commitSha: "f".repeat(40),
     region: null,
     mountPath: "/data",
     runtimePort: 8080,
@@ -138,6 +139,18 @@ describe("railwayProvisionerConfigFromEnv", () => {
         }),
       ),
     ).toContain("GATEWAY_INGRESS_SECRET");
+  });
+
+  test("pins retries to the control-plane release when a Git commit is available", () => {
+    const parsed = railwayProvisionerConfigFromEnv({
+      WORKLIN_RELEASE_SHA: "a".repeat(40),
+    });
+    expect(parsed.commitSha).toBe("a".repeat(40));
+    expect(
+      railwayProvisionerConfigFromEnv({
+        WORKLIN_RELEASE_SHA: "not-a-git-sha",
+      }).commitSha,
+    ).toBeNull();
   });
 });
 
@@ -285,6 +298,32 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
+      if (request.query.includes("runtimeServiceRepository")) {
+        return jsonResponse({
+          data: { service: { repoTriggers: { edges: [] } } },
+        });
+      }
+      if (request.query.includes("serviceConnect")) {
+        return jsonResponse({
+          data: { serviceConnect: { id: "service-1" } },
+        });
+      }
+      if (request.query.includes("runtimeServiceDeployments")) {
+        return jsonResponse({
+          data: {
+            deployments: {
+              edges: [
+                {
+                  node: {
+                    id: "deploy-1",
+                    createdAt: "2026-07-29T00:00:00.000Z",
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
       if (request.query.includes("serviceInstanceDeployV2")) {
         return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
@@ -353,6 +392,19 @@ describe("provisionRailwayRuntime", () => {
       CREDENTIAL_SECURITY_DIR: "/runtime/customer/ces-data/security",
     });
     expect(input.variables.CES_SERVICE_TOKEN).toHaveLength(64);
+    const serviceMutation = graphqlOperations.find((operation) =>
+      operation.query.includes("serviceCreate"),
+    );
+    const serviceInput = serviceMutation?.variables.input as {
+      environmentId: string;
+      variables: Record<string, string>;
+      source?: { repo: string };
+      branch?: string;
+    };
+    expect(serviceInput.environmentId).toBe("environment-1");
+    expect(serviceInput.variables).toMatchObject(input.variables);
+    expect(serviceInput.source).toEqual({ repo: "Logarn/Worklin-ai" });
+    expect(serviceInput.branch).toBe("main");
     const volumeMutation = graphqlOperations.find((operation) =>
       operation.query.includes("volumeCreate"),
     );
@@ -362,10 +414,7 @@ describe("provisionRailwayRuntime", () => {
     const deployMutation = graphqlOperations.find((operation) =>
       operation.query.includes("serviceInstanceDeployV2"),
     );
-    expect(deployMutation?.query).toContain(
-      "mutation serviceInstanceDeployV2",
-    );
-    expect(deployMutation?.query).not.toContain("serviceInstanceDeploy(");
+    expect(deployMutation).toBeUndefined();
     expect(
       graphqlOperations.map((operation) => {
         if (operation.query.includes("runtimeProjectServices"))
@@ -376,6 +425,11 @@ describe("provisionRailwayRuntime", () => {
         if (operation.query.includes("volumeCreate")) return "volume";
         if (operation.query.includes("variableCollectionUpsert"))
           return "variables";
+        if (operation.query.includes("runtimeServiceRepository"))
+          return "repository-lookup";
+        if (operation.query.includes("serviceConnect")) return "connect";
+        if (operation.query.includes("runtimeServiceDeployments"))
+          return "deployment-lookup";
         if (operation.query.includes("serviceInstanceDeployV2"))
           return "deploy";
         return "status";
@@ -386,7 +440,7 @@ describe("provisionRailwayRuntime", () => {
       "volume-lookup",
       "volume",
       "variables",
-      "deploy",
+      "deployment-lookup",
       "status",
       "status",
     ]);
@@ -455,6 +509,32 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
+      if (request.query.includes("runtimeServiceRepository")) {
+        return jsonResponse({
+          data: { service: { repoTriggers: { edges: [] } } },
+        });
+      }
+      if (request.query.includes("serviceConnect")) {
+        return jsonResponse({
+          data: { serviceConnect: { id: "service-recovered" } },
+        });
+      }
+      if (request.query.includes("runtimeServiceDeployments")) {
+        return jsonResponse({
+          data: {
+            deployments: {
+              edges: [
+                {
+                  node: {
+                    id: "deploy-1",
+                    createdAt: "2026-07-29T00:00:00.000Z",
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
       if (request.query.includes("serviceInstanceDeployV2")) {
         return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
@@ -488,6 +568,71 @@ describe("provisionRailwayRuntime", () => {
       "volume:volume-recovered",
       "active:http://worklin-rt-52d71495-4bde2f6aeafa.railway.internal:8080:200",
     ]);
+  });
+
+  test("recovers a lost source-connect response without starting a duplicate deployment", async () => {
+    let explicitDeployCalls = 0;
+    const fetchImpl = (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/readyz")) {
+        return jsonResponse({ status: "ok" });
+      }
+      const request = JSON.parse(String(init?.body)) as { query: string };
+      if (request.query.includes("variableCollectionUpsert")) {
+        return jsonResponse({ data: { variableCollectionUpsert: true } });
+      }
+      if (request.query.includes("runtimeServiceRepository")) {
+        return jsonResponse({
+          data: { service: { repoTriggers: { edges: [] } } },
+        });
+      }
+      if (request.query.includes("serviceConnect")) {
+        throw new TypeError("simulated source-connect response loss");
+      }
+      if (request.query.includes("runtimeServiceDeployments")) {
+        return jsonResponse({
+          data: {
+            deployments: {
+              edges: [
+                {
+                  node: {
+                    id: "deploy-from-connect",
+                    createdAt: "2026-07-29T00:00:00.000Z",
+                  },
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (request.query.includes("serviceInstanceDeployV2")) {
+        explicitDeployCalls += 1;
+        return jsonResponse({
+          data: { serviceInstanceDeployV2: "duplicate-deploy" },
+        });
+      }
+      if (request.query.includes("query deployment")) {
+        return jsonResponse({ data: { deployment: { status: "SUCCESS" } } });
+      }
+      throw new Error(`Unexpected GraphQL operation: ${request.query}`);
+    }) as typeof fetch;
+
+    await provisionRailwayRuntime({
+      assistant,
+      stack: stack({
+        service_ref: "service-existing",
+        workspace_volume_ref: "volume-existing",
+      }),
+      runtimeActorSigningKey: "9".repeat(64),
+      allowServiceCreation: false,
+      config: config(),
+      fetchImpl,
+      sleep: async () => {},
+      now: () => 0,
+      persistence: makePersistence(),
+    });
+
+    expect(explicitDeployCalls).toBe(0);
   });
 
   test("never creates again automatically after an ambiguous response", async () => {
@@ -659,6 +804,25 @@ describe("provisionRailwayRuntime", () => {
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
+      if (request.query.includes("runtimeServiceRepository")) {
+        return jsonResponse({
+          data: {
+            service: {
+              repoTriggers: {
+                edges: [
+                  {
+                    node: {
+                      repository: "Logarn/Worklin-ai",
+                      branch: "main",
+                      environmentId: "environment-1",
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
       if (request.query.includes("serviceInstanceDeployV2")) {
         return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
@@ -727,17 +891,41 @@ describe("provisionRailwayRuntime", () => {
 
   test("reuses persisted service and volume references after a partial attempt", async () => {
     const operations: string[] = [];
+    let deployVariables: Record<string, unknown> | null = null;
     const fetchImpl = (async (input, init) => {
       const url = String(input);
       if (url.endsWith("/readyz")) {
         return jsonResponse({ status: "ok" });
       }
-      const request = JSON.parse(String(init?.body)) as { query: string };
+      const request = JSON.parse(String(init?.body)) as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
       operations.push(request.query);
       if (request.query.includes("variableCollectionUpsert")) {
         return jsonResponse({ data: { variableCollectionUpsert: true } });
       }
+      if (request.query.includes("runtimeServiceRepository")) {
+        return jsonResponse({
+          data: {
+            service: {
+              repoTriggers: {
+                edges: [
+                  {
+                    node: {
+                      repository: "Logarn/Worklin-ai",
+                      branch: "main",
+                      environmentId: "environment-1",
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
       if (request.query.includes("serviceInstanceDeployV2")) {
+        deployVariables = request.variables;
         return jsonResponse({ data: { serviceInstanceDeployV2: "deploy-1" } });
       }
       if (request.query.includes("query deployment")) {
@@ -775,5 +963,13 @@ describe("provisionRailwayRuntime", () => {
     expect(operations.some((query) => query.includes("volumeCreate"))).toBe(
       false,
     );
+    const deployment = operations.find((query) =>
+      query.includes("serviceInstanceDeployV2"),
+    );
+    expect(deployment).toBeDefined();
+    expect(deployVariables).toMatchObject({
+      serviceId: "service-existing",
+      commitSha: "f".repeat(40),
+    });
   });
 });

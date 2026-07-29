@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import { isPlatformIsolatedRuntime } from "../config/env.js";
 import { getIsContainerized } from "../config/env-registry.js";
 import type { ChannelCapabilities } from "../daemon/conversation-runtime-assembly.js";
 import type { TrustContext } from "../daemon/trust-context.js";
@@ -33,6 +34,7 @@ export { isTemplateContent };
 const log = getLogger("system-prompt");
 
 const PROMPT_FILES = ["IDENTITY.md", "SOUL.md"] as const;
+const MANAGED_BOOTSTRAP_TEMPLATE = "BOOTSTRAP-WORKLIN.md";
 
 function hasPopulatedUsersDir(): boolean {
   try {
@@ -103,12 +105,19 @@ export function ensurePromptFiles(): void {
   if (isFirstRun) {
     const bootstrapDest = getWorkspacePromptPath("BOOTSTRAP.md");
     if (!existsSync(bootstrapDest)) {
-      const bootstrapSrc = join(templatesDir, "BOOTSTRAP.md");
+      const bootstrapTemplate = isPlatformIsolatedRuntime()
+        ? MANAGED_BOOTSTRAP_TEMPLATE
+        : "BOOTSTRAP.md";
+      const bootstrapSrc = join(templatesDir, bootstrapTemplate);
       try {
         if (existsSync(bootstrapSrc)) {
           copyFileSync(bootstrapSrc, bootstrapDest);
           log.info(
-            { file: "BOOTSTRAP.md", dest: bootstrapDest },
+            {
+              file: "BOOTSTRAP.md",
+              template: bootstrapTemplate,
+              dest: bootstrapDest,
+            },
             "Created BOOTSTRAP.md for first-run onboarding",
           );
         }

@@ -71,11 +71,14 @@ const hatchAssistantMock = mock(async () => ({
 const completeAccountOnboardingMock = mock(async () => {
   await setSelectedAssistantMock("asst-1");
   return {
-    id: "asst-1",
-    name: "Worklin",
-    status: "initializing",
-    is_local: false,
-    created: "2026-07-28T00:00:00.000Z",
+    completed: true,
+    assistant: {
+      id: "asst-1",
+      name: "Worklin",
+      status: "initializing",
+      is_local: false,
+      created: "2026-07-28T00:00:00.000Z",
+    },
   };
 });
 
@@ -294,9 +297,14 @@ mock.module("@/domains/onboarding/recipe-client.js", () => ({
 mock.module("@/domains/onboarding/provider-key", () => ({
   applyChatgptSubscriptionProvider: applyChatgptSubscriptionProviderMock,
   applyPendingProviderKey: applyPendingProviderKeyMock,
+  pendingProviderAuthType: (pending: { authType?: string }) =>
+    pending.authType ?? "api_key",
   pendingProviderRequiresOAuth: (pending: { authType?: string } | null) =>
     pending?.authType === "oauth_subscription",
   peekPendingProviderKey: () => pendingProviderKey,
+  setPendingProviderKey: (value: unknown) => {
+    pendingProviderKey = value;
+  },
 }));
 
 mock.module("@/lib/navigation/navigation-resolver", () => ({
@@ -518,6 +526,8 @@ const { HatchingScreen } =
   await import("@/domains/onboarding/pages/hatching-screen");
 const { PreChatFlow } =
   await import("@/domains/onboarding/pages/pre-chat-flow");
+const { ApiKeyScreen } =
+  await import("@/domains/onboarding/pages/api-key-screen");
 
 afterAll(() => {
   mock.restore();
@@ -584,6 +594,7 @@ afterEach(() => {
 
 describe("onboarding lifecycle sync", () => {
   test("platform hatch primes the runtime connection before assistant health polling", async () => {
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
     let assistantCalls = 0;
     let sawConnectionBeforeHealthz = false;
     getAssistantImpl = async () =>
@@ -822,6 +833,38 @@ describe("onboarding lifecycle sync", () => {
     expect(applyPendingProviderKeyMock).not.toHaveBeenCalled();
   });
 
+  test("resumable platform hatch preserves its assistant and chat handoff through provider selection", async () => {
+    searchParams = new URLSearchParams("next=chat&assistantId=asst-1");
+    getAssistantImpl = async () => assistantResult("initializing");
+
+    render(<HatchingScreen />);
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.provider}?next=hatching&assistantId=asst-1&afterHatch=chat`,
+        { replace: true },
+      ),
+    );
+    expect(hatchAssistantMock).not.toHaveBeenCalled();
+  });
+
+  test("provider selection returns to the same resumable hatch and completes into chat", async () => {
+    searchParams = new URLSearchParams(
+      "next=hatching&afterHatch=chat&assistantId=asst-1",
+    );
+
+    render(<ApiKeyScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(navigateMock).toHaveBeenCalledWith(
+      `${routes.onboarding.hatching}?next=chat&assistantId=asst-1`,
+    );
+    expect(pendingProviderKey).toMatchObject({
+      provider: "openai",
+      authType: "oauth_subscription",
+    });
+  });
+
   test("hatching refreshes the root assistant lifecycle before leaving onboarding", async () => {
     let resolveLifecycle!: () => void;
     checkAssistantImpl = () =>
@@ -844,6 +887,34 @@ describe("onboarding lifecycle sync", () => {
         replace: true,
       }),
     );
+  });
+
+  test("a resumed platform hatch finalizes onboarding before entering chat", async () => {
+    searchParams = new URLSearchParams("next=chat&assistantId=asst-1");
+    getAssistantImpl = async () =>
+      assistantResult("active", {
+        id: "asst-1",
+        is_local: false,
+        ingress_url: "https://worklin-ai.vercel.app",
+        platform_actor_token: "actor-token-1",
+      });
+
+    render(<HatchingScreen />);
+
+    await waitFor(
+      () => expect(completeAccountOnboardingMock).toHaveBeenCalledTimes(1),
+      { timeout: 2_000 },
+    );
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.assistant}?onboarding=1`,
+        { replace: true },
+      ),
+    );
+    expect(getAssistantMock).toHaveBeenCalledWith("asst-1");
+    expect(navigateMock).not.toHaveBeenCalledWith(routes.onboarding.prechat, {
+      replace: true,
+    });
   });
 
   test("pre-chat completion refreshes the root assistant lifecycle before entering chat", async () => {
@@ -892,6 +963,64 @@ describe("onboarding lifecycle sync", () => {
     await waitFor(() =>
       expect(navigateMock).toHaveBeenCalledWith(
         `${routes.assistant}?onboarding=1`,
+        { replace: true },
+      ),
+    );
+  });
+
+  test("pre-chat sends an unfinished account through provider selection before the resumable hatch", async () => {
+    completeAccountOnboardingMock.mockResolvedValueOnce({
+      completed: false,
+      assistant: {
+        id: "asst-1",
+        name: "Worklin",
+        status: "initializing",
+        is_local: false,
+        created: "2026-07-28T00:00:00.000Z",
+      },
+    });
+
+    render(<PreChatFlow />);
+
+    fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
+    fireEvent.click(await screen.findByText("Skip for now"));
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.provider}?next=hatching&afterHatch=chat&assistantId=asst-1`,
+        { replace: true },
+      ),
+    );
+    expect(checkAssistantMock).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalledWith(
+      `${routes.assistant}?onboarding=1`,
+      { replace: true },
+    );
+  });
+
+  test("pre-chat resumes hatching immediately when provider selection is already pending", async () => {
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
+    completeAccountOnboardingMock.mockResolvedValueOnce({
+      completed: false,
+      assistant: {
+        id: "asst-1",
+        name: "Worklin",
+        status: "initializing",
+        is_local: false,
+        created: "2026-07-28T00:00:00.000Z",
+      },
+    });
+
+    render(<PreChatFlow />);
+
+    fireEvent.click(await screen.findByTestId("name-continue"));
+    await skipBrandResearchStep();
+    fireEvent.click(await screen.findByText("Skip for now"));
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith(
+        `${routes.onboarding.hatching}?next=chat&assistantId=asst-1`,
         { replace: true },
       ),
     );
@@ -1119,10 +1248,9 @@ describe("onboarding lifecycle sync", () => {
 
     expect(screen.queryByTestId("prior-continue")).toBeNull();
     await waitFor(() =>
-      expect(navigateMock).toHaveBeenCalledWith(
-        routes.onboarding.hatching,
-        { replace: true },
-      ),
+      expect(navigateMock).toHaveBeenCalledWith(routes.onboarding.hatching, {
+        replace: true,
+      }),
     );
     expect(checkAssistantMock).not.toHaveBeenCalled();
   });
@@ -1144,6 +1272,7 @@ describe("onboarding lifecycle sync", () => {
   });
 
   test("hatching persists the random avatar and invalidates the avatar query before leaving onboarding", async () => {
+    pendingProviderKey = { provider: "kimi", key: "provider-key-value" };
     // Route through the hatch + poll path (a freshly provisioned assistant),
     // not the already-active early return — only a fresh hatch may be seeded.
     let assistantCalls = 0;

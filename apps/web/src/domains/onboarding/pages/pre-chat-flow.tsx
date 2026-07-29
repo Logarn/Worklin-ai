@@ -54,6 +54,7 @@ import {
   getSelectedAssistant,
   isLocalMode,
 } from "@/lib/local-mode";
+import { peekPendingProviderKey } from "@/domains/onboarding/provider-key";
 import { useClientFeatureFlagStore } from "@/stores/client-feature-flag-store";
 import { useIsNativePlatform } from "@/runtime/native-auth.js";
 import {
@@ -198,10 +199,7 @@ export function PreChatFlow() {
       ...profileFromCharacter(selectedAvatar),
       assistantName: assistantName.trim() || selectedAvatar.shortName,
     };
-    const saved = await saveAssistantCharacterProfile(
-      assistantId,
-      nextProfile,
-    );
+    const saved = await saveAssistantCharacterProfile(assistantId, nextProfile);
     if (!saved) return;
     void queryClient.invalidateQueries({
       queryKey: avatarQueryKey(assistantId),
@@ -214,10 +212,12 @@ export function PreChatFlow() {
       selectedAssistantId ??
       activeAssistantId ??
       localPlatformAssistantId;
+    let accountOnboardingCompleted = localMode;
 
     if (!localMode) {
-      const completedAssistant = await completeAccountOnboarding();
-      handoffAssistantId = completedAssistant.id;
+      const onboarding = await completeAccountOnboarding();
+      handoffAssistantId = onboarding.assistant.id;
+      accountOnboardingCompleted = onboarding.completed;
     }
 
     await persistSelectedAvatarProfile(handoffAssistantId ?? undefined);
@@ -242,6 +242,29 @@ export function PreChatFlow() {
       }).catch((err) => {
         captureError(err, { context: "onboarding_queue_brand_research" });
       });
+    }
+
+    if (!accountOnboardingCompleted && handoffAssistantId) {
+      if (!peekPendingProviderKey({ userId })) {
+        const providerQuery = new URLSearchParams({
+          next: "hatching",
+          afterHatch: "chat",
+          assistantId: handoffAssistantId,
+        });
+        void navigate(
+          `${routes.onboarding.provider}?${providerQuery.toString()}`,
+          { replace: true },
+        );
+        return;
+      }
+      const query = new URLSearchParams({
+        next: "chat",
+        assistantId: handoffAssistantId,
+      });
+      void navigate(`${routes.onboarding.hatching}?${query.toString()}`, {
+        replace: true,
+      });
+      return;
     }
 
     await lifecycleService.checkAssistant(handoffAssistantId ?? undefined);

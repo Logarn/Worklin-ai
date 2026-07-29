@@ -27,6 +27,7 @@ export interface RailwayProvisionerConfig {
   environmentId: string;
   repository: string;
   branch: string;
+  commitSha: string | null;
   region: string | null;
   mountPath: string;
   runtimePort: number;
@@ -89,6 +90,12 @@ function trimTrailingSlash(value: string): string {
 export function railwayProvisionerConfigFromEnv(
   rawEnv: EnvLike,
 ): RailwayProvisionerConfig {
+  const rawCommitSha =
+    rawEnv.WORKLIN_RAILWAY_RUNTIME_COMMIT_SHA?.trim() ||
+    rawEnv.WORKLIN_RELEASE_SHA?.trim() ||
+    rawEnv.RAILWAY_GIT_COMMIT_SHA?.trim() ||
+    rawEnv.GITHUB_SHA?.trim() ||
+    "";
   return {
     enabled: boolEnv(rawEnv.WORKLIN_RAILWAY_PROVISIONING_ENABLED),
     retentionAssistantBridgeEnabled: boolEnv(
@@ -108,6 +115,7 @@ export function railwayProvisionerConfigFromEnv(
     repository:
       rawEnv.WORKLIN_RAILWAY_RUNTIME_REPOSITORY?.trim() || DEFAULT_REPOSITORY,
     branch: rawEnv.WORKLIN_RAILWAY_RUNTIME_BRANCH?.trim() || "main",
+    commitSha: /^[0-9a-f]{7,64}$/i.test(rawCommitSha) ? rawCommitSha : null,
     region: rawEnv.WORKLIN_RAILWAY_RUNTIME_REGION?.trim() || null,
     mountPath: rawEnv.WORKLIN_RAILWAY_RUNTIME_MOUNT_PATH?.trim() || "/data",
     runtimePort: positiveIntegerEnv(rawEnv.WORKLIN_RAILWAY_RUNTIME_PORT, 8080),
@@ -324,7 +332,10 @@ class RailwayGraphqlClient {
     return payload.data;
   }
 
-  async createService(name: string): Promise<string> {
+  async createService(
+    name: string,
+    variables: Record<string, string>,
+  ): Promise<string> {
     const data = await this.request<{
       serviceCreate: { id: string };
     }>(
@@ -334,13 +345,65 @@ class RailwayGraphqlClient {
       {
         input: {
           projectId: this.config.projectId,
+          environmentId: this.config.environmentId,
           name,
           source: { repo: this.config.repository },
           branch: this.config.branch,
+          variables,
         },
       },
     );
     return data.serviceCreate.id;
+  }
+
+  async connectService(serviceId: string): Promise<void> {
+    await this.request<{ serviceConnect: { id: string } }>(
+      `mutation serviceConnect($id: String!, $input: ServiceConnectInput!) {
+        serviceConnect(id: $id, input: $input) { id }
+      }`,
+      {
+        id: serviceId,
+        input: {
+          repo: this.config.repository,
+          branch: this.config.branch,
+        },
+      },
+    );
+  }
+
+  async hasExpectedRepositoryConnection(serviceId: string): Promise<boolean> {
+    const data = await this.request<{
+      service: {
+        repoTriggers: {
+          edges: Array<{
+            node: {
+              repository: string;
+              branch: string;
+              environmentId: string;
+            };
+          }>;
+        };
+      } | null;
+    }>(
+      `query runtimeServiceRepository($id: String!) {
+        service(id: $id) {
+          repoTriggers {
+            edges {
+              node { repository branch environmentId }
+            }
+          }
+        }
+      }`,
+      { id: serviceId },
+    );
+    return (
+      data.service?.repoTriggers.edges.some(
+        ({ node }) =>
+          node.repository === this.config.repository &&
+          node.branch === this.config.branch &&
+          node.environmentId === this.config.environmentId,
+      ) ?? false
+    );
   }
 
   async findServiceByName(name: string): Promise<string | null> {
@@ -451,18 +514,54 @@ class RailwayGraphqlClient {
 
   async deploy(serviceId: string): Promise<string> {
     const data = await this.request<{ serviceInstanceDeployV2: string }>(
-      `mutation serviceInstanceDeployV2($environmentId: String!, $serviceId: String!) {
+      `mutation serviceInstanceDeployV2(
+        $environmentId: String!
+        $serviceId: String!
+        $commitSha: String
+      ) {
         serviceInstanceDeployV2(
           environmentId: $environmentId
           serviceId: $serviceId
+          commitSha: $commitSha
         )
       }`,
       {
         environmentId: this.config.environmentId,
         serviceId,
+        commitSha: this.config.commitSha,
       },
     );
     return data.serviceInstanceDeployV2;
+  }
+
+  async latestDeploymentId(serviceId: string): Promise<string | null> {
+    const data = await this.request<{
+      deployments: {
+        edges: Array<{ node: { id: string; createdAt: string } }>;
+      };
+    }>(
+      `query runtimeServiceDeployments($input: DeploymentListInput!, $first: Int) {
+        deployments(input: $input, first: $first) {
+          edges { node { id createdAt } }
+        }
+      }`,
+      {
+        input: {
+          projectId: this.config.projectId,
+          environmentId: this.config.environmentId,
+          serviceId,
+        },
+        first: 10,
+      },
+    );
+    const deployments = data.deployments.edges
+      .map((edge) => edge.node)
+      .sort(
+        (left, right) =>
+          Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+          right.id.localeCompare(left.id),
+      );
+    return deployments[0]?.id ?? null;
   }
 
   async deploymentStatus(deploymentId: string): Promise<string> {
@@ -542,6 +641,26 @@ async function waitForVolumeReconciliation(
   return null;
 }
 
+async function waitForInitialDeployment(
+  client: RailwayGraphqlClient,
+  serviceId: string,
+  config: RailwayProvisionerConfig,
+  sleep: Sleep,
+): Promise<string | null> {
+  const attempts = Math.max(
+    1,
+    Math.ceil(config.serviceReconcileTimeoutMs / config.pollIntervalMs) + 1,
+  );
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const deploymentId = await client.latestDeploymentId(serviceId);
+    if (deploymentId) return deploymentId;
+    if (attempt + 1 < attempts) {
+      await sleep(config.pollIntervalMs);
+    }
+  }
+  return null;
+}
+
 async function waitForHealth(
   gatewayUrl: string,
   config: RailwayProvisionerConfig,
@@ -592,6 +711,33 @@ export async function provisionRailwayRuntime(
   const serviceName = railwayRuntimeServiceName(options.assistant.id);
   let serviceId = options.stack.service_ref;
   let volumeId = options.stack.workspace_volume_ref;
+  let serviceCreatedWithSource = false;
+  const runtimeVariables = {
+    WORKLIN_RUNTIME_MODE: "isolated",
+    WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+    WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
+    PLATFORM_ORGANIZATION_ID: options.assistant.org_id,
+    RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
+    DEFAULT_ASSISTANT_ID: "self",
+    UNMAPPED_POLICY: "default",
+    ACTOR_TOKEN_SIGNING_KEY: options.runtimeActorSigningKey,
+    CES_SERVICE_TOKEN: randomBytes(32).toString("hex"),
+    WORKLIN_RUNTIME_ROOT: options.config.mountPath,
+    VELLUM_WORKSPACE_DIR: `${options.config.mountPath}/workspace`,
+    GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
+    CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
+    CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
+    ...(options.config.retentionAssistantBridgeEnabled
+      ? {
+          WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
+          WORKLIN_CONTROL_PLANE_INTERNAL_URL:
+            options.config.controlPlaneInternalUrl,
+          WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET:
+            options.config.retentionGatewayIngressSecret,
+        }
+      : {}),
+  };
 
   if (!serviceId) {
     serviceId = await client.findServiceByName(serviceName);
@@ -616,7 +762,8 @@ export async function provisionRailwayRuntime(
       }
       options.persistence.recordServiceCreateAttempt(now());
       try {
-        serviceId = await client.createService(serviceName);
+        serviceId = await client.createService(serviceName, runtimeVariables);
+        serviceCreatedWithSource = true;
       } catch {
         serviceId = await waitForServiceReconciliation(
           client,
@@ -670,34 +817,47 @@ export async function provisionRailwayRuntime(
   }
 
   const gatewayUrl = `http://${serviceName}.railway.internal:${options.config.runtimePort}`;
-  await client.setVariables(serviceId, {
-    WORKLIN_RUNTIME_MODE: "isolated",
-    WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
-    WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
-    WORKLIN_PLATFORM_ASSISTANT_ID: options.assistant.id,
-    PLATFORM_ORGANIZATION_ID: options.assistant.org_id,
-    RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
-    DEFAULT_ASSISTANT_ID: "self",
-    UNMAPPED_POLICY: "default",
-    ACTOR_TOKEN_SIGNING_KEY: options.runtimeActorSigningKey,
-    CES_SERVICE_TOKEN: randomBytes(32).toString("hex"),
-    WORKLIN_RUNTIME_ROOT: options.config.mountPath,
-    VELLUM_WORKSPACE_DIR: `${options.config.mountPath}/workspace`,
-    GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
-    CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
-    CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
-    ...(options.config.retentionAssistantBridgeEnabled
-      ? {
-          WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
-          WORKLIN_CONTROL_PLANE_INTERNAL_URL:
-            options.config.controlPlaneInternalUrl,
-          WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET:
-            options.config.retentionGatewayIngressSecret,
-        }
-      : {}),
-  });
+  await client.setVariables(serviceId, runtimeVariables);
 
-  const deploymentId = await client.deploy(serviceId);
+  let initialDeploymentId: string | null = null;
+  if (serviceCreatedWithSource) {
+    initialDeploymentId = await waitForInitialDeployment(
+      client,
+      serviceId,
+      options.config,
+      sleep,
+    );
+    if (!initialDeploymentId) {
+      throw new Error(
+        "Railway service was created with its source, but its initial deployment did not appear before the reconciliation deadline.",
+      );
+    }
+  } else if (!(await client.hasExpectedRepositoryConnection(serviceId))) {
+    try {
+      await client.connectService(serviceId);
+    } catch (error) {
+      initialDeploymentId = await waitForInitialDeployment(
+        client,
+        serviceId,
+        options.config,
+        sleep,
+      );
+      if (!initialDeploymentId) {
+        throw new Error(
+          `Railway source connection failed and no initial deployment appeared: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    initialDeploymentId ??= await waitForInitialDeployment(
+      client,
+      serviceId,
+      options.config,
+      sleep,
+    );
+  }
+  const deploymentId = initialDeploymentId ?? (await client.deploy(serviceId));
   await waitForDeployment(client, deploymentId, options.config, sleep, now);
   const healthStatus = await waitForHealth(
     gatewayUrl,

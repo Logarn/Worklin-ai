@@ -28,7 +28,10 @@ mock.module("../util/logger.js", () => ({
     }),
 }));
 
-import { QdrantManager } from "../memory/qdrant-manager.js";
+import {
+  buildQdrantSpawnEnv,
+  QdrantManager,
+} from "../memory/qdrant-manager.js";
 
 /**
  * Short timeouts so tests complete fast but with enough headroom for CI and
@@ -230,6 +233,44 @@ describe("QdrantManager", () => {
   // ── Process Lifecycle ────────────────────────────────────────
 
   describe("process lifecycle", () => {
+    test("keeps snapshots inside the writable storage path", () => {
+      const storagePath = join(qdrantDir, "runtime-storage");
+      const env = buildQdrantSpawnEnv(
+        {
+          host: "127.0.0.1",
+          port: 6333,
+          storagePath,
+        },
+        {},
+      );
+
+      expect(env).toMatchObject({
+        QDRANT__SERVICE__HOST: "127.0.0.1",
+        QDRANT__SERVICE__HTTP_PORT: "6333",
+        QDRANT__STORAGE__STORAGE_PATH: storagePath,
+        QDRANT__STORAGE__SNAPSHOTS_PATH: join(storagePath, "snapshots"),
+      });
+    });
+
+    test("preserves inherited environment variables for Qdrant", () => {
+      const env = buildQdrantSpawnEnv(
+        {
+          host: "127.0.0.1",
+          port: 6333,
+          storagePath: join(qdrantDir, "runtime-storage"),
+        },
+        {
+          HOME: "/home/assistant",
+          WORKLIN_RUNTIME_MODE: "isolated",
+        },
+      );
+
+      expect(env).toMatchObject({
+        HOME: "/home/assistant",
+        WORKLIN_RUNTIME_MODE: "isolated",
+      });
+    });
+
     test("writes PID file after spawning", async () => {
       const pidPath = join(testDataDir, "data", "qdrant", "qdrant.pid");
 
