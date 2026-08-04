@@ -4,6 +4,7 @@
     "src/**/__tests__/**/*.ts",
     "scripts/**/*.ts",
     "src/daemon/main.ts!",
+    "src/concurrent-runtime/main.ts!",
     "src/plugin-api/index.ts!",
     "src/api/index.ts!"
   ],
