@@ -6,7 +6,7 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 
 const activateMutate = mock((_input: unknown, _options?: unknown) => {});
 const pauseMutate = mock((_input: unknown, _options?: unknown) => {});
@@ -103,10 +103,21 @@ mock.module("./use-retention-setup", () => ({
 
 const { RetentionSetup } = await import("./retention-setup");
 
+function CurrentLocation() {
+  const location = useLocation();
+  return (
+    <output data-testid="current-location">
+      {location.pathname}
+      {location.search}
+    </output>
+  );
+}
+
 function renderSetup() {
   return render(
     <MemoryRouter>
       <RetentionSetup assistantId="assistant-1" />
+      <CurrentLocation />
     </MemoryRouter>,
   );
 }
@@ -153,12 +164,12 @@ describe("RetentionSetup", () => {
     );
   });
 
-  test("links connection management to Integrations", () => {
+  test("opens connection management in Integrations", () => {
     const { container } = renderSetup();
 
     expect(screen.getByText("Klaviyo not connected")).toBeTruthy();
-    const link = screen.getByRole("link", { name: "Connect Klaviyo" });
-    expect(link.getAttribute("href")).toBe(
+    fireEvent.click(screen.getByRole("button", { name: "Connect Klaviyo" }));
+    expect(screen.getByTestId("current-location").textContent).toBe(
       "/assistant/settings/integrations?provider=klaviyo",
     );
     expect(container.querySelector('input[type="password"]')).toBeNull();
@@ -169,10 +180,9 @@ describe("RetentionSetup", () => {
     renderSetup();
 
     expect(screen.getByText("Klaviyo connected")).toBeTruthy();
-    expect(
-      screen
-        .getByRole("link", { name: "View integration" })
-        .getAttribute("href"),
-    ).toBe("/assistant/settings/integrations?provider=klaviyo");
+    fireEvent.click(screen.getByRole("button", { name: "View integration" }));
+    expect(screen.getByTestId("current-location").textContent).toBe(
+      "/assistant/settings/integrations?provider=klaviyo",
+    );
   });
 });
