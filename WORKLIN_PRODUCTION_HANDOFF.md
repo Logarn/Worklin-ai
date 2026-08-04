@@ -7,23 +7,64 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 ## Start Here
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-retention-50-segment-pilot`
-- Current `main`: `68c4a12083c7217225e5477ab50c171de94ba507` (`Build review-only Klaviyo audience pilot`, PR `#166`).
-- Current production control-plane source: `68c4a12083c7217225e5477ab50c171de94ba507`. Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
+- Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-klaviyo-integration-home`
+- Current deployed product release: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f` (`Support all Klaviyo custom properties`, PR `#171`).
+- Current production control-plane source: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f`. Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
 - Public `/readyz` reports the control plane and provisioner ready. This proves deployment health, not the authenticated retention pilot flow.
 - The tenant-safe pooled code is present in the production image but every pool gate remains disabled. No pooled worker, tenant-state bucket, paid capacity, or new production secret has been created.
-- The private retention service is deployed, but customer ingestion, assistant access, external provider writes, and sending remain disabled. The correct Railway PostgreSQL service currently shows `No Backups` and no restore window; the workspace asks for a Pro upgrade to enable backups and point-in-time recovery. Do not connect real Shopify or Klaviyo customer data until both protections are enabled and a visible restore point is verified.
-- Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
+- The private retention service is active at the same release SHA with migrations `001` through `006`, forced tenant isolation, and the private raw-payload bucket ready. The authenticated browser proxy and bounded assistant review bridge are enabled. External provider writes and sending remain disabled globally and per organization.
+- Railway PostgreSQL still has no managed backups or point-in-time recovery. The user explicitly approved one disposable, read-only Dr Rachael pilot because Klaviyo remains the source of truth and the imported state can be rebuilt. Verified encrypted SQL snapshots are stored outside the repo at `/Users/admin/Documents/Worklin Private Backups/retention-production-pre-005-006-20260804.sql.enc` and `/Users/admin/Documents/Worklin Private Backups/retention-production-post-006-20260804.sql.enc`; their passphrases are in macOS Keychain under the matching filenames without `.sql.enc`. The post-migration snapshot is `123152` bytes with SHA-256 `660b14e5920f3a16e73577f9a99a28b89e751c4bfdcc0088f1d85a16b52d7387` and was decrypted in memory to verify the migration ledger and `property_access_mode` schema. This exception does not authorize sending, external writes, a second brand, or ongoing production without managed backup and restore proof.
+- Browser requirement for the pilot: use an authenticated in-app browser or the authenticated Chrome profile selected by the user. The in-app Klaviyo connection dialog was verified against production on 2026-08-04.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
-## 2026-08-04 Competitor Intelligence Release Candidate
+## 2026-08-04 All Klaviyo Properties Pilot Ready For Connection
 
-Branch `assistant/brand-intelligence-production` adds the evidence-backed
+PR `#171` merged as `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f`.
+The Klaviyo integration now records an explicit `all` or `allowlist` property
+access mode. The importer preserves that choice across validation, backfill,
+polling, reconciliation, normalization, and customer-memory writes. The
+connection form defaults to **Use all custom properties**, while retaining a
+limited-list option for future customers. Unsafe object keys are blocked and
+ordinary long or `$`-prefixed Klaviyo fields no longer fail the old property
+name contract.
+
+Local and CI verification passed: `102` retention-service tests with `5`
+PostgreSQL-dependent tests skipped locally, `15` control-plane retention tests,
+`18` focused web tests, all relevant typechecks, touched-file lint, and the
+production-mode web build. Every mandatory GitHub check and the Vercel preview
+passed before merge.
+
+Before and after migration, portable encrypted SQL snapshots were created,
+decrypted in memory, and checked for the retention schema and migration ledger. Railway
+migrations `005_segment_review_pilot` and
+`006_klaviyo_property_access_mode` are applied. The four new tables force row
+security and the non-bypass runtime role has exactly the expected four data
+privileges on each. The steady-state private deployment is `SUCCESS` and its
+internal `/readyz` returned HTTP `200` with database, migrations, tenant
+isolation, and raw storage all ready; external writes and sending were both
+`false`.
+
+The control-plane retention proxy and bounded assistant bridge are enabled.
+Public `/healthz` reports the merge SHA and `/readyz` is healthy. Vercel serves
+the integrations route with HTTP `200`. In the authenticated in-app browser,
+the Klaviyo dialog rendered the live connection form, no longer showed the
+service-unavailable state, and showed **Use all custom properties** checked.
+
+No Klaviyo key has been submitted and no real profile has been imported yet.
+The next user action is to enter Dr Rachael's brand name, website, and
+read-only Klaviyo private key in the open Integrations dialog. After connection,
+approve only the historical read import, inspect counts and rejected fields,
+then generate the first 10 review audiences. Do not enable external writes or
+sending.
+
+## 2026-08-04 Competitor Intelligence Deployed
+
+PR `#170` merged as `b5be09c7c6863c209abd9bb08f8e7f009e9fbc29` and adds the evidence-backed
 competitor-intelligence artifact, deeper asynchronous brand research, bounded
 research providers, scheduled refresh support, and Brand Brain persistence.
 The customer UI stays inside Worklin and uses plain labels for competitors,
@@ -47,8 +88,9 @@ tests (`7`), all four relevant typechecks, the exact Vercel production build,
 desktop visual checks, and mobile visual checks. The expected local auth and
 feature-flag proxy calls returned connection errors because those backend
 services were intentionally not started; the artifact itself rendered and
-interacted correctly. Merge, deployment, deployed-SHA verification, and an
-authenticated production browser check remain pending.
+interacted correctly. The change is included in the current successful Vercel
+and Railway control-plane release. An authenticated production check of the
+competitor artifact itself remains pending.
 
 ## 2026-08-04 Same-Day Campaign Review Pilot Deployed Behind Safety Gates
 
@@ -75,24 +117,10 @@ hygiene; a production-equivalent web build; and a real PostgreSQL
 row-level-security integration test using a non-superuser runtime role. The
 disposable test database and role were removed after the test.
 
-Vercel deployed the merge commit and the canonical `/assistant` route returns
-HTTP 200. Railway deployed the control plane successfully; public `/healthz`
-reports the merge SHA and `/readyz` reports `ok: true`. The new retention-service
-release failed closed during its healthcheck because PostgreSQL migration `005`
-is not applied. Its startup diagnostics reported `databaseReady: true`,
-`tenantIsolationReady: true`, `rawPayloadStoreReady: true`, and
-`migrationsReady: false`. Railway kept the prior healthy retention-service
-release active, so this failure did not take the existing service down.
-
-Do not retry the new retention release or enable the browser proxy, assistant
-bridge, imports, external writes, or sending until the documented one-time
-migration release applies `005` and the normal runtime role is re-granted. The
-hard gate for real customer data remains the Railway retention database: its
-Backups view reports no backups, no restore range, and that backups/PITR require
-a Pro workspace. Enable both protections and verify a visible restore point
-before applying migration `005` or connecting Dr Rachael's Klaviyo account.
-No customer data was imported and no Klaviyo data was changed during this
-release.
+The original post-merge retention release failed closed because migration
+`005` had not yet been applied. That condition is resolved by PR `#171` and the
+verified migration release described above. Managed backup and restore proof
+remain mandatory before any external write or send path is enabled.
 
 ## 2026-07-29 Customer Decisioning Foundation Deployed
 
