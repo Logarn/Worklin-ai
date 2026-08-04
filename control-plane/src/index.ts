@@ -226,6 +226,12 @@ import {
   retentionAssistantOperatorProxyRequest,
 } from "./retention-assistant-bridge.js";
 import {
+  brandIntelligenceArchiveConfigFromEnv,
+  createBrandIntelligenceArchiveService,
+  parseBrandIntelligenceArchiveRequest,
+  startBrandIntelligenceArchiveWorker,
+} from "./brand-intelligence-archive.js";
+import {
   acquireRuntimeWorkerCoordinatorOwnership,
   runtimeWorkerCoordinatorOwnershipConfigFromEnv,
   RuntimeWorkerCoordinatorOwnershipGuard,
@@ -368,14 +374,17 @@ const runtimeWorkerOperatorRecoveryConfig =
     runtimeWorkerPoolConfig.enabled,
   );
 const retentionServiceConfig = parseRetentionServiceConfig(process.env);
+const brandIntelligenceArchiveConfig = brandIntelligenceArchiveConfigFromEnv(
+  process.env,
+);
 const retentionGatewayIngressSecret =
   process.env.WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET?.trim() ?? "";
 if (
-  retentionServiceConfig.enabled &&
+  (retentionServiceConfig.enabled || brandIntelligenceArchiveConfig.enabled) &&
   Buffer.byteLength(retentionGatewayIngressSecret, "utf8") < 32
 ) {
   throw new Error(
-    "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when the retention service is enabled.",
+    "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when an internal gateway ingress is enabled.",
   );
 }
 const boundedTrendtrackRows = (
@@ -413,9 +422,7 @@ const trendtrackResearchConfig = {
     1,
     Math.min(
       3,
-      Number(
-        process.env.WORKLIN_TRENDTRACK_MAX_COMPETITORS_PER_RUN ?? 3,
-      ) || 3,
+      Number(process.env.WORKLIN_TRENDTRACK_MAX_COMPETITORS_PER_RUN ?? 3) || 3,
     ),
   ),
   minimumCreditReserve: Math.max(
@@ -504,6 +511,10 @@ ensureWorkspaceManagementSchema(db);
 ensureTenantRuntimeAdmissionSchema(db);
 ensureTenantRuntimeOperationsSchema(db);
 ensureRetentionControlSchema(db);
+const brandIntelligenceArchiveService = createBrandIntelligenceArchiveService(
+  db,
+  brandIntelligenceArchiveConfig,
+);
 const managedGoogleOAuth = new ManagedGoogleOAuthService(
   db,
   managedGoogleOAuthConfigFromEnv(process.env),
@@ -5164,6 +5175,118 @@ async function handleRetentionAssistantOperatorIngress(
   await streamRuntimeResponse(req, res, response);
 }
 
+async function handleBrandIntelligenceArchiveIngress(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (
+    !brandIntelligenceArchiveConfig.enabled ||
+    req.method !== "POST" ||
+    !retentionGatewayIngressSecret
+  ) {
+    sendJson(req, res, { detail: "Not found." }, 404);
+    return;
+  }
+  const authorization = req.headers.authorization ?? "";
+  const match = /^Bearer (.+)$/u.exec(authorization);
+  if (!match || !safeEqual(match[1]!, retentionGatewayIngressSecret)) {
+    sendJson(req, res, { detail: "Invalid gateway authorization." }, 401);
+    return;
+  }
+  const archiveRequest = parseBrandIntelligenceArchiveRequest(
+    parseJsonBody<unknown>(req),
+    brandIntelligenceArchiveConfig.maxJobBytes,
+  );
+  if (!archiveRequest) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Brand intelligence archive request is invalid.",
+        code: "brand_intelligence_archive_request_invalid",
+      },
+      400,
+    );
+    return;
+  }
+
+  const user = db
+    .query<UserRow, [string]>("SELECT * FROM users WHERE id = ?")
+    .get(archiveRequest.userId);
+  const organization = db
+    .query<
+      OrganizationRow,
+      [string]
+    >("SELECT * FROM organizations WHERE id = ?")
+    .get(archiveRequest.organizationId);
+  const membership = getOrganizationMembership(
+    db,
+    archiveRequest.organizationId,
+    archiveRequest.userId,
+  );
+  const assistant = db
+    .query<
+      AssistantRow,
+      [string, string]
+    >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
+    .get(archiveRequest.assistantId, archiveRequest.organizationId);
+  if (
+    !user ||
+    !organization ||
+    !membership ||
+    membership.status !== "active" ||
+    !assistant
+  ) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Brand intelligence tenant access was not found.",
+        code: "brand_intelligence_archive_tenant_access_denied",
+      },
+      403,
+    );
+    return;
+  }
+  const accessibleAssistantIds = new Set(
+    listAccessibleAssistantIds(db, organization.id, user.id, membership.role),
+  );
+  if (!accessibleAssistantIds.has(assistant.id)) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Brand intelligence assistant access was denied.",
+        code: "brand_intelligence_archive_assistant_access_denied",
+      },
+      403,
+    );
+    return;
+  }
+
+  try {
+    const archive = brandIntelligenceArchiveService.enqueue(archiveRequest);
+    const usage = brandIntelligenceArchiveService.usage(archiveRequest);
+    sendJson(req, res, { archive, usage }, 202);
+  } catch (error) {
+    sendJson(
+      req,
+      res,
+      {
+        detail: "Brand intelligence archive request could not be queued.",
+        code:
+          error instanceof Error &&
+          error.message === "archive_payload_too_large"
+            ? "brand_intelligence_archive_payload_too_large"
+            : "brand_intelligence_archive_queue_failed",
+      },
+      error instanceof Error && error.message === "archive_payload_too_large"
+        ? 413
+        : 503,
+    );
+  }
+}
+
 const app = express();
 app.set("trust proxy", true);
 app.use(corsMiddleware);
@@ -5239,6 +5362,11 @@ app.post(
 app.post(
   "/internal/retention/operator",
   asyncHandler(handleRetentionAssistantOperatorIngress),
+);
+
+app.post(
+  "/internal/brand-intelligence/archive",
+  asyncHandler(handleBrandIntelligenceArchiveIngress),
 );
 
 app.get(
@@ -5538,6 +5666,16 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 const server = app.listen(env.port, env.host, () => {
   console.log(`Worklin control plane listening on ${env.host}:${env.port}`);
 });
+const stopBrandIntelligenceArchiveWorker = startBrandIntelligenceArchiveWorker(
+  brandIntelligenceArchiveService,
+);
+console.log("brand_intelligence_archive", {
+  enabled: brandIntelligenceArchiveConfig.enabled,
+  globalMaxBytes: brandIntelligenceArchiveConfig.globalMaxBytes,
+  perBrandMaxBytes: brandIntelligenceArchiveConfig.perBrandMaxBytes,
+  warningPercent: brandIntelligenceArchiveConfig.warningPercent,
+  maxVisualAssets: brandIntelligenceArchiveConfig.maxVisualAssets,
+});
 
 let retentionTenantWakeSweep: ReturnType<typeof setInterval> | null = null;
 let retentionTenantWakeSweepInFlight = false;
@@ -5688,6 +5826,7 @@ process.once("SIGTERM", closeForShutdown);
 process.once("SIGINT", closeForShutdown);
 server.on("close", () => {
   clearInterval(keepAlive);
+  stopBrandIntelligenceArchiveWorker();
   brandResearchExecutor.stop();
   brandResearchRefreshScheduler.stop();
   if (retentionTenantWakeSweep) clearInterval(retentionTenantWakeSweep);

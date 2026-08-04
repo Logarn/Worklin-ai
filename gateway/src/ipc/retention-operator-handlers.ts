@@ -24,8 +24,22 @@ const RetentionOperatorParamsSchema = z
   })
   .strict();
 
+const BrandIntelligenceArchiveParamsSchema = z
+  .object({
+    organizationId: z.string().uuid(),
+    userId: z.string().trim().min(1).max(512),
+    assistantId: z.string().trim().min(1).max(256),
+    brandId: z.string().trim().min(1).max(256),
+    snapshotId: z.string().regex(/^brand_research_[0-9a-f]{64}$/u),
+    brandBrain: z.record(z.string(), z.unknown()),
+    report: z.record(z.string(), z.unknown()),
+    quality: z.record(z.string(), z.unknown()).nullable(),
+  })
+  .strict();
+
 export interface RetentionOperatorBridgeConfig {
   enabled: boolean;
+  brandIntelligenceArchiveEnabled?: boolean;
   controlPlaneBaseUrl?: string;
   gatewayIngressSecret?: string;
   platformOrganizationId?: string;
@@ -42,8 +56,11 @@ export interface RetentionOperatorBridgeDependencies {
 export function retentionOperatorBridgeConfigFromEnv(
   env: Record<string, string | undefined>,
 ): RetentionOperatorBridgeConfig {
-  if (env.WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED !== "true") {
-    return { enabled: false };
+  const enabled = env.WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED === "true";
+  const brandIntelligenceArchiveEnabled =
+    env.WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BRIDGE_ENABLED === "true";
+  if (!enabled && !brandIntelligenceArchiveEnabled) {
+    return { enabled: false, brandIntelligenceArchiveEnabled: false };
   }
   const baseUrl = parseOrigin(
     env.WORKLIN_CONTROL_PLANE_INTERNAL_URL,
@@ -69,7 +86,8 @@ export function retentionOperatorBridgeConfigFromEnv(
     );
   }
   return {
-    enabled: true,
+    enabled,
+    brandIntelligenceArchiveEnabled,
     controlPlaneBaseUrl: baseUrl.origin,
     gatewayIngressSecret,
     platformOrganizationId,
@@ -136,6 +154,59 @@ export function createRetentionOperatorRoutes(
           return { status: response.status, headers, body };
         } catch {
           return errorResult(503, "retention_control_plane_unavailable");
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    },
+    {
+      method: "brand_intelligence_archive_request",
+      schema: BrandIntelligenceArchiveParamsSchema,
+      handler: async (raw?: Record<string, unknown>) => {
+        if (!config.brandIntelligenceArchiveEnabled) {
+          return errorResult(503, "brand_intelligence_archive_disabled");
+        }
+        const params = BrandIntelligenceArchiveParamsSchema.parse(raw);
+        if (
+          params.organizationId !== config.platformOrganizationId ||
+          params.assistantId !== config.platformAssistantId
+        ) {
+          return errorResult(403, "brand_intelligence_archive_tenant_mismatch");
+        }
+
+        const target = new URL(
+          "/internal/brand-intelligence/archive",
+          config.controlPlaneBaseUrl,
+        );
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () => controller.abort(),
+          gatewayConfig.runtimeTimeoutMs,
+        );
+        try {
+          const response = await (dependencies.fetch ?? fetchImpl)(target, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${config.gatewayIngressSecret!}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(params),
+            redirect: "manual",
+            signal: controller.signal,
+          });
+          const contentType = response.headers.get("content-type") ?? "";
+          const body = contentType.includes("application/json")
+            ? await response.json().catch(() => ({
+                error: { code: "brand_intelligence_archive_invalid_response" },
+              }))
+            : await response.text();
+          return {
+            status: response.status,
+            headers: { "content-type": "application/json" },
+            body,
+          };
+        } catch {
+          return errorResult(503, "brand_intelligence_archive_unavailable");
         } finally {
           clearTimeout(timeout);
         }

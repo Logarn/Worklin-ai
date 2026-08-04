@@ -25,6 +25,7 @@ import {
   getStoredBrandBrain,
   saveBrandBrain,
 } from "../../../../memory/brand-brain-store.js";
+import { archiveBrandIntelligence } from "../../../../memory/brand-intelligence-archive.js";
 import {
   brandResearchSnapshotId,
   saveBrandResearchSnapshot,
@@ -673,6 +674,14 @@ export async function run(
       report,
       quality,
     });
+    const archive = await archiveBrandIntelligence({
+      context,
+      brandId: saved.brandId,
+      snapshotId: snapshot.snapshotId,
+      brandBrain: next as unknown as Record<string, unknown>,
+      report: report as unknown as Record<string, unknown>,
+      quality: (quality as unknown as Record<string, unknown>) ?? null,
+    });
     const surfaceId = brandResearchDocumentSurfaceId(saved.brandId);
     const title = intelligence
       ? "Brand Intelligence"
@@ -713,6 +722,7 @@ export async function run(
           generatedAt: report.generatedAt,
           snapshotId: snapshot.snapshotId,
           researchHistoryPreserved: true,
+          offVolumeArchive: archive,
           researchVersion: report.version,
           evidenceCount: report.evidence.length,
           competitorCount: report.competitorLandscape.length,
@@ -742,6 +752,7 @@ export async function run(
       revision: saved.revision,
       snapshotId: snapshot.snapshotId,
       snapshotStatus: snapshot.status,
+      offVolumeArchive: archive,
       researchVersion: report.version,
       evidenceCount: report.evidence.length,
       visualEvidenceCount,

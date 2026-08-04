@@ -21,6 +21,7 @@ type Sleep = (delayMs: number) => Promise<void>;
 export interface RailwayProvisionerConfig {
   enabled: boolean;
   retentionAssistantBridgeEnabled: boolean;
+  brandIntelligenceArchiveBridgeEnabled: boolean;
   controlPlaneInternalUrl: string;
   retentionGatewayIngressSecret: string;
   apiEndpoint: string;
@@ -104,6 +105,9 @@ export function railwayProvisionerConfigFromEnv(
     retentionAssistantBridgeEnabled: boolEnv(
       rawEnv.WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED,
     ),
+    brandIntelligenceArchiveBridgeEnabled: boolEnv(
+      rawEnv.WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BRIDGE_ENABLED,
+    ),
     controlPlaneInternalUrl: trimTrailingSlash(
       rawEnv.WORKLIN_CONTROL_PLANE_INTERNAL_URL?.trim() || "",
     ),
@@ -180,14 +184,15 @@ export function railwayProvisionerConfigurationError(
   if (config.maxRuntimeServices < 1) {
     return "WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES must be explicitly set above zero.";
   }
-  if (config.retentionAssistantBridgeEnabled) {
+  if (
+    config.retentionAssistantBridgeEnabled ||
+    config.brandIntelligenceArchiveBridgeEnabled
+  ) {
     if (!isHttpOrigin(config.controlPlaneInternalUrl)) {
-      return "WORKLIN_CONTROL_PLANE_INTERNAL_URL must be an HTTP(S) origin when the retention assistant bridge is enabled.";
+      return "WORKLIN_CONTROL_PLANE_INTERNAL_URL must be an HTTP(S) origin when an assistant control-plane bridge is enabled.";
     }
-    if (
-      Buffer.byteLength(config.retentionGatewayIngressSecret, "utf8") < 32
-    ) {
-      return "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when the retention assistant bridge is enabled.";
+    if (Buffer.byteLength(config.retentionGatewayIngressSecret, "utf8") < 32) {
+      return "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when an assistant control-plane bridge is enabled.";
     }
   }
   if (config.provisioningLeaseTtlMs <= config.requestTimeoutMs) {
@@ -741,13 +746,21 @@ export async function provisionRailwayRuntime(
     GATEWAY_SECURITY_DIR: `${options.config.mountPath}/gateway-security`,
     CES_DATA_DIR: `${options.config.mountPath}/ces-data`,
     CREDENTIAL_SECURITY_DIR: `${options.config.mountPath}/ces-data/security`,
-    ...(options.config.retentionAssistantBridgeEnabled
+    ...(options.config.retentionAssistantBridgeEnabled ||
+    options.config.brandIntelligenceArchiveBridgeEnabled
       ? {
-          WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
           WORKLIN_CONTROL_PLANE_INTERNAL_URL:
             options.config.controlPlaneInternalUrl,
           WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET:
             options.config.retentionGatewayIngressSecret,
+          ...(options.config.retentionAssistantBridgeEnabled
+            ? { WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true" }
+            : {}),
+          ...(options.config.brandIntelligenceArchiveBridgeEnabled
+            ? {
+                WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BRIDGE_ENABLED: "true",
+              }
+            : {}),
         }
       : {}),
   };
