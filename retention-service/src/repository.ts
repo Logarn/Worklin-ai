@@ -2245,6 +2245,7 @@ export class RetentionRepository {
 
       let appendedCount = 0;
       let duplicateCount = 0;
+      const rejectedCount = page.rejectedCount ?? 0;
       for (const event of page.events) {
         const result = await this.appendSourceEvent(organizationId, {
           ...event,
@@ -2323,6 +2324,7 @@ export class RetentionRepository {
                 JSON.parse(canonicalJson(lifecycleState)),
               )},
               imported_count = imported_count + ${appendedCount},
+              rejected_count = rejected_count + ${rejectedCount},
               completed_at = CASE
                 WHEN ${lifecycleCompleted} THEN now()
                 ELSE completed_at
@@ -2343,6 +2345,7 @@ export class RetentionRepository {
             resource: payload.resource,
             appendedCount,
             duplicateCount,
+            rejectedCount,
             pageCompleted: !page.hasMore,
             lifecycleCompleted,
           },

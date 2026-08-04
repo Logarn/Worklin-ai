@@ -65,6 +65,7 @@ export interface ProviderSyncPage<Resource extends string> {
   lifecycle: ProviderSyncLifecycle;
   resource: Resource;
   events: SourceEventInput[];
+  rejectedCount?: number;
   checkpoint: ProviderSyncCheckpoint;
   hasMore: boolean;
   rateLimit: ProviderRateLimitMetadata;
@@ -1367,18 +1368,33 @@ function relationshipId(
 
 function includedResourceMap(
   included: readonly unknown[],
-): Map<string, Record<string, unknown>> {
+): {
+  resources: Map<string, Record<string, unknown>>;
+  rejectedCount: number;
+} {
   const resources = new Map<string, Record<string, unknown>>();
+  let rejectedCount = 0;
   for (const value of included) {
-    const resource = requiredRecord(value, "klaviyo");
-    const type = requiredString(resource.type, "klaviyo", 64);
-    const id = requiredString(resource.id, "klaviyo", 512);
-    if (type !== "profile" && type !== "metric") {
-      continue;
+    try {
+      const resource = requiredRecord(value, "klaviyo");
+      const type = requiredString(resource.type, "klaviyo", 64);
+      const id = requiredString(resource.id, "klaviyo", 512);
+      if (type !== "profile" && type !== "metric") {
+        continue;
+      }
+      resources.set(`${type}:${id}`, resource);
+    } catch (error) {
+      if (
+        error instanceof ProviderSyncError &&
+        error.code === "malformed_provider_response"
+      ) {
+        rejectedCount += 1;
+        continue;
+      }
+      throw error;
     }
-    resources.set(`${type}:${id}`, resource);
   }
-  return resources;
+  return { resources, rejectedCount };
 }
 
 function klaviyoEventOccurredAt(attributes: Record<string, unknown>): string {
@@ -1545,16 +1561,31 @@ export class KlaviyoProviderSyncClient implements ProviderSyncLifecycleClient<Kl
       pageSize,
     );
     const included = includedResourceMap(document.included);
-    const events = document.data.map((item) =>
-      input.resource === "profiles"
-        ? klaviyoProfileEvent(integrationId, item, this.#propertySelection)
-        : klaviyoDeliveryEvent(
-            integrationId,
-            item,
-            included,
-            this.#propertySelection,
-          ),
-    );
+    const events: SourceEventInput[] = [];
+    let rejectedCount = included.rejectedCount;
+    for (const item of document.data) {
+      try {
+        events.push(
+          input.resource === "profiles"
+            ? klaviyoProfileEvent(integrationId, item, this.#propertySelection)
+            : klaviyoDeliveryEvent(
+                integrationId,
+                item,
+                included.resources,
+                this.#propertySelection,
+              ),
+        );
+      } catch (error) {
+        if (
+          error instanceof ProviderSyncError &&
+          error.code === "malformed_provider_response"
+        ) {
+          rejectedCount += 1;
+          continue;
+        }
+        throw error;
+      }
+    }
     const hasMore = document.nextCursor !== null;
     const observedWatermark = advanceWatermark(
       pendingWatermark ?? watermark,
@@ -1565,6 +1596,7 @@ export class KlaviyoProviderSyncClient implements ProviderSyncLifecycleClient<Kl
       lifecycle,
       resource: input.resource,
       events,
+      rejectedCount,
       checkpoint: {
         cursor: document.nextCursor,
         watermark: hasMore ? watermark : observedWatermark,
