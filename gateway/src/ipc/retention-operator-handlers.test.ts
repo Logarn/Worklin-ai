@@ -50,6 +50,46 @@ describe("retention operator IPC bridge", () => {
     ).toBe(false);
   });
 
+  test("allows only the bounded segment-run orchestration routes", () => {
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(isAssistantOperatorRoute("POST", "/v1/retention/segment-runs")).toBe(
+      true,
+    );
+    expect(
+      isAssistantOperatorRoute("GET", `/v1/retention/segment-runs/${runId}`),
+    ).toBe(true);
+    expect(
+      isAssistantOperatorRoute(
+        "POST",
+        `/v1/retention/segment-runs/${runId}/claim`,
+      ),
+    ).toBe(true);
+    expect(
+      isAssistantOperatorRoute(
+        "POST",
+        `/v1/retention/segment-runs/${runId}/complete`,
+      ),
+    ).toBe(true);
+    expect(
+      isAssistantOperatorRoute(
+        "GET",
+        `/v1/retention/segment-runs/${runId}/segments`,
+      ),
+    ).toBe(true);
+    expect(
+      isAssistantOperatorRoute(
+        "POST",
+        "/v1/retention/segment-runs/not-a-uuid/claim",
+      ),
+    ).toBe(false);
+    expect(
+      isAssistantOperatorRoute(
+        "GET",
+        `/v1/retention/segment-runs/${runId}/segments?organizationId=forged`,
+      ),
+    ).toBe(false);
+  });
+
   test("rejects a tenant mismatch before making a network request", async () => {
     let called = false;
     const route = createRetentionOperatorRoutes(

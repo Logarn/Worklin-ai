@@ -5,6 +5,8 @@ import { fetchImpl } from "../fetch.js";
 import type { IpcRoute } from "./server.js";
 
 const MIN_SECRET_BYTES = 32;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SAFE_RESPONSE_HEADERS = new Set([
   "content-type",
   "retry-after",
@@ -156,15 +158,28 @@ export function isAssistantOperatorRoute(
     return false;
   }
   if (method === "GET") {
+    const segmentRunMatch = /^\/v1\/retention\/segment-runs\/([^/]+)$/iu.exec(
+      path,
+    );
+    const segmentRunSegmentsMatch =
+      /^\/v1\/retention\/segment-runs\/([^/]+)\/segments$/iu.exec(path);
     return (
       path === "/v1/retention/status" ||
+      (segmentRunMatch !== null && UUID_PATTERN.test(segmentRunMatch[1]!)) ||
+      (segmentRunSegmentsMatch !== null &&
+        UUID_PATTERN.test(segmentRunSegmentsMatch[1]!)) ||
       /^\/v1\/retention\/campaigns\/[0-9a-f-]+\/approval-preview$/iu.test(path)
     );
   }
+  const segmentRunActionMatch =
+    /^\/v1\/retention\/segment-runs\/([^/]+)\/(?:claim|complete)$/iu.exec(path);
   return (
     path === "/v1/retention/brands" ||
     path === "/v1/retention/programs" ||
     path === "/v1/retention/segments" ||
+    path === "/v1/retention/segment-runs" ||
+    (segmentRunActionMatch !== null &&
+      UUID_PATTERN.test(segmentRunActionMatch[1]!)) ||
     path === "/v1/retention/reasoning/claim" ||
     path === "/v1/retention/decisions/complete" ||
     path === "/v1/retention/campaigns" ||
