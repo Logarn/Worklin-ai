@@ -8,7 +8,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
 - Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-klaviyo-integration-home`
-- Current `main`: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f` (`Support all Klaviyo custom properties`, PR `#171`).
+- Current deployed product release: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f` (`Support all Klaviyo custom properties`, PR `#171`).
 - Current production control-plane source: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f`. Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
@@ -17,7 +17,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Public `/readyz` reports the control plane and provisioner ready. This proves deployment health, not the authenticated retention pilot flow.
 - The tenant-safe pooled code is present in the production image but every pool gate remains disabled. No pooled worker, tenant-state bucket, paid capacity, or new production secret has been created.
 - The private retention service is active at the same release SHA with migrations `001` through `006`, forced tenant isolation, and the private raw-payload bucket ready. The authenticated browser proxy and bounded assistant review bridge are enabled. External provider writes and sending remain disabled globally and per organization.
-- Railway PostgreSQL still has no managed backups or point-in-time recovery. The user explicitly approved one disposable, read-only Dr Rachael pilot because Klaviyo remains the source of truth and the imported state can be rebuilt. A verified encrypted pre-migration SQL snapshot is stored outside the repo at `/Users/admin/Documents/Worklin Private Backups/retention-production-pre-005-006-20260804.sql.enc`; its passphrase is in macOS Keychain under `worklin-retention-production-pre-005-006-20260804`. This exception does not authorize sending, external writes, a second brand, or ongoing production without managed backup and restore proof.
+- Railway PostgreSQL still has no managed backups or point-in-time recovery. The user explicitly approved one disposable, read-only Dr Rachael pilot because Klaviyo remains the source of truth and the imported state can be rebuilt. Verified encrypted SQL snapshots are stored outside the repo at `/Users/admin/Documents/Worklin Private Backups/retention-production-pre-005-006-20260804.sql.enc` and `/Users/admin/Documents/Worklin Private Backups/retention-production-post-006-20260804.sql.enc`; their passphrases are in macOS Keychain under the matching filenames without `.sql.enc`. The post-migration snapshot is `123152` bytes with SHA-256 `660b14e5920f3a16e73577f9a99a28b89e751c4bfdcc0088f1d85a16b52d7387` and was decrypted in memory to verify the migration ledger and `property_access_mode` schema. This exception does not authorize sending, external writes, a second brand, or ongoing production without managed backup and restore proof.
 - Browser requirement for the pilot: use an authenticated in-app browser or the authenticated Chrome profile selected by the user. The in-app Klaviyo connection dialog was verified against production on 2026-08-04.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
@@ -39,8 +39,8 @@ PostgreSQL-dependent tests skipped locally, `15` control-plane retention tests,
 production-mode web build. Every mandatory GitHub check and the Vercel preview
 passed before merge.
 
-Before migration, a portable encrypted SQL snapshot was created, decrypted in
-memory, and checked for the retention schema and migration ledger. Railway
+Before and after migration, portable encrypted SQL snapshots were created,
+decrypted in memory, and checked for the retention schema and migration ledger. Railway
 migrations `005_segment_review_pilot` and
 `006_klaviyo_property_access_mode` are applied. The four new tables force row
 security and the non-bypass runtime role has exactly the expected four data
