@@ -6,15 +6,19 @@ import {
   activateRetentionProgram,
   approveRetentionImport,
   approveRetentionCampaign,
+  connectRetentionKlaviyo,
   fetchRetentionCampaignApprovalPreview,
   fetchRetentionCampaignPreview,
   fetchRetentionCampaigns,
   fetchRetentionImports,
   fetchRetentionProgramApprovalPreview,
   fetchRetentionPrograms,
+  fetchRetentionSegmentRun,
+  fetchRetentionSegments,
   fetchRetentionStatus,
   releaseRetentionCampaign,
   RetentionApiError,
+  startRetentionSegmentRun,
 } from "./retention-api";
 
 const originalGet = client.get;
@@ -29,6 +33,8 @@ const DECISION_ID = "66666666-6666-4666-8666-666666666666";
 const MESSAGE_ID = "77777777-7777-4777-8777-777777777777";
 const DISPATCH_ID = "88888888-8888-4888-8888-888888888888";
 const IMPORT_ID = "99999999-9999-4999-8999-999999999999";
+const RUN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SEGMENT_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const SNAPSHOT_SHA256 = "a".repeat(64);
 const AUDIENCE_SHA256 = "b".repeat(64);
 const MESSAGE_SHA256 = "c".repeat(64);
@@ -218,9 +224,7 @@ describe("retention campaign API", () => {
           mode: "individual_message",
           audienceSnapshotId: AUDIENCE_ID,
           audienceChecksum: AUDIENCE_SHA256,
-          recipientDecisions: [
-            { id: DECISION_ID, checksum: "d".repeat(64) },
-          ],
+          recipientDecisions: [{ id: DECISION_ID, checksum: "d".repeat(64) }],
           content: [{ id: MESSAGE_ID, checksum: MESSAGE_SHA256 }],
           modelReferences: ["provider:model"],
           promptReferences: ["retention-v1"],
@@ -255,11 +259,7 @@ describe("retention campaign API", () => {
     }));
     client.post = request as typeof client.post;
 
-    await approveRetentionCampaign(
-      "assistant-1",
-      CAMPAIGN_ID,
-      SNAPSHOT_SHA256,
-    );
+    await approveRetentionCampaign("assistant-1", CAMPAIGN_ID, SNAPSHOT_SHA256);
 
     expect(request).toHaveBeenCalledWith({
       url: "/v1/retention/campaigns/{campaign_id}/approve",
@@ -329,9 +329,7 @@ describe("retention campaign API", () => {
       throw new Error("Expected approval to fail.");
     } catch (error) {
       expect(error).toBeInstanceOf(RetentionApiError);
-      expect((error as RetentionApiError).code).toBe(
-        "approval_invalidated",
-      );
+      expect((error as RetentionApiError).code).toBe("approval_invalidated");
       expect((error as RetentionApiError).status).toBe(409);
     }
   });
@@ -459,5 +457,218 @@ describe("retention setup API", () => {
       headers: { "X-Worklin-Assistant-Id": "assistant-1" },
       throwOnError: false,
     });
+  });
+});
+
+describe("Klaviyo connection API", () => {
+  test("creates the brand before the encrypted integration request", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    client.post = mock(async (input: Record<string, unknown>) => {
+      requests.push(input);
+      return input.url === "/v1/retention/brands"
+        ? {
+            data: { id: BRAND_ID, name: "Example Brand" },
+            error: undefined,
+            response: new Response(null, { status: 201 }),
+          }
+        : {
+            data: {
+              id: DISPATCH_ID,
+              provider: "klaviyo",
+              migrationRunId: IMPORT_ID,
+              controlPlaneConnectionId: "private-binding",
+              webhookPath: "/private-webhook",
+              credential: "must-not-return",
+            },
+            error: undefined,
+            response: new Response(null, { status: 201 }),
+          };
+    }) as typeof client.post;
+
+    const result = await connectRetentionKlaviyo("assistant-1", {
+      brandName: "Example Brand",
+      websiteUrl: "https://example.com/",
+      credential: "pk_private",
+      propertyAllowlist: ["Lead Magnet"],
+    });
+
+    expect(requests[0]).toEqual({
+      url: "/v1/retention/brands",
+      body: { name: "Example Brand", websiteUrl: "https://example.com/" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Worklin-Assistant-Id": "assistant-1",
+      },
+      throwOnError: false,
+    });
+    expect(requests[1]?.url).toBe("/v1/retention/integrations");
+    expect(requests[1]?.body).toEqual({
+      brandId: BRAND_ID,
+      provider: "klaviyo",
+      credential: "pk_private",
+      propertyAllowlist: ["Lead Magnet"],
+    });
+    expect(result).toEqual({
+      brandId: BRAND_ID,
+      brandName: "Example Brand",
+      integrationId: DISPATCH_ID,
+      migrationRunId: IMPORT_ID,
+    });
+    expect(result).not.toHaveProperty("credential");
+    expect(result).not.toHaveProperty("webhookPath");
+  });
+});
+
+describe("retention audience API", () => {
+  const runDetail = {
+    id: RUN_ID,
+    brandId: BRAND_ID,
+    status: "claimed",
+    maxSegments: 10,
+    sampleLimitPerSegment: 2,
+    trancheSize: 10,
+    completedSegmentCount: 4,
+    evidenceCutoffAt: "2026-08-04T10:00:00.000Z",
+    lastErrorCode: null,
+    createdAt: "2026-08-04T10:00:00.000Z",
+    updatedAt: "2026-08-04T10:01:00.000Z",
+  };
+
+  test("starts and polls a bounded review run", async () => {
+    const postRequest = mock(async () => ({
+      data: {
+        id: RUN_ID,
+        status: "queued",
+        maxSegments: 10,
+        sampleLimitPerSegment: 2,
+        trancheSize: 10,
+        evidenceCutoffAt: "2026-08-04T10:00:00.000Z",
+        duplicate: false,
+      },
+      error: undefined,
+      response: new Response(null, { status: 201 }),
+    }));
+    const getRequest = mock(async () => ({
+      data: runDetail,
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    }));
+    client.post = postRequest as typeof client.post;
+    client.get = getRequest as typeof client.get;
+
+    await startRetentionSegmentRun("assistant-1", {
+      brandId: BRAND_ID,
+      maxSegments: 10,
+      sampleLimitPerSegment: 2,
+    });
+    const result = await fetchRetentionSegmentRun("assistant-1", RUN_ID);
+
+    expect(postRequest).toHaveBeenCalledWith({
+      url: "/v1/retention/segment-runs",
+      body: {
+        brandId: BRAND_ID,
+        maxSegments: 10,
+        sampleLimitPerSegment: 2,
+      },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Worklin-Assistant-Id": "assistant-1",
+      },
+      throwOnError: false,
+    });
+    expect(getRequest).toHaveBeenCalledWith({
+      url: "/v1/retention/segment-runs/{run_id}",
+      path: { run_id: RUN_ID },
+      headers: { "X-Worklin-Assistant-Id": "assistant-1" },
+      throwOnError: false,
+    });
+    expect(result.completedSegments).toBe(4);
+    expect(result.status).toBe("claimed");
+  });
+
+  test("rejects a run response without at least one sample per audience", async () => {
+    client.post = mock(async () => ({
+      data: {
+        id: RUN_ID,
+        status: "queued",
+        maxSegments: 10,
+        sampleLimitPerSegment: 0,
+        trancheSize: 10,
+        evidenceCutoffAt: "2026-08-04T10:00:00.000Z",
+        duplicate: false,
+      },
+      error: undefined,
+      response: new Response(null, { status: 201 }),
+    })) as typeof client.post;
+
+    expect(
+      startRetentionSegmentRun("assistant-1", {
+        brandId: BRAND_ID,
+        maxSegments: 10,
+        sampleLimitPerSegment: 1,
+      }),
+    ).rejects.toThrow("Audience run response was invalid.");
+  });
+
+  test("loads review fields while stripping brand and customer identifiers", async () => {
+    client.get = mock(async () => ({
+      data: {
+        segments: [
+          {
+            id: SEGMENT_ID,
+            name: "Recent browsers",
+            version: 1,
+            expression: { type: "predicate" },
+            status: "draft",
+            checksum: "a".repeat(64),
+            sourceRunId: RUN_ID,
+            memberCount: 18,
+            eligibleCount: 16,
+            createdAt: "2026-08-04T10:01:00.000Z",
+            campaignPreview: {
+              description: "People showing recent product interest.",
+              confidence: 0.82,
+              strategy: {
+                objective: "Turn active interest into a first order.",
+                angle: "Lead with the product category they explored.",
+                timing: "Within two days",
+                callToAction: "Find your best fit",
+              },
+              evidence: [
+                {
+                  signal: "Recent product view",
+                  explanation: "Viewed a product in the last seven days",
+                  strength: "strong",
+                  source: "event",
+                },
+              ],
+              qualityStatus: "passed",
+              samples: [
+                {
+                  customerReference: "private-customer",
+                  subject: "Still deciding?",
+                  preheader: null,
+                  body: "Here is a clearer way to choose.",
+                  explanation: "Supports an active product decision.",
+                  checksum: "b".repeat(64),
+                },
+              ],
+            },
+          },
+        ],
+      },
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    })) as typeof client.get;
+
+    const segments = await fetchRetentionSegments("assistant-1", BRAND_ID);
+
+    expect(segments[0]?.eligibleCount).toBe(16);
+    expect(segments[0]?.description).toBe(
+      "People showing recent product interest.",
+    );
+    expect(segments[0]?.sampleMessages[0]).not.toHaveProperty(
+      "customerReference",
+    );
   });
 });

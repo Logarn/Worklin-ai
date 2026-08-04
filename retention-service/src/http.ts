@@ -1,8 +1,4 @@
-import {
-  createHash,
-  createHmac,
-  timingSafeEqual,
-} from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";
 
@@ -18,6 +14,7 @@ import type { RetentionDatabase } from "./database.js";
 import {
   RetentionRepository,
   tenantContextFromClaims,
+  type SegmentRunCompletionInput,
 } from "./repository.js";
 import type { RawPayloadStore } from "./raw-payload-store.js";
 import { RetentionServiceError } from "./types.js";
@@ -36,16 +33,15 @@ const integrationInputSchema = z.object({
   externalAccountId: z.string().trim().min(1).max(512).optional(),
   credential: z.string().min(1).max(16_384).optional(),
   webhookSecret: z.string().min(8).max(16_384),
-  propertyAllowlist: z.array(z.string().trim().min(1).max(128)).max(500).optional(),
+  propertyAllowlist: z
+    .array(z.string().trim().min(1).max(128))
+    .max(500)
+    .optional(),
 });
 
 const programInputSchema = z.object({
   brandId: z.string().uuid(),
-  type: z.enum([
-    "non_buyer_conversion",
-    "re_engagement",
-    "repeat_purchase",
-  ]),
+  type: z.enum(["non_buyer_conversion", "re_engagement", "repeat_purchase"]),
   name: z.string().trim().min(1).max(200),
   policyVersion: z.string().trim().min(1).max(128),
   policy: z.record(z.string(), z.unknown()),
@@ -79,6 +75,73 @@ const segmentDefinitionInputSchema = z.object({
   expression: z.unknown(),
 });
 
+const segmentRunInputSchema = z.object({
+  brandId: z.string().uuid(),
+  maxSegments: z.number().int().min(1).max(50).default(50),
+  sampleLimitPerSegment: z.number().int().min(1).max(2).default(2),
+  trancheSize: z.number().int().min(1).max(10).default(10),
+  evidenceCutoffAt: z.string().datetime({ offset: true }).optional(),
+});
+
+const segmentRunClaimInputSchema = z.object({
+  resume: z.boolean().default(false),
+});
+
+const campaignPreviewSampleSchema = z.object({
+  customerReference: z
+    .string()
+    .regex(/^(?:customer_[a-f0-9]{12}|archetype_[a-z0-9_-]{1,64})$/u),
+  subject: z.string().trim().min(1).max(1_000),
+  preheader: z.string().trim().min(1).max(2_000).optional(),
+  body: z.string().trim().min(1).max(500_000),
+  explanation: z.string().trim().min(1).max(20_000),
+});
+
+const segmentRunCompletionSchema = z.object({
+  leaseOwner: z.string().trim().min(20).max(128),
+  outcome: z.enum(["continue", "pause", "complete"]),
+  errorCode: z.string().trim().min(1).max(128).optional(),
+  definitions: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(200),
+        description: z.string().trim().min(1).max(10_000),
+        expression: z.unknown(),
+        confidence: z.number().min(0).max(1),
+        evidence: z.array(z.string().trim().min(1).max(2_000)).max(50),
+        campaignPreview: z.object({
+          strategy: z.unknown(),
+          qualityStatus: z.enum(["passed", "needs_review", "blocked"]),
+          qualityIssues: z.array(z.string().trim().min(1).max(2_000)).max(100),
+          modelProvider: z.string().trim().min(1).max(128),
+          modelId: z.string().trim().min(1).max(256),
+          promptVersion: z.string().trim().min(1).max(256),
+          usage: z.object({
+            inputTokens: z.number().int().nonnegative().max(100_000),
+            outputTokens: z.number().int().nonnegative().max(20_000),
+            cachedInputTokens: z
+              .number()
+              .int()
+              .nonnegative()
+              .max(100_000)
+              .optional(),
+          }),
+          samples: z.array(campaignPreviewSampleSchema).max(2),
+        }),
+      }),
+    )
+    .max(10),
+});
+
+const segmentListQuerySchema = z.object({
+  brandId: z.string().uuid(),
+});
+
+const segmentActivationInputSchema = z.object({
+  expectedVersion: z.number().int().positive().max(1_000_000),
+  expectedChecksum: z.string().regex(/^[0-9a-f]{64}$/iu),
+});
+
 const recipientDecisionInputSchema = z.object({
   jobId: z.string().uuid(),
   leaseOwner: z.string().trim().min(11).max(128),
@@ -108,12 +171,7 @@ const recipientDecisionInputSchema = z.object({
     .max(50),
   evidenceIds: z.array(z.string().uuid()).max(1_000),
   confidence: z.number().min(0).max(1),
-  sensitivity: z.enum([
-    "standard",
-    "personal",
-    "sensitive",
-    "restricted",
-  ]),
+  sensitivity: z.enum(["standard", "personal", "sensitive", "restricted"]),
   requiresHumanReview: z.boolean(),
   model: z.object({
     provider: z.string().trim().min(1).max(128),
@@ -155,11 +213,7 @@ const prepareGenerationInputSchema = z.object({
   modelId: z.string().trim().min(1).max(256),
   promptVersion: z.string().trim().min(1).max(256),
   estimatedMaxCostUsd: z.number().nonnegative().max(1_000_000),
-  campaignSpendCeilingUsd: z
-    .number()
-    .nonnegative()
-    .max(1_000_000)
-    .optional(),
+  campaignSpendCeilingUsd: z.number().nonnegative().max(1_000_000).optional(),
 });
 
 const renderedMessageInputSchema = z.object({
@@ -183,7 +237,10 @@ const renderedMessageInputSchema = z.object({
 });
 
 const approvalInputSchema = z.object({
-  expectedSnapshotSha256: z.string().regex(/^[0-9a-f]{64}$/iu).optional(),
+  expectedSnapshotSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/iu)
+    .optional(),
   note: z.string().trim().min(1).max(2_000).optional(),
 });
 
@@ -285,15 +342,18 @@ export interface RetentionHttpDependencies {
     | "analyzeCampaignOutcomes"
     | "approveCampaign"
     | "activateProgram"
+    | "activateSegment"
     | "cancelCampaign"
     | "campaignApprovalPreview"
     | "claimRecipientReasoning"
+    | "claimSegmentRun"
     | "correctCustomer"
     | "createBrand"
     | "createCampaign"
     | "createIntegration"
     | "createProgram"
     | "createSegmentDefinition"
+    | "createSegmentRun"
     | "freezeCampaignAudience"
     | "customerConsentHistory"
     | "customerPrivacyAccess"
@@ -301,8 +361,11 @@ export interface RetentionHttpDependencies {
     | "exportCustomerData"
     | "initializeTenant"
     | "integrationForWebhook"
+    | "getSegmentRun"
     | "listCampaigns"
     | "listPrograms"
+    | "listSegments"
+    | "listSegmentsForRun"
     | "pauseProgram"
     | "prepareCampaignGeneration"
     | "previewAudience"
@@ -310,6 +373,7 @@ export interface RetentionHttpDependencies {
     | "programPolicyApprovalPreview"
     | "recordRecipientDecision"
     | "recordRenderedMessage"
+    | "completeSegmentRun"
     | "releaseCampaign"
     | "revokeIntegration"
     | "reviewImports"
@@ -409,9 +473,7 @@ function verifyInternalWebhookSignature(input: {
   connectionId: string;
 }): void {
   const timestamp = input.request.headers.get("x-worklin-webhook-timestamp");
-  const digest = input.request.headers.get(
-    "x-worklin-webhook-content-sha256",
-  );
+  const digest = input.request.headers.get("x-worklin-webhook-content-sha256");
   const signature = input.request.headers.get("x-worklin-webhook-signature");
   const expectedDigest = createHash("sha256")
     .update(input.body)
@@ -433,10 +495,7 @@ function verifyInternalWebhookSignature(input: {
   }
   const issuedAt = Number(timestamp);
   const now = Math.floor(Date.now() / 1_000);
-  if (
-    !Number.isSafeInteger(issuedAt) ||
-    Math.abs(now - issuedAt) > 60
-  ) {
+  if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > 60) {
     throw new RetentionServiceError(
       "retention_webhook_binding_expired",
       "The internal webhook binding expired.",
@@ -467,7 +526,10 @@ function verifyInternalWebhookSignature(input: {
   }
 }
 
-function routeMatch(pathname: string, pattern: RegExp): RegExpMatchArray | null {
+function routeMatch(
+  pathname: string,
+  pattern: RegExp,
+): RegExpMatchArray | null {
   if (
     pathname.includes("\\") ||
     /%(?:2f|5c)/iu.test(pathname) ||
@@ -501,10 +563,7 @@ async function handleWebhook(
       403,
     );
   }
-  const body = await boundedBody(
-    request,
-    dependencies.config.maxBodyBytes,
-  );
+  const body = await boundedBody(request, dependencies.config.maxBodyBytes);
   verifyInternalWebhookSignature({
     request,
     body,
@@ -567,13 +626,12 @@ export function createRetentionHttpHandler(
           migrationsReady,
           tenantIsolationReady,
           rawPayloadStoreReady,
-        ] =
-          await Promise.all([
-            dependencies.database.ready(),
-            dependencies.database.migrationsReady(),
-            dependencies.database.tenantIsolationReady(),
-            dependencies.rawPayloadStore.ready(),
-          ]);
+        ] = await Promise.all([
+          dependencies.database.ready(),
+          dependencies.database.migrationsReady(),
+          dependencies.database.tenantIsolationReady(),
+          dependencies.rawPayloadStore.ready(),
+        ]);
         const ok =
           databaseReady &&
           migrationsReady &&
@@ -584,11 +642,8 @@ export function createRetentionHttpHandler(
           database: databaseReady ? "ready" : "unavailable",
           migrations: migrationsReady ? "ready" : "pending",
           tenantIsolation: tenantIsolationReady ? "ready" : "unsafe",
-          rawPayloadStore: rawPayloadStoreReady
-            ? "ready"
-            : "unavailable",
-          externalWritesEnabled:
-            dependencies.config.externalWritesEnabled,
+          rawPayloadStore: rawPayloadStoreReady ? "ready" : "unavailable",
+          externalWritesEnabled: dependencies.config.externalWritesEnabled,
           sendEnabled: dependencies.config.sendEnabled,
         });
       }
@@ -627,10 +682,7 @@ export function createRetentionHttpHandler(
         dependencies.worker.wakeTenant(context.organizationId);
         return json(202, { accepted: true });
       }
-      if (
-        request.method === "GET" &&
-        url.pathname === "/v1/retention/status"
-      ) {
+      if (request.method === "GET" && url.pathname === "/v1/retention/status") {
         requirePermission(claims, "retention:read");
         return json(200, await dependencies.repository.status(context));
       }
@@ -885,6 +937,92 @@ export function createRetentionHttpHandler(
       }
       if (
         request.method === "POST" &&
+        url.pathname === "/v1/retention/segment-runs"
+      ) {
+        requirePermission(claims, "retention:write");
+        const input = segmentRunInputSchema.parse(
+          parseJson(
+            await boundedBody(request, dependencies.config.maxBodyBytes),
+          ),
+        );
+        return json(
+          201,
+          await dependencies.repository.createSegmentRun(context, input),
+        );
+      }
+      const segmentRunMatch = routeMatch(
+        url.pathname,
+        /^\/v1\/retention\/segment-runs\/([0-9a-f-]+)$/iu,
+      );
+      if (request.method === "GET" && segmentRunMatch) {
+        requirePermission(claims, "retention:read");
+        return json(
+          200,
+          await dependencies.repository.getSegmentRun(
+            context,
+            segmentRunMatch[1]!,
+          ),
+        );
+      }
+      const segmentRunSegmentsMatch = routeMatch(
+        url.pathname,
+        /^\/v1\/retention\/segment-runs\/([0-9a-f-]+)\/segments$/iu,
+      );
+      if (request.method === "GET" && segmentRunSegmentsMatch) {
+        requirePermission(claims, "retention:read");
+        return json(
+          200,
+          await dependencies.repository.listSegmentsForRun(
+            context,
+            segmentRunSegmentsMatch[1]!,
+          ),
+        );
+      }
+      const segmentRunClaimMatch = routeMatch(
+        url.pathname,
+        /^\/v1\/retention\/segment-runs\/([0-9a-f-]+)\/claim$/iu,
+      );
+      if (request.method === "POST" && segmentRunClaimMatch) {
+        requirePermission(claims, "retention:generate");
+        const input = segmentRunClaimInputSchema.parse(
+          parseJson(
+            await boundedBody(request, dependencies.config.maxBodyBytes),
+          ),
+        );
+        return json(
+          200,
+          await dependencies.repository.claimSegmentRun(context, {
+            runId: segmentRunClaimMatch[1]!,
+            ...input,
+          }),
+        );
+      }
+      const segmentRunCompleteMatch = routeMatch(
+        url.pathname,
+        /^\/v1\/retention\/segment-runs\/([0-9a-f-]+)\/complete$/iu,
+      );
+      if (request.method === "POST" && segmentRunCompleteMatch) {
+        requirePermission(claims, "retention:generate");
+        const input = segmentRunCompletionSchema.parse(
+          parseJson(
+            await boundedBody(request, dependencies.config.maxBodyBytes),
+          ),
+        );
+        return json(
+          200,
+          await dependencies.repository.completeSegmentRun(context, {
+            ...input,
+            runId: segmentRunCompleteMatch[1]!,
+            definitions: input.definitions.map((definition) => ({
+              ...definition,
+              expression:
+                definition.expression as SegmentRunCompletionInput["definitions"][number]["expression"],
+            })),
+          }),
+        );
+      }
+      if (
+        request.method === "POST" &&
         url.pathname === "/v1/retention/segments"
       ) {
         requirePermission(claims, "retention:write");
@@ -897,10 +1035,39 @@ export function createRetentionHttpHandler(
           201,
           await dependencies.repository.createSegmentDefinition(context, {
             ...input,
-            expression:
-              input.expression as Parameters<
-                RetentionRepository["createSegmentDefinition"]
-              >[1]["expression"],
+            expression: input.expression as Parameters<
+              RetentionRepository["createSegmentDefinition"]
+            >[1]["expression"],
+          }),
+        );
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/retention/segments"
+      ) {
+        requirePermission(claims, "retention:read");
+        const input = segmentListQuerySchema.parse(queryParameters(url));
+        return json(
+          200,
+          await dependencies.repository.listSegments(context, input),
+        );
+      }
+      const segmentActivationMatch = routeMatch(
+        url.pathname,
+        /^\/v1\/retention\/segments\/([0-9a-f-]+)\/activate$/iu,
+      );
+      if (request.method === "POST" && segmentActivationMatch) {
+        requirePermission(claims, "retention:approve");
+        const input = segmentActivationInputSchema.parse(
+          parseJson(
+            await boundedBody(request, dependencies.config.maxBodyBytes),
+          ),
+        );
+        return json(
+          200,
+          await dependencies.repository.activateSegment(context, {
+            segmentId: segmentActivationMatch[1]!,
+            ...input,
           }),
         );
       }
@@ -910,8 +1077,7 @@ export function createRetentionHttpHandler(
       ) {
         requirePermission(claims, "retention:generate");
         return json(200, {
-          work:
-            await dependencies.repository.claimRecipientReasoning(context),
+          work: await dependencies.repository.claimRecipientReasoning(context),
         });
       }
       if (
@@ -926,10 +1092,7 @@ export function createRetentionHttpHandler(
         );
         return json(
           200,
-          await dependencies.repository.recordRecipientDecision(
-            context,
-            input,
-          ),
+          await dependencies.repository.recordRecipientDecision(context, input),
         );
       }
       if (

@@ -52,6 +52,17 @@ runbook's infrastructure, backup, isolation, and synthetic-tenant gates pass.
 - `GET /v1/retention/status`: tenant-scoped integration and job status.
 - `POST /v1/retention/jobs/wake`: authenticated, permission-gated wake for only
   the token's organization.
+- `POST /v1/retention/segment-runs`: create one bounded, review-only audience
+  analysis run for a brand.
+- `GET /v1/retention/segment-runs/{id}` and the run `claim` / `complete`
+  routes: inspect and resumably process AI-authored segment tranches.
+- `GET /v1/retention/segment-runs/{id}/segments`: retrieve only that run's
+  review result, including its brand name for the client-facing Work artifact.
+- `GET /v1/retention/segments?brandId=...`: list versioned audience definitions,
+  deterministic membership counts, eligibility counts, and encrypted campaign
+  previews after tenant-scoped decryption.
+- `POST /v1/retention/segments/{id}/activate`: activate only the reviewed
+  definition version and checksum.
 - `/v1/retention/*`: authenticated operator and campaign APIs.
 - `POST /v1/retention/integrations/{provider}/webhooks/{connectionId}`:
   private, signed webhook handoff from the control plane.
@@ -143,6 +154,9 @@ Implemented:
 - Checksum-bound program activation, campaign approval invalidation, and
   owner-facing Work review surfaces
 - Global and organization write/send gates
+- Review-only Klaviyo connection validation, resumable segment runs, exact
+  1-2 sample bounds, deterministic membership evaluation, server-derived
+  message quality checks, and encrypted preview storage
 
 Not production-complete:
 

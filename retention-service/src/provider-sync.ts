@@ -260,9 +260,7 @@ function requiredRecord(
   return value;
 }
 
-function optionalRecord(
-  value: unknown,
-): Record<string, unknown> | undefined {
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
 }
 
@@ -291,10 +289,7 @@ function optionalString(
   return requiredString(value, provider, maxCharacters);
 }
 
-function requiredIsoTime(
-  value: unknown,
-  provider: RetentionProvider,
-): string {
+function requiredIsoTime(value: unknown, provider: RetentionProvider): string {
   const candidate = requiredString(value, provider, 128);
   const milliseconds = Date.parse(candidate);
   if (!Number.isFinite(milliseconds)) {
@@ -344,12 +339,7 @@ function configurationError(
   provider: RetentionProvider,
   message: string,
 ): ProviderSyncError {
-  return new ProviderSyncError(
-    provider,
-    "invalid_configuration",
-    message,
-    400,
-  );
+  return new ProviderSyncError(provider, "invalid_configuration", message, 400);
 }
 
 function validateCredential(
@@ -374,14 +364,9 @@ function validateCredential(
 function validateShopifyOrigin(value: string): string {
   let parsed: URL;
   try {
-    parsed = new URL(
-      value.includes("://") ? value : `https://${value}`,
-    );
+    parsed = new URL(value.includes("://") ? value : `https://${value}`);
   } catch {
-    throw configurationError(
-      "shopify",
-      "The Shopify store domain is invalid.",
-    );
+    throw configurationError("shopify", "The Shopify store domain is invalid.");
   }
   const hostname = parsed.hostname.toLocaleLowerCase("en-US");
   if (
@@ -394,10 +379,7 @@ function validateShopifyOrigin(value: string): string {
     parsed.hash ||
     !SHOPIFY_HOST_PATTERN.test(hostname)
   ) {
-    throw configurationError(
-      "shopify",
-      "The Shopify store domain is invalid.",
-    );
+    throw configurationError("shopify", "The Shopify store domain is invalid.");
   }
   return `https://${hostname}`;
 }
@@ -504,11 +486,7 @@ function validatePageSize(
   maximum: number,
 ): number {
   const pageSize = value ?? maximum;
-  if (
-    !Number.isSafeInteger(pageSize) ||
-    pageSize < 1 ||
-    pageSize > maximum
-  ) {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > maximum) {
     throw new ProviderSyncError(
       provider,
       "invalid_request",
@@ -526,10 +504,7 @@ function advanceWatermark(
   let latestMilliseconds =
     previous === null ? Number.NEGATIVE_INFINITY : Date.parse(previous);
   for (const occurredAt of occurredAtValues) {
-    latestMilliseconds = Math.max(
-      latestMilliseconds,
-      Date.parse(occurredAt),
-    );
+    latestMilliseconds = Math.max(latestMilliseconds, Date.parse(occurredAt));
   }
   return Number.isFinite(latestMilliseconds)
     ? new Date(latestMilliseconds).toISOString()
@@ -542,10 +517,7 @@ function parseNonNegativeInteger(value: string | null): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
-function parseRetryAfter(
-  value: string | null,
-  now: Date,
-): number | undefined {
+function parseRetryAfter(value: string | null, now: Date): number | undefined {
   if (value === null) return undefined;
   if (/^\d+(?:\.\d+)?$/u.test(value)) {
     return Math.min(
@@ -555,10 +527,7 @@ function parseRetryAfter(
   }
   const retryAt = Date.parse(value);
   if (!Number.isFinite(retryAt)) return undefined;
-  return Math.min(
-    Math.max(0, retryAt - now.getTime()),
-    MAX_RETRY_AFTER_MS,
-  );
+  return Math.min(Math.max(0, retryAt - now.getTime()), MAX_RETRY_AFTER_MS);
 }
 
 function headerRateLimit(
@@ -570,8 +539,7 @@ function headerRateLimit(
     headers.get("ratelimit-limit") ?? headers.get("x-ratelimit-limit"),
   );
   const remaining = parseNonNegativeInteger(
-    headers.get("ratelimit-remaining") ??
-      headers.get("x-ratelimit-remaining"),
+    headers.get("ratelimit-remaining") ?? headers.get("x-ratelimit-remaining"),
   );
   const resetSeconds = parseNonNegativeInteger(
     headers.get("ratelimit-reset") ?? headers.get("x-ratelimit-reset"),
@@ -583,10 +551,7 @@ function headerRateLimit(
     ...(resetSeconds === undefined
       ? {}
       : {
-          resetAfterMs: Math.min(
-            resetSeconds * 1_000,
-            MAX_RETRY_AFTER_MS,
-          ),
+          resetAfterMs: Math.min(resetSeconds * 1_000, MAX_RETRY_AFTER_MS),
         }),
   };
 }
@@ -598,10 +563,7 @@ async function readBoundedBody(
   const contentLength = parseNonNegativeInteger(
     response.headers.get("content-length"),
   );
-  if (
-    contentLength !== undefined &&
-    contentLength > MAX_RESPONSE_BYTES
-  ) {
+  if (contentLength !== undefined && contentLength > MAX_RESPONSE_BYTES) {
     throw new ProviderSyncError(
       provider,
       "provider_response_too_large",
@@ -690,9 +652,7 @@ async function fetchBoundedJson(
 }
 
 function finiteNonNegativeNumber(value: unknown): number | undefined {
-  return typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 0
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
     : undefined;
 }
@@ -707,9 +667,7 @@ function shopifyRateLimit(
   const extensions = optionalRecord(root?.extensions);
   const cost = optionalRecord(extensions?.cost);
   const throttle = optionalRecord(cost?.throttleStatus);
-  const maximumAvailable = finiteNonNegativeNumber(
-    throttle?.maximumAvailable,
-  );
+  const maximumAvailable = finiteNonNegativeNumber(throttle?.maximumAvailable);
   const currentlyAvailable = finiteNonNegativeNumber(
     throttle?.currentlyAvailable,
   );
@@ -744,10 +702,7 @@ function parseShopifyConnection(
   }
   const data = requiredRecord(root.data, "shopify");
   const connection = requiredRecord(data[resource], "shopify");
-  if (
-    !Array.isArray(connection.nodes) ||
-    connection.nodes.length > pageSize
-  ) {
+  if (!Array.isArray(connection.nodes) || connection.nodes.length > pageSize) {
     throw malformedResponse("shopify");
   }
   const pageInfo = requiredRecord(connection.pageInfo, "shopify");
@@ -808,20 +763,12 @@ function shopifyCustomerSignal(
     externalId: requiredString(customer.id, "shopify", 512),
     ...(optionalString(emailAddress?.emailAddress, "shopify", 512)
       ? {
-          email: optionalString(
-            emailAddress?.emailAddress,
-            "shopify",
-            512,
-          ),
+          email: optionalString(emailAddress?.emailAddress, "shopify", 512),
         }
       : {}),
     ...(optionalString(phoneNumber?.phoneNumber, "shopify", 64)
       ? {
-          phone: optionalString(
-            phoneNumber?.phoneNumber,
-            "shopify",
-            64,
-          ),
+          phone: optionalString(phoneNumber?.phoneNumber, "shopify", 64),
         }
       : {}),
     ...(displayName ? { displayName } : {}),
@@ -838,11 +785,7 @@ function shopifyCustomerEvent(
   const createdAt = requiredIsoTime(customer.createdAt, "shopify");
   const amountSpent = optionalRecord(customer.amountSpent);
   const amount = optionalString(amountSpent?.amount, "shopify", 64);
-  const currencyCode = optionalString(
-    amountSpent?.currencyCode,
-    "shopify",
-    8,
-  );
+  const currencyCode = optionalString(amountSpent?.currencyCode, "shopify", 8);
   const numberOfOrders =
     typeof customer.numberOfOrders === "number" &&
     Number.isSafeInteger(customer.numberOfOrders) &&
@@ -884,11 +827,7 @@ function shopifyMoney(value: unknown): Record<string, string> | undefined {
   const moneyBag = optionalRecord(value);
   const shopMoney = optionalRecord(moneyBag?.shopMoney);
   const amount = optionalString(shopMoney?.amount, "shopify", 64);
-  const currencyCode = optionalString(
-    shopMoney?.currencyCode,
-    "shopify",
-    8,
-  );
+  const currencyCode = optionalString(shopMoney?.currencyCode, "shopify", 8);
   return amount && currencyCode ? { amount, currencyCode } : undefined;
 }
 
@@ -936,9 +875,7 @@ function shopifyOrderEvent(
   const updatedAt = requiredIsoTime(order.updatedAt, "shopify");
   const createdAt = requiredIsoTime(order.createdAt, "shopify");
   const customer = optionalRecord(order.customer);
-  const customerSignal = customer
-    ? shopifyCustomerSignal(customer)
-    : undefined;
+  const customerSignal = customer ? shopifyCustomerSignal(customer) : undefined;
   const fallbackEmail = optionalString(order.email, "shopify", 512);
   const normalizedCustomer =
     customerSignal ??
@@ -1025,9 +962,7 @@ function shopifySearchQuery(
   return `updated_at:>='${watermark}'`;
 }
 
-export class ShopifyProviderSyncClient
-  implements ProviderSyncLifecycleClient<ShopifySyncResource>
-{
+export class ShopifyProviderSyncClient implements ProviderSyncLifecycleClient<ShopifySyncResource> {
   readonly provider = "shopify" as const;
   readonly #origin: string;
   readonly #accessToken: string;
@@ -1036,10 +971,7 @@ export class ShopifyProviderSyncClient
 
   constructor(options: ShopifyProviderSyncClientOptions) {
     this.#origin = validateShopifyOrigin(options.shopDomain);
-    this.#accessToken = validateCredential(
-      "shopify",
-      options.accessToken,
-    );
+    this.#accessToken = validateCredential("shopify", options.accessToken);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? (() => new Date());
   }
@@ -1066,10 +998,7 @@ export class ShopifyProviderSyncClient
     lifecycle: ProviderSyncLifecycle,
     input: ProviderSyncPageInput<ShopifySyncResource>,
   ): Promise<ProviderSyncPage<ShopifySyncResource>> {
-    const integrationId = validateIntegrationId(
-      "shopify",
-      input.integrationId,
-    );
+    const integrationId = validateIntegrationId("shopify", input.integrationId);
     if (input.resource !== "customers" && input.resource !== "orders") {
       throw new ProviderSyncError(
         "shopify",
@@ -1078,14 +1007,8 @@ export class ShopifyProviderSyncClient
         400,
       );
     }
-    const cursor = validateCursor(
-      "shopify",
-      input.checkpoint?.cursor,
-    );
-    const watermark = validateWatermark(
-      "shopify",
-      input.checkpoint?.watermark,
-    );
+    const cursor = validateCursor("shopify", input.checkpoint?.cursor);
+    const watermark = validateWatermark("shopify", input.checkpoint?.watermark);
     const pendingWatermark = validateWatermark(
       "shopify",
       input.checkpoint?.pendingWatermark,
@@ -1144,9 +1067,7 @@ export class ShopifyProviderSyncClient
       resource: input.resource,
       events,
       checkpoint: {
-        cursor: hasMore
-          ? connection.pageInfo.endCursor
-          : null,
+        cursor: hasMore ? connection.pageInfo.endCursor : null,
         watermark: hasMore ? watermark : observedWatermark,
         pendingWatermark: hasMore ? observedWatermark : null,
       },
@@ -1181,7 +1102,10 @@ function addKlaviyoReadParameters(
   watermark: string | null,
 ): void {
   url.searchParams.set("page[size]", String(pageSize));
-  url.searchParams.set("sort", resource === "profiles" ? "updated" : "datetime");
+  url.searchParams.set(
+    "sort",
+    resource === "profiles" ? "updated" : "datetime",
+  );
   if (cursor) {
     url.searchParams.set("page[cursor]", cursor);
   }
@@ -1194,10 +1118,7 @@ function addKlaviyoReadParameters(
       "fields[profile]",
       "email,phone_number,first_name,last_name,created,updated,properties,subscriptions",
     );
-    url.searchParams.set(
-      "additional-fields[profile]",
-      "subscriptions",
-    );
+    url.searchParams.set("additional-fields[profile]", "subscriptions");
     return;
   }
   url.searchParams.set(
@@ -1290,6 +1211,17 @@ function klaviyoTraits(
   );
 }
 
+export function isAllowlistedKlaviyoTraitKey(
+  traitKey: string,
+  allowlist: readonly string[],
+): boolean {
+  const prefix = "klaviyo.";
+  return (
+    traitKey.startsWith(prefix) &&
+    allowlist.includes(traitKey.slice(prefix.length))
+  );
+}
+
 function klaviyoConsent(
   value: unknown,
 ): NormalizedSourcePayload["consent"] | undefined {
@@ -1317,23 +1249,11 @@ function klaviyoCustomerSignal(
   id: string,
   attributes: Record<string, unknown>,
 ): NonNullable<NormalizedSourcePayload["customer"]> {
-  const firstName = optionalString(
-    attributes.first_name,
-    "klaviyo",
-    256,
-  );
-  const lastName = optionalString(
-    attributes.last_name,
-    "klaviyo",
-    256,
-  );
+  const firstName = optionalString(attributes.first_name, "klaviyo", 256);
+  const lastName = optionalString(attributes.last_name, "klaviyo", 256);
   const displayName = [firstName, lastName].filter(Boolean).join(" ");
   const email = optionalString(attributes.email, "klaviyo", 512);
-  const phone = optionalString(
-    attributes.phone_number,
-    "klaviyo",
-    64,
-  );
+  const phone = optionalString(attributes.phone_number, "klaviyo", 64);
   return {
     externalId: id,
     ...(email ? { email } : {}),
@@ -1367,22 +1287,10 @@ function klaviyoProfileEvent(
   allowlist: ReadonlySet<string>,
 ): SourceEventInput {
   const profile = klaviyoResource(value, "profile");
-  const updatedAt = requiredIsoTime(
-    profile.attributes.updated,
-    "klaviyo",
-  );
-  const createdAt = optionalIsoTime(
-    profile.attributes.created,
-    "klaviyo",
-  );
-  const customer = klaviyoCustomerSignal(
-    profile.id,
-    profile.attributes,
-  );
-  const traits = klaviyoTraits(
-    profile.attributes.properties,
-    allowlist,
-  );
+  const updatedAt = requiredIsoTime(profile.attributes.updated, "klaviyo");
+  const createdAt = optionalIsoTime(profile.attributes.created, "klaviyo");
+  const customer = klaviyoCustomerSignal(profile.id, profile.attributes);
+  const traits = klaviyoTraits(profile.attributes.properties, allowlist);
   const consent = klaviyoConsent(profile.attributes.subscriptions);
   const payload: NormalizedSourcePayload = {
     customer,
@@ -1438,9 +1346,7 @@ function includedResourceMap(
   return resources;
 }
 
-function klaviyoEventOccurredAt(
-  attributes: Record<string, unknown>,
-): string {
+function klaviyoEventOccurredAt(attributes: Record<string, unknown>): string {
   return (
     optionalIsoTime(attributes.datetime, "klaviyo") ??
     numericTimestamp(attributes.timestamp, "klaviyo") ??
@@ -1472,11 +1378,7 @@ function klaviyoDeliveryEvent(
   const metricAttributes = includedMetric
     ? requiredRecord(includedMetric.attributes, "klaviyo")
     : undefined;
-  const metricName = optionalString(
-    metricAttributes?.name,
-    "klaviyo",
-    512,
-  );
+  const metricName = optionalString(metricAttributes?.name, "klaviyo", 512);
   const approvedEventProperties = filteredProperties(
     event.attributes.event_properties,
     allowlist,
@@ -1484,10 +1386,7 @@ function klaviyoDeliveryEvent(
   const payload: NormalizedSourcePayload = {
     ...(profileId && profileAttributes
       ? {
-          customer: klaviyoCustomerSignal(
-            profileId,
-            profileAttributes,
-          ),
+          customer: klaviyoCustomerSignal(profileId, profileAttributes),
         }
       : {}),
     delivery: {
@@ -1515,9 +1414,7 @@ function klaviyoDeliveryEvent(
   };
 }
 
-export class KlaviyoProviderSyncClient
-  implements ProviderSyncLifecycleClient<KlaviyoSyncResource>
-{
+export class KlaviyoProviderSyncClient implements ProviderSyncLifecycleClient<KlaviyoSyncResource> {
   readonly provider = "klaviyo" as const;
   readonly #privateApiKey: string;
   readonly #propertyAllowlist: ReadonlySet<string>;
@@ -1525,13 +1422,8 @@ export class KlaviyoProviderSyncClient
   readonly #now: () => Date;
 
   constructor(options: KlaviyoProviderSyncClientOptions) {
-    this.#privateApiKey = validateCredential(
-      "klaviyo",
-      options.privateApiKey,
-    );
-    this.#propertyAllowlist = validateAllowlist(
-      options.propertyAllowlist,
-    );
+    this.#privateApiKey = validateCredential("klaviyo", options.privateApiKey);
+    this.#propertyAllowlist = validateAllowlist(options.propertyAllowlist);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? (() => new Date());
   }
@@ -1558,10 +1450,7 @@ export class KlaviyoProviderSyncClient
     lifecycle: ProviderSyncLifecycle,
     input: ProviderSyncPageInput<KlaviyoSyncResource>,
   ): Promise<ProviderSyncPage<KlaviyoSyncResource>> {
-    const integrationId = validateIntegrationId(
-      "klaviyo",
-      input.integrationId,
-    );
+    const integrationId = validateIntegrationId("klaviyo", input.integrationId);
     if (input.resource !== "profiles" && input.resource !== "events") {
       throw new ProviderSyncError(
         "klaviyo",
@@ -1570,14 +1459,8 @@ export class KlaviyoProviderSyncClient
         400,
       );
     }
-    const cursor = validateCursor(
-      "klaviyo",
-      input.checkpoint?.cursor,
-    );
-    const watermark = validateWatermark(
-      "klaviyo",
-      input.checkpoint?.watermark,
-    );
+    const cursor = validateCursor("klaviyo", input.checkpoint?.cursor);
+    const watermark = validateWatermark("klaviyo", input.checkpoint?.watermark);
     const pendingWatermark = validateWatermark(
       "klaviyo",
       input.checkpoint?.pendingWatermark,
@@ -1620,11 +1503,7 @@ export class KlaviyoProviderSyncClient
     const included = includedResourceMap(document.included);
     const events = document.data.map((item) =>
       input.resource === "profiles"
-        ? klaviyoProfileEvent(
-            integrationId,
-            item,
-            this.#propertyAllowlist,
-          )
+        ? klaviyoProfileEvent(integrationId, item, this.#propertyAllowlist)
         : klaviyoDeliveryEvent(
             integrationId,
             item,

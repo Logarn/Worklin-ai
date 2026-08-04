@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { RetentionCrypto } from "./crypto.js";
-import type {
-  RetentionDatabase,
-  RetentionTransactionSql,
-} from "./database.js";
+import type { RetentionDatabase, RetentionTransactionSql } from "./database.js";
 import type { RawPayloadStore } from "./raw-payload-store.js";
 import { RetentionRepository } from "./repository.js";
 import type { TenantContext } from "./types.js";
@@ -20,11 +17,7 @@ const context: TenantContext = {
   userId: "user-123",
   assistantId: "assistant-123",
   roles: ["retention_marketer"],
-  permissions: [
-    "retention:read",
-    "retention:write",
-    "retention:integrations",
-  ],
+  permissions: ["retention:read", "retention:write", "retention:integrations"],
   requestId: "request-123",
 };
 
@@ -60,14 +53,9 @@ function createRepository(input: {
         values,
       };
       queries.push(query);
-      if (
-        query.sql.startsWith(
-          "INSERT INTO retention_raw_payload_deletions",
-        )
-      ) {
+      if (query.sql.startsWith("INSERT INTO retention_raw_payload_deletions")) {
         rawPayloadDeletions.set(String(values[0]), {
-          privacyRequestId:
-            typeof values[3] === "string" ? values[3] : null,
+          privacyRequestId: typeof values[3] === "string" ? values[3] : null,
           reference: String(values[4]),
           status: "pending",
         });
@@ -80,8 +68,7 @@ function createRepository(input: {
         const privacyRequestId = String(values[1]);
         return [...rawPayloadDeletions.entries()]
           .filter(
-            ([, deletion]) =>
-              deletion.privacyRequestId === privacyRequestId,
+            ([, deletion]) => deletion.privacyRequestId === privacyRequestId,
           )
           .map(([id]) => ({ id }));
       }
@@ -184,6 +171,7 @@ describe("retention privacy workflows", () => {
                 source_event_count: "0",
                 decision_count: "0",
                 message_count: "0",
+                segment_membership_count: "0",
               },
             ];
           }
@@ -235,9 +223,9 @@ describe("retention privacy workflows", () => {
         context,
         customerId,
       );
-      expect(
-        (exported.customer as { displayName: string }).displayName,
-      ).toBe("Example User");
+      expect((exported.customer as { displayName: string }).displayName).toBe(
+        "Example User",
+      );
 
       await expect(
         setup.repository.explainCustomer(context, { customerId }),
@@ -470,9 +458,7 @@ describe("retention privacy workflows", () => {
       expect(deletedRawPayloads).toEqual([]);
       expect(
         setup.queries.some((query) =>
-          query.sql.startsWith(
-            "INSERT INTO retention_raw_payload_deletions",
-          ),
+          query.sql.startsWith("INSERT INTO retention_raw_payload_deletions"),
         ),
       ).toBe(true);
       expect(

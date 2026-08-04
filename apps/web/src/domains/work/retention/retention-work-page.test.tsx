@@ -85,6 +85,28 @@ describe("RetentionWorkPage", () => {
     expect(screen.getByText("Queue is clear")).toBeTruthy();
   });
 
+  test("offers the audiences workspace alongside campaigns and setup", () => {
+    queryState = {
+      data: {
+        integrations: [],
+        jobs: {},
+        externalWritesEnabled: false,
+        sendEnabled: false,
+      },
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      refetch,
+    };
+    renderPage();
+
+    expect(
+      screen
+        .getByRole("tab", { name: "Audiences" })
+        .getAttribute("aria-selected"),
+    ).toBe("false");
+  });
+
   test("formats ingestion freshness for operators", () => {
     const now = Date.parse("2026-07-28T12:00:00.000Z");
 
@@ -138,7 +160,9 @@ describe("RetentionWorkPage", () => {
     expect(
       screen.getByText("Changes to connected services are blocked."),
     ).toBeTruthy();
-    expect(screen.getByText("Sending through Klaviyo is blocked.")).toBeTruthy();
+    expect(
+      screen.getByText("Sending through Klaviyo is blocked."),
+    ).toBeTruthy();
     expect(screen.getAllByText("Blocked")).toHaveLength(2);
     expect(screen.queryByText("provider_timeout")).toBeNull();
   });

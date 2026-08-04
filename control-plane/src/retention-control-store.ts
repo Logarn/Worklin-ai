@@ -101,8 +101,7 @@ export function replaceRetentionAccessGrants(
   const roles = [...new Set(input.roles)];
   if (
     roles.some(
-      (role) =>
-        !ASSIGNABLE_RETENTION_ROLES.has(role as RetentionServiceRole),
+      (role) => !ASSIGNABLE_RETENTION_ROLES.has(role as RetentionServiceRole),
     )
   ) {
     throw new Error("Invalid retention access role.");
@@ -141,10 +140,7 @@ export function listRetentionAccessGrants(
   organizationId: string,
 ): Array<{ userId: string; roles: RetentionServiceRole[] }> {
   const rows = db
-    .query<
-      { user_id: string; role: RetentionServiceRole },
-      [string]
-    >(
+    .query<{ user_id: string; role: RetentionServiceRole }, [string]>(
       `
         SELECT user_id, role
         FROM retention_access_grants
@@ -255,10 +251,7 @@ export function listActiveRetentionWakeTargets(
   db: Database,
 ): Array<{ organizationId: string; assistantId: string }> {
   return db
-    .query<
-      { org_id: string; assistant_id: string },
-      []
-    >(
+    .query<{ org_id: string; assistant_id: string }, []>(
       `
         SELECT org_id, min(assistant_id) AS assistant_id
         FROM retention_integration_bindings
@@ -295,5 +288,18 @@ export function retentionIntegrationConnectionPayload(
   delete payload.webhookRouteToken;
   delete payload.credential;
   delete payload.webhookSecret;
+  return payload;
+}
+
+export function retentionIntegrationCreatePayload(
+  clientBody: Record<string, unknown>,
+  binding: { id: string; webhookSecret: string },
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    ...clientBody,
+    controlPlaneConnectionId: binding.id,
+    webhookSecret: binding.webhookSecret,
+  };
+  delete payload.webhookRouteToken;
   return payload;
 }

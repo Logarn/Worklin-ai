@@ -214,6 +214,12 @@ export interface SendMessageConfig {
    * set `manual` to avoid double-counting.
    */
   usageTracking?: "auto" | "manual";
+  /**
+   * Disable the provider wrapper's automatic retry loop for calls whose
+   * caller owns resumable job state. The field is consumed by RetryProvider
+   * and stripped before the provider request is built.
+   */
+  retryMode?: "default" | "none";
   effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
   speed?: "standard" | "fast";
   verbosity?: "low" | "medium" | "high";

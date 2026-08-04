@@ -26,15 +26,16 @@ const migrations = [
       import.meta.url,
     ),
   },
+  {
+    version: "005_segment_review_pilot",
+    url: new URL("./migrations/005_segment_review_pilot.sql", import.meta.url),
+  },
 ] as const;
 
 export class RetentionDatabase {
   readonly sql: RetentionSql;
 
-  constructor(
-    databaseUrl: string,
-    options: { timeoutMs: number },
-  ) {
+  constructor(databaseUrl: string, options: { timeoutMs: number }) {
     this.sql = postgres(databaseUrl, {
       max: 10,
       idle_timeout: 20,
@@ -152,11 +153,11 @@ export class RetentionDatabase {
       const role = rows[0];
       return Boolean(
         role &&
-          !role.rolsuper &&
-          !role.rolbypassrls &&
-          !role.owns_tenant_tables &&
-          role.unsafe_tenant_tables === "0" &&
-          role.current_org_is_empty,
+        !role.rolsuper &&
+        !role.rolbypassrls &&
+        !role.owns_tenant_tables &&
+        role.unsafe_tenant_tables === "0" &&
+        role.current_org_is_empty,
       );
     } catch {
       return false;

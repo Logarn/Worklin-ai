@@ -83,6 +83,37 @@ describe("SendMessageOptions.config.overrideProfile", () => {
     });
   });
 
+  test("CallSiteConfiguredProvider pins the required connection model", async () => {
+    let captured: SendMessageOptions | undefined;
+    const inner: Provider = {
+      name: "openai",
+      async sendMessage(
+        _messages: Message[],
+        options?: SendMessageOptions,
+      ): Promise<ProviderResponse> {
+        captured = options;
+        return makeResponse("openai");
+      },
+    };
+
+    const provider = new CallSiteConfiguredProvider(inner, "workflowLeaf", {
+      requiredConnection: {
+        name: "chatgpt-subscription",
+        provider: "openai",
+        authType: "oauth_subscription",
+        model: "gpt-5.4",
+      },
+    });
+    await provider.sendMessage(DUMMY_MESSAGES, {
+      config: { model: "must-not-win" },
+    });
+
+    expect(captured?.config).toMatchObject({
+      callSite: "workflowLeaf",
+      model: "gpt-5.4",
+    });
+  });
+
   test("CallSiteConfiguredProvider preserves explicit call sites and bound routing metadata", async () => {
     let captured: SendMessageOptions | undefined;
     const inner: Provider = {

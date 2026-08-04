@@ -125,7 +125,10 @@ mock.module("../registry.js", () => ({
   },
 }));
 
-import { getConfiguredProvider } from "../provider-send-message.js";
+import {
+  getConfiguredProvider,
+  RequiredProviderConnectionError,
+} from "../provider-send-message.js";
 
 function registerConnections(connections: Connection[]): void {
   fakeConnectionList = connections;
@@ -239,6 +242,70 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
     expect(result).not.toBeNull();
     expect(resolveProviderCalls.length).toBe(1);
     expect(resolveProviderCalls[0].name).toBe("openai-codex");
+  });
+});
+
+describe("required provider connection", () => {
+  beforeEach(reset);
+
+  test("uses only the exact named ChatGPT subscription connection", async () => {
+    const subscription = {
+      ...OPENAI_CODEX,
+      name: "chatgpt-subscription",
+    };
+    registerConnections([OPENAI_KEY, subscription]);
+    setOpenAiProfile("gpt-5");
+
+    const result = await getConfiguredProvider("workflowLeaf", {
+      requiredConnection: {
+        name: "chatgpt-subscription",
+        provider: "openai",
+        authType: "oauth_subscription",
+        model: "gpt-5.4",
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(resolveProviderCalls).toHaveLength(1);
+    expect(resolveProviderCalls[0]?.name).toBe("chatgpt-subscription");
+  });
+
+  test("rejects an API-key connection with the required name without fallback", async () => {
+    registerConnections([
+      { ...OPENAI_KEY, name: "chatgpt-subscription" },
+      OPENAI_CODEX,
+    ]);
+
+    await expect(
+      getConfiguredProvider("workflowLeaf", {
+        requiredConnection: {
+          name: "chatgpt-subscription",
+          provider: "openai",
+          authType: "oauth_subscription",
+          model: "gpt-5.4",
+        },
+      }),
+    ).rejects.toBeInstanceOf(RequiredProviderConnectionError);
+    expect(resolveProviderCalls).toHaveLength(0);
+  });
+
+  test("rejects an incompatible model before dispatch", async () => {
+    registerConnections([
+      { ...OPENAI_CODEX, name: "chatgpt-subscription" },
+      OPENAI_KEY,
+    ]);
+
+    await expect(
+      getConfiguredProvider("workflowLeaf", {
+        requiredConnection: {
+          name: "chatgpt-subscription",
+          provider: "openai",
+          authType: "oauth_subscription",
+          model: "gpt-5",
+        },
+      }),
+    ).rejects.toBeInstanceOf(RequiredProviderConnectionError);
+    expect(resolveProviderCalls).toHaveLength(0);
   });
 });
 

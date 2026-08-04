@@ -1,7 +1,4 @@
-import {
-  createHash,
-  randomUUID,
-} from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   createAiRecipientDecision,
@@ -16,10 +13,7 @@ import {
 
 import type { RetentionActorClaims } from "./auth.js";
 import { RetentionCrypto } from "./crypto.js";
-import {
-  RetentionDatabase,
-  type RetentionTransactionSql,
-} from "./database.js";
+import { RetentionDatabase, type RetentionTransactionSql } from "./database.js";
 import {
   RetentionServiceError,
   type NormalizedSourcePayload,
@@ -43,12 +37,20 @@ import {
 import { validateMessageQuality } from "./message-quality.js";
 import { buildMessageQualityEvidence } from "./message-quality-policy.js";
 import {
+  isAllowlistedKlaviyoTraitKey,
   KlaviyoProviderSyncClient,
   ProviderSyncError,
   ShopifyProviderSyncClient,
   type ProviderSyncCheckpoint,
   type ProviderSyncLifecycle,
 } from "./provider-sync.js";
+import {
+  campaignEligibility,
+  evaluateSegmentExpression,
+  scalarForDossier,
+  validateSafeSegmentExpression,
+  type SegmentCustomerState,
+} from "./segment-runs.js";
 import {
   rawPayloadReference,
   type RawPayloadStore,
@@ -61,9 +63,7 @@ function canonicalJson(value: unknown): string {
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(
-        ([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`,
-      )
+      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
       .join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
@@ -207,11 +207,7 @@ interface RepositoryOptions {
   ) => Promise<Response>;
 }
 
-type ProviderSyncResource =
-  | "customers"
-  | "orders"
-  | "profiles"
-  | "events";
+type ProviderSyncResource = "customers" | "orders" | "profiles" | "events";
 
 export interface ProviderSyncJobPayload {
   integrationId: string;
@@ -274,6 +270,48 @@ interface ProcessedSourceEvent {
   occurred_at: Date;
 }
 
+export interface SegmentRunCompletionInput {
+  runId: string;
+  leaseOwner: string;
+  outcome: "continue" | "pause" | "complete";
+  errorCode?: string;
+  definitions: Array<{
+    name: string;
+    description: string;
+    expression: WorklinSegmentExpression;
+    confidence: number;
+    evidence: string[];
+    campaignPreview: {
+      strategy: unknown;
+      qualityStatus: "passed" | "needs_review" | "blocked";
+      qualityIssues: string[];
+      modelProvider: string;
+      modelId: string;
+      promptVersion: string;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens?: number;
+      };
+      samples: Array<{
+        customerReference: string;
+        subject: string;
+        preheader?: string;
+        body: string;
+        explanation: string;
+      }>;
+    };
+  }>;
+}
+
+interface StoredSegmentDefinition {
+  id: string;
+  name: string;
+  version: number;
+  checksum: string;
+  expression: WorklinSegmentExpression;
+}
+
 export class RetentionRepository {
   constructor(
     readonly database: RetentionDatabase,
@@ -283,7 +321,7 @@ export class RetentionRepository {
 
   async initializeTenant(context: TenantContext): Promise<void> {
     await this.database.withTenant(context.organizationId, async (tx) => {
-        const rows = await tx<Array<{ exists: boolean }>>`
+      const rows = await tx<Array<{ exists: boolean }>>`
           SELECT EXISTS (
             SELECT 1
             FROM retention_tenant_registry
@@ -404,6 +442,7 @@ export class RetentionRepository {
       sourceEvents: number;
       decisions: number;
       messages: number;
+      segmentMemberships: number;
     };
     updatedAt: string;
   }> {
@@ -425,6 +464,7 @@ export class RetentionRepository {
             source_event_count: string;
             decision_count: string;
             message_count: string;
+            segment_membership_count: string;
           }>
         >`
           SELECT
@@ -469,7 +509,13 @@ export class RetentionRepository {
               FROM retention_rendered_messages
               WHERE org_id = customer.org_id
                 AND customer_id = customer.id
-            ) AS message_count
+            ) AS message_count,
+            (
+              SELECT count(*)::TEXT
+              FROM retention_segment_memberships
+              WHERE org_id = customer.org_id
+                AND customer_id = customer.id
+            ) AS segment_membership_count
           FROM retention_customers AS customer
           WHERE customer.org_id = ${context.organizationId}
             AND customer.id = ${customerId}
@@ -513,6 +559,7 @@ export class RetentionRepository {
             sourceEvents: Number(row.source_event_count),
             decisions: Number(row.decision_count),
             messages: Number(row.message_count),
+            segmentMemberships: Number(row.segment_membership_count),
           },
           updatedAt: row.updated_at.toISOString(),
         };
@@ -734,6 +781,29 @@ export class RetentionRepository {
           ORDER BY generated_at, id
           LIMIT 250
         `;
+        const segmentMemberships = await tx<
+          Array<{
+            segment_definition_id: string;
+            segment_run_id: string;
+            campaign_eligible: boolean;
+            eligibility_reason: string;
+            evidence_cutoff_at: Date;
+            evaluated_at: Date;
+          }>
+        >`
+          SELECT
+            segment_definition_id,
+            segment_run_id,
+            campaign_eligible,
+            eligibility_reason,
+            evidence_cutoff_at,
+            evaluated_at
+          FROM retention_segment_memberships
+          WHERE org_id = ${context.organizationId}
+            AND customer_id = ${customerId}
+          ORDER BY evaluated_at, segment_definition_id
+          LIMIT 500
+        `;
 
         const exportValue = {
           schemaVersion: "worklin-retention-customer-export-v1",
@@ -759,8 +829,7 @@ export class RetentionRepository {
               customerId,
               customer.display_name_ciphertext,
             ),
-            sourceUpdatedAt:
-              customer.source_updated_at?.toISOString() ?? null,
+            sourceUpdatedAt: customer.source_updated_at?.toISOString() ?? null,
             createdAt: customer.created_at.toISOString(),
             updatedAt: customer.updated_at.toISOString(),
           },
@@ -833,12 +902,9 @@ export class RetentionRepository {
               : null,
             sensitivity: decision.sensitivity,
             confidence:
-              decision.confidence === null
-                ? null
-                : Number(decision.confidence),
+              decision.confidence === null ? null : Number(decision.confidence),
             reasonedAt: decision.reasoned_at?.toISOString() ?? null,
-            invalidatedAt:
-              decision.invalidated_at?.toISOString() ?? null,
+            invalidatedAt: decision.invalidated_at?.toISOString() ?? null,
           })),
           messages: messages.map((message) => ({
             id: message.id,
@@ -869,6 +935,14 @@ export class RetentionRepository {
             ),
             qualityStatus: message.quality_status,
             generatedAt: message.generated_at.toISOString(),
+          })),
+          segmentMemberships: segmentMemberships.map((membership) => ({
+            segmentDefinitionId: membership.segment_definition_id,
+            segmentRunId: membership.segment_run_id,
+            campaignEligible: membership.campaign_eligible,
+            eligibilityReason: membership.eligibility_reason,
+            evidenceCutoffAt: membership.evidence_cutoff_at.toISOString(),
+            evaluatedAt: membership.evaluated_at.toISOString(),
           })),
         };
         const byteLength = jsonByteLength(exportValue);
@@ -1324,9 +1398,7 @@ export class RetentionRepository {
             });
             return {
               status: "deleted" as const,
-              rawPayloadsDeleted: Number(
-                existing?.raw_payload_count ?? 0,
-              ),
+              rawPayloadsDeleted: Number(existing?.raw_payload_count ?? 0),
               duplicate: true,
             };
           }
@@ -1653,6 +1725,43 @@ export class RetentionRepository {
     assertUuid(input.brandId, "brandId");
     const id = randomUUID();
     const migrationRunId = randomUUID();
+    if (input.provider === "klaviyo" && input.credential) {
+      try {
+        const client = new KlaviyoProviderSyncClient({
+          privateApiKey: input.credential,
+          propertyAllowlist: input.propertyAllowlist ?? [],
+          fetch:
+            this.options.providerFetch ?? globalThis.fetch.bind(globalThis),
+        });
+        await client.historicalBackfillPage({
+          integrationId: id,
+          resource: "profiles",
+          pageSize: 1,
+        });
+      } catch (error) {
+        if (error instanceof ProviderSyncError) {
+          const code =
+            error.status === 401
+              ? "klaviyo_credentials_rejected"
+              : error.status === 403
+                ? "klaviyo_read_scope_required"
+                : error.code;
+          throw new RetentionServiceError(
+            code,
+            error.status === 401
+              ? "Klaviyo rejected the private API key."
+              : error.status === 403
+                ? "The Klaviyo key needs read access to profiles."
+                : error.message,
+            error.status,
+            Object.keys(error.rateLimit).length > 0
+              ? { rateLimit: error.rateLimit }
+              : undefined,
+          );
+        }
+        throw error;
+      }
+    }
     const credentialCiphertext = input.credential
       ? this.crypto.encrypt(
           input.credential,
@@ -1710,7 +1819,7 @@ export class RetentionRepository {
             resources: [...PROVIDER_SYNC_RESOURCES[input.provider]],
             approvedPropertyAllowlist:
               input.provider === "klaviyo"
-                ? input.propertyAllowlist ?? []
+                ? (input.propertyAllowlist ?? [])
                 : [],
             externalWrites: false,
           })},
@@ -1815,8 +1924,7 @@ export class RetentionRepository {
         cursor.historical_backfill = Object.fromEntries(
           PROVIDER_SYNC_RESOURCES[row.provider].map((resource) => [
             resource,
-            cursor.historical_backfill?.[resource] ??
-              emptyProviderSyncState(),
+            cursor.historical_backfill?.[resource] ?? emptyProviderSyncState(),
           ]),
         );
         await tx`
@@ -2002,11 +2110,9 @@ export class RetentionRepository {
       assertUuid(payload.migrationRunId, "migrationRunId");
     }
     if (
-      ![
-        "historical_backfill",
-        "incremental_poll",
-        "reconciliation",
-      ].includes(payload.lifecycle)
+      !["historical_backfill", "incremental_poll", "reconciliation"].includes(
+        payload.lifecycle,
+      )
     ) {
       throw new RetentionServiceError(
         "invalid_job_payload",
@@ -2062,8 +2168,7 @@ export class RetentionRepository {
     }
     const cursor = parseProviderCursor(integration.cursor);
     const checkpoint =
-      cursor[payload.lifecycle]?.[payload.resource] ??
-      emptyProviderSyncState();
+      cursor[payload.lifecycle]?.[payload.resource] ?? emptyProviderSyncState();
     const credential = this.crypto.decrypt(
       integration.credential_ciphertext,
       `${organizationId}:integration:${payload.integrationId}:credential`,
@@ -2600,13 +2705,13 @@ export class RetentionRepository {
           brand_id: string;
           integration_id: string;
           provider: "shopify" | "klaviyo";
-              external_event_id: string;
-              event_type: string;
-              payload_ciphertext: string;
-              raw_payload_ref: string;
-              processing_status: string;
-              occurred_at: Date;
-              property_allowlist: unknown;
+          external_event_id: string;
+          event_type: string;
+          payload_ciphertext: string;
+          raw_payload_ref: string;
+          processing_status: string;
+          occurred_at: Date;
+          property_allowlist: unknown;
         }>
       >`
         SELECT
@@ -2637,8 +2742,10 @@ export class RetentionRepository {
           404,
         );
       }
-      if (event.processing_status === "processed" ||
-          event.processing_status === "ignored") {
+      if (
+        event.processing_status === "processed" ||
+        event.processing_status === "ignored"
+      ) {
         const linked = await tx<Array<{ customer_id: string | null }>>`
           SELECT customer_id
           FROM retention_source_events
@@ -2669,7 +2776,7 @@ export class RetentionRepository {
               `${organizationId}:source-event:${eventId}:payload`,
             ),
           ),
-          );
+        );
       } catch {
         await tx`
           UPDATE retention_source_events
@@ -2684,9 +2791,7 @@ export class RetentionRepository {
         );
       }
 
-      if (
-        isShopifyIntegrationUninstall(event.provider, event.event_type)
-      ) {
+      if (isShopifyIntegrationUninstall(event.provider, event.event_type)) {
         await this.revokeIntegrationFromSource(
           tx,
           organizationId,
@@ -3048,12 +3153,7 @@ export class RetentionRepository {
       }
 
       if (isCustomerPrivacyDeletion(event.provider, event.event_type)) {
-        await this.eraseCustomer(
-          tx,
-          organizationId,
-          customerId,
-          eventId,
-        );
+        await this.eraseCustomer(tx, organizationId, customerId, eventId);
         await this.auditSystem(tx, organizationId, {
           action: "customer.privacy_erased",
           resourceType: "customer",
@@ -3101,7 +3201,10 @@ export class RetentionRepository {
           )
         : [];
       for (const trait of payload.traits ?? []) {
-        if (event.provider === "klaviyo" && !allowlist.includes(trait.key)) {
+        if (
+          event.provider === "klaviyo" &&
+          !isAllowlistedKlaviyoTraitKey(trait.key, allowlist)
+        ) {
           continue;
         }
         const traitId = randomUUID();
@@ -3531,9 +3634,7 @@ export class RetentionRepository {
           checksum.error.code,
           checksum.error.message,
           409,
-          checksum.error.details
-            ? { ...checksum.error.details }
-            : undefined,
+          checksum.error.details ? { ...checksum.error.details } : undefined,
         );
       }
       return {
@@ -3764,9 +3865,7 @@ export class RetentionRepository {
         validation.error.code,
         validation.error.message,
         400,
-        validation.error.details
-          ? { ...validation.error.details }
-          : undefined,
+        validation.error.details ? { ...validation.error.details } : undefined,
       );
     }
     const id = randomUUID();
@@ -3811,9 +3910,1416 @@ export class RetentionRepository {
     };
   }
 
-  async claimRecipientReasoning(
+  async createSegmentRun(
     context: TenantContext,
+    input: {
+      brandId: string;
+      maxSegments: number;
+      sampleLimitPerSegment: number;
+      trancheSize: number;
+      evidenceCutoffAt?: string;
+    },
   ): Promise<{
+    id: string;
+    status: string;
+    maxSegments: number;
+    sampleLimitPerSegment: number;
+    trancheSize: number;
+    evidenceCutoffAt: string;
+    duplicate: boolean;
+  }> {
+    assertUuid(input.brandId, "brandId");
+    if (
+      !Number.isInteger(input.maxSegments) ||
+      input.maxSegments < 1 ||
+      input.maxSegments > 50
+    ) {
+      throw new RetentionServiceError(
+        "invalid_segment_limit",
+        "A segment run must request between 1 and 50 segments.",
+        400,
+      );
+    }
+    if (
+      !Number.isInteger(input.sampleLimitPerSegment) ||
+      input.sampleLimitPerSegment < 1 ||
+      input.sampleLimitPerSegment > 2
+    ) {
+      throw new RetentionServiceError(
+        "invalid_sample_limit",
+        "A segment run must request one or two samples per segment.",
+        400,
+      );
+    }
+    if (
+      !Number.isInteger(input.trancheSize) ||
+      input.trancheSize < 1 ||
+      input.trancheSize > 10
+    ) {
+      throw new RetentionServiceError(
+        "invalid_tranche_size",
+        "A segment run tranche must contain between 1 and 10 segments.",
+        400,
+      );
+    }
+    const evidenceCutoff = input.evidenceCutoffAt
+      ? new Date(input.evidenceCutoffAt)
+      : new Date();
+    if (
+      !Number.isFinite(evidenceCutoff.getTime()) ||
+      evidenceCutoff.getTime() > Date.now() + 60_000
+    ) {
+      throw new RetentionServiceError(
+        "invalid_evidence_cutoff",
+        "The evidence cutoff must be a current or past timestamp.",
+        400,
+      );
+    }
+
+    return this.database.withTenant(context.organizationId, async (tx) => {
+      const brands = await tx<
+        Array<{ id: string; name: string; website_url: string | null }>
+      >`
+        SELECT id, name, website_url
+        FROM retention_brands
+        WHERE org_id = ${context.organizationId}
+          AND id = ${input.brandId}
+          AND status = 'active'
+        FOR UPDATE
+      `;
+      const brand = brands[0];
+      if (!brand) {
+        throw new RetentionServiceError(
+          "brand_not_found",
+          "The retention brand is unavailable.",
+          404,
+        );
+      }
+      const openRuns = await tx<
+        Array<{
+          id: string;
+          status: string;
+          max_segments: number;
+          sample_limit_per_segment: number;
+          tranche_size: number;
+          evidence_cutoff_at: Date;
+        }>
+      >`
+        SELECT
+          id,
+          status,
+          max_segments,
+          sample_limit_per_segment,
+          tranche_size,
+          evidence_cutoff_at
+        FROM retention_segment_runs
+        WHERE org_id = ${context.organizationId}
+          AND brand_id = ${input.brandId}
+          AND status IN ('queued', 'claimed', 'paused')
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      if (openRuns[0]) {
+        return {
+          id: openRuns[0].id,
+          status: openRuns[0].status,
+          maxSegments: openRuns[0].max_segments,
+          sampleLimitPerSegment: openRuns[0].sample_limit_per_segment,
+          trancheSize: openRuns[0].tranche_size,
+          evidenceCutoffAt: openRuns[0].evidence_cutoff_at.toISOString(),
+          duplicate: true,
+        };
+      }
+
+      const customerSummary = await tx<
+        Array<{
+          customer_count: string;
+          email_count: string;
+          subscribed_count: string;
+          unsubscribed_count: string;
+          suppressed_count: string;
+        }>
+      >`
+        SELECT
+          count(*)::TEXT AS customer_count,
+          count(*) FILTER (
+            WHERE customer.primary_email_ciphertext IS NOT NULL
+          )::TEXT AS email_count,
+          count(*) FILTER (WHERE consent.state = 'subscribed')::TEXT
+            AS subscribed_count,
+          count(*) FILTER (WHERE consent.state = 'unsubscribed')::TEXT
+            AS unsubscribed_count,
+          count(*) FILTER (WHERE consent.state = 'suppressed')::TEXT
+            AS suppressed_count
+        FROM retention_customers AS customer
+        LEFT JOIN LATERAL (
+          SELECT state
+          FROM retention_consent_events
+          WHERE org_id = customer.org_id
+            AND customer_id = customer.id
+            AND channel = 'email'
+            AND occurred_at <= ${evidenceCutoff}
+          ORDER BY occurred_at DESC, created_at DESC
+          LIMIT 1
+        ) AS consent ON true
+        WHERE customer.org_id = ${context.organizationId}
+          AND customer.brand_id = ${input.brandId}
+          AND customer.status = 'active'
+          AND customer.created_at <= ${evidenceCutoff}
+      `;
+      const eventSummary = await tx<
+        Array<{
+          provider: string;
+          event_type: string;
+          event_count: string;
+          latest_at: Date;
+        }>
+      >`
+        SELECT
+          provider,
+          event_type,
+          count(*)::TEXT AS event_count,
+          max(occurred_at) AS latest_at
+        FROM retention_source_events
+        WHERE org_id = ${context.organizationId}
+          AND brand_id = ${input.brandId}
+          AND occurred_at <= ${evidenceCutoff}
+          AND processing_status IN ('processed', 'ignored')
+        GROUP BY provider, event_type
+        ORDER BY count(*) DESC, provider, event_type
+        LIMIT 100
+      `;
+      const traitSummary = await tx<
+        Array<{ trait_key: string; customer_count: string }>
+      >`
+        SELECT trait_key, count(DISTINCT customer_id)::TEXT AS customer_count
+        FROM retention_customer_traits
+        WHERE org_id = ${context.organizationId}
+          AND brand_id = ${input.brandId}
+          AND observed_at <= ${evidenceCutoff}
+          AND (expires_at IS NULL OR expires_at > ${evidenceCutoff})
+          AND targeting_status NOT IN ('rejected', 'expired')
+          AND sensitivity IN ('standard', 'personal')
+        GROUP BY trait_key
+        ORDER BY count(DISTINCT customer_id) DESC, trait_key
+        LIMIT 100
+      `;
+      const traitValueRows = await tx<
+        Array<{
+          id: string;
+          trait_key: string;
+          value_ciphertext: string;
+        }>
+      >`
+        SELECT id, trait_key, value_ciphertext
+        FROM (
+          SELECT
+            id,
+            customer_id,
+            trait_key,
+            value_ciphertext,
+            observed_at,
+            row_number() OVER (
+              PARTITION BY customer_id, trait_key
+              ORDER BY observed_at DESC, id DESC
+            ) AS trait_rank
+          FROM retention_customer_traits
+          WHERE org_id = ${context.organizationId}
+            AND brand_id = ${input.brandId}
+            AND observed_at <= ${evidenceCutoff}
+            AND (expires_at IS NULL OR expires_at > ${evidenceCutoff})
+            AND targeting_status NOT IN ('rejected', 'expired')
+            AND sensitivity IN ('standard', 'personal')
+        ) AS current_trait
+        WHERE trait_rank = 1
+        ORDER BY observed_at DESC, id
+        LIMIT 5000
+      `;
+      const traitValueCounts = new Map<
+        string,
+        Map<string, { value: string | number | boolean; count: number }>
+      >();
+      for (const row of traitValueRows) {
+        let value: unknown;
+        try {
+          value = JSON.parse(
+            this.crypto.decrypt(
+              row.value_ciphertext,
+              `${context.organizationId}:trait:${row.id}:value`,
+            ),
+          );
+        } catch {
+          continue;
+        }
+        const scalar = scalarForDossier(value);
+        if (
+          scalar === null ||
+          (typeof scalar === "string" &&
+            (scalar.length > 100 || redactOperatorText(scalar, []) !== scalar))
+        ) {
+          continue;
+        }
+        const keyCounts = traitValueCounts.get(row.trait_key) ?? new Map();
+        const valueKey = canonicalJson(scalar);
+        const current = keyCounts.get(valueKey) ?? { value: scalar, count: 0 };
+        current.count += 1;
+        keyCounts.set(valueKey, current);
+        traitValueCounts.set(row.trait_key, keyCounts);
+      }
+      const summary = customerSummary[0] ?? {
+        customer_count: "0",
+        email_count: "0",
+        subscribed_count: "0",
+        unsubscribed_count: "0",
+        suppressed_count: "0",
+      };
+      const dossier = {
+        version: "segment_account_dossier_v1",
+        brand: {
+          name: brand.name,
+          websiteUrl: brand.website_url,
+        },
+        evidenceCutoffAt: evidenceCutoff.toISOString(),
+        customers: {
+          total: Number(summary.customer_count),
+          withEmail: Number(summary.email_count),
+          emailConsent: {
+            subscribed: Number(summary.subscribed_count),
+            unsubscribed: Number(summary.unsubscribed_count),
+            suppressed: Number(summary.suppressed_count),
+            unknown: Math.max(
+              0,
+              Number(summary.customer_count) -
+                Number(summary.subscribed_count) -
+                Number(summary.unsubscribed_count) -
+                Number(summary.suppressed_count),
+            ),
+          },
+        },
+        eventSignals: eventSummary.map((row) => ({
+          provider: row.provider,
+          type: row.event_type,
+          count: Number(row.event_count),
+          latestAt: row.latest_at.toISOString(),
+        })),
+        availableTraits: traitSummary.map((row) => ({
+          key: row.trait_key,
+          customerCount: Number(row.customer_count),
+          observedValues: [
+            ...(traitValueCounts.get(row.trait_key)?.values() ?? []),
+          ]
+            .filter((value) => value.count >= 3)
+            .sort(
+              (left, right) =>
+                right.count - left.count ||
+                canonicalJson(left.value).localeCompare(
+                  canonicalJson(right.value),
+                ),
+            )
+            .slice(0, 20)
+            .map((value) => ({
+              value: value.value,
+              sampledCount: value.count,
+            })),
+        })),
+        expressionGrammar: {
+          namespaces: {
+            profile: [
+              "status",
+              "has_email",
+              "has_phone",
+              "created_at",
+              "source_updated_at",
+            ],
+            consent: ["email"],
+            metric: [
+              "source_event_count",
+              "klaviyo_event_count",
+              "days_since_last_event",
+            ],
+            evidence: ["provider", "event_type"],
+            trait: traitSummary.map((row) => row.trait_key),
+          },
+          operators: [
+            "equals",
+            "not_equals",
+            "exists",
+            "not_exists",
+            "contains",
+            "not_contains",
+            "in",
+            "not_in",
+            "greater_than",
+            "greater_than_or_equal",
+            "less_than",
+            "less_than_or_equal",
+            "after",
+            "before",
+          ],
+        },
+      };
+      const runId = randomUUID();
+      const dossierJson = canonicalJson(dossier);
+      await tx`
+        INSERT INTO retention_segment_runs (
+          id,
+          org_id,
+          brand_id,
+          max_segments,
+          sample_limit_per_segment,
+          tranche_size,
+          evidence_cutoff_at,
+          account_dossier_ciphertext,
+          account_dossier_sha256,
+          created_by
+        )
+        VALUES (
+          ${runId},
+          ${context.organizationId},
+          ${input.brandId},
+          ${input.maxSegments},
+          ${input.sampleLimitPerSegment},
+          ${input.trancheSize},
+          ${evidenceCutoff},
+          ${this.crypto.encrypt(
+            dossierJson,
+            `${context.organizationId}:segment-run:${runId}:dossier`,
+          )},
+          ${sha256(dossierJson)},
+          ${context.userId}
+        )
+      `;
+      await this.audit(tx, context, {
+        action: "segment_run.created",
+        resourceType: "segment_run",
+        resourceId: runId,
+        metadata: {
+          maxSegments: input.maxSegments,
+          sampleLimitPerSegment: input.sampleLimitPerSegment,
+          trancheSize: input.trancheSize,
+          evidenceCutoffAt: evidenceCutoff.toISOString(),
+        },
+      });
+      return {
+        id: runId,
+        status: "queued",
+        maxSegments: input.maxSegments,
+        sampleLimitPerSegment: input.sampleLimitPerSegment,
+        trancheSize: input.trancheSize,
+        evidenceCutoffAt: evidenceCutoff.toISOString(),
+        duplicate: false,
+      };
+    });
+  }
+
+  async getSegmentRun(
+    context: TenantContext,
+    runId: string,
+  ): Promise<{
+    id: string;
+    brandId: string;
+    status: string;
+    maxSegments: number;
+    sampleLimitPerSegment: number;
+    trancheSize: number;
+    completedSegmentCount: number;
+    evidenceCutoffAt: string;
+    lastErrorCode: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }> {
+    assertUuid(runId, "runId");
+    return this.database.withTenant(context.organizationId, async (tx) => {
+      const rows = await tx<
+        Array<{
+          id: string;
+          brand_id: string;
+          status: string;
+          max_segments: number;
+          sample_limit_per_segment: number;
+          tranche_size: number;
+          completed_segment_count: number;
+          evidence_cutoff_at: Date;
+          last_error_code: string | null;
+          created_at: Date;
+          updated_at: Date;
+        }>
+      >`
+        SELECT
+          id,
+          brand_id,
+          status,
+          max_segments,
+          sample_limit_per_segment,
+          tranche_size,
+          completed_segment_count,
+          evidence_cutoff_at,
+          last_error_code,
+          created_at,
+          updated_at
+        FROM retention_segment_runs
+        WHERE org_id = ${context.organizationId}
+          AND id = ${runId}
+      `;
+      const row = rows[0];
+      if (!row) {
+        throw new RetentionServiceError(
+          "segment_run_not_found",
+          "The segment run is unavailable.",
+          404,
+        );
+      }
+      return {
+        id: row.id,
+        brandId: row.brand_id,
+        status: row.status,
+        maxSegments: row.max_segments,
+        sampleLimitPerSegment: row.sample_limit_per_segment,
+        trancheSize: row.tranche_size,
+        completedSegmentCount: row.completed_segment_count,
+        evidenceCutoffAt: row.evidence_cutoff_at.toISOString(),
+        lastErrorCode: row.last_error_code,
+        createdAt: row.created_at.toISOString(),
+        updatedAt: row.updated_at.toISOString(),
+      };
+    });
+  }
+
+  async claimSegmentRun(
+    context: TenantContext,
+    input: { runId: string; resume?: boolean },
+  ): Promise<{
+    runId: string;
+    leaseOwner: string;
+    leaseExpiresAt: string;
+    dossierSha256: string;
+    dossier: unknown;
+    limits: {
+      maxSegments: number;
+      completedSegments: number;
+      remainingSegments: number;
+      trancheSize: number;
+      sampleLimitPerSegment: number;
+    };
+  }> {
+    assertUuid(input.runId, "runId");
+    return this.database.withTenant(context.organizationId, async (tx) => {
+      const rows = await tx<
+        Array<{
+          status: string;
+          max_segments: number;
+          sample_limit_per_segment: number;
+          tranche_size: number;
+          completed_segment_count: number;
+          account_dossier_ciphertext: string;
+          account_dossier_sha256: string;
+          lease_expires_at: Date | null;
+          attempt_count: number;
+        }>
+      >`
+        SELECT
+          status,
+          max_segments,
+          sample_limit_per_segment,
+          tranche_size,
+          completed_segment_count,
+          account_dossier_ciphertext,
+          account_dossier_sha256,
+          lease_expires_at,
+          attempt_count
+        FROM retention_segment_runs
+        WHERE org_id = ${context.organizationId}
+          AND id = ${input.runId}
+        FOR UPDATE
+      `;
+      const run = rows[0];
+      if (!run) {
+        throw new RetentionServiceError(
+          "segment_run_not_found",
+          "The segment run is unavailable.",
+          404,
+        );
+      }
+      if (run.status === "completed" || run.status === "failed") {
+        throw new RetentionServiceError(
+          "segment_run_finished",
+          "The segment run has already finished.",
+          409,
+        );
+      }
+      if (run.status === "paused" && input.resume !== true) {
+        throw new RetentionServiceError(
+          "segment_run_paused",
+          "The segment run is paused and must be explicitly resumed.",
+          409,
+        );
+      }
+      if (run.attempt_count >= this.options.maxJobAttempts) {
+        throw new RetentionServiceError(
+          "segment_run_attempt_limit",
+          "The segment run reached its processing attempt limit.",
+          409,
+        );
+      }
+      if (
+        run.status === "claimed" &&
+        run.lease_expires_at &&
+        run.lease_expires_at.getTime() > Date.now()
+      ) {
+        throw new RetentionServiceError(
+          "segment_run_claimed",
+          "The segment run is already being processed.",
+          409,
+        );
+      }
+      const leaseOwner = `segment-run:${randomUUID()}`;
+      const leaseExpiresAt = new Date(
+        Date.now() + this.options.jobLeaseSeconds * 1_000,
+      );
+      await tx`
+        UPDATE retention_segment_runs
+        SET
+          status = 'claimed',
+          lease_owner = ${leaseOwner},
+          lease_expires_at = ${leaseExpiresAt},
+          attempt_count = attempt_count + 1,
+          claimed_at = now(),
+          paused_at = NULL,
+          last_error_code = NULL,
+          updated_at = now()
+        WHERE org_id = ${context.organizationId}
+          AND id = ${input.runId}
+      `;
+      await this.audit(tx, context, {
+        action: input.resume ? "segment_run.resumed" : "segment_run.claimed",
+        resourceType: "segment_run",
+        resourceId: input.runId,
+      });
+      return {
+        runId: input.runId,
+        leaseOwner,
+        leaseExpiresAt: leaseExpiresAt.toISOString(),
+        dossierSha256: run.account_dossier_sha256,
+        dossier: JSON.parse(
+          this.crypto.decrypt(
+            run.account_dossier_ciphertext,
+            `${context.organizationId}:segment-run:${input.runId}:dossier`,
+          ),
+        ),
+        limits: {
+          maxSegments: run.max_segments,
+          completedSegments: run.completed_segment_count,
+          remainingSegments: Math.max(
+            0,
+            run.max_segments - run.completed_segment_count,
+          ),
+          trancheSize: Math.min(
+            run.tranche_size,
+            run.max_segments - run.completed_segment_count,
+          ),
+          sampleLimitPerSegment: run.sample_limit_per_segment,
+        },
+      };
+    });
+  }
+
+  async completeSegmentRun(
+    context: TenantContext,
+    input: SegmentRunCompletionInput,
+  ): Promise<{
+    runId: string;
+    status: string;
+    completedSegmentCount: number;
+    definitions: Array<{
+      id: string;
+      name: string;
+      version: number;
+      checksum: string;
+      memberCount: number;
+      eligibleCount: number;
+    }>;
+  }> {
+    assertUuid(input.runId, "runId");
+    if (!input.leaseOwner.startsWith("segment-run:")) {
+      throw new RetentionServiceError(
+        "segment_run_lease_invalid",
+        "The segment run lease is invalid.",
+        409,
+      );
+    }
+    return this.database.withTenant(context.organizationId, async (tx) => {
+      const rows = await tx<
+        Array<{
+          brand_id: string;
+          status: string;
+          max_segments: number;
+          sample_limit_per_segment: number;
+          tranche_size: number;
+          completed_segment_count: number;
+          evidence_cutoff_at: Date;
+          lease_owner: string | null;
+          lease_expires_at: Date | null;
+        }>
+      >`
+        SELECT
+          brand_id,
+          status,
+          max_segments,
+          sample_limit_per_segment,
+          tranche_size,
+          completed_segment_count,
+          evidence_cutoff_at,
+          lease_owner,
+          lease_expires_at
+        FROM retention_segment_runs
+        WHERE org_id = ${context.organizationId}
+          AND id = ${input.runId}
+        FOR UPDATE
+      `;
+      const run = rows[0];
+      if (!run) {
+        throw new RetentionServiceError(
+          "segment_run_not_found",
+          "The segment run is unavailable.",
+          404,
+        );
+      }
+      if (
+        run.status !== "claimed" ||
+        run.lease_owner !== input.leaseOwner ||
+        !run.lease_expires_at ||
+        run.lease_expires_at.getTime() <= Date.now()
+      ) {
+        throw new RetentionServiceError(
+          "segment_run_lease_expired",
+          "The segment run lease expired or does not match.",
+          409,
+        );
+      }
+      const remaining = run.max_segments - run.completed_segment_count;
+      if (
+        input.definitions.length > run.tranche_size ||
+        input.definitions.length > 10 ||
+        input.definitions.length > remaining
+      ) {
+        throw new RetentionServiceError(
+          "segment_tranche_too_large",
+          "The segment completion exceeds its remaining tranche limit.",
+          400,
+        );
+      }
+      if (
+        input.outcome !== "pause" &&
+        input.definitions.length === 0 &&
+        run.completed_segment_count === 0
+      ) {
+        throw new RetentionServiceError(
+          "segment_definitions_required",
+          "A completed segment run must contain at least one useful segment.",
+          400,
+        );
+      }
+      const names = new Set<string>();
+      const sampleFingerprints = new Set<string>();
+      const derivedQualityByName = new Map<
+        string,
+        { status: "passed" | "needs_review"; issues: string[] }
+      >();
+      const existingRunNames = await tx<Array<{ name: string }>>`
+        SELECT name
+        FROM retention_segment_definitions
+        WHERE org_id = ${context.organizationId}
+          AND source_run_id = ${input.runId}
+      `;
+      const usedNames = new Set(
+        existingRunNames.map((row) => row.name.trim().toLocaleLowerCase()),
+      );
+      const trancheUsage = input.definitions.reduce(
+        (total, definition) => ({
+          inputTokens:
+            total.inputTokens + definition.campaignPreview.usage.inputTokens,
+          outputTokens:
+            total.outputTokens + definition.campaignPreview.usage.outputTokens,
+        }),
+        { inputTokens: 0, outputTokens: 0 },
+      );
+      if (
+        trancheUsage.inputTokens > 500_000 ||
+        trancheUsage.outputTokens > 100_000
+      ) {
+        throw new RetentionServiceError(
+          "segment_tranche_usage_limit",
+          "The segment tranche exceeds its model usage limit.",
+          400,
+        );
+      }
+      for (const definition of input.definitions) {
+        const normalizedName = definition.name.trim().toLocaleLowerCase();
+        if (
+          normalizedName.length === 0 ||
+          definition.name.trim().length > 200 ||
+          names.has(normalizedName) ||
+          usedNames.has(normalizedName)
+        ) {
+          throw new RetentionServiceError(
+            "invalid_segment_name",
+            "Segment names must be unique, non-empty, and at most 200 characters.",
+            400,
+          );
+        }
+        names.add(normalizedName);
+        assertConfidence(definition.confidence);
+        const validation = validateSafeSegmentExpression(definition.expression);
+        if (!validation.ok) {
+          throw new RetentionServiceError(
+            validation.code,
+            validation.message,
+            400,
+          );
+        }
+        if (
+          definition.campaignPreview.samples.length !==
+          run.sample_limit_per_segment
+        ) {
+          throw new RetentionServiceError(
+            "segment_sample_count_invalid",
+            "The campaign preview must contain the run's exact sample count.",
+            400,
+          );
+        }
+        const qualityEvidence = buildMessageQualityEvidence({
+          frozenStrategy: definition.campaignPreview.strategy,
+          allowedTemplateTokens: [],
+        });
+        const qualityWarnings: string[] = [];
+        for (const sample of definition.campaignPreview.samples) {
+          if (
+            !/^(?:customer_[a-f0-9]{12}|archetype_[a-z0-9_-]{1,64})$/u.test(
+              sample.customerReference,
+            )
+          ) {
+            throw new RetentionServiceError(
+              "invalid_sample_customer_reference",
+              "Campaign samples require an opaque customer reference.",
+              400,
+            );
+          }
+          const sampleText = [
+            sample.subject,
+            sample.preheader ?? "",
+            sample.body,
+            sample.explanation,
+          ].join("\n");
+          if (redactOperatorText(sampleText, []) !== sampleText) {
+            throw new RetentionServiceError(
+              "sample_contains_direct_identifier",
+              "Campaign samples cannot contain email addresses or phone numbers.",
+              400,
+            );
+          }
+          const fingerprint = `${sample.subject}\n${sample.body}`
+            .normalize("NFKC")
+            .toLocaleLowerCase("en-US")
+            .replace(/\s+/gu, " ")
+            .trim();
+          if (sampleFingerprints.has(fingerprint)) {
+            throw new RetentionServiceError(
+              "campaign_preview_repetitive",
+              "Campaign samples must be distinct across the complete tranche.",
+              400,
+            );
+          }
+          sampleFingerprints.add(fingerprint);
+          const quality = validateMessageQuality({
+            content: {
+              subject: sample.subject,
+              preheader: sample.preheader,
+              body: sample.body,
+            },
+            evidence: qualityEvidence,
+          });
+          if (!quality.valid) {
+            throw new RetentionServiceError(
+              "campaign_preview_quality_failed",
+              "A campaign sample failed the server quality check.",
+              400,
+              {
+                issues: quality.blockingErrors.map((issue) => issue.code),
+              },
+            );
+          }
+          qualityWarnings.push(
+            ...quality.warnings.map(
+              (issue) => `${issue.code}:${issue.field}:${issue.message}`,
+            ),
+          );
+        }
+        derivedQualityByName.set(normalizedName, {
+          status: qualityWarnings.length > 0 ? "needs_review" : "passed",
+          issues: qualityWarnings,
+        });
+      }
+
+      const stored: StoredSegmentDefinition[] = [];
+      for (const definition of input.definitions) {
+        const versionRows = await tx<Array<{ version: number }>>`
+          SELECT COALESCE(max(version), 0)::INTEGER + 1 AS version
+          FROM retention_segment_definitions
+          WHERE org_id = ${context.organizationId}
+            AND brand_id = ${run.brand_id}
+            AND lower(name) = lower(${definition.name.trim()})
+        `;
+        const version = versionRows[0]?.version ?? 1;
+        const definitionId = randomUUID();
+        const checksum = sha256(
+          canonicalJson({
+            brandId: run.brand_id,
+            name: definition.name.trim(),
+            version,
+            expression: definition.expression,
+          }),
+        );
+        const derivedQuality = derivedQualityByName.get(
+          definition.name.trim().toLocaleLowerCase(),
+        )!;
+        await tx`
+          INSERT INTO retention_segment_definitions (
+            id,
+            org_id,
+            brand_id,
+            name,
+            version,
+            expression,
+            status,
+            created_by,
+            source_run_id,
+            definition_checksum_sha256
+          )
+          VALUES (
+            ${definitionId},
+            ${context.organizationId},
+            ${run.brand_id},
+            ${definition.name.trim()},
+            ${version},
+            ${tx.json(JSON.parse(canonicalJson(definition.expression)))},
+            'draft',
+            ${context.userId},
+            ${input.runId},
+            ${checksum}
+          )
+        `;
+        const previewId = randomUUID();
+        await tx`
+          INSERT INTO retention_campaign_previews (
+            id,
+            org_id,
+            segment_run_id,
+            segment_definition_id,
+            strategy_ciphertext,
+            evidence_ciphertext,
+            quality_status,
+            quality_issues_ciphertext,
+            model_provider,
+            model_id,
+            prompt_version,
+            usage
+          )
+          VALUES (
+            ${previewId},
+            ${context.organizationId},
+            ${input.runId},
+            ${definitionId},
+            ${encryptedJson(
+              this.crypto,
+              {
+                description: definition.description,
+                confidence: definition.confidence,
+                strategy: definition.campaignPreview.strategy,
+              },
+              `${context.organizationId}:campaign-preview:${previewId}:strategy`,
+            )},
+            ${encryptedJson(
+              this.crypto,
+              definition.evidence,
+              `${context.organizationId}:campaign-preview:${previewId}:evidence`,
+            )},
+            ${derivedQuality.status},
+            ${encryptedJson(
+              this.crypto,
+              derivedQuality.issues,
+              `${context.organizationId}:campaign-preview:${previewId}:quality-issues`,
+            )},
+            ${definition.campaignPreview.modelProvider},
+            ${definition.campaignPreview.modelId},
+            ${definition.campaignPreview.promptVersion},
+            ${tx.json(definition.campaignPreview.usage)}
+          )
+        `;
+        for (const sample of definition.campaignPreview.samples) {
+          const sampleId = randomUUID();
+          const content = {
+            subject: sample.subject,
+            preheader: sample.preheader ?? null,
+            body: sample.body,
+          };
+          await tx`
+            INSERT INTO retention_campaign_preview_samples (
+              id,
+              org_id,
+              campaign_preview_id,
+              customer_reference_ciphertext,
+              subject_ciphertext,
+              preheader_ciphertext,
+              body_ciphertext,
+              explanation_ciphertext,
+              message_sha256
+            )
+            VALUES (
+              ${sampleId},
+              ${context.organizationId},
+              ${previewId},
+              ${this.crypto.encrypt(
+                sample.customerReference,
+                `${context.organizationId}:campaign-preview-sample:${sampleId}:customer-reference`,
+              )},
+              ${this.crypto.encrypt(
+                sample.subject,
+                `${context.organizationId}:campaign-preview-sample:${sampleId}:subject`,
+              )},
+              ${
+                sample.preheader
+                  ? this.crypto.encrypt(
+                      sample.preheader,
+                      `${context.organizationId}:campaign-preview-sample:${sampleId}:preheader`,
+                    )
+                  : null
+              },
+              ${this.crypto.encrypt(
+                sample.body,
+                `${context.organizationId}:campaign-preview-sample:${sampleId}:body`,
+              )},
+              ${this.crypto.encrypt(
+                sample.explanation,
+                `${context.organizationId}:campaign-preview-sample:${sampleId}:explanation`,
+              )},
+              ${sha256(canonicalJson(content))}
+            )
+          `;
+        }
+        stored.push({
+          id: definitionId,
+          name: definition.name.trim(),
+          version,
+          checksum,
+          expression: definition.expression,
+        });
+      }
+
+      const counts = await this.evaluateSegmentMemberships(tx, {
+        organizationId: context.organizationId,
+        brandId: run.brand_id,
+        runId: input.runId,
+        evidenceCutoff: run.evidence_cutoff_at,
+        definitions: stored,
+      });
+      const completedSegmentCount = run.completed_segment_count + stored.length;
+      const status =
+        input.outcome === "pause"
+          ? "paused"
+          : input.outcome === "complete" ||
+              completedSegmentCount >= run.max_segments
+            ? "completed"
+            : "queued";
+      await tx`
+        UPDATE retention_segment_runs
+        SET
+          status = ${status},
+          completed_segment_count = ${completedSegmentCount},
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          paused_at = CASE WHEN ${status} = 'paused' THEN now() ELSE NULL END,
+          completed_at = CASE
+            WHEN ${status} = 'completed' THEN now()
+            ELSE completed_at
+          END,
+          last_error_code = ${
+            input.outcome === "pause"
+              ? (input.errorCode ?? "generation_paused")
+              : null
+          },
+          updated_at = now()
+        WHERE org_id = ${context.organizationId}
+          AND id = ${input.runId}
+      `;
+      await this.audit(tx, context, {
+        action:
+          status === "paused"
+            ? "segment_run.paused"
+            : status === "completed"
+              ? "segment_run.completed"
+              : "segment_run.tranche_completed",
+        resourceType: "segment_run",
+        resourceId: input.runId,
+        metadata: {
+          segmentCount: stored.length,
+          completedSegmentCount,
+          errorCode: input.errorCode ?? null,
+        },
+      });
+      return {
+        runId: input.runId,
+        status,
+        completedSegmentCount,
+        definitions: stored.map((definition) => ({
+          id: definition.id,
+          name: definition.name,
+          version: definition.version,
+          checksum: definition.checksum,
+          memberCount: counts.get(definition.id)?.memberCount ?? 0,
+          eligibleCount: counts.get(definition.id)?.eligibleCount ?? 0,
+        })),
+      };
+    });
+  }
+
+  async listSegments(
+    context: TenantContext,
+    input: { brandId: string; sourceRunId?: string },
+  ): Promise<{ segments: unknown[] }> {
+    assertUuid(input.brandId, "brandId");
+    if (input.sourceRunId) {
+      assertUuid(input.sourceRunId, "sourceRunId");
+    }
+    return this.database.withTenant(context.organizationId, async (tx) => {
+      const rows = await tx<
+        Array<{
+          id: string;
+          name: string;
+          version: number;
+          expression: WorklinSegmentExpression;
+          status: string;
+          definition_checksum_sha256: string | null;
+          source_run_id: string | null;
+          created_at: Date;
+          member_count: string;
+          eligible_count: string;
+          preview_id: string | null;
+          strategy_ciphertext: string | null;
+          evidence_ciphertext: string | null;
+          quality_status: string | null;
+          quality_issues_ciphertext: string | null;
+          model_provider: string | null;
+          model_id: string | null;
+          prompt_version: string | null;
+          usage: unknown;
+        }>
+      >`
+        SELECT
+          definition.id,
+          definition.name,
+          definition.version,
+          definition.expression,
+          definition.status,
+          definition.definition_checksum_sha256,
+          definition.source_run_id,
+          definition.created_at,
+          count(membership.customer_id)::TEXT AS member_count,
+          count(membership.customer_id) FILTER (
+            WHERE membership.campaign_eligible
+          )::TEXT AS eligible_count,
+          preview.id AS preview_id,
+          preview.strategy_ciphertext,
+          preview.evidence_ciphertext,
+          preview.quality_status,
+          preview.quality_issues_ciphertext,
+          preview.model_provider,
+          preview.model_id,
+          preview.prompt_version,
+          preview.usage
+        FROM retention_segment_definitions AS definition
+        LEFT JOIN retention_segment_memberships AS membership
+          ON membership.org_id = definition.org_id
+          AND membership.segment_definition_id = definition.id
+        LEFT JOIN retention_campaign_previews AS preview
+          ON preview.org_id = definition.org_id
+          AND preview.segment_definition_id = definition.id
+        WHERE definition.org_id = ${context.organizationId}
+          AND definition.brand_id = ${input.brandId}
+          AND definition.source_run_id IS NOT NULL
+          AND (
+            ${input.sourceRunId ?? null}::UUID IS NULL
+            OR definition.source_run_id = ${input.sourceRunId ?? null}
+          )
+          AND definition.status <> 'archived'
+        GROUP BY definition.id, preview.id
+        ORDER BY
+          CASE WHEN definition.status = 'active' THEN 0 ELSE 1 END,
+          definition.created_at DESC,
+          definition.name
+      `;
+      const previewIds = rows
+        .map((row) => row.preview_id)
+        .filter((value): value is string => value !== null);
+      const sampleRows =
+        previewIds.length === 0
+          ? []
+          : await tx<
+              Array<{
+                id: string;
+                campaign_preview_id: string;
+                customer_reference_ciphertext: string;
+                subject_ciphertext: string;
+                preheader_ciphertext: string | null;
+                body_ciphertext: string;
+                explanation_ciphertext: string;
+                message_sha256: string;
+              }>
+            >`
+            SELECT
+              id,
+              campaign_preview_id,
+              customer_reference_ciphertext,
+              subject_ciphertext,
+              preheader_ciphertext,
+              body_ciphertext,
+              explanation_ciphertext,
+              message_sha256
+            FROM retention_campaign_preview_samples
+            WHERE org_id = ${context.organizationId}
+              AND campaign_preview_id = ANY(${tx.array(previewIds)}::UUID[])
+            ORDER BY created_at, id
+          `;
+      return {
+        segments: rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          version: row.version,
+          expression: row.expression,
+          status: row.status,
+          checksum: row.definition_checksum_sha256,
+          sourceRunId: row.source_run_id,
+          memberCount: Number(row.member_count),
+          eligibleCount: Number(row.eligible_count),
+          createdAt: row.created_at.toISOString(),
+          campaignPreview:
+            row.preview_id &&
+            row.strategy_ciphertext &&
+            row.evidence_ciphertext &&
+            row.quality_issues_ciphertext
+              ? {
+                  ...JSON.parse(
+                    this.crypto.decrypt(
+                      row.strategy_ciphertext,
+                      `${context.organizationId}:campaign-preview:${row.preview_id}:strategy`,
+                    ),
+                  ),
+                  evidence: JSON.parse(
+                    this.crypto.decrypt(
+                      row.evidence_ciphertext,
+                      `${context.organizationId}:campaign-preview:${row.preview_id}:evidence`,
+                    ),
+                  ),
+                  qualityStatus: row.quality_status,
+                  qualityIssues: JSON.parse(
+                    this.crypto.decrypt(
+                      row.quality_issues_ciphertext,
+                      `${context.organizationId}:campaign-preview:${row.preview_id}:quality-issues`,
+                    ),
+                  ),
+                  model: {
+                    provider: row.model_provider,
+                    id: row.model_id,
+                    promptVersion: row.prompt_version,
+                  },
+                  usage: row.usage,
+                  samples: sampleRows
+                    .filter(
+                      (sample) => sample.campaign_preview_id === row.preview_id,
+                    )
+                    .map((sample) => ({
+                      customerReference: this.crypto.decrypt(
+                        sample.customer_reference_ciphertext,
+                        `${context.organizationId}:campaign-preview-sample:${sample.id}:customer-reference`,
+                      ),
+                      subject: this.crypto.decrypt(
+                        sample.subject_ciphertext,
+                        `${context.organizationId}:campaign-preview-sample:${sample.id}:subject`,
+                      ),
+                      preheader: sample.preheader_ciphertext
+                        ? this.crypto.decrypt(
+                            sample.preheader_ciphertext,
+                            `${context.organizationId}:campaign-preview-sample:${sample.id}:preheader`,
+                          )
+                        : null,
+                      body: this.crypto.decrypt(
+                        sample.body_ciphertext,
+                        `${context.organizationId}:campaign-preview-sample:${sample.id}:body`,
+                      ),
+                      explanation: this.crypto.decrypt(
+                        sample.explanation_ciphertext,
+                        `${context.organizationId}:campaign-preview-sample:${sample.id}:explanation`,
+                      ),
+                      checksum: sample.message_sha256,
+                    })),
+                }
+              : null,
+        })),
+      };
+    });
+  }
+
+  async listSegmentsForRun(
+    context: TenantContext,
+    runId: string,
+  ): Promise<{ brandName: string; segments: unknown[] }> {
+    assertUuid(runId, "runId");
+    const run = await this.database.withTenant(
+      context.organizationId,
+      async (tx) => {
+        const rows = await tx<Array<{ brand_id: string; brand_name: string }>>`
+          SELECT run.brand_id, brand.name AS brand_name
+          FROM retention_segment_runs AS run
+          INNER JOIN retention_brands AS brand
+            ON brand.org_id = run.org_id
+            AND brand.id = run.brand_id
+          WHERE run.org_id = ${context.organizationId}
+            AND run.id = ${runId}
+        `;
+        if (!rows[0]) {
+          throw new RetentionServiceError(
+            "segment_run_not_found",
+            "The segment review run is unavailable.",
+            404,
+          );
+        }
+        return {
+          brandId: rows[0].brand_id,
+          brandName: rows[0].brand_name,
+        };
+      },
+    );
+    const result = await this.listSegments(context, {
+      brandId: run.brandId,
+      sourceRunId: runId,
+    });
+    return { brandName: run.brandName, segments: result.segments };
+  }
+
+  async activateSegment(
+    context: TenantContext,
+    input: {
+      segmentId: string;
+      expectedVersion: number;
+      expectedChecksum: string;
+    },
+  ): Promise<{
+    segmentId: string;
+    status: "active";
+    version: number;
+    checksum: string;
+    duplicate: boolean;
+  }> {
+    assertUuid(input.segmentId, "segmentId");
+    assertSha256(input.expectedChecksum, "expectedChecksum");
+    return this.database.withTenant(context.organizationId, async (tx) => {
+      const rows = await tx<
+        Array<{
+          brand_id: string;
+          name: string;
+          version: number;
+          status: string;
+          definition_checksum_sha256: string | null;
+          run_status: string | null;
+        }>
+      >`
+        SELECT
+          definition.brand_id,
+          definition.name,
+          definition.version,
+          definition.status,
+          definition.definition_checksum_sha256,
+          run.status AS run_status
+        FROM retention_segment_definitions AS definition
+        LEFT JOIN retention_segment_runs AS run
+          ON run.org_id = definition.org_id
+          AND run.id = definition.source_run_id
+        WHERE definition.org_id = ${context.organizationId}
+          AND definition.id = ${input.segmentId}
+        FOR UPDATE OF definition
+      `;
+      const segment = rows[0];
+      if (!segment) {
+        throw new RetentionServiceError(
+          "segment_not_found",
+          "The segment definition is unavailable.",
+          404,
+        );
+      }
+      if (
+        segment.version !== input.expectedVersion ||
+        segment.definition_checksum_sha256 !== input.expectedChecksum
+      ) {
+        throw new RetentionServiceError(
+          "segment_activation_stale",
+          "The segment changed after it was reviewed.",
+          409,
+        );
+      }
+      if (segment.run_status !== "completed") {
+        throw new RetentionServiceError(
+          "segment_run_incomplete",
+          "The full segment review run must finish before activation.",
+          409,
+        );
+      }
+      if (segment.status === "active") {
+        return {
+          segmentId: input.segmentId,
+          status: "active",
+          version: segment.version,
+          checksum: input.expectedChecksum,
+          duplicate: true,
+        };
+      }
+      await tx`
+        UPDATE retention_segment_definitions
+        SET status = 'archived', updated_at = now()
+        WHERE org_id = ${context.organizationId}
+          AND brand_id = ${segment.brand_id}
+          AND lower(name) = lower(${segment.name})
+          AND status = 'active'
+          AND id <> ${input.segmentId}
+      `;
+      await tx`
+        UPDATE retention_segment_definitions
+        SET
+          status = 'active',
+          activated_by = ${context.userId},
+          activated_at = now(),
+          updated_at = now()
+        WHERE org_id = ${context.organizationId}
+          AND id = ${input.segmentId}
+      `;
+      await this.audit(tx, context, {
+        action: "segment_definition.activated",
+        resourceType: "segment_definition",
+        resourceId: input.segmentId,
+        metadata: {
+          version: segment.version,
+          checksum: input.expectedChecksum,
+        },
+      });
+      return {
+        segmentId: input.segmentId,
+        status: "active",
+        version: segment.version,
+        checksum: input.expectedChecksum,
+        duplicate: false,
+      };
+    });
+  }
+
+  async claimRecipientReasoning(context: TenantContext): Promise<{
     jobId: string;
     leaseOwner: string;
     decisionId: string;
@@ -4011,8 +5517,7 @@ export class RetentionRepository {
               policyVersion: decision.policy_version,
               policy: decision.policy,
             },
-            evidenceCutoffAt:
-              decision.input_evidence_cutoff_at.toISOString(),
+            evidenceCutoffAt: decision.input_evidence_cutoff_at.toISOString(),
             consent: consentRows.map((row) => ({
               channel: row.channel,
               state: row.state,
@@ -4067,11 +5572,7 @@ export class RetentionRepository {
         },
       );
       if (!result) {
-        await this.completeJob(
-          context.organizationId,
-          leaseOwner,
-          job.id,
-        );
+        await this.completeJob(context.organizationId, leaseOwner, job.id);
         return null;
       }
       return {
@@ -4084,18 +5585,13 @@ export class RetentionRepository {
         dossier: result.dossier,
       };
     } catch (error) {
-      await this.failJob(
-        context.organizationId,
-        leaseOwner,
-        job.id,
-        {
-          code:
-            error instanceof RetentionServiceError
-              ? error.code
-              : "reasoning_claim_failed",
-          message: error instanceof Error ? error.message : String(error),
-        },
-      );
+      await this.failJob(context.organizationId, leaseOwner, job.id, {
+        code:
+          error instanceof RetentionServiceError
+            ? error.code
+            : "reasoning_claim_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -4258,8 +5754,7 @@ export class RetentionRepository {
                 : {}),
               ...(input.usage.estimatedProviderCost !== undefined
                 ? {
-                    estimatedProviderCost:
-                      input.usage.estimatedProviderCost,
+                    estimatedProviderCost: input.usage.estimatedProviderCost,
                     currency: "USD",
                   }
                 : {}),
@@ -4279,9 +5774,7 @@ export class RetentionRepository {
     }
 
     return this.database.withTenant(context.organizationId, async (tx) => {
-      const jobs = await tx<
-        Array<{ payload_ciphertext: string }>
-      >`
+      const jobs = await tx<Array<{ payload_ciphertext: string }>>`
         SELECT payload_ciphertext
         FROM retention_jobs
         WHERE org_id = ${context.organizationId}
@@ -4332,8 +5825,7 @@ export class RetentionRepository {
       if (
         !state ||
         state.dossier_sha256 !== input.dossierSha256 ||
-        state.input_evidence_cutoff_at.getTime() !==
-          evidenceCutoffAt.getTime()
+        state.input_evidence_cutoff_at.getTime() !== evidenceCutoffAt.getTime()
       ) {
         throw new RetentionServiceError(
           "decision_evidence_changed",
@@ -4363,8 +5855,7 @@ export class RetentionRepository {
           status = ${input.status},
           objective = ${input.objective},
           recommended_timing = ${
-            recommendedTiming &&
-            !Number.isNaN(recommendedTiming.valueOf())
+            recommendedTiming && !Number.isNaN(recommendedTiming.valueOf())
               ? recommendedTiming
               : null
           },
@@ -4373,8 +5864,7 @@ export class RetentionRepository {
             action: input.recommendation.action,
             channel: input.recommendation.channel,
             timing: input.recommendation.timing ?? null,
-            personalizationBrief:
-              input.recommendation.personalizationBrief,
+            personalizationBrief: input.recommendation.personalizationBrief,
           })},
           reasoning_ciphertext = ${encryptedJson(
             this.crypto,
@@ -4589,9 +6079,7 @@ export class RetentionRepository {
           inclusionExplanation: member.inclusionExplanation.trim(),
         };
       })
-      .sort((left, right) =>
-        left.customerId.localeCompare(right.customerId),
-      );
+      .sort((left, right) => left.customerId.localeCompare(right.customerId));
     const snapshotSha256 = sha256(
       canonicalJson({
         campaignId: input.campaignId,
@@ -4653,9 +6141,7 @@ export class RetentionRepository {
           audienceSnapshotId: campaign.existing_snapshot_id,
           snapshotSha256,
           memberCount: Number(counts[0]?.member_count ?? 0),
-          sensitiveMemberCount: Number(
-            counts[0]?.sensitive_member_count ?? 0,
-          ),
+          sensitiveMemberCount: Number(counts[0]?.sensitive_member_count ?? 0),
           duplicate: true,
         };
       }
@@ -4903,10 +6389,7 @@ export class RetentionRepository {
     estimatedMaxCostUsd: number;
   }> {
     assertUuid(input.campaignId, "campaignId");
-    assertNonNegativeMoney(
-      input.estimatedMaxCostUsd,
-      "estimatedMaxCostUsd",
-    );
+    assertNonNegativeMoney(input.estimatedMaxCostUsd, "estimatedMaxCostUsd");
     if (input.campaignSpendCeilingUsd !== undefined) {
       assertNonNegativeMoney(
         input.campaignSpendCeilingUsd,
@@ -4966,19 +6449,14 @@ export class RetentionRepository {
       const campaignLimit = settings[0]?.campaign_spend_limit_usd
         ? Number(settings[0].campaign_spend_limit_usd)
         : null;
-      if (
-        campaignLimit !== null &&
-        input.estimatedMaxCostUsd > campaignLimit
-      ) {
+      if (campaignLimit !== null && input.estimatedMaxCostUsd > campaignLimit) {
         throw new RetentionServiceError(
           "organization_campaign_spend_limit_exceeded",
           "The estimated provider cost exceeds the workspace campaign limit.",
           409,
         );
       }
-      const monthUsage = await tx<
-        Array<{ used: string; reserved: string }>
-      >`
+      const monthUsage = await tx<Array<{ used: string; reserved: string }>>`
         SELECT
           COALESCE((
             SELECT sum(estimated_cost_usd)
@@ -5022,8 +6500,7 @@ export class RetentionRepository {
       const budgetReservationId = existing[0]?.id ?? randomUUID();
       if (
         existing[0] &&
-        Number(existing[0].estimated_cost_usd) !==
-          input.estimatedMaxCostUsd
+        Number(existing[0].estimated_cost_usd) !== input.estimatedMaxCostUsd
       ) {
         throw new RetentionServiceError(
           "budget_reservation_conflict",
@@ -5126,10 +6603,7 @@ export class RetentionRepository {
     assertUuid(input.campaignId, "campaignId");
     assertUuid(input.customerId, "customerId");
     if (input.usage.estimatedCostUsd !== undefined) {
-      assertNonNegativeMoney(
-        input.usage.estimatedCostUsd,
-        "estimatedCostUsd",
-      );
+      assertNonNegativeMoney(input.usage.estimatedCostUsd, "estimatedCostUsd");
     }
     const generatedAt = new Date(input.generatedAt);
     if (Number.isNaN(generatedAt.valueOf())) {
@@ -5391,9 +6865,7 @@ export class RetentionRepository {
         Number(coverage[0]?.members ?? 0) > 0 &&
         Number(coverage[0]?.members ?? 0) ===
           Number(coverage[0]?.ready_messages ?? 0);
-      const campaignStatus = complete
-        ? "review_required"
-        : "generating";
+      const campaignStatus = complete ? "review_required" : "generating";
       await tx`
         UPDATE retention_campaigns
         SET status = ${campaignStatus}, updated_at = now()
@@ -5497,9 +6969,7 @@ export class RetentionRepository {
           checksum.error.code,
           checksum.error.message,
           409,
-          checksum.error.details
-            ? { ...checksum.error.details }
-            : undefined,
+          checksum.error.details ? { ...checksum.error.details } : undefined,
         );
       }
       if (
@@ -5720,8 +7190,10 @@ export class RetentionRepository {
         input.campaignId,
       );
       const currentChecksum = getCampaignApprovalChecksum(material);
-      if (!currentChecksum.ok ||
-          currentChecksum.value !== input.snapshotSha256) {
+      if (
+        !currentChecksum.ok ||
+        currentChecksum.value !== input.snapshotSha256
+      ) {
         await tx`
           UPDATE retention_approvals
           SET status = 'invalidated', invalidated_at = now()
@@ -6123,9 +7595,7 @@ export class RetentionRepository {
           rationale: operatorRationale.summary || null,
           rationaleRedacted: operatorRationale.redacted,
           confidence:
-            decision.confidence === null
-              ? null
-              : Number(decision.confidence),
+            decision.confidence === null ? null : Number(decision.confidence),
           evidenceCount: Number(decision.evidence_count),
           reasonedAt: decision.reasoned_at?.toISOString() ?? null,
         };
@@ -6552,8 +8022,7 @@ export class RetentionRepository {
       `;
       const messageSamples = messages.map((message) => {
         const contentWithheld =
-          message.sensitive_content_blocked ||
-          message.sensitive_inference_used;
+          message.sensitive_content_blocked || message.sensitive_inference_used;
         if (contentWithheld) {
           return {
             customerReference: operatorCustomerReference(
@@ -6643,9 +8112,7 @@ export class RetentionRepository {
           approvedAt: campaign.approved_at?.toISOString() ?? null,
         },
         audience:
-          campaign.audience_id &&
-          campaign.snapshot_sha256 &&
-          campaign.frozen_at
+          campaign.audience_id && campaign.snapshot_sha256 && campaign.frozen_at
             ? {
                 id: campaign.audience_id,
                 memberCount: Number(campaign.member_count ?? 0),
@@ -6728,9 +8195,7 @@ export class RetentionRepository {
           AND campaign_id = ${campaignId}
         ORDER BY released_at, id
       `;
-      const recipientRows = await tx<
-        Array<{ status: string; count: string }>
-      >`
+      const recipientRows = await tx<Array<{ status: string; count: string }>>`
         SELECT status, count(*)::TEXT AS count
         FROM retention_dispatch_recipients
         WHERE org_id = ${context.organizationId}
@@ -6876,9 +8341,7 @@ export class RetentionRepository {
           403,
         );
       }
-      const acceptanceRows = await tx<
-        Array<{ accepted_count: string }>
-      >`
+      const acceptanceRows = await tx<Array<{ accepted_count: string }>>`
         SELECT count(*)::TEXT AS accepted_count
         FROM retention_dispatch_recipients
         WHERE org_id = ${context.organizationId}
@@ -6911,12 +8374,8 @@ export class RetentionRepository {
           providerListId: dispatch.provider_list_id,
           providerPayloadReference: dispatch.provider_payload_reference,
         })),
-        acceptedRecipientCount: Number(
-          acceptanceRows[0]?.accepted_count ?? 0,
-        ),
-        runningDispatchJobCount: Number(
-          runningJobRows[0]?.running_count ?? 0,
-        ),
+        acceptedRecipientCount: Number(acceptanceRows[0]?.accepted_count ?? 0),
+        runningDispatchJobCount: Number(runningJobRows[0]?.running_count ?? 0),
       });
       if (campaign.status === "cancelled") {
         return {
@@ -7004,15 +8463,12 @@ export class RetentionRepository {
     organizationId: string,
     workerId: string,
     acceptedTypes: readonly string[],
-  ): Promise<
-    | {
-        id: string;
-        type: string;
-        payload: unknown;
-        attempts: number;
-      }
-    | null
-  > {
+  ): Promise<{
+    id: string;
+    type: string;
+    payload: unknown;
+    attempts: number;
+  } | null> {
     if (acceptedTypes.length === 0) return null;
     return this.database.withTenant(organizationId, async (tx) => {
       const rows = await tx<
@@ -7149,9 +8605,7 @@ export class RetentionRepository {
           checksum.error.code,
           checksum.error.message,
           409,
-          checksum.error.details
-            ? { ...checksum.error.details }
-            : undefined,
+          checksum.error.details ? { ...checksum.error.details } : undefined,
         );
       }
       return { snapshotSha256: checksum.value, material };
@@ -7462,9 +8916,7 @@ export class RetentionRepository {
         AND sensitive_content_blocked = false
       ORDER BY id
     `;
-    const audienceMemberCount = Number(
-      campaign.audience_member_count ?? 0,
-    );
+    const audienceMemberCount = Number(campaign.audience_member_count ?? 0);
     const decisionsComplete =
       audienceMemberCount > 0 &&
       decisions.length === audienceMemberCount &&
@@ -7474,8 +8926,7 @@ export class RetentionRepository {
           decision.reasoned_at !== null &&
           decision.invalidated_at === null,
       );
-    const messagesComplete =
-      messages.length === audienceMemberCount;
+    const messagesComplete = messages.length === audienceMemberCount;
     if (!decisionsComplete || !messagesComplete) {
       throw new RetentionServiceError(
         "campaign_not_ready",
@@ -7492,18 +8943,14 @@ export class RetentionRepository {
     const modelReferences = new Set<string>();
     const promptReferences = new Set<string>();
     if (campaign.model_provider && campaign.model_id) {
-      modelReferences.add(
-        `${campaign.model_provider}:${campaign.model_id}`,
-      );
+      modelReferences.add(`${campaign.model_provider}:${campaign.model_id}`);
     }
     if (campaign.prompt_version) {
       promptReferences.add(campaign.prompt_version);
     }
     for (const decision of decisions) {
       if (decision.model_provider && decision.model_id) {
-        modelReferences.add(
-          `${decision.model_provider}:${decision.model_id}`,
-        );
+        modelReferences.add(`${decision.model_provider}:${decision.model_id}`);
       }
       if (decision.prompt_version) {
         promptReferences.add(decision.prompt_version);
@@ -7863,6 +9310,11 @@ export class RetentionRepository {
         AND customer_id = ${customerId}
     `;
     await tx`
+      DELETE FROM retention_segment_memberships
+      WHERE org_id = ${organizationId}
+        AND customer_id = ${customerId}
+    `;
+    await tx`
       DELETE FROM retention_feature_snapshots
       WHERE org_id = ${organizationId}
         AND customer_id = ${customerId}
@@ -8112,11 +9564,7 @@ export class RetentionRepository {
     `;
     let rawPayloadsDeleted = 0;
     for (const customer of customers) {
-      const erased = await this.eraseCustomer(
-        tx,
-        organizationId,
-        customer.id,
-      );
+      const erased = await this.eraseCustomer(tx, organizationId, customer.id);
       rawPayloadsDeleted += erased.rawPayloadsDeleted;
     }
     const remainingEvents = await tx<
@@ -8209,6 +9657,255 @@ export class RetentionRepository {
         `${organizationId}:customer:${customerId}:display-name`,
       );
     }
+  }
+
+  private async evaluateSegmentMemberships(
+    tx: RetentionTransactionSql,
+    input: {
+      organizationId: string;
+      brandId: string;
+      runId: string;
+      evidenceCutoff: Date;
+      definitions: StoredSegmentDefinition[];
+    },
+  ): Promise<Map<string, { memberCount: number; eligibleCount: number }>> {
+    const counts = new Map(
+      input.definitions.map((definition) => [
+        definition.id,
+        { memberCount: 0, eligibleCount: 0 },
+      ]),
+    );
+    let lastCustomerId: string | null = null;
+    while (true) {
+      const customers: Array<{
+        id: string;
+        status: string;
+        primary_email_ciphertext: string | null;
+        primary_phone_ciphertext: string | null;
+        created_at: Date;
+        source_updated_at: Date | null;
+      }> = await tx<
+        Array<{
+          id: string;
+          status: string;
+          primary_email_ciphertext: string | null;
+          primary_phone_ciphertext: string | null;
+          created_at: Date;
+          source_updated_at: Date | null;
+        }>
+      >`
+        SELECT
+          id,
+          status,
+          primary_email_ciphertext,
+          primary_phone_ciphertext,
+          created_at,
+          source_updated_at
+        FROM retention_customers
+        WHERE org_id = ${input.organizationId}
+          AND brand_id = ${input.brandId}
+          AND status = 'active'
+          AND created_at <= ${input.evidenceCutoff}
+          AND (${lastCustomerId}::UUID IS NULL OR id > ${lastCustomerId})
+        ORDER BY id
+        LIMIT 500
+      `;
+      if (customers.length === 0) break;
+      const customerIds = customers.map((customer) => customer.id);
+      const consentRows = await tx<
+        Array<{ customer_id: string; state: string }>
+      >`
+        SELECT DISTINCT ON (customer_id)
+          customer_id,
+          state
+        FROM retention_consent_events
+        WHERE org_id = ${input.organizationId}
+          AND brand_id = ${input.brandId}
+          AND customer_id = ANY(${tx.array(customerIds)}::UUID[])
+          AND channel = 'email'
+          AND occurred_at <= ${input.evidenceCutoff}
+        ORDER BY customer_id, occurred_at DESC, created_at DESC
+      `;
+      const eventRows = await tx<
+        Array<{
+          customer_id: string;
+          provider: string;
+          event_type: string;
+          event_count: string;
+          latest_at: Date;
+        }>
+      >`
+        SELECT
+          customer_id,
+          provider,
+          event_type,
+          count(*)::TEXT AS event_count,
+          max(occurred_at) AS latest_at
+        FROM retention_source_events
+        WHERE org_id = ${input.organizationId}
+          AND brand_id = ${input.brandId}
+          AND customer_id = ANY(${tx.array(customerIds)}::UUID[])
+          AND occurred_at <= ${input.evidenceCutoff}
+          AND processing_status IN ('processed', 'ignored')
+        GROUP BY customer_id, provider, event_type
+      `;
+      const traitRows = await tx<
+        Array<{
+          id: string;
+          customer_id: string;
+          trait_key: string;
+          value_ciphertext: string;
+        }>
+      >`
+        SELECT DISTINCT ON (customer_id, trait_key)
+          id,
+          customer_id,
+          trait_key,
+          value_ciphertext
+        FROM retention_customer_traits
+        WHERE org_id = ${input.organizationId}
+          AND brand_id = ${input.brandId}
+          AND customer_id = ANY(${tx.array(customerIds)}::UUID[])
+          AND observed_at <= ${input.evidenceCutoff}
+          AND (expires_at IS NULL OR expires_at > ${input.evidenceCutoff})
+          AND targeting_status NOT IN ('rejected', 'expired')
+          AND sensitivity IN ('standard', 'personal')
+        ORDER BY customer_id, trait_key, observed_at DESC, id DESC
+      `;
+      const consentByCustomer = new Map(
+        consentRows.map((row) => [row.customer_id, row.state]),
+      );
+      const eventsByCustomer = new Map<
+        string,
+        Array<(typeof eventRows)[number]>
+      >();
+      for (const row of eventRows) {
+        const rows = eventsByCustomer.get(row.customer_id) ?? [];
+        rows.push(row);
+        eventsByCustomer.set(row.customer_id, rows);
+      }
+      const traitsByCustomer = new Map<string, Record<string, unknown>>();
+      for (const row of traitRows) {
+        let value: unknown;
+        try {
+          value = JSON.parse(
+            this.crypto.decrypt(
+              row.value_ciphertext,
+              `${input.organizationId}:trait:${row.id}:value`,
+            ),
+          );
+        } catch {
+          continue;
+        }
+        const safeValue = Array.isArray(value)
+          ? value
+              .map((item) => scalarForDossier(item))
+              .filter((item) => item !== null)
+              .slice(0, 50)
+          : scalarForDossier(value);
+        if (safeValue === null) continue;
+        const traits = traitsByCustomer.get(row.customer_id) ?? {};
+        traits[row.trait_key] = safeValue;
+        traitsByCustomer.set(row.customer_id, traits);
+      }
+
+      const membershipRows: Array<{
+        org_id: string;
+        segment_definition_id: string;
+        segment_run_id: string;
+        customer_id: string;
+        campaign_eligible: boolean;
+        eligibility_reason: string;
+        evidence_cutoff_at: Date;
+      }> = [];
+      for (const customer of customers) {
+        const events = eventsByCustomer.get(customer.id) ?? [];
+        const eventCount = events.reduce(
+          (sum, row) => sum + Number(row.event_count),
+          0,
+        );
+        const latestEventTime = events.reduce(
+          (latest, row) => Math.max(latest, row.latest_at.getTime()),
+          Number.NEGATIVE_INFINITY,
+        );
+        const state: SegmentCustomerState = {
+          profile: {
+            status: customer.status,
+            has_email: customer.primary_email_ciphertext !== null,
+            has_phone: customer.primary_phone_ciphertext !== null,
+            created_at: customer.created_at.toISOString(),
+            source_updated_at:
+              customer.source_updated_at?.toISOString() ?? null,
+          },
+          consent: {
+            email: consentByCustomer.get(customer.id) ?? "unknown",
+          },
+          metric: {
+            source_event_count: eventCount,
+            klaviyo_event_count: events
+              .filter((row) => row.provider === "klaviyo")
+              .reduce((sum, row) => sum + Number(row.event_count), 0),
+            days_since_last_event: Number.isFinite(latestEventTime)
+              ? Math.max(
+                  0,
+                  Math.floor(
+                    (input.evidenceCutoff.getTime() - latestEventTime) /
+                      86_400_000,
+                  ),
+                )
+              : null,
+          },
+          evidence: {
+            provider: [...new Set(events.map((row) => row.provider))].sort(),
+            event_type: [
+              ...new Set(events.map((row) => row.event_type)),
+            ].sort(),
+          },
+          trait: traitsByCustomer.get(customer.id) ?? {},
+        };
+        const eligibility = campaignEligibility(state);
+        for (const definition of input.definitions) {
+          if (!evaluateSegmentExpression(definition.expression, state)) {
+            continue;
+          }
+          membershipRows.push({
+            org_id: input.organizationId,
+            segment_definition_id: definition.id,
+            segment_run_id: input.runId,
+            customer_id: customer.id,
+            campaign_eligible: eligibility.eligible,
+            eligibility_reason: eligibility.reason,
+            evidence_cutoff_at: input.evidenceCutoff,
+          });
+          const count = counts.get(definition.id)!;
+          count.memberCount += 1;
+          if (eligibility.eligible) count.eligibleCount += 1;
+        }
+      }
+      if (membershipRows.length > 0) {
+        await tx`
+          INSERT INTO retention_segment_memberships ${tx(
+            membershipRows,
+            "org_id",
+            "segment_definition_id",
+            "segment_run_id",
+            "customer_id",
+            "campaign_eligible",
+            "eligibility_reason",
+            "evidence_cutoff_at",
+          )}
+          ON CONFLICT (org_id, segment_definition_id, customer_id)
+          DO UPDATE SET
+            segment_run_id = excluded.segment_run_id,
+            campaign_eligible = excluded.campaign_eligible,
+            eligibility_reason = excluded.eligibility_reason,
+            evidence_cutoff_at = excluded.evidence_cutoff_at,
+            evaluated_at = now()
+        `;
+      }
+      lastCustomerId = customers.at(-1)!.id;
+    }
+    return counts;
   }
 
   private async auditSystem(

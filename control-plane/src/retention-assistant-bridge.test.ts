@@ -37,6 +37,43 @@ describe("retention assistant bridge contract", () => {
     });
   });
 
+  test("allows only the bounded segment-run orchestration routes", () => {
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(
+      isRetentionAssistantOperatorRoute("POST", "/v1/retention/segment-runs"),
+    ).toBe(true);
+    expect(
+      isRetentionAssistantOperatorRoute(
+        "GET",
+        `/v1/retention/segment-runs/${runId}`,
+      ),
+    ).toBe(true);
+    expect(
+      isRetentionAssistantOperatorRoute(
+        "POST",
+        `/v1/retention/segment-runs/${runId}/claim`,
+      ),
+    ).toBe(true);
+    expect(
+      isRetentionAssistantOperatorRoute(
+        "POST",
+        `/v1/retention/segment-runs/${runId}/complete`,
+      ),
+    ).toBe(true);
+    expect(
+      isRetentionAssistantOperatorRoute(
+        "GET",
+        `/v1/retention/segment-runs/${runId}/segments`,
+      ),
+    ).toBe(true);
+    expect(
+      isRetentionAssistantOperatorRoute(
+        "GET",
+        "/v1/retention/segments?brandId=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      ),
+    ).toBe(false);
+  });
+
   test("forbids privilege, integration, approval, and send routes", () => {
     for (const path of [
       "/v1/retention/access",
@@ -59,6 +96,22 @@ describe("retention assistant bridge contract", () => {
         1024,
       ),
     ).toBeNull();
+    expect(
+      parseRetentionAssistantOperatorRequest(
+        {
+          ...base,
+          method: "GET",
+          path: `/v1/retention/segments?brandId=${base.organizationId}&organizationId=forged`,
+        },
+        1024,
+      ),
+    ).toBeNull();
+    expect(
+      isRetentionAssistantOperatorRoute(
+        "POST",
+        "/v1/retention/segment-runs/not-a-uuid/complete",
+      ),
+    ).toBe(false);
     expect(
       parseRetentionAssistantOperatorRequest(
         {

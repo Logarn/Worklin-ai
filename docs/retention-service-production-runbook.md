@@ -147,13 +147,13 @@ not its display name (`RAILWAY_BUCKET_NAME`).
 
 Map Railway bucket references to service variables:
 
-| Service variable | Railway bucket value |
-| --- | --- |
-| `WORKLIN_RETENTION_BUCKET_ENDPOINT` | `ENDPOINT` |
-| `WORKLIN_RETENTION_BUCKET_NAME` | `BUCKET` |
-| `WORKLIN_RETENTION_BUCKET_REGION` | `REGION` |
-| `WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID` | `ACCESS_KEY_ID` |
-| `WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY` | `SECRET_ACCESS_KEY` |
+| Service variable                                | Railway bucket value                                                                       |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `WORKLIN_RETENTION_BUCKET_ENDPOINT`             | `ENDPOINT`                                                                                 |
+| `WORKLIN_RETENTION_BUCKET_NAME`                 | `BUCKET`                                                                                   |
+| `WORKLIN_RETENTION_BUCKET_REGION`               | `REGION`                                                                                   |
+| `WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID`        | `ACCESS_KEY_ID`                                                                            |
+| `WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY`    | `SECRET_ACCESS_KEY`                                                                        |
 | `WORKLIN_RETENTION_BUCKET_VIRTUAL_HOSTED_STYLE` | `true`; the service combines Railway's generic endpoint with the `BUCKET` hostname for Bun |
 
 The application encrypts raw payloads before upload. Bucket privacy does not
@@ -221,7 +221,8 @@ Use a one-time, private migration release:
 4. Keep both write kill switches `false`.
 5. Start the release and wait for migrations `001_initial`,
    `002_privacy_workflows`, `003_program_policy_approvals`, and
-   `004_raw_payload_deletion_outbox` to be recorded.
+   `004_raw_payload_deletion_outbox`, and `005_segment_review_pilot` to be
+   recorded.
 6. Stop the temporary migration service.
 7. Apply the runtime grants below.
 8. Deploy the normal service with the runtime URL.
@@ -406,16 +407,16 @@ gateway. They are not read by the `retention-service` process itself.
 
 ### Secret Inventory
 
-| Secret | Present in | Rotation state |
-| --- | --- | --- |
-| Service JWT secret | Control plane, retention service | Coordinated rotation; one active key |
-| Internal webhook HMAC secret | Control plane, retention service | Coordinated rotation; one active key |
-| Gateway ingress secret | Gateway, control plane | Coordinated rotation; one active key |
-| Encryption key | Retention service | No online rotation/key versioning |
-| Runtime database password | Retention service, PostgreSQL | Rotatable with a new runtime credential |
-| Migrator database password | One-time migration release, PostgreSQL | Rotate after each migration window |
-| Bucket access key | Retention service, bucket | Reset invalidates the old credential |
-| Provider credentials/webhook secrets | Encrypted retention records | No update/rotation operator API yet |
+| Secret                               | Present in                             | Rotation state                          |
+| ------------------------------------ | -------------------------------------- | --------------------------------------- |
+| Service JWT secret                   | Control plane, retention service       | Coordinated rotation; one active key    |
+| Internal webhook HMAC secret         | Control plane, retention service       | Coordinated rotation; one active key    |
+| Gateway ingress secret               | Gateway, control plane                 | Coordinated rotation; one active key    |
+| Encryption key                       | Retention service                      | No online rotation/key versioning       |
+| Runtime database password            | Retention service, PostgreSQL          | Rotatable with a new runtime credential |
+| Migrator database password           | One-time migration release, PostgreSQL | Rotate after each migration window      |
+| Bucket access key                    | Retention service, bucket              | Reset invalidates the old credential    |
+| Provider credentials/webhook secrets | Encrypted retention records            | No update/rotation operator API yet     |
 
 Rules:
 
@@ -830,49 +831,50 @@ Restore in this order:
 
 ## Gap Matrix
 
-| Capability | State | Evidence in this revision | Production consequence |
-| --- | --- | --- | --- |
-| Private deployable service | Implemented | Dockerfile, Railway config, `::` binding | Deploy without a public domain |
-| Required configuration validation | Implemented | Startup rejects missing DB, secrets, encryption key, or bucket | Misconfiguration fails at startup |
-| Separate runtime and migrator URLs | Implemented in service config | Migration URL required when startup migrations are enabled | Role creation and grants remain operator work |
-| Dedicated migration executable | Blocked | Migrations run only during service startup | Use temporary private migration release |
-| Forced tenant RLS | Implemented | Every tenant table has enabled and forced RLS | Still verify grants and role ownership in production |
-| Runtime non-bypass readiness | Implemented | Readiness rejects privileged/owner roles, verifies every tenant policy, and requires empty initial org context | Unsafe isolation prevents activation |
-| Tenant-scoped registration | Implemented | Registry and settings inserts run inside `withTenant` | No bypass role or definer function required |
-| Tenant job wake and restart recovery | Implemented | Webhooks wake their authenticated org; control plane wakes one active binding per org at startup and every five minutes | Durable normalization jobs resume without cross-tenant DB discovery |
-| Production role/grant automation | Blocked | Migration does not create roles or grants | Apply and audit SQL manually |
-| Empty-database migration | Implemented and tested | Migration applies from an empty PostgreSQL database | Keep the migrator separate from runtime |
-| Two-tenant PostgreSQL isolation test | Implemented and tested | No-context failure, identical identifiers, and tenant registry inserts pass with non-bypass runtime | Run before every schema release |
-| Real PostgreSQL operator flow | Implemented and tested | Tenant initialization and operator persistence pass against PostgreSQL | Retain as a release regression |
-| Identity-pinned assistant bridge | Implemented | Runtime org/assistant equality checks plus route allowlists | Approval, release, send, access, and integration routes remain excluded |
-| Field encryption | Partially implemented | Identifiers, traits, credentials, payloads, decisions, and messages use application encryption | Key versioning and online re-key are blocked |
-| Private raw-payload bucket | Implemented | Encrypted writes and readiness check | Versioning, replication, lifecycle, and replay are blocked |
-| Durable source event append/dedup | Implemented | Provider event ID and payload-hash dedup records | Requires load and replay validation |
-| Durable jobs, leases, retries | Implemented for current workers | Tenant-scoped leases, cancellation, retry/dead-letter state, normalization, provider sync, and recipient reasoning | Long-running lease renewal and dispatch consumption remain blocked |
-| Shopify webhook verification/normalization | Implemented for supported event shapes | Gateway, control-plane binding, provider signature, append | Provider subscription/OAuth lifecycle is blocked |
-| Klaviyo webhook verification/normalization | Implemented for supported event shapes | Same verified path as Shopify | Complete system-webhook coverage and OAuth are blocked |
-| Historical Shopify backfill | Implemented for customers and orders | Read-only GraphQL cursor loop, durable checkpoints, encrypted raw evidence | Products, refunds, fulfillment, consent detail, OAuth, and Web Pixels remain incomplete |
-| Historical Klaviyo backfill | Implemented for profiles and events | Read-only API cursor/watermark loop and approved property allowlist | Complete delivery-history coverage and OAuth remain incomplete |
-| Incremental polling | Implemented for supported reads | Authenticated tenant wakes schedule due five-minute provider pages | Production lag and rate-limit behavior remain unproven |
-| Hourly/nightly reconciliation | Partially implemented | Hourly recent-source reconciliation uses durable provider checkpoints | Nightly authoritative reconciliation is blocked |
-| Privacy access/export/deletion | Implemented in service | Tenant-scoped requests, encrypted exports, corrections, deletion tombstones, consent history, and revocation | Provider-side deletion completion and production legal review remain required |
-| Worklin segment definitions | Implemented | Versioned expression contract and persistence | Evaluation engine at production scale remains unproven |
-| Program policy approval | Implemented | Frozen policy material and checksum are required before activation | Policy quality still requires human review |
-| Per-recipient AI decision persistence | Implemented | Compact dossier lease, decision evidence, hypotheses, model/prompt, and usage | Production model runner and second-pass review remain incomplete |
-| Audience freeze | Implemented | Eligible decisions and current consent checked | Full segment recomputation pipeline is incomplete |
-| Cost estimate/reservation | Partially implemented | Campaign and monthly ceilings plus reservations | Billing reconciliation and fleet dashboards are blocked |
-| Message encryption/checksums | Implemented | Rendered content encrypted and frozen into approval material | Production model generation worker is incomplete |
-| Message quality enforcement | Implemented | Server derives allowed evidence and blocks unsupported numbers, contradictions, unsafe tokens, and sensitive disclosure | Model-based second-pass review and quality evaluation sets remain blocked |
-| Approval and invalidation | Implemented in service and Work UI | Frozen checksums, invalidation logic, samples, and explicit confirmation | Production role administration still needs an owner workflow |
-| Separate idempotent release | Implemented as dispatch intent | Sender permission, four switches, checksum, idempotency key | It does not call Klaviyo |
-| Outbound Klaviyo adapter | Blocked | No worker consumes dispatch recipients | Production sending is prohibited |
-| Consent/suppression check at provider call | Blocked | Release checks current local consent | Must recheck immediately before actual provider delivery |
-| Provider acceptance and partial retry | Blocked | Dispatch status schema exists | No honest send completion is possible yet |
-| Organization kill-switch API/UI | Blocked | Organization columns exist | DBA operation required; keep false |
-| Continuous fleet metrics | Blocked | Health, readiness, status, and logs only | Add exporter, dashboards, and alerts |
-| Automated backups/PITR | Infrastructure prerequisite | Not created by application code | Must be enabled and restore-tested in Railway |
-| One-million-profile load proof | Blocked | No recorded production-scale result | Capacity target is not a current claim |
-| Raw-event replay tooling | Blocked | Encrypted objects are stored | Incident recovery may require manual tooling |
+| Capability                                 | State                                   | Evidence in this revision                                                                                                                                                                              | Production consequence                                                                  |
+| ------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Private deployable service                 | Implemented                             | Dockerfile, Railway config, `::` binding                                                                                                                                                               | Deploy without a public domain                                                          |
+| Required configuration validation          | Implemented                             | Startup rejects missing DB, secrets, encryption key, or bucket                                                                                                                                         | Misconfiguration fails at startup                                                       |
+| Separate runtime and migrator URLs         | Implemented in service config           | Migration URL required when startup migrations are enabled                                                                                                                                             | Role creation and grants remain operator work                                           |
+| Dedicated migration executable             | Blocked                                 | Migrations run only during service startup                                                                                                                                                             | Use temporary private migration release                                                 |
+| Forced tenant RLS                          | Implemented                             | Every tenant table has enabled and forced RLS                                                                                                                                                          | Still verify grants and role ownership in production                                    |
+| Runtime non-bypass readiness               | Implemented                             | Readiness rejects privileged/owner roles, verifies every tenant policy, and requires empty initial org context                                                                                         | Unsafe isolation prevents activation                                                    |
+| Tenant-scoped registration                 | Implemented                             | Registry and settings inserts run inside `withTenant`                                                                                                                                                  | No bypass role or definer function required                                             |
+| Tenant job wake and restart recovery       | Implemented                             | Webhooks wake their authenticated org; control plane wakes one active binding per org at startup and every five minutes                                                                                | Durable normalization jobs resume without cross-tenant DB discovery                     |
+| Production role/grant automation           | Blocked                                 | Migration does not create roles or grants                                                                                                                                                              | Apply and audit SQL manually                                                            |
+| Empty-database migration                   | Implemented and tested                  | Migration applies from an empty PostgreSQL database                                                                                                                                                    | Keep the migrator separate from runtime                                                 |
+| Two-tenant PostgreSQL isolation test       | Implemented and tested                  | No-context failure, identical identifiers, and tenant registry inserts pass with non-bypass runtime                                                                                                    | Run before every schema release                                                         |
+| Real PostgreSQL operator flow              | Implemented and tested                  | Tenant initialization and operator persistence pass against PostgreSQL                                                                                                                                 | Retain as a release regression                                                          |
+| Identity-pinned assistant bridge           | Implemented                             | Runtime org/assistant equality checks plus route allowlists                                                                                                                                            | Approval, release, send, access, and integration routes remain excluded                 |
+| Field encryption                           | Partially implemented                   | Identifiers, traits, credentials, payloads, decisions, and messages use application encryption                                                                                                         | Key versioning and online re-key are blocked                                            |
+| Private raw-payload bucket                 | Implemented                             | Encrypted writes and readiness check                                                                                                                                                                   | Versioning, replication, lifecycle, and replay are blocked                              |
+| Durable source event append/dedup          | Implemented                             | Provider event ID and payload-hash dedup records                                                                                                                                                       | Requires load and replay validation                                                     |
+| Durable jobs, leases, retries              | Implemented for current workers         | Tenant-scoped leases, cancellation, retry/dead-letter state, normalization, provider sync, and recipient reasoning                                                                                     | Long-running lease renewal and dispatch consumption remain blocked                      |
+| Shopify webhook verification/normalization | Implemented for supported event shapes  | Gateway, control-plane binding, provider signature, append                                                                                                                                             | Provider subscription/OAuth lifecycle is blocked                                        |
+| Klaviyo webhook verification/normalization | Implemented for supported event shapes  | Same verified path as Shopify                                                                                                                                                                          | Complete system-webhook coverage and OAuth are blocked                                  |
+| Historical Shopify backfill                | Implemented for customers and orders    | Read-only GraphQL cursor loop, durable checkpoints, encrypted raw evidence                                                                                                                             | Products, refunds, fulfillment, consent detail, OAuth, and Web Pixels remain incomplete |
+| Historical Klaviyo backfill                | Implemented for profiles and events     | Read-only API cursor/watermark loop and approved property allowlist                                                                                                                                    | Complete delivery-history coverage and OAuth remain incomplete                          |
+| Incremental polling                        | Implemented for supported reads         | Authenticated tenant wakes schedule due five-minute provider pages                                                                                                                                     | Production lag and rate-limit behavior remain unproven                                  |
+| Hourly/nightly reconciliation              | Partially implemented                   | Hourly recent-source reconciliation uses durable provider checkpoints                                                                                                                                  | Nightly authoritative reconciliation is blocked                                         |
+| Privacy access/export/deletion             | Implemented in service                  | Tenant-scoped requests, encrypted exports, corrections, deletion tombstones, consent history, and revocation                                                                                           | Provider-side deletion completion and production legal review remain required           |
+| Worklin segment definitions                | Implemented                             | Versioned expression contract and persistence                                                                                                                                                          | Evaluation engine at production scale remains unproven                                  |
+| Review-only microsegment pilot             | Implemented behind infrastructure gates | Bounded 10-item tranches, maximum 50 audiences and 100 samples, exact ChatGPT subscription routing, encrypted previews, resumable quota pauses, non-PII CSV, and editable PDF-exportable Work artifact | Do not connect real data until Railway backups and PITR show a verified restore range   |
+| Program policy approval                    | Implemented                             | Frozen policy material and checksum are required before activation                                                                                                                                     | Policy quality still requires human review                                              |
+| Per-recipient AI decision persistence      | Implemented                             | Compact dossier lease, decision evidence, hypotheses, model/prompt, and usage                                                                                                                          | Production model runner and second-pass review remain incomplete                        |
+| Audience freeze                            | Implemented                             | Eligible decisions and current consent checked                                                                                                                                                         | Full segment recomputation pipeline is incomplete                                       |
+| Cost estimate/reservation                  | Partially implemented                   | Campaign and monthly ceilings plus reservations                                                                                                                                                        | Billing reconciliation and fleet dashboards are blocked                                 |
+| Message encryption/checksums               | Implemented                             | Rendered content encrypted and frozen into approval material                                                                                                                                           | Production model generation worker is incomplete                                        |
+| Message quality enforcement                | Implemented                             | Server derives allowed evidence and blocks unsupported numbers, contradictions, unsafe tokens, and sensitive disclosure                                                                                | Model-based second-pass review and quality evaluation sets remain blocked               |
+| Approval and invalidation                  | Implemented in service and Work UI      | Frozen checksums, invalidation logic, samples, and explicit confirmation                                                                                                                               | Production role administration still needs an owner workflow                            |
+| Separate idempotent release                | Implemented as dispatch intent          | Sender permission, four switches, checksum, idempotency key                                                                                                                                            | It does not call Klaviyo                                                                |
+| Outbound Klaviyo adapter                   | Blocked                                 | No worker consumes dispatch recipients                                                                                                                                                                 | Production sending is prohibited                                                        |
+| Consent/suppression check at provider call | Blocked                                 | Release checks current local consent                                                                                                                                                                   | Must recheck immediately before actual provider delivery                                |
+| Provider acceptance and partial retry      | Blocked                                 | Dispatch status schema exists                                                                                                                                                                          | No honest send completion is possible yet                                               |
+| Organization kill-switch API/UI            | Blocked                                 | Organization columns exist                                                                                                                                                                             | DBA operation required; keep false                                                      |
+| Continuous fleet metrics                   | Blocked                                 | Health, readiness, status, and logs only                                                                                                                                                               | Add exporter, dashboards, and alerts                                                    |
+| Automated backups/PITR                     | Infrastructure prerequisite             | Not created by application code                                                                                                                                                                        | Must be enabled and restore-tested in Railway                                           |
+| One-million-profile load proof             | Blocked                                 | No recorded production-scale result                                                                                                                                                                    | Capacity target is not a current claim                                                  |
+| Raw-event replay tooling                   | Blocked                                 | Encrypted objects are stored                                                                                                                                                                           | Incident recovery may require manual tooling                                            |
 
 ## Production Sign-Off
 

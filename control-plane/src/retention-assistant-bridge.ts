@@ -64,23 +64,32 @@ export function isRetentionAssistantOperatorRoute(
     return false;
   }
   if (method === "GET") {
+    const segmentRunMatch = /^\/v1\/retention\/segment-runs\/([^/]+)$/iu.exec(
+      path,
+    );
+    const segmentRunSegmentsMatch =
+      /^\/v1\/retention\/segment-runs\/([^/]+)\/segments$/iu.exec(path);
     return (
       path === "/v1/retention/status" ||
-      /^\/v1\/retention\/campaigns\/[0-9a-f-]+\/approval-preview$/iu.test(
-        path,
-      )
+      (segmentRunMatch !== null && UUID_PATTERN.test(segmentRunMatch[1]!)) ||
+      (segmentRunSegmentsMatch !== null &&
+        UUID_PATTERN.test(segmentRunSegmentsMatch[1]!)) ||
+      /^\/v1\/retention\/campaigns\/[0-9a-f-]+\/approval-preview$/iu.test(path)
     );
   }
+  const segmentRunActionMatch =
+    /^\/v1\/retention\/segment-runs\/([^/]+)\/(?:claim|complete)$/iu.exec(path);
   return (
     path === "/v1/retention/brands" ||
     path === "/v1/retention/programs" ||
     path === "/v1/retention/segments" ||
+    path === "/v1/retention/segment-runs" ||
+    (segmentRunActionMatch !== null &&
+      UUID_PATTERN.test(segmentRunActionMatch[1]!)) ||
     path === "/v1/retention/reasoning/claim" ||
     path === "/v1/retention/decisions/complete" ||
     path === "/v1/retention/campaigns" ||
-    /^\/v1\/retention\/campaigns\/[0-9a-f-]+\/audience\/freeze$/iu.test(
-      path,
-    ) ||
+    /^\/v1\/retention\/campaigns\/[0-9a-f-]+\/audience\/freeze$/iu.test(path) ||
     /^\/v1\/retention\/campaigns\/[0-9a-f-]+\/generation\/prepare$/iu.test(
       path,
     ) ||

@@ -1,14 +1,12 @@
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useIsOrgReady } from "@/hooks/use-is-org-ready";
 
 import {
   activateRetentionProgram,
   approveRetentionImport,
+  connectRetentionKlaviyo,
+  type ConnectKlaviyoInput,
   fetchRetentionImports,
   fetchRetentionProgramApprovalPreview,
   fetchRetentionPrograms,
@@ -69,10 +67,7 @@ export function useRetentionProgramApprovalPreview(
 export function useActivateRetentionProgram(assistantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: {
-      programId: string;
-      expectedPolicySha256: string;
-    }) =>
+    mutationFn: (input: { programId: string; expectedPolicySha256: string }) =>
       activateRetentionProgram(
         assistantId,
         input.programId,
@@ -89,11 +84,7 @@ export function usePauseRetentionProgram(assistantId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { programId: string; reason: string }) =>
-      pauseRetentionProgram(
-        assistantId,
-        input.programId,
-        input.reason,
-      ),
+      pauseRetentionProgram(assistantId, input.programId, input.reason),
     onSuccess: () =>
       queryClient.invalidateQueries({
         queryKey: ["retention", "programs", assistantId],
@@ -106,6 +97,24 @@ export function useApproveRetentionImport(assistantId: string) {
   return useMutation({
     mutationFn: (migrationRunId: string) =>
       approveRetentionImport(assistantId, migrationRunId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["retention", "imports", assistantId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["retention", "status", assistantId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useConnectKlaviyo(assistantId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ConnectKlaviyoInput) =>
+      connectRetentionKlaviyo(assistantId, input),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({

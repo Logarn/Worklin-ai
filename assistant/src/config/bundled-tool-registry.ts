@@ -147,6 +147,7 @@ import * as retentionAuditStatus from "./bundled-skills/worklin-retention/tools/
 import * as retentionBrandBrain from "./bundled-skills/worklin-retention/tools/retention-brand-brain.js";
 import * as retentionBuildMicroSegments from "./bundled-skills/worklin-retention/tools/retention-build-micro-segments.js";
 import * as retentionCampaignApprovalPreview from "./bundled-skills/worklin-retention/tools/retention-campaign-approval-preview.js";
+import * as retentionCampaignReviewPilot from "./bundled-skills/worklin-retention/tools/retention-campaign-review-pilot.js";
 import * as retentionClaimRecipientReasoning from "./bundled-skills/worklin-retention/tools/retention-claim-recipient-reasoning.js";
 import * as retentionComputeCustomerFeatures from "./bundled-skills/worklin-retention/tools/retention-compute-customer-features.js";
 import * as retentionConnectKlaviyo from "./bundled-skills/worklin-retention/tools/retention-connect-klaviyo.js";
@@ -350,6 +351,10 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
   [
     "worklin-retention:tools/retention-platform-status.ts",
     retentionPlatformStatus,
+  ],
+  [
+    "worklin-retention:tools/retention-campaign-review-pilot.ts",
+    retentionCampaignReviewPilot,
   ],
   [
     "worklin-retention:tools/retention-create-segment-definition.ts",
