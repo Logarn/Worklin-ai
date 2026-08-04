@@ -16,6 +16,10 @@ import {
   ensureRuntimeStackSchema,
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
+import {
+  createOrGetBrandResearchRun,
+  markBrandResearchRunFailed,
+} from "./brand-research-runs.js";
 import { ensureWorkspaceManagementSchema } from "./workspace-management-store.js";
 
 const CONTROL_PLANE_DIR = fileURLToPath(new URL("..", import.meta.url));
@@ -1822,5 +1826,54 @@ describe("control-plane runtime provisioning guards", () => {
         .get()?.count,
     ).toBe(0);
     verificationDb.close();
+  });
+
+  test("brand research retries are authenticated and return the queued run", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const dbPath = createTempDbPath();
+    seedAuthenticatedUser(dbPath, {
+      userId: "user-research-retry",
+      sessionId: "session-research-retry",
+    });
+    const fixtureDb = new Database(dbPath);
+    createControlPlaneSchema(fixtureDb);
+    const run = createOrGetBrandResearchRun(
+      fixtureDb,
+      {
+        orgId: "org-research-retry",
+        userId: "user-research-retry",
+        assistantId: "assistant-research-retry",
+        brandName: "Acme Studio",
+      },
+      () => new Date().toISOString(),
+    );
+    markBrandResearchRunFailed(
+      fixtureDb,
+      run.id,
+      () => new Date().toISOString(),
+      "Temporary provider error.",
+    );
+    fixtureDb.close();
+
+    spawnControlPlane(port, dbPath);
+    await waitForHealth(origin);
+
+    const response = await fetch(
+      `${origin}/v1/brand-research/runs/${run.id}/retry/`,
+      {
+        method: "POST",
+        headers: authenticatedHeaders("session-research-retry"),
+      },
+    );
+    expect(response.status).toBe(202);
+    const payload = (await response.json()) as {
+      id: string;
+      status: string;
+      retry_count: number;
+    };
+    expect(payload.id).toBe(run.id);
+    expect(payload.status).toBe("queued");
+    expect(payload.retry_count).toBe(1);
   });
 });

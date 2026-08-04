@@ -11,6 +11,7 @@ import {
   listStoredBrandBrains,
   recordStoredBrandBrainCampaignLearning,
 } from "../../memory/brand-brain-store.js";
+import { listBrandResearchSnapshotSummaries } from "../../memory/brand-research-snapshot-store.js";
 import type { ToolContext, ToolExecutionResult } from "../types.js";
 
 const CORRECTION_FIELDS = new Set<BrandBrainCorrectionField>([
@@ -52,6 +53,7 @@ function jsonResult(value: unknown, isError = false): ToolExecutionResult {
 
 function storedResult(stored: ReturnType<typeof getStoredBrandBrain>) {
   if (!stored) return undefined;
+  const researchHistory = listBrandResearchSnapshotSummaries(stored.brandId);
   return {
     storage: {
       brandId: stored.brandId,
@@ -60,6 +62,10 @@ function storedResult(stored: ReturnType<typeof getStoredBrandBrain>) {
       updatedAt: new Date(stored.updatedAt).toISOString(),
     },
     profile: stored.brain,
+    researchHistory: {
+      preserved: true,
+      snapshots: researchHistory,
+    },
   };
 }
 

@@ -6,6 +6,7 @@ import express, {
   type Response,
 } from "express";
 import { auth } from "express-openid-connect";
+import { createResearchProviderRegistry } from "@vellumai/retention-domain";
 import {
   createHash,
   createHmac,
@@ -46,6 +47,7 @@ import {
   getAssistantAdminAccessConsent,
   getOrCreateAssistant as getOrCreateStoredAssistant,
   getOrCreateOrganization as getOrCreateStoredOrganization,
+  hasAcceptedAssistantConsent,
   setAssistantAdminAccessConsent,
   type AssistantRow,
   type OrganizationRow,
@@ -78,13 +80,27 @@ import {
   pathIsOrStartsWith,
 } from "./http-paths.js";
 import {
+  BRAND_RESEARCH_TRACKS,
   brandResearchRunPayload,
   createOrGetBrandResearchRun,
   ensureBrandResearchRunSchema,
   getBrandResearchRunForUser,
   listBrandResearchRunsForUser,
   markBrandResearchRunCancelled,
+  releaseBrandResearchRunForRetry,
+  type BrandResearchRunRow,
+  type BrandResearchTrack,
 } from "./brand-research-runs.js";
+import {
+  createBrandResearchExecutor,
+  readBrandResearchRuntimeResult,
+  type BrandResearchRuntimeClient,
+} from "./brand-research-executor.js";
+import { createBrandResearchRefreshScheduler } from "./brand-research-refresh-scheduler.js";
+import {
+  collectBrandResearchProviderContext,
+  type BrandResearchProviderContext,
+} from "./brand-research-provider-context.js";
 import {
   acceptWorkspaceInvitationForUser,
   assignAssistant,
@@ -115,6 +131,7 @@ import {
 } from "./user-onboarding-store.js";
 import {
   deleteWorkspaceResearchProviderCredential,
+  getWorkspaceResearchProviderCredential,
   isWorkspaceResearchProviderId,
   listWorkspaceResearchProviders,
   saveWorkspaceResearchProviderCredential,
@@ -361,6 +378,69 @@ if (
     "WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET must contain at least 32 bytes when the retention service is enabled.",
   );
 }
+const boundedTrendtrackRows = (
+  value: string | undefined,
+  fallback: number,
+): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(0, Math.min(5, Math.floor(parsed)))
+    : fallback;
+};
+const trendtrackResearchConfig = {
+  baseUrl: trimTrailingSlash(
+    process.env.WORKLIN_TRENDTRACK_API_BASE_URL ?? "https://api.trendtrack.io",
+  ),
+  liveRequestsEnabled:
+    process.env.WORKLIN_TRENDTRACK_LIVE_REQUESTS_ENABLED === "true",
+  maxCreditsPerRun: Math.max(
+    0,
+    Number(process.env.WORKLIN_TRENDTRACK_MAX_CREDITS_PER_RUN ?? 0) || 0,
+  ),
+  maxRowsPerRequest: Math.max(
+    1,
+    Number(process.env.WORKLIN_TRENDTRACK_MAX_ROWS_PER_REQUEST ?? 5) || 5,
+  ),
+  maxGoogleAdsRowsPerRequest: boundedTrendtrackRows(
+    process.env.WORKLIN_TRENDTRACK_MAX_GOOGLE_ADS_ROWS_PER_REQUEST,
+    2,
+  ),
+  maxTikTokRowsPerRequest: boundedTrendtrackRows(
+    process.env.WORKLIN_TRENDTRACK_MAX_TIKTOK_ROWS_PER_REQUEST,
+    2,
+  ),
+  maxCompetitorsPerRun: Math.max(
+    1,
+    Math.min(
+      3,
+      Number(
+        process.env.WORKLIN_TRENDTRACK_MAX_COMPETITORS_PER_RUN ?? 3,
+      ) || 3,
+    ),
+  ),
+  minimumCreditReserve: Math.max(
+    0,
+    Number(process.env.WORKLIN_TRENDTRACK_MINIMUM_CREDIT_RESERVE ?? 0) || 0,
+  ),
+};
+const brandResearchRefreshConfig = {
+  enabled: process.env.WORKLIN_BRAND_RESEARCH_REFRESH_ENABLED === "true",
+  dailyChecksEnabled:
+    process.env.WORKLIN_BRAND_RESEARCH_DAILY_CHECKS_ENABLED === "true",
+  weeklyUpdatesEnabled:
+    process.env.WORKLIN_BRAND_RESEARCH_WEEKLY_UPDATES_ENABLED !== "false",
+  monthlyReviewsEnabled:
+    process.env.WORKLIN_BRAND_RESEARCH_MONTHLY_REVIEWS_ENABLED !== "false",
+  maxRunsPerWorkspacePer30Days: Math.max(
+    0,
+    Math.floor(
+      Number(
+        process.env.WORKLIN_BRAND_RESEARCH_MAX_REFRESH_RUNS_PER_WORKSPACE_30D ??
+          0,
+      ) || 0,
+    ),
+  ),
+};
 
 if (!env.sessionSecret || env.sessionSecret.length < 32) {
   throw new Error(
@@ -1347,6 +1427,16 @@ function scheduleRuntimeProvisioning(
   });
 }
 
+function assistantOwnerHasAcceptedConsent(assistant: AssistantRow): boolean {
+  const owner = db
+    .query<
+      { consent_json: string | null },
+      [string]
+    >("SELECT consent_json FROM users WHERE id = ?")
+    .get(assistant.user_id);
+  return hasAcceptedAssistantConsent(owner?.consent_json ?? null);
+}
+
 function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
   const current = runtimeStackForPayload(assistant);
   if (pooledRuntimeEligible(current)) return current;
@@ -2184,6 +2274,324 @@ async function handleWorkspace(
   return true;
 }
 
+function brandResearchConversationKey(run: BrandResearchRunRow): string {
+  return `brand-research:${run.id}`;
+}
+
+const BRAND_RESEARCH_TRACK_OBJECTIVES: Record<BrandResearchTrack, string> = {
+  identity_and_offers:
+    "Verify the official brand identity, audience, positioning, offers, pricing posture, and visible proof.",
+  competitors:
+    "Identify direct, adjacent, substitute, and aspirational competitors and explain the evidence-backed rationale for each.",
+  seo_and_content:
+    "Map the public SEO and content footprint, information architecture, recurring topics, formats, and observable gaps.",
+  social:
+    "Analyze official public social profiles, publishing cadence, formats, themes, engagement signals, and coverage limitations.",
+  email_and_lifecycle:
+    "Analyze public email capture, lifecycle promises, public campaign examples, cadence signals, and observable gaps.",
+  sms: "Analyze public SMS capture and lifecycle signals without entering private systems or inventing campaign visibility.",
+  products_and_launches:
+    "Map products, services, bundles, pricing posture, launches, merchandising, and visible offer changes.",
+  customer_market_investor_trends:
+    "Research public customer sentiment, category and market signals, investor or company signals where relevant, and dated trends.",
+};
+
+async function buildBrandResearchProviderContext(
+  run: BrandResearchRunRow,
+): Promise<BrandResearchProviderContext> {
+  const credential = getWorkspaceResearchProviderCredential(
+    db,
+    run.org_id,
+    "trendtrack",
+    env.actorSigningKey,
+  );
+  const provider = createResearchProviderRegistry({
+    trendtrack: {
+      ...trendtrackResearchConfig,
+      credential,
+    },
+  })[0];
+  if (!provider) {
+    return {
+      status: "not_configured",
+      capabilities: [],
+      observations: [],
+      gaps: ["Market Intelligence is not configured."],
+      usage: {
+        creditsUsed: 0,
+        requestIds: [],
+      },
+    };
+  }
+  const context = await collectBrandResearchProviderContext(provider, {
+    brandName: run.brand_name,
+    ...(run.website_url ? { websiteUrl: run.website_url } : {}),
+  });
+  if (context.status === "disabled" && credential) {
+    context.gaps.push(
+      "A Market Intelligence credential is stored, but live requests are disabled for this rollout.",
+    );
+  }
+  return context;
+}
+
+function brandResearchTaskPrompt(
+  run: BrandResearchRunRow,
+  providerContext: BrandResearchProviderContext,
+): string {
+  const seed = [
+    `Stable brand ID: ${run.brand_id}`,
+    `Brand: ${run.brand_name}`,
+    run.website_url ? `Public website: ${run.website_url}` : null,
+    `Research run type: ${run.run_kind}`,
+    run.coverage_start || run.coverage_end
+      ? `Requested observation window: ${run.coverage_start ?? "earliest available"} to ${run.coverage_end ?? "now"}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const researchProgram = BRAND_RESEARCH_TRACKS.map(
+    (track) =>
+      `- ${track}: ${BRAND_RESEARCH_TRACK_OBJECTIVES[track]} Spawn label: brand-research:${track}`,
+  ).join("\n");
+  const providerCompetitorSeeds = providerContext.observations
+    .filter(
+      (observation) =>
+        observation.capability === "competitors" && observation.sourceUrl,
+    )
+    .slice(0, 3)
+    .map((observation) => ({
+      name: observation.title,
+      websiteUrl: observation.sourceUrl,
+      providerEvidenceId: observation.id,
+      initialSignal: observation.finding,
+      confidence: observation.confidence,
+    }));
+  return [
+    "Run the Worklin Brand Research skill as a durable background onboarding task.",
+    seed,
+    `Market Intelligence status: ${providerContext.status}. Capabilities: ${providerContext.capabilities.join(", ") || "none"}. Gaps: ${providerContext.gaps.join(" ")}`,
+    providerContext.observations.length > 0
+      ? [
+          "The following observations came from the explicitly connected Market Intelligence provider.",
+          "Use only observations with a public sourceUrl as report evidence, set provider to the supplied provider ID, and keep provider evidence separate from ordinary public-web evidence.",
+          "When an observation includes public media, add a matching visualEvidence entry for the Competitor Intelligence artifact. Preserve the source URL, media or thumbnail URL, observed date, provider ID, evidence IDs, caption, and caveats. Never invent a preview or include credential-bearing URLs.",
+          JSON.stringify(providerContext.observations),
+          `Provider credits used for this run: ${providerContext.usage.creditsUsed}${providerContext.usage.runCreditLimit ? ` of ${providerContext.usage.runCreditLimit}` : ""}.`,
+        ].join("\n")
+      : "No provider-backed observation was supplied for this run.",
+    "Use only public, read-only evidence. Do not ask the user questions, do not access private competitor systems, and do not use credentials from chat or external accounts.",
+    [
+      "Act as the coordinator. Start by spawning exactly one direct researcher subagent for each research track below.",
+      "For the competitors track, use role supervisor. For the other seven tracks, use role researcher. Always set send_result_to_user=false.",
+      "Use the exact spawn label shown so the durable run can record each child task.",
+      "Give every researcher a source budget and require URLs, observed dates, confidence, contradictions, and explicit unknowns.",
+      "If one spawn fails, research only that missing track sequentially and record the spawn failure as a gap.",
+      researchProgram,
+    ].join("\n"),
+    [
+      "Competitor watch program:",
+      `Provider-selected competitor leads: ${JSON.stringify(providerCompetitorSeeds)}.`,
+      "The direct competitors supervisor must keep two or three evidence-backed competitors when that many credible competitors can be found, and classify each as direct, adjacent, substitute, or aspirational.",
+      "For every selected competitor, the supervisor may spawn exactly one specialist with label brand-research:competitors:1, brand-research:competitors:2, or brand-research:competitors:3. Those specialists must use role researcher and must not spawn children.",
+      "Each specialist gets a maximum of eight public sources and must return: why the company belongs in the set, positioning, offers and pricing posture, proof, paid-media themes, public social themes, public email or lifecycle signals, product or launch moves, visible differentiation, contradictions, and explicit gaps.",
+      "Provider leads are discovery clues, not proof. Verify each competitor on public sources before including factual claims. If fewer than two credible competitors are observable, save the honest smaller set.",
+    ].join("\n"),
+    "Do not claim Market Intelligence or any provider was used unless provider observations were actually supplied in this conversation. Public-web evidence remains the fallback.",
+    `Before declaring success, create a valid brand_research_v1 report with a brand_intelligence_v1 intelligence layer whose brandId is exactly ${run.brand_id}. Cover every required research area with findings or an explicit reason it could not be observed. Include useful charts or comparison data plus public image, video, email, product, and page examples when available.`,
+    `Call brand_research_save with brand_id exactly ${run.brand_id}. Never claim the report is complete unless the tool returned saved=true, a Brand Brain ID, and qualityAccepted=true. If it saves with qualityAccepted=false, report partial.`,
+    "End your final response with exactly one line: WORKLIN_RESEARCH_RUN_STATUS: saved, partial, or failed.",
+  ].join("\n\n");
+}
+
+function runtimeResearchHeaders(
+  assistant: AssistantRow,
+  userId: string,
+  runtimeStack: RuntimeStackRow,
+): Headers {
+  const tenantContext = createRuntimeTenantContext(
+    assistant,
+    userId,
+    runtimeStack,
+  );
+  const headers = new Headers({
+    Authorization: `Bearer ${mintActorToken(runtimeStack, tenantContext)}`,
+  });
+  applyRuntimeTenantHeaders(headers, tenantContext);
+  return headers;
+}
+
+function researchRuntimeTarget(
+  runtimeStack: RuntimeStackRow,
+  assistantId: string,
+  suffix: string,
+): URL {
+  const target = new URL(runtimeStack.gateway_url!);
+  target.pathname = `/v1/assistants/${encodeURIComponent(assistantId)}${suffix}`;
+  return target;
+}
+
+function researchAssistantForRun(
+  run: BrandResearchRunRow,
+): AssistantRow | null {
+  return (
+    db
+      .query<
+        AssistantRow,
+        [string, string]
+      >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
+      .get(run.assistant_id, run.org_id) ?? null
+  );
+}
+
+function researchActorHasConsent(run: BrandResearchRunRow): boolean {
+  const user = db
+    .query<
+      Pick<UserRow, "consent_json">,
+      [string]
+    >("SELECT consent_json FROM users WHERE id = ?")
+    .get(run.user_id);
+  return hasAcceptedAssistantConsent(user?.consent_json ?? null);
+}
+
+const brandResearchRuntimeClient: BrandResearchRuntimeClient = {
+  async dispatch(run) {
+    if (!researchActorHasConsent(run)) {
+      return {
+        status: "failed",
+        detail:
+          "Assistant consent must be accepted before brand research can run.",
+      };
+    }
+    const assistant = researchAssistantForRun(run);
+    if (!assistant) {
+      return {
+        status: "failed",
+        detail: "Assistant for this research run was not found.",
+      };
+    }
+    const runtimeStack = ensureAssistantRuntime(assistant);
+    if (!isRuntimeStackRoutable(runtimeStack)) {
+      return {
+        status: "waiting",
+        detail: "The assistant runtime is preparing before research can begin.",
+      };
+    }
+
+    const providerContext = await buildBrandResearchProviderContext(run);
+    const target = researchRuntimeTarget(
+      runtimeStack,
+      assistant.id,
+      "/messages",
+    );
+    const headers = runtimeResearchHeaders(
+      assistant,
+      run.user_id,
+      runtimeStack,
+    );
+    headers.set("Content-Type", "application/json");
+    const response = await fetch(target, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        conversationKey: brandResearchConversationKey(run),
+        content: brandResearchTaskPrompt(run, providerContext),
+        sourceChannel: "vellum",
+        interface: "web",
+        automated: true,
+        clientMessageId: run.id,
+        onboarding: {
+          tools: [],
+          tasks: ["brand_research"],
+          tone: "grounded",
+          websiteUrl: run.website_url ?? undefined,
+          skills: ["worklin-brand-research"],
+        },
+      }),
+    });
+    if (response.status === 503) {
+      return {
+        status: "waiting",
+        detail: "The assistant runtime is still preparing for research.",
+      };
+    }
+    if (!response.ok) {
+      return {
+        status: "failed",
+        detail: `The assistant runtime rejected the research task (HTTP ${response.status}).`,
+      };
+    }
+    const payload = (await response.json().catch(() => null)) as unknown;
+    const conversationId =
+      payload && typeof payload === "object" && "conversationId" in payload
+        ? (payload as { conversationId?: unknown }).conversationId
+        : undefined;
+    if (typeof conversationId !== "string" || !conversationId.trim()) {
+      return {
+        status: "failed",
+        detail:
+          "The assistant runtime accepted research without returning a conversation ID.",
+      };
+    }
+    return { status: "started", parentTaskId: conversationId };
+  },
+
+  async poll(run) {
+    if (!run.parent_task_id) return { status: "running" };
+    const assistant = researchAssistantForRun(run);
+    if (!assistant) {
+      return {
+        status: "failed",
+        detail: "Assistant for this research run was not found.",
+      };
+    }
+    const runtimeStack = ensureAssistantRuntime(assistant);
+    if (!isRuntimeStackRoutable(runtimeStack)) return { status: "running" };
+
+    const target = researchRuntimeTarget(
+      runtimeStack,
+      assistant.id,
+      "/messages",
+    );
+    target.searchParams.set("conversationId", run.parent_task_id);
+    const response = await fetch(target, {
+      headers: runtimeResearchHeaders(assistant, run.user_id, runtimeStack),
+    });
+    if (response.status === 404 || response.status === 503) {
+      return { status: "running" };
+    }
+    if (!response.ok) {
+      return {
+        status: "failed",
+        detail: `The assistant runtime could not read research progress (HTTP ${response.status}).`,
+      };
+    }
+    const payload = (await response.json().catch(() => null)) as unknown;
+    const messages =
+      payload && typeof payload === "object" && "messages" in payload
+        ? (payload as { messages?: unknown }).messages
+        : undefined;
+    return readBrandResearchRuntimeResult(messages);
+  },
+
+  async cancel(run) {
+    if (!run.parent_task_id) return;
+    const assistant = researchAssistantForRun(run);
+    if (!assistant) return;
+    const runtimeStack = ensureAssistantRuntime(assistant);
+    if (!isRuntimeStackRoutable(runtimeStack)) return;
+    const target = researchRuntimeTarget(
+      runtimeStack,
+      assistant.id,
+      `/conversations/${encodeURIComponent(run.parent_task_id)}/cancel`,
+    );
+    await fetch(target, {
+      method: "POST",
+      headers: runtimeResearchHeaders(assistant, run.user_id, runtimeStack),
+    });
+  },
+};
+
 async function handleBrandResearchRuns(
   req: Request,
   res: Response,
@@ -2217,14 +2625,22 @@ async function handleBrandResearchRuns(
     const body =
       parseJsonBody<{
         assistantId?: string;
+        brandId?: string;
         brandName?: string;
         websiteUrl?: string;
       }>(req) ?? {};
-    const assistant = body.assistantId
-      ? accessibleAssistantsForUser(req, user).find(
-          (candidate) => candidate.id === body.assistantId,
-        )
-      : accessibleAssistantsForUser(req, user)[0];
+    if (!body.assistantId) {
+      sendJson(
+        req,
+        res,
+        { detail: "Choose the assistant that owns this brand research." },
+        400,
+      );
+      return true;
+    }
+    const assistant = accessibleAssistantsForUser(req, user).find(
+      (candidate) => candidate.id === body.assistantId,
+    );
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
       return true;
@@ -2236,6 +2652,7 @@ async function handleBrandResearchRuns(
           orgId: assistant.org_id,
           userId: user.id,
           assistantId: assistant.id,
+          brandId: body.brandId,
           brandName: body.brandName,
           websiteUrl: body.websiteUrl,
         },
@@ -2253,6 +2670,36 @@ async function handleBrandResearchRuns(
         400,
       );
     }
+    return true;
+  }
+
+  const retryMatch = /^\/v1\/brand-research\/runs\/([^/]+)\/retry\/?$/.exec(
+    url.pathname,
+  );
+  if (retryMatch && req.method === "POST") {
+    if (!checkCsrf(req)) {
+      sendJson(req, res, { detail: "CSRF validation failed." }, 403);
+      return true;
+    }
+    const run = getBrandResearchRunForUser(db, retryMatch[1]!, user.id);
+    if (!run) {
+      sendJson(req, res, { detail: "Research run not found." }, 404);
+      return true;
+    }
+    if (!releaseBrandResearchRunForRetry(db, run.id, nowIso)) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "Only failed, cancelled, or partial research runs can be retried.",
+        },
+        409,
+      );
+      return true;
+    }
+    const retried = getBrandResearchRunForUser(db, run.id, user.id);
+    sendJson(req, res, retried ? brandResearchRunPayload(retried) : null, 202);
     return true;
   }
 
@@ -5208,6 +5655,24 @@ if (
   runtimeCapacityMonitor.unref();
 }
 resumeRuntimeProvisioning();
+const brandResearchExecutor = createBrandResearchExecutor(db, nowIso, {
+  runtimeClient: brandResearchRuntimeClient,
+});
+brandResearchExecutor.start();
+const brandResearchRefreshScheduler = createBrandResearchRefreshScheduler(
+  db,
+  brandResearchRefreshConfig,
+  nowIso,
+);
+brandResearchRefreshScheduler.start();
+console.log("brand_research_refresh_scheduler", {
+  enabled: brandResearchRefreshScheduler.enabled,
+  dailyChecksEnabled: brandResearchRefreshConfig.dailyChecksEnabled,
+  weeklyUpdatesEnabled: brandResearchRefreshConfig.weeklyUpdatesEnabled,
+  monthlyReviewsEnabled: brandResearchRefreshConfig.monthlyReviewsEnabled,
+  maxRunsPerWorkspacePer30Days:
+    brandResearchRefreshConfig.maxRunsPerWorkspacePer30Days,
+});
 
 // Bun's Node HTTP compatibility can let an Express-only process exit after
 // listen() unless another handle is active. Keep the control-plane alive in
@@ -5223,6 +5688,8 @@ process.once("SIGTERM", closeForShutdown);
 process.once("SIGINT", closeForShutdown);
 server.on("close", () => {
   clearInterval(keepAlive);
+  brandResearchExecutor.stop();
+  brandResearchRefreshScheduler.stop();
   if (retentionTenantWakeSweep) clearInterval(retentionTenantWakeSweep);
   if (runtimeWorkerHealthMonitor) clearInterval(runtimeWorkerHealthMonitor);
   if (runtimeCapacityMonitor) clearInterval(runtimeCapacityMonitor);

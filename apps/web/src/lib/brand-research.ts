@@ -1,11 +1,33 @@
 import { client } from "@/generated/api/client.gen";
 import { assertHasResponse, extractErrorMessage } from "@/utils/api-errors";
 
+export type BrandResearchTrackStatus =
+  | "pending"
+  | "running"
+  | "complete"
+  | "partial"
+  | "unavailable"
+  | "not_observable";
+
+export interface BrandResearchTrackProgress {
+  track: string;
+  status: BrandResearchTrackStatus;
+  evidence_count: number;
+  evidence_ids: string[];
+  provider_usage: string[];
+  provider_gaps: string[];
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
 export interface BrandResearchRun {
   id: string;
   assistant_id: string;
   brand_name: string;
   website_url: string | null;
+  seed_missing_reason: null | "seedMissing";
+  brand_brain_id: string | null;
   status:
     | "queued"
     | "running"
@@ -14,10 +36,15 @@ export interface BrandResearchRun {
     | "failed"
     | "cancelled";
   tracks: string[];
+  track_progress?: Record<string, BrandResearchTrackProgress>;
   evidence_count: number;
+  provider_usage?: Record<string, unknown>;
+  provider_gaps?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   error: string | null;
+  retry_count?: number;
+  elapsed_ms?: number | null;
 }
 
 interface BrandResearchRunListResponse {
@@ -75,6 +102,40 @@ export async function enqueueBrandResearchRun(input: {
   if (!response.ok) {
     throw new Error(
       extractErrorMessage(error, response, "Failed to queue brand research."),
+    );
+  }
+  return data ?? null;
+}
+
+export async function cancelBrandResearchRun(runId: string): Promise<BrandResearchRun | null> {
+  const { data, error, response } = await client.post<
+    BrandResearchRun,
+    unknown
+  >({
+    url: `/v1/brand-research/runs/${runId}/cancel/`,
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to cancel brand research run.");
+  if (!response.ok) {
+    throw new Error(
+      extractErrorMessage(error, response, "Failed to cancel brand research run."),
+    );
+  }
+  return data ?? null;
+}
+
+export async function retryBrandResearchRun(runId: string): Promise<BrandResearchRun | null> {
+  const { data, error, response } = await client.post<
+    BrandResearchRun,
+    unknown
+  >({
+    url: `/v1/brand-research/runs/${runId}/retry/`,
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to retry brand research run.");
+  if (!response.ok) {
+    throw new Error(
+      extractErrorMessage(error, response, "Failed to retry brand research run."),
     );
   }
   return data ?? null;

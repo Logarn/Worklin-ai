@@ -185,7 +185,9 @@ export function createRuntimeProxyHandler(
     let platformOwnerBound = false;
     let tenantContext: RuntimeTenantContextClaim | null = null;
     let pooledWorkerLease: RuntimeWorkerLeaseClaim | null = null;
-    let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
+    // A path-provided assistant ID is a claim to validate, not trusted stack
+    // identity. Populate this only after token or stack validation succeeds.
+    let actorScopeAssistantId: string | null = null;
     const authHeader = req.headers.get("authorization");
 
     if (config.runtimeProxyRequireAuth && req.method !== "OPTIONS") {
@@ -259,6 +261,16 @@ export function createRuntimeProxyHandler(
         }
       }
       let exchangeClaims = result.claims;
+      if (assistantScopedPath && !pooledWorkerLease) {
+        const requested = requestedAssistantId(
+          result.claims,
+          assistantScopedPath,
+        );
+        if (!requested) {
+          return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+        actorScopeAssistantId = requested;
+      }
       if (enforcesAssistantScope(config)) {
         let expectedAssistantId: string | null = null;
         if (pooledWorkerLease) {
@@ -270,10 +282,9 @@ export function createRuntimeProxyHandler(
             return Response.json({ error: "Forbidden" }, { status: 403 });
           }
         } else {
-          const requested = requestedAssistantId(
-            result.claims,
-            assistantScopedPath,
-          );
+          const requested =
+            actorScopeAssistantId ??
+            requestedAssistantId(result.claims, assistantScopedPath);
           if (!requested) {
             return Response.json({ error: "Forbidden" }, { status: 403 });
           }

@@ -7,6 +7,7 @@ import {
 } from "node:crypto";
 
 export const WORKSPACE_RESEARCH_PROVIDER_IDS = [
+  "trendtrack",
   "meld",
   "instagram",
   "facebook",
@@ -22,6 +23,7 @@ export interface WorkspaceResearchProviderRow {
   provider_id: WorkspaceResearchProviderId;
   connected_at: string;
   updated_at: string;
+  credential_status: "stored";
 }
 
 const initializedDatabases = new WeakSet<Database>();
@@ -97,7 +99,8 @@ export function listWorkspaceResearchProviders(
   ensureWorkspaceResearchProviderSchema(db);
   return db
     .query<WorkspaceResearchProviderRow, [string]>(
-      `SELECT org_id, provider_id, connected_at, updated_at
+      `SELECT org_id, provider_id, connected_at, updated_at,
+              'stored' AS credential_status
        FROM workspace_research_providers
        WHERE org_id = ? ORDER BY provider_id`,
     )
@@ -137,6 +140,7 @@ export function saveWorkspaceResearchProviderCredential(
     provider_id: input.providerId,
     connected_at: timestamp,
     updated_at: timestamp,
+    credential_status: "stored",
   };
 }
 

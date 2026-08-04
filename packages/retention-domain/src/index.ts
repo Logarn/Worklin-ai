@@ -1,6 +1,10 @@
+import type { ResearchProviderId } from "./research-providers.js";
+import type { BrandIntelligence } from "./brand-intelligence.js";
+
 export * from "./decisioning-contracts.js";
 
 export const RETENTION_DOMAIN_VERSION = "worklin_retention_v1";
+export * from "./brand-intelligence.js";
 export * from "./research-providers.js";
 export const BRAND_BRAIN_VERSION = "brand_brain_v1";
 export const BRAND_RESEARCH_VERSION = "brand_research_v1";
@@ -165,6 +169,8 @@ export interface BrandResearchEvidence {
   id: string;
   url: string;
   title: string;
+  /** Identifies provider-backed evidence without exposing provider credentials. */
+  provider?: ResearchProviderId;
   sourceType:
     | "official_site"
     | "competitor_site"
@@ -177,6 +183,30 @@ export interface BrandResearchEvidence {
   observedAt: string;
   finding: string;
   confidence: BrandResearchConfidence;
+}
+
+export interface BrandResearchVisualEvidence {
+  id: string;
+  /** Deep reports assign every preview to the module it helps prove. */
+  module?: import("./brand-intelligence.js").BrandIntelligenceModuleKey;
+  kind:
+    | "ad"
+    | "email"
+    | "social"
+    | "product"
+    | "landing_page"
+    | "brand"
+    | "competitor";
+  title: string;
+  sourceUrl: string;
+  mediaUrl?: string;
+  thumbnailUrl?: string;
+  mediaType?: "image" | "video" | "page";
+  observedAt: string;
+  provider?: string;
+  evidenceIds: string[];
+  caption?: string;
+  caveats: string[];
 }
 
 export interface BrandResearchReport {
@@ -193,8 +223,20 @@ export interface BrandResearchReport {
   competitorLandscape: Array<{
     name: string;
     websiteUrl?: string;
+    classification?: "direct" | "adjacent" | "substitute" | "aspirational";
+    rationale?: string;
     positioning: string;
+    offers?: string[];
+    pricingPosture?: string;
+    channelSignals?: {
+      paidMedia: string[];
+      social: string[];
+      seoAndContent: string[];
+      emailAndLifecycle: string[];
+    };
+    differentiators?: string[];
     notableMoves: string[];
+    gaps?: string[];
     evidenceIds: string[];
     confidence: BrandResearchConfidence;
   }>;
@@ -209,6 +251,7 @@ export interface BrandResearchReport {
   customerSignals: string[];
   trendSignals: string[];
   evidence: BrandResearchEvidence[];
+  visualEvidence?: BrandResearchVisualEvidence[];
   gaps: string[];
   recommendations: Array<{
     priority: "now" | "next" | "later";
@@ -216,6 +259,8 @@ export interface BrandResearchReport {
     rationale: string;
     evidenceIds: string[];
   }>;
+  /** Optional deep Brand Intelligence contract used by new research runs. */
+  intelligence?: BrandIntelligence;
   safety: {
     readOnly: true;
     publicSourcesOnly: true;
@@ -244,7 +289,13 @@ export function attachBrandResearch(
     ...brain,
     research,
     sourceProvenance: [
-      ...brain.sourceProvenance,
+      ...brain.sourceProvenance.filter(
+        (source) =>
+          !(
+            source.sourceType === "brand_research" &&
+            source.observedAt === research.generatedAt
+          ),
+      ),
       {
         sourceType: "brand_research",
         label: `Public research report for ${research.query.brandName}`,

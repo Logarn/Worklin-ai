@@ -127,11 +127,7 @@ export function buildPreChatContext(
   const trimmedWebsiteUrl = input.websiteUrl?.trim();
   if (trimmedWebsiteUrl) context.websiteUrl = trimmedWebsiteUrl;
 
-  if (context.brandName || context.websiteUrl) {
-    context.skills = [
-      ...new Set([...(context.skills ?? []), "worklin-brand-research"]),
-    ];
-  }
+  context.skills = [...new Set([...(context.skills ?? []), "worklin-brand-research"])];
 
   if (mode === "paredDown") {
     if (connectedWithCurrentAction) {

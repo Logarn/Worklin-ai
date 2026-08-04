@@ -57,6 +57,17 @@ export function getArtifactDestination(
   fallbackBrandId: string,
 ): string | undefined {
   if (!artifact.sourceExists) return undefined;
+  if (
+    (artifact.artifactType === "competitor_intelligence" ||
+      artifact.artifactType === "brand_intelligence") &&
+    (artifact.metadata?.competitorIntelligence ||
+      artifact.metadata?.brandIntelligence)
+  ) {
+    return routes.work.competitorIntelligence(
+      artifact.brandId ?? fallbackBrandId,
+      artifact.id,
+    );
+  }
   if (artifact.resourceType === "document") {
     return routes.document(artifact.resourceId);
   }

@@ -17,12 +17,19 @@ describe("workspace research providers", () => {
     ensureWorkspaceResearchProviderSchema(db);
     const saved = saveWorkspaceResearchProviderCredential(
       db,
-      { orgId: "org-1", providerId: "meld", credential: "meld-secret" },
+      {
+        orgId: "org-1",
+        providerId: "trendtrack",
+        credential: "trendtrack-secret",
+      },
       "a".repeat(64),
       NOW,
     );
 
-    expect(saved.provider_id).toBe("meld");
+    expect(saved).toMatchObject({
+      provider_id: "trendtrack",
+      credential_status: "stored",
+    });
     expect(listWorkspaceResearchProviders(db, "org-1")).toEqual([saved]);
     expect(
       db
@@ -31,15 +38,15 @@ describe("workspace research providers", () => {
           []
         >("SELECT credential_ciphertext FROM workspace_research_providers")
         .get()?.credential_ciphertext,
-    ).not.toContain("meld-secret");
+    ).not.toContain("trendtrack-secret");
     expect(
       getWorkspaceResearchProviderCredential(
         db,
         "org-1",
-        "meld",
+        "trendtrack",
         "a".repeat(64),
       ),
-    ).toBe("meld-secret");
+    ).toBe("trendtrack-secret");
   });
 
   test("replaces and disconnects a provider without exposing its secret", () => {

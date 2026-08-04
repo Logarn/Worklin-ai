@@ -2677,6 +2677,7 @@ export const ROUTES: RouteDefinition[] = [
           userName: z.string().optional(),
           occupation: z.string().optional(),
           assistantName: z.string().optional(),
+          brandName: z.string().optional(),
           googleConnected: z.boolean().optional(),
           googleScopes: z.array(z.string()).optional(),
           priorAssistants: z.array(z.string()).optional(),

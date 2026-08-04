@@ -53,7 +53,7 @@ describe("buildPreChatContext — activation rail", () => {
 
     expect(context.cohort).toBe(ACTIVATION_FLOW_COHORT);
     expect(context.bootstrapTemplate).toBe(ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE);
-    expect(context.skills).toEqual(["geo-writing"]);
+    expect(context.skills).toEqual(["geo-writing", "worklin-brand-research"]);
     expect(context.initialMessage).toBe(DEFAULT_PRECHAT_INITIAL_MESSAGE);
   });
 });
@@ -96,6 +96,11 @@ describe("buildPreChatContext — control", () => {
     );
     expect(context.brandName).toBe("Acme Studio");
     expect(context.websiteUrl).toBe("https://acme.example");
+    expect(context.skills).toEqual(["worklin-brand-research"]);
+  });
+
+  test("loads the brand-research skill even when no seed is provided", () => {
+    const context = buildPreChatContext(baseInput());
     expect(context.skills).toEqual(["worklin-brand-research"]);
   });
 

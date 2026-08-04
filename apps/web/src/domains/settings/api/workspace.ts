@@ -49,6 +49,7 @@ export interface WorkspaceState {
 }
 
 export type WorkspaceResearchProviderId =
+  | "trendtrack"
   | "meld"
   | "instagram"
   | "facebook"
@@ -60,6 +61,7 @@ export interface WorkspaceResearchProvider {
   provider_id: WorkspaceResearchProviderId;
   connected_at: string;
   updated_at: string;
+  credential_status?: "stored";
 }
 
 async function request<T>(
@@ -98,9 +100,7 @@ export function inviteWorkspaceMember(input: {
   });
 }
 
-export function acceptWorkspaceInvitation(
-  token: string,
-): Promise<{
+export function acceptWorkspaceInvitation(token: string): Promise<{
   org_id: string;
   user_id: string;
   role: WorkspaceRole;
