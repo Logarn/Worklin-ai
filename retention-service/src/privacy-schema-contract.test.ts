@@ -30,6 +30,7 @@ describe("retention privacy schema contract", () => {
     expect(source).toContain('version: "003_program_policy_approvals"');
     expect(source).toContain('version: "004_raw_payload_deletion_outbox"');
     expect(source).toContain('version: "005_segment_review_pilot"');
+    expect(source).toContain('version: "006_klaviyo_property_access_mode"');
     expect(source).toContain("for (const migration of migrationSources)");
     expect(source).toContain(
       "CREATE TABLE IF NOT EXISTS retention_schema_migrations",

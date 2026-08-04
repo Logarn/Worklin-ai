@@ -30,6 +30,13 @@ const migrations = [
     version: "005_segment_review_pilot",
     url: new URL("./migrations/005_segment_review_pilot.sql", import.meta.url),
   },
+  {
+    version: "006_klaviyo_property_access_mode",
+    url: new URL(
+      "./migrations/006_klaviyo_property_access_mode.sql",
+      import.meta.url,
+    ),
+  },
 ] as const;
 
 export class RetentionDatabase {

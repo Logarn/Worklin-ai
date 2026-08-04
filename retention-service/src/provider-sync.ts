@@ -1,4 +1,5 @@
 import type {
+  KlaviyoPropertyAccessMode,
   NormalizedSourcePayload,
   RetentionProvider,
   SourceEventInput,
@@ -11,13 +12,13 @@ const KLAVIYO_ORIGIN = "https://a.klaviyo.com";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_CURSOR_CHARACTERS = 2_048;
 const MAX_CREDENTIAL_CHARACTERS = 4_096;
-const MAX_ALLOWLIST_PROPERTIES = 100;
-const MAX_ALLOWLIST_PROPERTY_CHARACTERS = 128;
+const MAX_ALLOWLIST_PROPERTIES = 500;
+const MAX_KLAVIYO_PROPERTIES_PER_RESOURCE = 2_000;
+const MAX_KLAVIYO_PROPERTY_CHARACTERS = 504;
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 const OPAQUE_CURSOR_PATTERN = /^[A-Za-z0-9+/=_:.-]+$/u;
 const SHOPIFY_HOST_PATTERN =
   /^(?!-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/u;
-const PROPERTY_NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u;
 const BLOCKED_PROPERTY_NAMES = new Set([
   "__proto__",
   "constructor",
@@ -30,9 +31,7 @@ type FetchImplementation = (
 ) => Promise<Response>;
 
 export type ProviderSyncLifecycle =
-  | "historical_backfill"
-  | "incremental_poll"
-  | "reconciliation";
+  "historical_backfill" | "incremental_poll" | "reconciliation";
 
 export interface ProviderSyncCheckpoint {
   cursor: string | null;
@@ -117,6 +116,7 @@ export type KlaviyoSyncResource = "profiles" | "events";
 
 export interface KlaviyoProviderSyncClientOptions {
   privateApiKey: string;
+  propertyAccessMode?: KlaviyoPropertyAccessMode;
   propertyAllowlist: readonly string[];
   fetch?: FetchImplementation;
   now?: () => Date;
@@ -384,7 +384,26 @@ function validateShopifyOrigin(value: string): string {
   return `https://${hostname}`;
 }
 
-function validateAllowlist(values: readonly string[]): ReadonlySet<string> {
+function isSafeKlaviyoPropertyName(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_KLAVIYO_PROPERTY_CHARACTERS &&
+    value.trim() === value &&
+    !/[\u0000-\u001f\u007f]/u.test(value) &&
+    !BLOCKED_PROPERTY_NAMES.has(value)
+  );
+}
+
+function validatePropertySelection(
+  mode: KlaviyoPropertyAccessMode,
+  values: readonly string[],
+): { mode: KlaviyoPropertyAccessMode; allowlist: ReadonlySet<string> } {
+  if (mode !== "allowlist" && mode !== "all") {
+    throw configurationError(
+      "klaviyo",
+      "The Klaviyo property access mode is invalid.",
+    );
+  }
   if (!Array.isArray(values) || values.length > MAX_ALLOWLIST_PROPERTIES) {
     throw configurationError(
       "klaviyo",
@@ -393,14 +412,7 @@ function validateAllowlist(values: readonly string[]): ReadonlySet<string> {
   }
   const unique = new Set<string>();
   for (const value of values) {
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      value.length > MAX_ALLOWLIST_PROPERTY_CHARACTERS ||
-      value.trim() !== value ||
-      !PROPERTY_NAME_PATTERN.test(value) ||
-      BLOCKED_PROPERTY_NAMES.has(value)
-    ) {
+    if (typeof value !== "string" || !isSafeKlaviyoPropertyName(value)) {
       throw configurationError(
         "klaviyo",
         "The Klaviyo property allowlist is invalid.",
@@ -408,7 +420,13 @@ function validateAllowlist(values: readonly string[]): ReadonlySet<string> {
     }
     unique.add(value);
   }
-  return unique;
+  if (mode === "all" && unique.size > 0) {
+    throw configurationError(
+      "klaviyo",
+      "An allowlist cannot be combined with all-property access.",
+    );
+  }
+  return { mode, allowlist: unique };
 }
 
 function validateIntegrationId(
@@ -1185,22 +1203,33 @@ function parseKlaviyoDocument(
 
 function filteredProperties(
   value: unknown,
-  allowlist: ReadonlySet<string>,
+  selection: {
+    mode: KlaviyoPropertyAccessMode;
+    allowlist: ReadonlySet<string>;
+  },
 ): Record<string, unknown> {
   const properties = optionalRecord(value);
   if (!properties) return {};
-  return Object.fromEntries(
-    [...allowlist]
-      .filter((key) => Object.hasOwn(properties, key))
-      .map((key) => [key, properties[key]]),
-  );
+  const keys =
+    selection.mode === "all"
+      ? Object.keys(properties).filter(isSafeKlaviyoPropertyName)
+      : [...selection.allowlist].filter((key) =>
+          Object.hasOwn(properties, key),
+        );
+  if (keys.length > MAX_KLAVIYO_PROPERTIES_PER_RESOURCE) {
+    throw malformedResponse("klaviyo");
+  }
+  return Object.fromEntries(keys.map((key) => [key, properties[key]]));
 }
 
 function klaviyoTraits(
   value: unknown,
-  allowlist: ReadonlySet<string>,
+  selection: {
+    mode: KlaviyoPropertyAccessMode;
+    allowlist: ReadonlySet<string>;
+  },
 ): NonNullable<NormalizedSourcePayload["traits"]> {
-  return Object.entries(filteredProperties(value, allowlist)).map(
+  return Object.entries(filteredProperties(value, selection)).map(
     ([key, propertyValue]) => ({
       key: `klaviyo.${key}`,
       value: propertyValue,
@@ -1211,14 +1240,17 @@ function klaviyoTraits(
   );
 }
 
-export function isAllowlistedKlaviyoTraitKey(
+export function isApprovedKlaviyoTraitKey(
   traitKey: string,
+  propertyAccessMode: KlaviyoPropertyAccessMode,
   allowlist: readonly string[],
 ): boolean {
   const prefix = "klaviyo.";
+  if (!traitKey.startsWith(prefix)) return false;
+  const propertyName = traitKey.slice(prefix.length);
   return (
-    traitKey.startsWith(prefix) &&
-    allowlist.includes(traitKey.slice(prefix.length))
+    isSafeKlaviyoPropertyName(propertyName) &&
+    (propertyAccessMode === "all" || allowlist.includes(propertyName))
   );
 }
 
@@ -1284,13 +1316,16 @@ function klaviyoResource(
 function klaviyoProfileEvent(
   integrationId: string,
   value: unknown,
-  allowlist: ReadonlySet<string>,
+  selection: {
+    mode: KlaviyoPropertyAccessMode;
+    allowlist: ReadonlySet<string>;
+  },
 ): SourceEventInput {
   const profile = klaviyoResource(value, "profile");
   const updatedAt = requiredIsoTime(profile.attributes.updated, "klaviyo");
   const createdAt = optionalIsoTime(profile.attributes.created, "klaviyo");
   const customer = klaviyoCustomerSignal(profile.id, profile.attributes);
-  const traits = klaviyoTraits(profile.attributes.properties, allowlist);
+  const traits = klaviyoTraits(profile.attributes.properties, selection);
   const consent = klaviyoConsent(profile.attributes.subscriptions);
   const payload: NormalizedSourcePayload = {
     customer,
@@ -1304,7 +1339,7 @@ function klaviyoProfileEvent(
       updatedAt,
       approvedProperties: filteredProperties(
         profile.attributes.properties,
-        allowlist,
+        selection,
       ),
     },
   };
@@ -1360,7 +1395,10 @@ function klaviyoDeliveryEvent(
   integrationId: string,
   value: unknown,
   included: ReadonlyMap<string, Record<string, unknown>>,
-  allowlist: ReadonlySet<string>,
+  selection: {
+    mode: KlaviyoPropertyAccessMode;
+    allowlist: ReadonlySet<string>;
+  },
 ): SourceEventInput {
   const event = klaviyoResource(value, "event");
   const occurredAt = klaviyoEventOccurredAt(event.attributes);
@@ -1381,7 +1419,7 @@ function klaviyoDeliveryEvent(
   const metricName = optionalString(metricAttributes?.name, "klaviyo", 512);
   const approvedEventProperties = filteredProperties(
     event.attributes.event_properties,
-    allowlist,
+    selection,
   );
   const payload: NormalizedSourcePayload = {
     ...(profileId && profileAttributes
@@ -1417,13 +1455,19 @@ function klaviyoDeliveryEvent(
 export class KlaviyoProviderSyncClient implements ProviderSyncLifecycleClient<KlaviyoSyncResource> {
   readonly provider = "klaviyo" as const;
   readonly #privateApiKey: string;
-  readonly #propertyAllowlist: ReadonlySet<string>;
+  readonly #propertySelection: {
+    mode: KlaviyoPropertyAccessMode;
+    allowlist: ReadonlySet<string>;
+  };
   readonly #fetch: FetchImplementation;
   readonly #now: () => Date;
 
   constructor(options: KlaviyoProviderSyncClientOptions) {
     this.#privateApiKey = validateCredential("klaviyo", options.privateApiKey);
-    this.#propertyAllowlist = validateAllowlist(options.propertyAllowlist);
+    this.#propertySelection = validatePropertySelection(
+      options.propertyAccessMode ?? "allowlist",
+      options.propertyAllowlist,
+    );
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? (() => new Date());
   }
@@ -1503,12 +1547,12 @@ export class KlaviyoProviderSyncClient implements ProviderSyncLifecycleClient<Kl
     const included = includedResourceMap(document.included);
     const events = document.data.map((item) =>
       input.resource === "profiles"
-        ? klaviyoProfileEvent(integrationId, item, this.#propertyAllowlist)
+        ? klaviyoProfileEvent(integrationId, item, this.#propertySelection)
         : klaviyoDeliveryEvent(
             integrationId,
             item,
             included,
-            this.#propertyAllowlist,
+            this.#propertySelection,
           ),
     );
     const hasMore = document.nextCursor !== null;

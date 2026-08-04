@@ -1,13 +1,11 @@
 export type RetentionProvider = "shopify" | "klaviyo";
 
-export type RetentionProgram =
-  | "non_buyer_conversion"
-  | "re_engagement"
-  | "repeat_purchase";
+export type KlaviyoPropertyAccessMode = "allowlist" | "all";
 
-export type RetentionCampaignMode =
-  | "dynamic_template"
-  | "individual_message";
+export type RetentionProgram =
+  "non_buyer_conversion" | "re_engagement" | "repeat_purchase";
+
+export type RetentionCampaignMode = "dynamic_template" | "individual_message";
 
 export type RetentionCampaignStatus =
   | "draft"

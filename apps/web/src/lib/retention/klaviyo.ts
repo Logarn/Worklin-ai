@@ -20,6 +20,7 @@ export interface ConnectKlaviyoInput {
   brandName: string;
   websiteUrl?: string;
   credential: string;
+  propertyAccessMode: "allowlist" | "all";
   propertyAllowlist: string[];
 }
 
@@ -63,6 +64,7 @@ export async function createRetentionKlaviyoIntegration(
   input: {
     brandId: string;
     credential: string;
+    propertyAccessMode: "allowlist" | "all";
     propertyAllowlist: string[];
   },
 ): Promise<z.infer<typeof klaviyoConnectionSchema>> {
@@ -72,6 +74,7 @@ export async function createRetentionKlaviyoIntegration(
       brandId: input.brandId,
       provider: "klaviyo",
       credential: input.credential,
+      propertyAccessMode: input.propertyAccessMode,
       propertyAllowlist: input.propertyAllowlist,
     },
     headers: {
@@ -102,6 +105,7 @@ export async function connectRetentionKlaviyo(
   const integration = await createRetentionKlaviyoIntegration(assistantId, {
     brandId: brand.id,
     credential: input.credential,
+    propertyAccessMode: input.propertyAccessMode,
     propertyAllowlist: input.propertyAllowlist,
   });
   return {

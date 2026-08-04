@@ -28,9 +28,8 @@ mock.module("@/domains/settings/hooks/use-klaviyo-integration", () => ({
 }));
 
 const { RetentionApiError } = await import("@/lib/retention/api-error");
-const { KlaviyoIntegrationModal, KlaviyoIntegrationRow } = await import(
-  "./klaviyo-integration"
-);
+const { KlaviyoIntegrationModal, KlaviyoIntegrationRow } =
+  await import("./klaviyo-integration");
 
 afterEach(() => {
   cleanup();
@@ -57,7 +56,7 @@ describe("Klaviyo integration", () => {
     expect(configure).toHaveBeenCalledTimes(1);
   });
 
-  test("connects with approved properties and clears the private key", () => {
+  test("connects with all custom properties by default and clears the private key", () => {
     render(
       <KlaviyoIntegrationModal assistantId="assistant-1" onClose={() => {}} />,
     );
@@ -72,6 +71,39 @@ describe("Klaviyo integration", () => {
       "Klaviyo private API key",
     ) as HTMLInputElement;
     fireEvent.change(keyInput, { target: { value: "pk_private" } });
+    expect(
+      screen
+        .getByRole("switch", { name: "Use all custom properties" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Connect securely" }));
+
+    expect(connectMutate).toHaveBeenCalledWith(
+      {
+        brandName: "Example Brand",
+        websiteUrl: "https://drrachael.example/",
+        credential: "pk_private",
+        propertyAccessMode: "all",
+        propertyAllowlist: [],
+      },
+      expect.any(Object),
+    );
+    expect(keyInput.value).toBe("");
+  });
+
+  test("supports a limited custom-property list", () => {
+    render(
+      <KlaviyoIntegrationModal assistantId="assistant-1" onClose={() => {}} />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Use all custom properties" }),
+    );
+    fireEvent.change(screen.getByLabelText("Brand name"), {
+      target: { value: "Example Brand" },
+    });
+    fireEvent.change(screen.getByLabelText("Klaviyo private API key"), {
+      target: { value: "pk_private" },
+    });
     fireEvent.change(screen.getByLabelText("Approved property 1"), {
       target: { value: "Lead Magnet" },
     });
@@ -84,13 +116,12 @@ describe("Klaviyo integration", () => {
     expect(connectMutate).toHaveBeenCalledWith(
       {
         brandName: "Example Brand",
-        websiteUrl: "https://drrachael.example/",
         credential: "pk_private",
+        propertyAccessMode: "allowlist",
         propertyAllowlist: ["Lead Magnet", "Product Interest"],
       },
       expect.any(Object),
     );
-    expect(keyInput.value).toBe("");
   });
 
   test("does not expose a rejected private key in the error", () => {

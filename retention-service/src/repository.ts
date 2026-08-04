@@ -16,6 +16,7 @@ import { RetentionCrypto } from "./crypto.js";
 import { RetentionDatabase, type RetentionTransactionSql } from "./database.js";
 import {
   RetentionServiceError,
+  type KlaviyoPropertyAccessMode,
   type NormalizedSourcePayload,
   type RetentionCampaignMode,
   type RetentionProgram,
@@ -37,7 +38,7 @@ import {
 import { validateMessageQuality } from "./message-quality.js";
 import { buildMessageQualityEvidence } from "./message-quality-policy.js";
 import {
-  isAllowlistedKlaviyoTraitKey,
+  isApprovedKlaviyoTraitKey,
   KlaviyoProviderSyncClient,
   ProviderSyncError,
   ShopifyProviderSyncClient,
@@ -1714,6 +1715,7 @@ export class RetentionRepository {
       externalAccountId?: string;
       credential?: string;
       webhookSecret: string;
+      propertyAccessMode?: KlaviyoPropertyAccessMode;
       propertyAllowlist?: string[];
     },
   ): Promise<{
@@ -1725,10 +1727,15 @@ export class RetentionRepository {
     assertUuid(input.brandId, "brandId");
     const id = randomUUID();
     const migrationRunId = randomUUID();
+    const propertyAccessMode =
+      input.provider === "klaviyo"
+        ? (input.propertyAccessMode ?? "allowlist")
+        : "allowlist";
     if (input.provider === "klaviyo" && input.credential) {
       try {
         const client = new KlaviyoProviderSyncClient({
           privateApiKey: input.credential,
+          propertyAccessMode,
           propertyAllowlist: input.propertyAllowlist ?? [],
           fetch:
             this.options.providerFetch ?? globalThis.fetch.bind(globalThis),
@@ -1784,6 +1791,7 @@ export class RetentionRepository {
           external_account_id,
           credential_ciphertext,
           webhook_secret_ciphertext,
+          property_access_mode,
           property_allowlist
         )
         VALUES (
@@ -1796,6 +1804,7 @@ export class RetentionRepository {
           ${input.externalAccountId ?? null},
           ${credentialCiphertext},
           ${webhookSecretCiphertext},
+          ${propertyAccessMode},
           ${tx.json(input.propertyAllowlist ?? [])}
         )
       `;
@@ -1821,6 +1830,7 @@ export class RetentionRepository {
               input.provider === "klaviyo"
                 ? (input.propertyAllowlist ?? [])
                 : [],
+            approvedPropertyAccessMode: propertyAccessMode,
             externalWrites: false,
           })},
           '{}'::JSONB
@@ -2129,6 +2139,7 @@ export class RetentionRepository {
             status: string;
             external_account_id: string | null;
             credential_ciphertext: string | null;
+            property_access_mode: KlaviyoPropertyAccessMode;
             property_allowlist: unknown;
             cursor: unknown;
           }>
@@ -2138,6 +2149,7 @@ export class RetentionRepository {
             status,
             external_account_id,
             credential_ciphertext,
+            property_access_mode,
             property_allowlist,
             cursor
           FROM retention_integrations
@@ -2213,6 +2225,7 @@ export class RetentionRepository {
                 : [];
               const client = new KlaviyoProviderSyncClient({
                 privateApiKey: credential,
+                propertyAccessMode: integration.property_access_mode,
                 propertyAllowlist: allowlist,
                 fetch: fetchImplementation,
               });
@@ -2711,6 +2724,7 @@ export class RetentionRepository {
           raw_payload_ref: string;
           processing_status: string;
           occurred_at: Date;
+          property_access_mode: KlaviyoPropertyAccessMode;
           property_allowlist: unknown;
         }>
       >`
@@ -2725,6 +2739,7 @@ export class RetentionRepository {
               event.raw_payload_ref,
               event.processing_status,
               event.occurred_at,
+              integration.property_access_mode,
               integration.property_allowlist
         FROM retention_source_events AS event
         JOIN retention_integrations AS integration
@@ -3203,7 +3218,11 @@ export class RetentionRepository {
       for (const trait of payload.traits ?? []) {
         if (
           event.provider === "klaviyo" &&
-          !isAllowlistedKlaviyoTraitKey(trait.key, allowlist)
+          !isApprovedKlaviyoTraitKey(
+            trait.key,
+            event.property_access_mode,
+            allowlist,
+          )
         ) {
           continue;
         }
