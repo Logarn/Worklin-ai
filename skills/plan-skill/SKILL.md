@@ -2,6 +2,7 @@
 name: plan-skill
 description: Use when an agent needs to create, revise, or review implementation plans in the repository's plans/ directory, especially when the user asks for a plan before implementation, asks to standardize planning, asks to incorporate reviewer feedback into a plan, or asks whether an existing plan follows repo methodology.
 metadata:
+  emoji: "🧭"
   vellum:
     category: "development"
     display-name: "Implementation Planning"
@@ -18,13 +19,13 @@ Use this skill to write plans that another engineer can execute with minimal amb
 1. Read the request and identify the feature/domain.
 2. Read `.codex/AGENTS.md` when present and follow its methodology.
 3. Establish the baseline before planning:
-    - Read the relevant `docs/<feature>` folder.
-    - Read related code paths, routes, components, workers, utilities, tests, migrations, schemas, and existing plans.
-    - Separate shipped behavior from desired behavior, assumptions, and future ideas.
+   - Read the relevant `docs/<feature>` folder.
+   - Read related code paths, routes, components, workers, utilities, tests, migrations, schemas, and existing plans.
+   - Separate shipped behavior from desired behavior, assumptions, and future ideas.
 4. Choose the plan location:
-    - Prefer `plans/<feature>/<kebab-case-title>-plan.md` when a feature folder exists or should clearly exist.
-    - Use `plans/<kebab-case-title>-plan.md` only for cross-cutting or one-off plans with no natural feature folder.
-    - Use kebab-case filenames ending in `-plan.md`.
+   - Prefer `plans/<feature>/<kebab-case-title>-plan.md` when a feature folder exists or should clearly exist.
+   - Use `plans/<kebab-case-title>-plan.md` only for cross-cutting or one-off plans with no natural feature folder.
+   - Use kebab-case filenames ending in `-plan.md`.
 5. Write the plan. Do not implement unless the user explicitly asks to proceed.
 6. When revising a plan from external feedback, verify each claim against code/docs before accepting it. Classify comments as must-fix, valid but future, non-issue, or already covered.
 
