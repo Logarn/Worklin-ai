@@ -1,11 +1,22 @@
 import { z } from "zod";
 
 import { client } from "@/generated/api/client.gen";
-import {
-  ApiError,
-  assertHasResponse,
-  extractErrorMessage,
-} from "@/utils/api-errors";
+import { assertHasResponse } from "@/utils/api-errors";
+import { throwRetentionResponseError } from "@/lib/retention/api-error";
+
+export { RetentionApiError } from "@/lib/retention/api-error";
+export {
+  connectRetentionKlaviyo,
+  createRetentionBrand,
+  createRetentionKlaviyoIntegration,
+  type ConnectKlaviyoInput,
+  type RetentionKlaviyoConnection,
+} from "@/lib/retention/klaviyo";
+export {
+  fetchRetentionStatus,
+  type RetentionIntegrationStatus,
+  type RetentionStatus,
+} from "@/lib/retention/status";
 
 const uuidSchema = z.string().uuid();
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/iu);
@@ -40,32 +51,6 @@ const segmentRunStatusSchema = z.enum([
   "completed",
   "failed",
 ]);
-
-const integrationSchema = z.object({
-  provider: z.string(),
-  status: z.string(),
-  lastWebhookAt: z.string().datetime().nullable(),
-  lastPolledAt: z.string().datetime().nullable(),
-  lastReconciledAt: z.string().datetime().nullable(),
-  lastErrorCode: z.string().nullable(),
-});
-
-const retentionStatusSchema = z.object({
-  organizationId: z.string(),
-  integrations: z.array(integrationSchema),
-  jobs: z.record(z.string(), z.number().int().nonnegative()),
-  externalWritesEnabled: z.boolean(),
-  sendEnabled: z.boolean(),
-});
-
-export type RetentionIntegrationStatus = z.infer<typeof integrationSchema>;
-
-export interface RetentionStatus {
-  integrations: RetentionIntegrationStatus[];
-  jobs: Record<string, number>;
-  externalWritesEnabled: boolean;
-  sendEnabled: boolean;
-}
 
 const campaignSummarySchema = z.object({
   id: uuidSchema,
@@ -292,17 +277,6 @@ const importApprovalSchema = z.object({
   duplicate: z.boolean(),
 });
 
-const brandSchema = z.object({
-  id: uuidSchema,
-  name: z.string(),
-});
-
-const klaviyoConnectionSchema = z.object({
-  id: uuidSchema,
-  provider: z.literal("klaviyo"),
-  migrationRunId: uuidSchema,
-});
-
 const segmentRunCreateSchema = z.object({
   id: uuidSchema,
   status: segmentRunStatusSchema,
@@ -417,91 +391,6 @@ export interface RetentionSegment {
     qualityStatus: "passed" | "needs_review" | "blocked";
   }>;
   updatedAt: string;
-}
-
-export interface ConnectKlaviyoInput {
-  brandName: string;
-  websiteUrl?: string;
-  credential: string;
-  propertyAllowlist: string[];
-}
-
-export interface RetentionKlaviyoConnection {
-  brandId: string;
-  brandName: string;
-  integrationId: string;
-  migrationRunId: string;
-}
-
-function retentionErrorCode(error: unknown): string | null {
-  if (
-    error &&
-    typeof error === "object" &&
-    "error" in error &&
-    error.error &&
-    typeof error.error === "object" &&
-    "code" in error.error &&
-    typeof error.error.code === "string"
-  ) {
-    return error.error.code;
-  }
-  return null;
-}
-
-export class RetentionApiError extends ApiError {
-  readonly code: string | null;
-
-  constructor(status: number, message: string, code: string | null) {
-    super(status, message);
-    this.name = "RetentionApiError";
-    this.code = code;
-  }
-}
-
-function throwRetentionResponseError(
-  response: Response,
-  error: unknown,
-  fallback: string,
-): never {
-  throw new RetentionApiError(
-    response.status,
-    extractErrorMessage(error, response, fallback),
-    retentionErrorCode(error),
-  );
-}
-
-/**
- * This endpoint is not in the generated platform specification yet. The
- * singleton client supplies session and workspace authentication; the selected
- * assistant remains explicit because the control plane verifies its ownership.
- */
-export async function fetchRetentionStatus(
-  assistantId: string,
-): Promise<RetentionStatus> {
-  const { data, error, response } = await client.get<unknown, unknown>({
-    url: "/v1/retention/status",
-    headers: { "X-Worklin-Assistant-Id": assistantId },
-    throwOnError: false,
-  });
-  assertHasResponse(response, error, "Failed to load retention status.");
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      extractErrorMessage(error, response, "Failed to load retention status."),
-    );
-  }
-
-  const parsed = retentionStatusSchema.safeParse(data);
-  if (!parsed.success) {
-    throw new Error("Retention status response was invalid.");
-  }
-
-  return {
-    integrations: parsed.data.integrations,
-    jobs: parsed.data.jobs,
-    externalWritesEnabled: parsed.data.externalWritesEnabled,
-    sendEnabled: parsed.data.sendEnabled,
-  };
 }
 
 export async function fetchRetentionCampaigns(
@@ -835,88 +724,6 @@ export async function approveRetentionImport(
     throw new Error("Retention import approval response was invalid.");
   }
   return parsed.data;
-}
-
-export async function createRetentionBrand(
-  assistantId: string,
-  input: { name: string; websiteUrl?: string },
-): Promise<z.infer<typeof brandSchema>> {
-  const { data, error, response } = await client.post<unknown, unknown>({
-    url: "/v1/retention/brands",
-    body: input,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Worklin-Assistant-Id": assistantId,
-    },
-    throwOnError: false,
-  });
-  assertHasResponse(response, error, "Failed to create the brand workspace.");
-  if (!response.ok) {
-    throwRetentionResponseError(
-      response,
-      error,
-      "Failed to create the brand workspace.",
-    );
-  }
-  const parsed = brandSchema.safeParse(data);
-  if (!parsed.success) {
-    throw new Error("Retention brand response was invalid.");
-  }
-  return parsed.data;
-}
-
-export async function createRetentionKlaviyoIntegration(
-  assistantId: string,
-  input: {
-    brandId: string;
-    credential: string;
-    propertyAllowlist: string[];
-  },
-): Promise<z.infer<typeof klaviyoConnectionSchema>> {
-  const { data, error, response } = await client.post<unknown, unknown>({
-    url: "/v1/retention/integrations",
-    body: {
-      brandId: input.brandId,
-      provider: "klaviyo",
-      credential: input.credential,
-      propertyAllowlist: input.propertyAllowlist,
-    },
-    headers: {
-      "Content-Type": "application/json",
-      "X-Worklin-Assistant-Id": assistantId,
-    },
-    throwOnError: false,
-  });
-  assertHasResponse(response, error, "Failed to connect Klaviyo.");
-  if (!response.ok) {
-    throwRetentionResponseError(response, error, "Failed to connect Klaviyo.");
-  }
-  const parsed = klaviyoConnectionSchema.safeParse(data);
-  if (!parsed.success) {
-    throw new Error("Klaviyo connection response was invalid.");
-  }
-  return parsed.data;
-}
-
-export async function connectRetentionKlaviyo(
-  assistantId: string,
-  input: ConnectKlaviyoInput,
-): Promise<RetentionKlaviyoConnection> {
-  const brand = await createRetentionBrand(assistantId, {
-    name: input.brandName,
-    ...(input.websiteUrl ? { websiteUrl: input.websiteUrl } : {}),
-  });
-  const integration = await createRetentionKlaviyoIntegration(assistantId, {
-    brandId: brand.id,
-    credential: input.credential,
-    propertyAllowlist: input.propertyAllowlist,
-  });
-  return {
-    brandId: brand.id,
-    brandName: brand.name,
-    integrationId: integration.id,
-    migrationRunId: integration.migrationRunId,
-  };
 }
 
 export async function startRetentionSegmentRun(
