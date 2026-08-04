@@ -8,10 +8,10 @@
 
 import { type ReactNode, useMemo } from "react";
 
-import { DiscordNudgeBanner } from "@/components/nudges/discord-nudge-banner";
 import { GitHubNudgeBanner } from "@/components/nudges/github-nudge-banner";
 import { IOSAppBanner } from "@/components/nudges/ios-app-banner";
 import { MacOSAppBanner } from "@/components/nudges/macos-app-banner";
+import { SlackNudgeBanner } from "@/components/nudges/slack-nudge-banner";
 import { QueuedMessagesDrawer } from "@/domains/chat/components/queued-messages-drawer";
 import { SlackChannelFooter } from "@/domains/chat/components/slack-channel-footer";
 import type { DisplayMessage } from "@/domains/chat/types/types";
@@ -59,7 +59,7 @@ export function useChatBannerSlots({
   const {
     showBanner, isOnIOS, nudge,
     showGitHubBanner, githubNudge,
-    showDiscordBanner, discordNudge,
+    showSlackBanner, slackNudge,
   } = nudges;
 
   const mainBannerSlot = useMemo((): ReactNode => {
@@ -90,18 +90,18 @@ export function useChatBannerSlots({
         </div>
       );
     }
-    if (showDiscordBanner) {
+    if (showSlackBanner) {
       return (
         <div className="pointer-events-auto w-full px-3 pb-2 sm:px-6">
-          <DiscordNudgeBanner
-            onJoin={discordNudge.handleJoin}
-            onDismiss={discordNudge.handleBannerDismiss}
+          <SlackNudgeBanner
+            onJoin={slackNudge.handleJoin}
+            onDismiss={slackNudge.handleBannerDismiss}
           />
         </div>
       );
     }
     return null;
-  }, [showBanner, isOnIOS, nudge, showGitHubBanner, githubNudge, showDiscordBanner, discordNudge]);
+  }, [showBanner, isOnIOS, nudge, showGitHubBanner, githubNudge, showSlackBanner, slackNudge]);
 
   const mainQueuedDrawerSlot = useMemo((): ReactNode => (
     <QueuedMessagesDrawer

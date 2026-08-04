@@ -2,7 +2,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 
 import { useHintRotation } from "@/domains/chat/hooks/use-hint-rotation";
-import { VELLUM_COMMUNITY_URL } from "@/utils/external-urls";
+import { WORKLIN_SLACK_INVITE_URL } from "@/utils/external-urls";
 
 const CLEANUP_HINTS = [
   "Cleaning up your assistant\u2026",
@@ -44,12 +44,12 @@ export function CleanupScreen() {
         <p className="mt-3 max-w-md text-center text-body-medium-lighter text-[var(--content-tertiary)]">
           Try running Worklin Doctor to diagnose the issue, or{" "}
           <a
-            href={VELLUM_COMMUNITY_URL}
+            href={WORKLIN_SLACK_INVITE_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="text-body-medium-default underline text-[var(--system-positive-strong)] hover:opacity-90"
           >
-            ask the community
+            ask the beta Slack group
           </a>{" "}
           for help.
         </p>

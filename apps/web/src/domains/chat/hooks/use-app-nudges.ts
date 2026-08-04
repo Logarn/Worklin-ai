@@ -23,7 +23,11 @@ import {
   GITHUB_MIN_USER_MESSAGES,
   type GitHubNudgeState,
 } from "@/hooks/use-github-nudge";
-import { useDiscordNudgeState, ensureFirstSeenAt, type DiscordNudgeState } from "@/hooks/use-discord-nudge";
+import {
+  ensureSlackFirstSeenAt,
+  type SlackNudgeState,
+  useSlackNudgeState,
+} from "@/hooks/use-slack-nudge";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,12 +41,12 @@ interface PlatformNudgeState {
 
 /**
  * Aggregated nudge visibility and handlers for every nudge surface
- * (iOS/macOS app download, GitHub star, Discord community).
+ * (iOS/macOS app download, GitHub star, Slack community).
  *
  * Mutual-exclusivity rules:
  * 1. Only one platform nudge shows at a time (iOS xor macOS).
  * 2. GitHub nudge surfaces only once the platform nudge is resolved.
- * 3. Discord nudge surfaces only once GitHub is resolved, with a cooldown.
+ * 3. Slack nudge surfaces only once GitHub is resolved, with a cooldown.
  */
 export interface AppNudgesState {
   /** True when the current browser is iOS Safari (non-native). */
@@ -61,9 +65,9 @@ export interface AppNudgesState {
   githubNudge: GitHubNudgeState;
   showGitHubBanner: boolean;
 
-  /** Discord community nudge state and handlers. */
-  discordNudge: DiscordNudgeState;
-  showDiscordBanner: boolean;
+  /** Slack community nudge state and handlers. */
+  slackNudge: SlackNudgeState;
+  showSlackBanner: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,13 +76,13 @@ export interface AppNudgesState {
 
 /**
  * Manages the full nudge stack: platform app-download (iOS/macOS), GitHub
- * star, and Discord community join. Tracks completed assistant turns to
+ * star, and Slack community join. Tracks completed assistant turns to
  * gate the platform nudge behind a minimum-turn threshold, then cascades
- * visibility through the GitHub and Discord nudges with mutual-exclusivity
+ * visibility through the GitHub and Slack nudges with mutual-exclusivity
  * guarantees.
  *
  * @param messages - Current transcript messages (used to count completed assistant turns).
- * @param conversationCount - Total conversation count (gates the Discord nudge).
+ * @param conversationCount - Total conversation count (gates the Slack nudge).
  * @param liveAssistantMessageId - Id of the currently-live assistant row, or
  *   `null` when nothing is streaming. Derived from message position and the
  *   conversation's processing state.
@@ -219,18 +223,18 @@ export function useAppNudges(
     platformNudgeResolved && githubNudge.bannerShouldShow;
 
   // -------------------------------------------------------------------------
-  // Discord community nudge — only after GitHub nudge is resolved
+  // Slack community nudge — only after GitHub nudge is resolved
   // -------------------------------------------------------------------------
   useEffect(() => {
-    ensureFirstSeenAt();
+    ensureSlackFirstSeenAt();
   }, []);
 
-  const discordNudge = useDiscordNudgeState(
+  const slackNudge = useSlackNudgeState(
     platformNudgeResolved,
     conversationCount,
   );
-  const showDiscordBanner =
-    !showBanner && !showGitHubBanner && discordNudge.bannerShouldShow;
+  const showSlackBanner =
+    !showBanner && !showGitHubBanner && slackNudge.bannerShouldShow;
 
   return {
     isOnIOS,
@@ -240,7 +244,7 @@ export function useAppNudges(
     showBanner,
     githubNudge,
     showGitHubBanner,
-    discordNudge,
-    showDiscordBanner,
+    slackNudge,
+    showSlackBanner,
   };
 }

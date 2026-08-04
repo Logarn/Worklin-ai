@@ -16,7 +16,7 @@ import { Button } from "@vellumai/design-library";
 
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   signup_closed:
-    "Sign-ups are currently closed. Visit vellum.ai/community to request access.",
+    "Sign-ups are currently closed. The Worklin Slack group is invite-only and limited to a small group of beta testers.",
 };
 
 /**
