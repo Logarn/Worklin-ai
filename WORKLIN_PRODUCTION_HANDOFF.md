@@ -8,8 +8,8 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
 - Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-retention-50-segment-pilot`
-- Current `main`: `a92c020` (`Restore onboarding progress and correct GitHub link`, PR `#165`).
-- Current production runtime source: `db8f349`. Public `/healthz` reports that SHA, so production is behind `main` and must be verified again after the next release.
+- Current `main`: `68c4a12083c7217225e5477ab50c171de94ba507` (`Build review-only Klaviyo audience pilot`, PR `#166`).
+- Current production control-plane source: `68c4a12083c7217225e5477ab50c171de94ba507`. Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
@@ -50,9 +50,10 @@ services were intentionally not started; the artifact itself rendered and
 interacted correctly. Merge, deployment, deployed-SHA verification, and an
 authenticated production browser check remain pending.
 
-## 2026-08-04 Same-Day Campaign Review Pilot Release Candidate
+## 2026-08-04 Same-Day Campaign Review Pilot Deployed Behind Safety Gates
 
-Branch `assistant/retention-50-segment-pilot` adds a bounded, review-only
+PR `#166` merged as `68c4a12083c7217225e5477ab50c171de94ba507`
+and adds a bounded, review-only
 Klaviyo pilot. It can validate a restricted read-only connection, import
 approved profile and event data, build up to 50 versioned Worklin audiences,
 generate two representative messages per audience through the named ChatGPT
@@ -69,18 +70,29 @@ routes and rejects query strings or path injection. No Klaviyo segment, list,
 campaign, profile, approval, release, or send mutation is part of this pilot.
 
 Local verification passed focused retention, assistant, control-plane, and web
-tests; all four package typechecks; touched-file lint; diff hygiene; and a real
-PostgreSQL row-level-security integration test using a non-superuser runtime
-role. The disposable test database and role were removed after the test.
+tests; all four package typechecks; touched-file lint; unused-code lint; diff
+hygiene; a production-equivalent web build; and a real PostgreSQL
+row-level-security integration test using a non-superuser runtime role. The
+disposable test database and role were removed after the test.
 
-Production release and authenticated browser acceptance remain pending. The
-hard gate for real customer data is the Railway retention database: its Backups
-view currently reports no backups, no restore range, and that backups/PITR
-require Pro. Keep ingestion and every external-write/send flag disabled until
-that is corrected and independently verified. The Railway database Data view
-also showed no tables, which conflicts with the earlier migration record;
-inspect the retention-service deployment and migration logs before enabling
-the browser proxy or assistant bridge.
+Vercel deployed the merge commit and the canonical `/assistant` route returns
+HTTP 200. Railway deployed the control plane successfully; public `/healthz`
+reports the merge SHA and `/readyz` reports `ok: true`. The new retention-service
+release failed closed during its healthcheck because PostgreSQL migration `005`
+is not applied. Its startup diagnostics reported `databaseReady: true`,
+`tenantIsolationReady: true`, `rawPayloadStoreReady: true`, and
+`migrationsReady: false`. Railway kept the prior healthy retention-service
+release active, so this failure did not take the existing service down.
+
+Do not retry the new retention release or enable the browser proxy, assistant
+bridge, imports, external writes, or sending until the documented one-time
+migration release applies `005` and the normal runtime role is re-granted. The
+hard gate for real customer data remains the Railway retention database: its
+Backups view reports no backups, no restore range, and that backups/PITR require
+a Pro workspace. Enable both protections and verify a visible restore point
+before applying migration `005` or connecting Dr Rachael's Klaviyo account.
+No customer data was imported and no Klaviyo data was changed during this
+release.
 
 ## 2026-07-29 Customer Decisioning Foundation Deployed
 

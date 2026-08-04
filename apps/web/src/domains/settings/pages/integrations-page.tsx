@@ -6,6 +6,12 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { IntegrationDetailModal } from "@/domains/settings/components/integration-detail-modal";
 import { IntegrationRow } from "@/domains/settings/components/integration-row";
+import {
+  isKlaviyoConnected,
+  KlaviyoIntegrationModal,
+  KlaviyoIntegrationRow,
+} from "@/domains/settings/components/klaviyo-integration";
+import { useKlaviyoIntegration } from "@/domains/settings/hooks/use-klaviyo-integration";
 import { assistantsOauthConnectionsListOptions } from "@/generated/api/@tanstack/react-query.gen";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import { oauthProvidersGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
@@ -44,6 +50,7 @@ function IntegrationsPanelInner() {
   const platformGate = usePlatformGate();
   const assistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const isLifecycleLoading = useActiveAssistantLifecycleIsLoading();
+  const klaviyo = useKlaviyoIntegration(assistantId);
 
   const [searchText, setSearchText] = useState("");
   const [selectedFilter, setSelectedFilter] =
@@ -85,14 +92,16 @@ function IntegrationsPanelInner() {
   });
 
   // Completion is verified inside the popup flow against the connection API.
-  // Query parameters on this page are untrusted legacy callback residue.
+  // OAuth status parameters are untrusted legacy callback residue. The
+  // provider parameter is only a local deep link to a known integration.
   useEffect(() => {
     const oauthStatus = searchParams.get("oauth_status");
-    if (!oauthStatus) {
+    if (oauthStatus) {
+      navigate(routes.settings.integrations, { replace: true });
       return;
     }
-
-    navigate(routes.settings.integrations, { replace: true });
+    const provider = searchParams.get("provider");
+    if (provider) setSelectedProviderKey(provider);
   }, [searchParams, navigate]);
 
   const managedProviders = useMemo(
@@ -137,6 +146,18 @@ function IntegrationsPanelInner() {
       return aName.localeCompare(bName);
     });
   }, [managedProviders, connections, searchText, selectedFilter]);
+
+  const klaviyoConnected = isKlaviyoConnected(klaviyo.integration);
+  const klaviyoMatchesSearch = [
+    "klaviyo",
+    "email delivery",
+    "customer activity",
+  ].some((value) => value.includes(searchText.trim().toLowerCase()));
+  const klaviyoMatchesFilter =
+    selectedFilter === "all" ||
+    (selectedFilter === "enabled" && klaviyoConnected) ||
+    (selectedFilter === "not-enabled" && !klaviyoConnected);
+  const showKlaviyo = klaviyoMatchesSearch && klaviyoMatchesFilter;
 
   const loading = isLifecycleLoading || providersLoading || connectionsLoading;
   const selectedFilterLabel =
@@ -254,7 +275,7 @@ function IntegrationsPanelInner() {
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>Loading...</span>
           </div>
-        ) : providersError ? (
+        ) : providersError && !showKlaviyo ? (
           <p className="text-body-medium-lighter text-[var(--content-tertiary)]">
             Failed to load integrations. Please try again.
           </p>
@@ -262,7 +283,7 @@ function IntegrationsPanelInner() {
           <p className="text-body-medium-lighter text-[var(--content-tertiary)]">
             No assistant found. Hatch an assistant to connect integrations.
           </p>
-        ) : filteredProviders.length === 0 ? (
+        ) : filteredProviders.length === 0 && !showKlaviyo ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--border-element)] px-4 py-12 text-center">
             <Search className="h-6 w-6 text-[var(--content-disabled)]" />
             <p className="text-body-medium-default text-[var(--content-default)]">
@@ -274,6 +295,19 @@ function IntegrationsPanelInner() {
           </div>
         ) : (
           <div className="space-y-2">
+            {providersError ? (
+              <p className="py-3 text-body-medium-lighter text-[var(--content-tertiary)]">
+                Some integrations could not be loaded. Please try again.
+              </p>
+            ) : null}
+            {showKlaviyo ? (
+              <KlaviyoIntegrationRow
+                integration={klaviyo.integration}
+                statusLoading={klaviyo.status.isPending}
+                statusUnavailable={klaviyo.status.isError}
+                onConfigure={() => setSelectedProviderKey("klaviyo")}
+              />
+            ) : null}
             {filteredProviders.map((provider) => (
               <IntegrationRow
                 key={provider.provider_key}
@@ -306,9 +340,25 @@ function IntegrationsPanelInner() {
           description={selectedProvider.description}
           logoUrl={selectedProvider.logo_url}
           platformGate={platformGate}
-          onClose={() => setSelectedProviderKey(null)}
+          onClose={() => {
+            setSelectedProviderKey(null);
+            if (searchParams.has("provider")) {
+              navigate(routes.settings.integrations, { replace: true });
+            }
+          }}
         />
       )}
+      {selectedProviderKey === "klaviyo" && assistantId ? (
+        <KlaviyoIntegrationModal
+          assistantId={assistantId}
+          onClose={() => {
+            setSelectedProviderKey(null);
+            if (searchParams.has("provider")) {
+              navigate(routes.settings.integrations, { replace: true });
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }

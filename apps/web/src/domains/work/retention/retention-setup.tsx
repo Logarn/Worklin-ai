@@ -1,28 +1,29 @@
 import {
   AlertCircle,
+  Cable,
   Check,
   Database,
   Loader2,
-  Plus,
   Pause,
   Play,
   RefreshCw,
   ShieldCheck,
-  X,
 } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { useState } from "react";
+import { useNavigate } from "react-router";
 
-import { Button, ConfirmDialog, Input } from "@vellumai/design-library";
+import type { RetentionIntegrationStatus } from "@/lib/retention/status";
+import { useRetentionStatus } from "@/lib/retention/use-retention-status";
+import { routes } from "@/utils/routes";
+import { Button, ConfirmDialog } from "@vellumai/design-library";
 
 import type {
   RetentionImportSummary,
   RetentionProgramSummary,
 } from "./retention-api";
-import { RetentionApiError } from "./retention-api";
 import {
   useActivateRetentionProgram,
   useApproveRetentionImport,
-  useConnectKlaviyo,
   usePauseRetentionProgram,
   useRetentionProgramApprovalPreview,
   useRetentionSetup,
@@ -137,277 +138,74 @@ function ImportRow({
   );
 }
 
-function normalizeWebsiteUrl(value: string): string | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const candidate = /^https?:\/\//iu.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
-  const url = new URL(candidate);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("invalid_website");
-  }
-  return url.toString();
-}
-
-function connectionErrorMessage(error: unknown): string {
-  if (error instanceof RetentionApiError) {
-    if (
-      error.code === "invalid_klaviyo_credential" ||
-      error.code === "klaviyo_credentials_rejected" ||
-      error.code === "provider_unauthorized" ||
-      error.status === 401
-    ) {
-      return "Klaviyo rejected this private key. Check the key and try again.";
-    }
-    if (
-      error.code === "klaviyo_scope_missing" ||
-      error.code === "klaviyo_read_scope_required" ||
-      error.code === "provider_permission_missing"
-    ) {
-      return "This key is missing a required read permission. Update its Klaviyo access and try again.";
-    }
-    if (error.status === 403) {
-      return "You do not have permission to connect Klaviyo for this workspace.";
-    }
-    if (error.status === 409) {
-      return "Klaviyo is already connected to this brand.";
-    }
-    if (error.status === 429) {
-      return "Klaviyo is receiving too many requests. Wait a moment, then try again.";
-    }
-    if (error.status === 503) {
-      return "The secure connection service is not ready. Try again shortly.";
-    }
-  }
-  return "Worklin could not connect Klaviyo. The key was cleared, so enter it again before retrying.";
-}
-
-function KlaviyoConnectionSection({
-  assistantId,
-  isConnected,
+function DataConnectionsSection({
+  integration,
+  isPending,
+  isUnavailable,
 }: {
-  assistantId: string;
-  isConnected: boolean;
+  integration: RetentionIntegrationStatus | null;
+  isPending: boolean;
+  isUnavailable: boolean;
 }) {
-  const connection = useConnectKlaviyo(assistantId);
-  const [brandName, setBrandName] = useState("");
-  const [website, setWebsite] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [properties, setProperties] = useState([""]);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const connected = isConnected || connection.isSuccess;
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const name = brandName.trim();
-    const credential = apiKey.trim();
-    if (!name || !credential) {
-      setFormError("Enter the brand name and Klaviyo private key.");
-      return;
-    }
-
-    let websiteUrl: string | undefined;
-    try {
-      websiteUrl = normalizeWebsiteUrl(website);
-    } catch {
-      setFormError("Enter a valid website, such as example.com.");
-      return;
-    }
-
-    const propertyAllowlist = Array.from(
-      new Set(properties.map((property) => property.trim()).filter(Boolean)),
-    );
-    setFormError(null);
-    connection.mutate(
-      {
-        brandName: name,
-        ...(websiteUrl ? { websiteUrl } : {}),
-        credential,
-        propertyAllowlist,
-      },
-      {
-        onError: (error) => setFormError(connectionErrorMessage(error)),
-        onSettled: () => setApiKey(""),
-      },
-    );
-  }
+  const navigate = useNavigate();
+  const isConnected = integration !== null && integration.status !== "revoked";
+  const statusLabel = isPending
+    ? "Checking Klaviyo connection"
+    : isUnavailable
+      ? "Klaviyo connection unavailable"
+      : isConnected
+        ? "Klaviyo connected"
+        : "Klaviyo not connected";
 
   return (
-    <section aria-labelledby="connect-klaviyo-heading">
+    <section aria-labelledby="data-connections-heading">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2
-            id="connect-klaviyo-heading"
+            id="data-connections-heading"
             className="text-title-small text-[var(--content-emphasised)]"
           >
-            Connect Klaviyo
+            Data connections
           </h2>
           <p className="mt-1 max-w-2xl text-body-small-default text-[var(--content-tertiary)]">
-            Worklin reads customer and campaign history. It cannot change a
-            profile, create a campaign, or send a message.
+            Connect and manage Klaviyo from Integrations. Customer decisions
+            uses that connection for imports, audiences, and campaign review.
           </p>
         </div>
-        <span className="flex shrink-0 items-center gap-2 text-body-small-default text-[var(--content-success)]">
-          <ShieldCheck className="size-4" aria-hidden="true" />
-          Read only
-        </span>
       </div>
-
-      {connected ? (
-        <div className="mt-4 flex items-start gap-3 border-y border-[var(--border-base)] py-4">
-          <Check
-            className="mt-0.5 size-5 shrink-0 text-[var(--content-success)]"
-            aria-hidden="true"
-          />
-          <div>
-            <p className="text-body-medium-default text-[var(--content-emphasised)]">
-              Klaviyo is connected
-            </p>
-            <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
-              Review the prepared history import below before any data is read.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <form className="mt-5" onSubmit={submit} noValidate>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Input
-              label="Brand name"
-              placeholder="Example Brand"
-              value={brandName}
-              onChange={(event) => {
-                setBrandName(event.target.value);
-                setFormError(null);
-              }}
-              disabled={connection.isPending}
-              fullWidth
-              required
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-y border-[var(--border-base)] py-4">
+        <p className="flex items-center gap-2 text-body-small-default text-[var(--content-secondary)]">
+          {isConnected ? (
+            <Check
+              className="size-4 text-[var(--content-success)]"
+              aria-hidden="true"
             />
-            <Input
-              label="Website (optional)"
-              placeholder="example.com"
-              value={website}
-              onChange={(event) => {
-                setWebsite(event.target.value);
-                setFormError(null);
-              }}
-              disabled={connection.isPending}
-              fullWidth
+          ) : (
+            <Cable
+              className="size-4 text-[var(--content-tertiary)]"
+              aria-hidden="true"
             />
-          </div>
-          <div className="mt-4">
-            <Input
-              type="password"
-              label="Klaviyo private API key"
-              placeholder="Enter the read-only key"
-              value={apiKey}
-              onChange={(event) => {
-                setApiKey(event.target.value);
-                setFormError(null);
-              }}
-              autoComplete="new-password"
-              spellCheck={false}
-              disabled={connection.isPending}
-              helperText="The key is encrypted by Worklin and cleared from this form after the request."
-              fullWidth
-              required
-            />
-          </div>
-
-          <fieldset className="mt-5">
-            <legend className="text-body-small-default text-[var(--content-default)]">
-              Approved profile properties
-            </legend>
-            <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
-              Add only the Klaviyo fields Worklin may use, such as lead magnet
-              or product interest.
-            </p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {properties.map((property, index) => (
-                <div key={index} className="flex min-w-0 items-end gap-2">
-                  <Input
-                    aria-label={`Approved property ${index + 1}`}
-                    placeholder="Property name"
-                    value={property}
-                    onChange={(event) =>
-                      setProperties((current) =>
-                        current.map((item, itemIndex) =>
-                          itemIndex === index ? event.target.value : item,
-                        ),
-                      )
-                    }
-                    disabled={connection.isPending}
-                    wrapperClassName="min-w-0 flex-1"
-                    fullWidth
-                  />
-                  <button
-                    type="button"
-                    className="mb-px flex size-10 shrink-0 items-center justify-center rounded-md text-[var(--content-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--content-default)] disabled:opacity-50"
-                    aria-label={`Remove approved property ${index + 1}`}
-                    title="Remove property"
-                    disabled={connection.isPending || properties.length === 1}
-                    onClick={() =>
-                      setProperties((current) =>
-                        current.filter((_, itemIndex) => itemIndex !== index),
-                      )
-                    }
-                  >
-                    <X className="size-4" aria-hidden="true" />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <Button
-              className="mt-3"
-              type="button"
-              size="compact"
-              variant="ghost"
-              leftIcon={<Plus />}
-              disabled={connection.isPending}
-              onClick={() => setProperties((current) => [...current, ""])}
-            >
-              Add property
-            </Button>
-          </fieldset>
-
-          {formError ? (
-            <p
-              className="mt-4 flex items-start gap-2 text-body-small-default text-[var(--system-negative-strong)]"
-              role="alert"
-            >
-              <AlertCircle
-                className="mt-0.5 size-4 shrink-0"
-                aria-hidden="true"
-              />
-              {formError}
-            </p>
-          ) : null}
-
-          <Button
-            className="mt-5 bg-[var(--content-emphasised)] text-[var(--surface-base)]"
-            type="submit"
-            variant="primary"
-            leftIcon={
-              connection.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <ShieldCheck />
-              )
-            }
-            disabled={connection.isPending}
-          >
-            {connection.isPending ? "Connecting" : "Connect securely"}
-          </Button>
-        </form>
-      )}
+          )}
+          {statusLabel}
+        </p>
+        <Button
+          variant="outlined"
+          size="compact"
+          leftIcon={<Cable />}
+          onClick={() =>
+            navigate(`${routes.settings.integrations}?provider=klaviyo`)
+          }
+        >
+          {isConnected ? "View integration" : "Connect Klaviyo"}
+        </Button>
+      </div>
     </section>
   );
 }
 
 export function RetentionSetup({ assistantId }: { assistantId: string }) {
   const setup = useRetentionSetup(assistantId);
+  const retentionStatus = useRetentionStatus(assistantId);
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(
     null,
   );
@@ -430,9 +228,14 @@ export function RetentionSetup({ assistantId }: { assistantId: string }) {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-10">
-      <KlaviyoConnectionSection
-        assistantId={assistantId}
-        isConnected={imports.some((item) => item.provider === "klaviyo")}
+      <DataConnectionsSection
+        integration={
+          retentionStatus.data?.integrations.find(
+            (integration) => integration.provider === "klaviyo",
+          ) ?? null
+        }
+        isPending={retentionStatus.isPending}
+        isUnavailable={retentionStatus.isError}
       />
 
       {loading ? (
