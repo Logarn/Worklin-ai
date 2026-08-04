@@ -1121,9 +1121,10 @@ function addKlaviyoReadParameters(
   watermark: string | null,
 ): void {
   url.searchParams.set("page[size]", String(pageSize));
+  const sortField = resource === "profiles" ? "updated" : "datetime";
   url.searchParams.set(
     "sort",
-    resource === "profiles" ? "updated" : "datetime",
+    lifecycle === "historical_backfill" ? `-${sortField}` : sortField,
   );
   if (cursor) {
     url.searchParams.set("page[cursor]", cursor);
