@@ -8,9 +8,8 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
 - Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-klaviyo-integration-home`
-- Current deployed product release: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f` (`Support all Klaviyo custom properties`, PR `#171`).
-- Current production control-plane source: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f`. Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
-- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`.
+- Current merged and deployed control-plane release: `2b5ffac616d6f3878bd221533aab09fef8cf055e` (`Heal tenant owner approval bindings`, PR `#179`). Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
+- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
@@ -21,6 +20,61 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Browser requirement for the pilot: use an authenticated in-app browser or the authenticated Chrome profile selected by the user. The in-app Klaviyo connection dialog was verified against production on 2026-08-04.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-08-04 Dr Rachael Live Import And Runtime Recovery
+
+Dr Rachael's real Klaviyo account is connected through the encrypted
+integration flow with all custom properties approved. The import is owned by
+Worklin and runs in the private retention service; it is not a browser upload.
+As of `2026-08-04 21:39:29Z`, the resumable historical run was still healthy
+and backfilling with `76,509` accepted source records, `196` malformed source
+records skipped, no run-level error, `56,787` canonical customers, `327,413`
+stored trait observations, and `196` distinct trait keys. Earlier verification
+confirmed current Klaviyo profile and event coverage through approximately
+`2026-08-04 20:01Z`. The higher trait-key count reflects continued import after
+that check. External writes and sending remain disabled.
+
+PRs `#175` through `#178` support this live run. Customer decisions can load
+without a chat runtime, malformed individual Klaviyo records no longer abort a
+page, page ingestion is bounded to six concurrent records, and initial history
+is read newest-first while incremental polling and reconciliation remain
+chronological. The latest retention-service deployment is healthy. The import
+must remain resumable and read-only; do not reset its stored counts or create a
+second customer brand under the disposable no-PITR exception.
+
+The selected assistant runtime had two independent failures. The current image
+fixed the stale `/data/workspace/runtime-ipc` ownership, then exposed structural
+SQLite corruption confined to the `llm_request_logs` tree. The runtime was put
+in maintenance mode, the original DB/WAL/SHM were preserved, and a full SQLite
+recovery was performed on a copy. The recovered database passed full integrity
+and foreign-key checks, all `117` readable application-table counts matched,
+and message search was rebuilt to match all `1,430` messages. The promoted DB
+contains `153` conversations, `1,430` messages, `1,430` search rows, `6`
+provider connections, and `22` recovered internal request-log rows. The
+original remains at
+`/data/workspace/data/db/recovery-20260804T202618Z/assistant.corrupt-live.db`.
+
+Railway runtime deployment `f6459620-b75e-43ae-8ad6-6d71512e306a` is
+`SUCCESS` and logged `Assistant is ready`; there was one startup-only cleanup
+lock warning and no repeated corruption or permission error. The production
+bootstrap guardian binding was also corrected from the stale runtime principal
+to the signed platform owner. PR `#179` makes this permanent for isolated
+tenant runtimes while refusing unsigned requests, pooled-worker leases, and
+attempts to replace an authenticated owner binding.
+
+The browser created review run
+`f85bf6c2-3f80-4d42-90f0-dca39ba1c209` for brand
+`31e9467f-bb6f-460f-8f66-05e33690ebd3`. It remains safely `queued` for `10`
+audiences and `2` examples per audience with zero attempts, zero completed
+audiences, and no error. The first chat attempt incorrectly searched local
+files and requested a terminal confirmation; the stale guardian binding then
+blocked that confirmation. The binding and permanent approval path are now
+fixed, but the in-app browser connection dropped before the run could be
+retried. Reconnect the authenticated in-app browser, resume this exact run,
+explicitly load `worklin-retention`, call `retention_campaign_review_pilot`,
+and forbid terminal or file-search fallback. Inspect all ten outputs before
+calling the pilot ready. Nothing has been created, updated, or sent in
+Klaviyo.
 
 ## 2026-08-04 All Klaviyo Properties Pilot Ready For Connection
 
@@ -55,12 +109,9 @@ the integrations route with HTTP `200`. In the authenticated in-app browser,
 the Klaviyo dialog rendered the live connection form, no longer showed the
 service-unavailable state, and showed **Use all custom properties** checked.
 
-No Klaviyo key has been submitted and no real profile has been imported yet.
-The next user action is to enter Dr Rachael's brand name, website, and
-read-only Klaviyo private key in the open Integrations dialog. After connection,
-approve only the historical read import, inspect counts and rejected fields,
-then generate the first 10 review audiences. Do not enable external writes or
-sending.
+This section records the pre-connection release state. The live connection and
+import now exist; use the newer section above for current counts and the exact
+queued audience run. Do not enable external writes or sending.
 
 ## 2026-08-04 Competitor Intelligence Deployed
 
