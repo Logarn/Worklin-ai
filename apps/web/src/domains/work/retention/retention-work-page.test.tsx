@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
 import type { RetentionStatus } from "./retention-api";
 
@@ -15,10 +17,7 @@ type QueryState = {
 
 const refetch = mock(async () => {});
 let queryState: QueryState;
-
-mock.module("@/assistant/use-active-assistant-id", () => ({
-  useActiveAssistantId: () => "assistant-1",
-}));
+let queriedAssistantId: string | null = null;
 
 mock.module("@/components/layout/chat-layout-slots-store", () => ({
   useChatLayoutSlotsStore: {
@@ -27,7 +26,10 @@ mock.module("@/components/layout/chat-layout-slots-store", () => ({
 }));
 
 mock.module("./use-retention-status", () => ({
-  useRetentionStatus: () => queryState,
+  useRetentionStatus: (assistantId: string) => {
+    queriedAssistantId = assistantId;
+    return queryState;
+  },
 }));
 
 mock.module("./retention-campaign-review", () => ({
@@ -46,9 +48,55 @@ function renderPage() {
 }
 
 describe("RetentionWorkPage", () => {
+  beforeEach(() => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: "assistant-1",
+      selectedAssistantId: "assistant-1",
+    });
+    queriedAssistantId = null;
+  });
+
   afterEach(() => {
     cleanup();
     refetch.mockClear();
+  });
+
+  test("uses the selected assistant while its chat runtime is unavailable", () => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: null,
+      selectedAssistantId: "assistant-selected",
+    });
+    queryState = {
+      data: {
+        integrations: [],
+        jobs: {},
+        externalWritesEnabled: false,
+        sendEnabled: false,
+      },
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      refetch,
+    };
+
+    renderPage();
+
+    expect(queriedAssistantId).toBe("assistant-selected");
+    expect(screen.getByText("Campaign review test surface")).toBeTruthy();
+  });
+
+  test("shows a safe waiting state when no assistant is selected", () => {
+    useResolvedAssistantsStore.setState({
+      activeAssistantId: null,
+      selectedAssistantId: null,
+    });
+
+    renderPage();
+
+    expect(
+      screen.getByText("Customer decisions is getting ready"),
+    ).toBeTruthy();
+    expect(queriedAssistantId).toBeNull();
   });
 
   test("shows clear loading and empty states", () => {

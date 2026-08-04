@@ -74,6 +74,19 @@ describe("Work routes", () => {
     expect(route?.Component?.name).toBe("WorkAppPage");
     expect(route?.lazy).toBeUndefined();
   });
+
+  test("keeps Customer decisions independent from chat runtime readiness", () => {
+    const matches =
+      matchRoutes(routeTree as never, "/assistant/work/retention") ?? [];
+
+    expect(
+      matches.some(
+        (match) =>
+          (match.route as { Component?: { name?: string } }).Component?.name ===
+          "ActiveAssistantGate",
+      ),
+    ).toBe(false);
+  });
 });
 
 test("workspace invitation links match the authenticated acceptance route", () => {
