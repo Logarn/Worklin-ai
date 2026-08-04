@@ -21,6 +21,8 @@ const audienceId = "66666666-6666-4666-8666-666666666666";
 const brandId = "77777777-7777-4777-8777-777777777777";
 const integrationId = "88888888-8888-4888-8888-888888888888";
 const programId = "99999999-9999-4999-8999-999999999999";
+const segmentRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const segmentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 const config: RetentionServiceConfig = {
   databaseUrl: "postgres://runtime:secret@postgres.internal/worklin",
@@ -104,15 +106,18 @@ function dependencies(
       analyzeCampaignOutcomes: unavailable,
       approveCampaign: unavailable,
       activateProgram: unavailable,
+      activateSegment: unavailable,
       cancelCampaign: unavailable,
       campaignApprovalPreview: unavailable,
       claimRecipientReasoning: unavailable,
+      claimSegmentRun: unavailable,
       correctCustomer: unavailable,
       createBrand: unavailable,
       createCampaign: unavailable,
       createIntegration: unavailable,
       createProgram: unavailable,
       createSegmentDefinition: unavailable,
+      createSegmentRun: unavailable,
       customerConsentHistory: unavailable,
       customerPrivacyAccess: unavailable,
       deleteCustomer: unavailable,
@@ -121,8 +126,11 @@ function dependencies(
       freezeCampaignAudience: unavailable,
       initializeTenant: unavailable,
       integrationForWebhook: unavailable,
+      getSegmentRun: unavailable,
       listCampaigns: unavailable,
       listPrograms: unavailable,
+      listSegments: unavailable,
+      listSegmentsForRun: unavailable,
       pauseProgram: unavailable,
       prepareCampaignGeneration: unavailable,
       previewAudience: unavailable,
@@ -130,6 +138,7 @@ function dependencies(
       programPolicyApprovalPreview: unavailable,
       recordRecipientDecision: unavailable,
       recordRenderedMessage: unavailable,
+      completeSegmentRun: unavailable,
       releaseCampaign: unavailable,
       revokeIntegration: unavailable,
       reviewImports: unavailable,
@@ -211,6 +220,312 @@ describe("retention operator HTTP boundary", () => {
     });
   });
 
+  test("validates and binds the segment review run routes", async () => {
+    const received: Array<Record<string, unknown>> = [];
+    const handler = createRetentionHttpHandler(
+      dependencies({
+        createSegmentRun: async (context, input) => {
+          received.push({
+            action: "create",
+            organizationId: context.organizationId,
+            ...input,
+          });
+          return {
+            id: segmentRunId,
+            status: "queued",
+            maxSegments: input.maxSegments,
+            sampleLimitPerSegment: input.sampleLimitPerSegment,
+            trancheSize: input.trancheSize,
+            evidenceCutoffAt: "2026-07-28T12:00:00.000Z",
+            duplicate: false,
+          };
+        },
+        getSegmentRun: async (context, runId) => ({
+          id: runId,
+          brandId,
+          status: "queued",
+          maxSegments: 20,
+          sampleLimitPerSegment: 2,
+          trancheSize: 10,
+          completedSegmentCount: 0,
+          evidenceCutoffAt: "2026-07-28T12:00:00.000Z",
+          lastErrorCode: null,
+          createdAt: "2026-07-28T12:00:00.000Z",
+          updatedAt: "2026-07-28T12:00:00.000Z",
+        }),
+        claimSegmentRun: async (context, input) => {
+          received.push({
+            action: "claim",
+            organizationId: context.organizationId,
+            ...input,
+          });
+          return {
+            runId: input.runId,
+            leaseOwner: "segment-run:cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            leaseExpiresAt: "2026-07-28T12:02:00.000Z",
+            dossierSha256: "d".repeat(64),
+            dossier: { customerCount: 10 },
+            limits: {
+              maxSegments: 20,
+              completedSegments: 0,
+              remainingSegments: 20,
+              trancheSize: 10,
+              sampleLimitPerSegment: 2,
+            },
+          };
+        },
+        completeSegmentRun: async (context, input) => {
+          received.push({
+            action: "complete",
+            organizationId: context.organizationId,
+            ...input,
+          });
+          return {
+            runId: input.runId,
+            status: "paused",
+            completedSegmentCount: 0,
+            definitions: [],
+          };
+        },
+        listSegments: async (context, input) => {
+          received.push({
+            action: "list",
+            organizationId: context.organizationId,
+            ...input,
+          });
+          return { segments: [] };
+        },
+        listSegmentsForRun: async (context, runId) => {
+          received.push({
+            action: "list-run",
+            organizationId: context.organizationId,
+            runId,
+          });
+          return { brandName: "Example Brand", segments: [] };
+        },
+        activateSegment: async (context, input) => {
+          received.push({
+            action: "activate",
+            organizationId: context.organizationId,
+            ...input,
+          });
+          return {
+            segmentId: input.segmentId,
+            status: "active",
+            version: input.expectedVersion,
+            checksum: input.expectedChecksum,
+            duplicate: false,
+          };
+        },
+      }),
+    );
+
+    const invalid = await handler(
+      new Request("http://retention.internal/v1/retention/segment-runs", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token(["retention:write"])}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ brandId, maxSegments: 51 }),
+      }),
+    );
+    expect(invalid.status).toBe(400);
+
+    const zeroSamples = await handler(
+      new Request("http://retention.internal/v1/retention/segment-runs", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token(["retention:write"])}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          brandId,
+          maxSegments: 20,
+          sampleLimitPerSegment: 0,
+          trancheSize: 10,
+        }),
+      }),
+    );
+    expect(zeroSamples.status).toBe(400);
+
+    const created = await handler(
+      new Request("http://retention.internal/v1/retention/segment-runs", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token(["retention:write"])}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          brandId,
+          maxSegments: 20,
+          sampleLimitPerSegment: 2,
+          trancheSize: 10,
+        }),
+      }),
+    );
+    expect(created.status).toBe(201);
+
+    const read = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segment-runs/${segmentRunId}`,
+        { headers: { authorization: `Bearer ${token(["retention:read"])}` } },
+      ),
+    );
+    expect(read.status).toBe(200);
+
+    const runSegments = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segment-runs/${segmentRunId}/segments`,
+        { headers: { authorization: `Bearer ${token(["retention:read"])}` } },
+      ),
+    );
+    expect(runSegments.status).toBe(200);
+    expect(await runSegments.json()).toEqual({
+      brandName: "Example Brand",
+      segments: [],
+    });
+
+    const claimed = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segment-runs/${segmentRunId}/claim`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token(["retention:generate"])}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ resume: true }),
+        },
+      ),
+    );
+    expect(claimed.status).toBe(200);
+
+    const completed = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segment-runs/${segmentRunId}/complete`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token(["retention:generate"])}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            leaseOwner: "segment-run:cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            outcome: "pause",
+            errorCode: "subscription_rate_limited",
+            definitions: [],
+          }),
+        },
+      ),
+    );
+    expect(completed.status).toBe(200);
+
+    const directIdentifierSample = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segment-runs/${segmentRunId}/complete`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token(["retention:generate"])}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            leaseOwner: "segment-run:cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            outcome: "complete",
+            definitions: [
+              {
+                name: "Example segment",
+                description: "A safe example.",
+                expression: {
+                  type: "predicate",
+                  namespace: "profile",
+                  key: "has_email",
+                  operator: "equals",
+                  value: true,
+                },
+                confidence: 1,
+                evidence: [],
+                campaignPreview: {
+                  strategy: {},
+                  qualityStatus: "passed",
+                  qualityIssues: [],
+                  modelProvider: "test",
+                  modelId: "test-model",
+                  promptVersion: "test-v1",
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                  samples: [
+                    {
+                      customerReference: "user@example.com",
+                      subject: "Example",
+                      body: "Example body",
+                      explanation: "Example explanation",
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        },
+      ),
+    );
+    expect(directIdentifierSample.status).toBe(400);
+
+    const listed = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segments?brandId=${brandId}`,
+        { headers: { authorization: `Bearer ${token(["retention:read"])}` } },
+      ),
+    );
+    expect(listed.status).toBe(200);
+
+    const activated = await handler(
+      new Request(
+        `http://retention.internal/v1/retention/segments/${segmentId}/activate`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token(["retention:approve"])}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            expectedVersion: 1,
+            expectedChecksum: "e".repeat(64),
+          }),
+        },
+      ),
+    );
+    expect(activated.status).toBe(200);
+    expect(received).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "claim",
+          runId: segmentRunId,
+          resume: true,
+        }),
+        expect.objectContaining({
+          action: "complete",
+          runId: segmentRunId,
+          outcome: "pause",
+        }),
+        expect.objectContaining({
+          action: "list",
+          brandId,
+        }),
+        expect.objectContaining({
+          action: "list-run",
+          organizationId,
+          runId: segmentRunId,
+        }),
+        expect.objectContaining({
+          action: "activate",
+          segmentId,
+          expectedVersion: 1,
+        }),
+      ]),
+    );
+  });
+
   test("uses the campaign id from the authenticated route", async () => {
     const received = { campaignId: "" };
     const handler = createRetentionHttpHandler(
@@ -219,8 +534,7 @@ describe("retention operator HTTP boundary", () => {
           received.campaignId = input.campaignId;
           return {
             campaignId: input.campaignId,
-            audienceSnapshotId:
-              "66666666-6666-4666-8666-666666666666",
+            audienceSnapshotId: "66666666-6666-4666-8666-666666666666",
             snapshotSha256: "a".repeat(64),
             memberCount: 1,
             sensitiveMemberCount: 0,
@@ -261,14 +575,11 @@ describe("retention operator HTTP boundary", () => {
 
   test("operator reads require retention read permission", async () => {
     const response = await createRetentionHttpHandler(dependencies())(
-      new Request(
-        "http://retention.internal/v1/retention/imports",
-        {
-          headers: {
-            authorization: `Bearer ${token(["retention:write"])}`,
-          },
+      new Request("http://retention.internal/v1/retention/imports", {
+        headers: {
+          authorization: `Bearer ${token(["retention:write"])}`,
         },
-      ),
+      }),
     );
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({
@@ -295,6 +606,7 @@ describe("retention operator HTTP boundary", () => {
             sourceEvents: 2,
             decisions: 0,
             messages: 0,
+            segmentMemberships: 0,
           },
           updatedAt: "2026-07-28T12:00:00.000Z",
           organizationId: context.organizationId,
@@ -450,9 +762,7 @@ describe("retention operator HTTP boundary", () => {
         {
           method: "POST",
           headers: {
-            authorization: `Bearer ${token([
-              "retention:integrations",
-            ])}`,
+            authorization: `Bearer ${token(["retention:integrations"])}`,
             "content-type": "application/json",
           },
           body: JSON.stringify({ reason: "Connection revoked." }),

@@ -198,6 +198,7 @@ import {
   listRetentionAccessGrants,
   listActiveRetentionWakeTargets,
   replaceRetentionAccessGrants,
+  retentionIntegrationCreatePayload,
   retentionIntegrationConnectionPayload,
   retentionRolesForUser,
   setRetentionIntegrationBindingStatus,
@@ -2124,9 +2125,10 @@ async function handleWorkspace(
       parseJsonBody<{ assistantId?: string; userId?: string }>(req) ?? {};
     const assistant = body.assistantId
       ? db
-          .query<AssistantRow, [string, string]>(
-            "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
-          )
+          .query<
+            AssistantRow,
+            [string, string]
+          >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
           .get(body.assistantId, context.org.id)
       : null;
     const member = body.userId
@@ -2296,9 +2298,10 @@ function accessibleAssistantsForUser(
   const workspace = workspaceContext(req, user);
   if (workspace.org.user_id === user.id) {
     const existing = db
-      .query<AssistantRow, [string]>(
-        "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
-      )
+      .query<
+        AssistantRow,
+        [string]
+      >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
       .all(workspace.org.id);
     if (existing.length === 0) getOrCreateAssistant(user);
   }
@@ -2854,9 +2857,10 @@ async function handleAssistants(
     const existing =
       workspace.org.user_id === user.id
         ? db
-            .query<AssistantRow, [string]>(
-              "SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id",
-            )
+            .query<
+              AssistantRow,
+              [string]
+            >("SELECT * FROM assistants WHERE org_id = ? ORDER BY created_at, id")
             .get(workspace.org.id)
         : accessibleAssistantsForUser(req, user)[0];
     const assistant =
@@ -3212,9 +3216,10 @@ async function handleArtifactInvitations(
       return true;
     }
     const assistant = db
-      .query<AssistantRow, [string, string]>(
-        "SELECT * FROM assistants WHERE id = ? AND user_id = ?",
-      )
+      .query<
+        AssistantRow,
+        [string, string]
+      >("SELECT * FROM assistants WHERE id = ? AND user_id = ?")
       .get(createMatch[1]!, user.id);
     if (!assistant) {
       sendJson(req, res, { detail: "Assistant not found." }, 404);
@@ -4440,11 +4445,7 @@ async function handleRetentionProxy(
 ): Promise<boolean> {
   if (!pathIsOrStartsWith(url.pathname, "/v1/retention/")) return false;
   if (await handleRetentionAccess(req, res, url, user)) return true;
-  if (
-    req.method !== "GET" &&
-    req.method !== "HEAD" &&
-    !checkCsrf(req)
-  ) {
+  if (req.method !== "GET" && req.method !== "HEAD" && !checkCsrf(req)) {
     sendJson(req, res, { detail: "CSRF validation failed." }, 403);
     return true;
   }
@@ -4491,10 +4492,10 @@ async function handleRetentionProxy(
     });
     bindingId = binding.id;
     bindingProvider = provider;
-    bodyOverride = {
-      ...body,
-      controlPlaneConnectionId: binding.id,
-    };
+    bodyOverride = retentionIntegrationCreatePayload(body ?? {}, {
+      id: binding.id,
+      webhookSecret: randomBytes(32).toString("base64url"),
+    });
   }
 
   const response = await proxyAuthenticatedRetentionRequest(
@@ -4572,10 +4573,7 @@ async function handleRetentionProviderWebhookIngress(
   }
   const authorization = req.headers.authorization ?? "";
   const match = /^Bearer (.+)$/u.exec(authorization);
-  if (
-    !match ||
-    !safeEqual(match[1]!, retentionGatewayIngressSecret)
-  ) {
+  if (!match || !safeEqual(match[1]!, retentionGatewayIngressSecret)) {
     sendJson(req, res, { detail: "Invalid gateway authorization." }, 401);
     return;
   }
@@ -4599,10 +4597,7 @@ async function handleRetentionProviderWebhookIngress(
   }
   const response = await forwardRetentionProviderWebhook(
     retentionServiceConfig,
-    retentionProxyRequest(
-      req,
-      new URL(req.originalUrl, env.apiOrigin),
-    ),
+    retentionProxyRequest(req, new URL(req.originalUrl, env.apiOrigin)),
     {
       organizationId: binding.org_id,
       userId: binding.created_by_user_id,
@@ -4653,9 +4648,10 @@ async function handleRetentionAssistantOperatorIngress(
     .query<UserRow, [string]>("SELECT * FROM users WHERE id = ?")
     .get(operatorRequest.userId);
   const organization = db
-    .query<OrganizationRow, [string]>(
-      "SELECT * FROM organizations WHERE id = ?",
-    )
+    .query<
+      OrganizationRow,
+      [string]
+    >("SELECT * FROM organizations WHERE id = ?")
     .get(operatorRequest.organizationId);
   const membership = getOrganizationMembership(
     db,
@@ -4663,9 +4659,10 @@ async function handleRetentionAssistantOperatorIngress(
     operatorRequest.userId,
   );
   const assistant = db
-    .query<AssistantRow, [string, string]>(
-      "SELECT * FROM assistants WHERE id = ? AND org_id = ?",
-    )
+    .query<
+      AssistantRow,
+      [string, string]
+    >("SELECT * FROM assistants WHERE id = ? AND org_id = ?")
     .get(operatorRequest.assistantId, operatorRequest.organizationId);
   if (
     !user ||
@@ -4686,12 +4683,7 @@ async function handleRetentionAssistantOperatorIngress(
     return;
   }
   const accessibleAssistantIds = new Set(
-    listAccessibleAssistantIds(
-      db,
-      organization.id,
-      user.id,
-      membership.role,
-    ),
+    listAccessibleAssistantIds(db, organization.id, user.id, membership.role),
   );
   if (!accessibleAssistantIds.has(assistant.id)) {
     sendJson(

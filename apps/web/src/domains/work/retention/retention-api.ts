@@ -9,10 +9,7 @@ import {
 
 const uuidSchema = z.string().uuid();
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/iu);
-const campaignModeSchema = z.enum([
-  "dynamic_template",
-  "individual_message",
-]);
+const campaignModeSchema = z.enum(["dynamic_template", "individual_message"]);
 const campaignStatusSchema = z.enum([
   "draft",
   "audience_frozen",
@@ -26,12 +23,7 @@ const campaignStatusSchema = z.enum([
   "failed",
   "cancelled",
 ]);
-const programStatusSchema = z.enum([
-  "draft",
-  "active",
-  "paused",
-  "archived",
-]);
+const programStatusSchema = z.enum(["draft", "active", "paused", "archived"]);
 const importStatusSchema = z.enum([
   "preview",
   "approved",
@@ -40,6 +32,13 @@ const importStatusSchema = z.enum([
   "completed",
   "failed",
   "cancelled",
+]);
+const segmentRunStatusSchema = z.enum([
+  "queued",
+  "claimed",
+  "paused",
+  "completed",
+  "failed",
 ]);
 
 const integrationSchema = z.object({
@@ -202,9 +201,7 @@ const campaignApprovalSchema = z.object({
   snapshotSha256: sha256Schema,
 });
 
-export type RetentionCampaignApproval = z.infer<
-  typeof campaignApprovalSchema
->;
+export type RetentionCampaignApproval = z.infer<typeof campaignApprovalSchema>;
 
 const campaignReleaseSchema = z.object({
   dispatchId: uuidSchema,
@@ -295,6 +292,81 @@ const importApprovalSchema = z.object({
   duplicate: z.boolean(),
 });
 
+const brandSchema = z.object({
+  id: uuidSchema,
+  name: z.string(),
+});
+
+const klaviyoConnectionSchema = z.object({
+  id: uuidSchema,
+  provider: z.literal("klaviyo"),
+  migrationRunId: uuidSchema,
+});
+
+const segmentRunCreateSchema = z.object({
+  id: uuidSchema,
+  status: segmentRunStatusSchema,
+  maxSegments: z.number().int().min(1).max(50),
+  sampleLimitPerSegment: z.number().int().min(1).max(2),
+  trancheSize: z.number().int().min(1).max(10),
+  evidenceCutoffAt: z.string().datetime(),
+  duplicate: z.boolean(),
+});
+
+const segmentRunDetailSchema = z.object({
+  id: uuidSchema,
+  brandId: uuidSchema,
+  status: segmentRunStatusSchema,
+  maxSegments: z.number().int().min(1).max(50),
+  sampleLimitPerSegment: z.number().int().min(1).max(2),
+  completedSegmentCount: z.number().int().nonnegative(),
+  lastErrorCode: z.string().nullable(),
+  updatedAt: z.string().datetime(),
+});
+
+const segmentSchema = z.object({
+  id: uuidSchema,
+  name: z.string(),
+  memberCount: z.number().int().nonnegative(),
+  eligibleCount: z.number().int().nonnegative(),
+  changeSincePriorRun: z.number().int().nullable().optional(),
+  campaignPreview: z
+    .object({
+      description: z.string(),
+      confidence: z.number().min(0).max(1),
+      strategy: z.object({
+        objective: z.string(),
+        angle: z.string(),
+        offer: z.string().optional(),
+        timing: z.string(),
+        callToAction: z.string(),
+      }),
+      evidence: z.array(
+        z.object({
+          signal: z.string(),
+          explanation: z.string(),
+          strength: z.enum(["strong", "medium", "weak"]),
+          source: z.enum(["metric", "event", "imported_trait", "consent"]),
+        }),
+      ),
+      qualityStatus: z.enum(["passed", "needs_review", "blocked"]),
+      samples: z.array(
+        z.object({
+          subject: z.string(),
+          preheader: z.string().nullable(),
+          body: z.string(),
+          explanation: z.string(),
+        }),
+      ),
+    })
+    .nullable(),
+  createdAt: z.string().datetime(),
+});
+
+const segmentListSchema = z.object({
+  segments: z.array(segmentSchema),
+});
+
 export type RetentionProgramSummary = z.infer<
   typeof programListSchema
 >["programs"][number];
@@ -304,6 +376,62 @@ export type RetentionProgramApprovalPreview = z.infer<
 export type RetentionImportSummary = z.infer<
   typeof importListSchema
 >["imports"][number];
+export interface RetentionSegmentRun {
+  id: string;
+  brandId: string;
+  status: z.infer<typeof segmentRunStatusSchema>;
+  maxSegments: number;
+  sampleLimitPerSegment: number;
+  completedSegments: number;
+  totalSegments: number;
+  lastErrorCode: string | null;
+  updatedAt: string;
+}
+
+export interface RetentionSegment {
+  id: string;
+  name: string;
+  description: string;
+  totalCount: number;
+  eligibleCount: number;
+  evidence: Array<{
+    signal: string;
+    explanation: string;
+    strength: "strong" | "medium" | "weak";
+    source: "metric" | "event" | "imported_trait" | "consent";
+  }>;
+  confidence: number;
+  changeSincePriorRun: number | null;
+  campaignConcept: {
+    objective: string;
+    angle: string;
+    offer?: string;
+    timing: string;
+    callToAction: string;
+  } | null;
+  sampleMessages: Array<{
+    subject: string;
+    preheader: string | null;
+    body: string;
+    explanation: string;
+    qualityStatus: "passed" | "needs_review" | "blocked";
+  }>;
+  updatedAt: string;
+}
+
+export interface ConnectKlaviyoInput {
+  brandName: string;
+  websiteUrl?: string;
+  credential: string;
+  propertyAllowlist: string[];
+}
+
+export interface RetentionKlaviyoConnection {
+  brandId: string;
+  brandName: string;
+  integrationId: string;
+  migrationRunId: string;
+}
 
 function retentionErrorCode(error: unknown): string | null {
   if (
@@ -359,11 +487,7 @@ export async function fetchRetentionStatus(
   if (!response.ok) {
     throw new ApiError(
       response.status,
-      extractErrorMessage(
-        error,
-        response,
-        "Failed to load retention status.",
-      ),
+      extractErrorMessage(error, response, "Failed to load retention status."),
     );
   }
 
@@ -711,4 +835,206 @@ export async function approveRetentionImport(
     throw new Error("Retention import approval response was invalid.");
   }
   return parsed.data;
+}
+
+export async function createRetentionBrand(
+  assistantId: string,
+  input: { name: string; websiteUrl?: string },
+): Promise<z.infer<typeof brandSchema>> {
+  const { data, error, response } = await client.post<unknown, unknown>({
+    url: "/v1/retention/brands",
+    body: input,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Worklin-Assistant-Id": assistantId,
+    },
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to create the brand workspace.");
+  if (!response.ok) {
+    throwRetentionResponseError(
+      response,
+      error,
+      "Failed to create the brand workspace.",
+    );
+  }
+  const parsed = brandSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new Error("Retention brand response was invalid.");
+  }
+  return parsed.data;
+}
+
+export async function createRetentionKlaviyoIntegration(
+  assistantId: string,
+  input: {
+    brandId: string;
+    credential: string;
+    propertyAllowlist: string[];
+  },
+): Promise<z.infer<typeof klaviyoConnectionSchema>> {
+  const { data, error, response } = await client.post<unknown, unknown>({
+    url: "/v1/retention/integrations",
+    body: {
+      brandId: input.brandId,
+      provider: "klaviyo",
+      credential: input.credential,
+      propertyAllowlist: input.propertyAllowlist,
+    },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Worklin-Assistant-Id": assistantId,
+    },
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to connect Klaviyo.");
+  if (!response.ok) {
+    throwRetentionResponseError(response, error, "Failed to connect Klaviyo.");
+  }
+  const parsed = klaviyoConnectionSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new Error("Klaviyo connection response was invalid.");
+  }
+  return parsed.data;
+}
+
+export async function connectRetentionKlaviyo(
+  assistantId: string,
+  input: ConnectKlaviyoInput,
+): Promise<RetentionKlaviyoConnection> {
+  const brand = await createRetentionBrand(assistantId, {
+    name: input.brandName,
+    ...(input.websiteUrl ? { websiteUrl: input.websiteUrl } : {}),
+  });
+  const integration = await createRetentionKlaviyoIntegration(assistantId, {
+    brandId: brand.id,
+    credential: input.credential,
+    propertyAllowlist: input.propertyAllowlist,
+  });
+  return {
+    brandId: brand.id,
+    brandName: brand.name,
+    integrationId: integration.id,
+    migrationRunId: integration.migrationRunId,
+  };
+}
+
+export async function startRetentionSegmentRun(
+  assistantId: string,
+  input: {
+    brandId: string;
+    maxSegments: number;
+    sampleLimitPerSegment: number;
+  },
+): Promise<RetentionSegmentRun> {
+  const { data, error, response } = await client.post<unknown, unknown>({
+    url: "/v1/retention/segment-runs",
+    body: input,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Worklin-Assistant-Id": assistantId,
+    },
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to start audience review.");
+  if (!response.ok) {
+    throwRetentionResponseError(
+      response,
+      error,
+      "Failed to start audience review.",
+    );
+  }
+  const parsed = segmentRunCreateSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new Error("Audience run response was invalid.");
+  }
+  return {
+    id: parsed.data.id,
+    brandId: input.brandId,
+    status: parsed.data.status,
+    maxSegments: parsed.data.maxSegments,
+    sampleLimitPerSegment: parsed.data.sampleLimitPerSegment,
+    completedSegments: 0,
+    totalSegments: parsed.data.maxSegments,
+    lastErrorCode: null,
+    updatedAt: parsed.data.evidenceCutoffAt,
+  };
+}
+
+export async function fetchRetentionSegmentRun(
+  assistantId: string,
+  runId: string,
+): Promise<RetentionSegmentRun> {
+  const { data, error, response } = await client.get<unknown, unknown>({
+    url: "/v1/retention/segment-runs/{run_id}",
+    path: { run_id: runId },
+    headers: { "X-Worklin-Assistant-Id": assistantId },
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to load audience progress.");
+  if (!response.ok) {
+    throwRetentionResponseError(
+      response,
+      error,
+      "Failed to load audience progress.",
+    );
+  }
+  const parsed = segmentRunDetailSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new Error("Audience run response was invalid.");
+  }
+  return {
+    id: parsed.data.id,
+    brandId: parsed.data.brandId,
+    status: parsed.data.status,
+    maxSegments: parsed.data.maxSegments,
+    sampleLimitPerSegment: parsed.data.sampleLimitPerSegment,
+    completedSegments: parsed.data.completedSegmentCount,
+    totalSegments: parsed.data.maxSegments,
+    lastErrorCode: parsed.data.lastErrorCode,
+    updatedAt: parsed.data.updatedAt,
+  };
+}
+
+export async function fetchRetentionSegments(
+  assistantId: string,
+  brandId: string,
+): Promise<RetentionSegment[]> {
+  const { data, error, response } = await client.get<unknown, unknown>({
+    url: "/v1/retention/segments",
+    query: { brandId },
+    headers: { "X-Worklin-Assistant-Id": assistantId },
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to load audiences.");
+  if (!response.ok) {
+    throwRetentionResponseError(response, error, "Failed to load audiences.");
+  }
+  const parsed = segmentListSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new Error("Audience list response was invalid.");
+  }
+  return parsed.data.segments.map((segment): RetentionSegment => {
+    const preview = segment.campaignPreview;
+    return {
+      id: segment.id,
+      name: segment.name,
+      description:
+        preview?.description ?? "Campaign direction is still being prepared.",
+      totalCount: segment.memberCount,
+      eligibleCount: segment.eligibleCount,
+      evidence: preview?.evidence ?? [],
+      confidence: preview?.confidence ?? 0,
+      changeSincePriorRun: segment.changeSincePriorRun ?? null,
+      campaignConcept: preview?.strategy ?? null,
+      sampleMessages: (preview?.samples ?? []).map((sample) => ({
+        subject: sample.subject,
+        preheader: sample.preheader,
+        body: sample.body,
+        explanation: sample.explanation,
+        qualityStatus: preview?.qualityStatus ?? "needs_review",
+      })),
+      updatedAt: segment.createdAt,
+    };
+  });
 }

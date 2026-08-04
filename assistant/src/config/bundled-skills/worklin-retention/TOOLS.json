@@ -11,6 +11,38 @@
       "execution_target": "host"
     },
     {
+      "name": "retention_campaign_review_pilot",
+      "description": "Start or safely resume a bounded, review-only Worklin audience run using only the named ChatGPT subscription connection. Produces at most 50 Worklin segment proposals and 100 representative messages, creates an editable review document, and never writes to or sends through Klaviyo.",
+      "category": "retention",
+      "risk": "medium",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "brand_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Central Worklin brand UUID."
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Existing segment-run UUID to resume. Omit to start a new run."
+          },
+          "max_segments": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 10,
+            "description": "Maximum useful audiences to prepare. Worklin may return fewer when evidence is insufficient."
+          }
+        },
+        "required": ["brand_id"]
+      },
+      "executor": "tools/retention-campaign-review-pilot.ts",
+      "execution_target": "host"
+    },
+    {
       "name": "retention_create_segment_definition",
       "description": "Create a versioned Worklin audience definition. This stores Worklin expressions only and never creates a Klaviyo segment.",
       "category": "retention",

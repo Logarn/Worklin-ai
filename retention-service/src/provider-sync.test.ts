@@ -8,6 +8,7 @@ import {
   KlaviyoProviderSyncClient,
   ProviderSyncError,
   ShopifyProviderSyncClient,
+  isAllowlistedKlaviyoTraitKey,
 } from "./provider-sync.js";
 
 type FetchImplementation = (
@@ -39,9 +40,7 @@ function jsonResponse(
   });
 }
 
-function captureFetch(
-  responses: readonly Response[],
-): {
+function captureFetch(responses: readonly Response[]): {
   fetch: FetchImplementation;
   requests: CapturedRequest[];
 } {
@@ -273,9 +272,9 @@ describe("ShopifyProviderSyncClient", () => {
       `https://example-shop.myshopify.com/admin/api/${SHOPIFY_ADMIN_API_VERSION}/graphql.json`,
     );
     expect(request.init?.method).toBe("POST");
-    expect(new Headers(request.init?.headers).get("x-shopify-access-token")).toBe(
-      "shopify-token",
-    );
+    expect(
+      new Headers(request.init?.headers).get("x-shopify-access-token"),
+    ).toBe("shopify-token");
     expect(new Headers(request.init?.headers).get("content-type")).toBe(
       "application/json",
     );
@@ -529,6 +528,21 @@ describe("ShopifyProviderSyncClient", () => {
 });
 
 describe("KlaviyoProviderSyncClient", () => {
+  test("matches stored prefixed traits to raw approved property names", () => {
+    expect(
+      isAllowlistedKlaviyoTraitKey("klaviyo.Customer stage", [
+        "Customer stage",
+      ]),
+    ).toBe(true);
+    expect(
+      isAllowlistedKlaviyoTraitKey("klaviyo.Unapproved property", [
+        "Customer stage",
+      ]),
+    ).toBe(false);
+    expect(
+      isAllowlistedKlaviyoTraitKey("Customer stage", ["Customer stage"]),
+    ).toBe(false);
+  });
   test("uses pinned read-only profile requests and applies the property allowlist", async () => {
     const nextCursor = "bmV4dDo6cHJvZmlsZS0x";
     const mock = captureFetch([
@@ -673,9 +687,7 @@ describe("KlaviyoProviderSyncClient", () => {
     ];
 
     for (const next of nextLinks) {
-      const mock = captureFetch([
-        jsonResponse(klaviyoDocument([], { next })),
-      ]);
+      const mock = captureFetch([jsonResponse(klaviyoDocument([], { next }))]);
       const client = new KlaviyoProviderSyncClient({
         privateApiKey: "klaviyo-private-key",
         propertyAllowlist: [],
@@ -795,9 +807,7 @@ describe("KlaviyoProviderSyncClient", () => {
       },
     });
     expect(JSON.stringify(page.events)).not.toContain("Private note");
-    expect(page.events[1]?.occurredAt).toBe(
-      "2026-07-28T10:00:00.000Z",
-    );
+    expect(page.events[1]?.occurredAt).toBe("2026-07-28T10:00:00.000Z");
   });
 
   test("keeps an existing watermark when every returned event is older", async () => {
@@ -871,9 +881,7 @@ describe("KlaviyoProviderSyncClient", () => {
     expect(mock.requests).toHaveLength(6);
     for (const request of mock.requests) {
       expect(request.url.origin).toBe("https://a.klaviyo.com");
-      expect(["/api/profiles", "/api/events"]).toContain(
-        request.url.pathname,
-      );
+      expect(["/api/profiles", "/api/events"]).toContain(request.url.pathname);
       expect(request.url.pathname).not.toContain("segment");
       expect(request.init?.method).toBe("GET");
       expect(request.init?.body).toBeUndefined();

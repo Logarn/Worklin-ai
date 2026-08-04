@@ -20,7 +20,7 @@ import {
   isPersonalProviderConnection,
   tryResolveProviderForConnectionName,
 } from "./connection-resolution.js";
-import { listConnections } from "./inference/connections.js";
+import { getConnection, listConnections } from "./inference/connections.js";
 import { initializeProviders, listProviders } from "./registry.js";
 import type {
   ContentBlock,
@@ -38,10 +38,38 @@ export interface ConfiguredProviderResult {
   configuredProviderName: string;
 }
 
+export interface RequiredProviderConnection {
+  name: string;
+  provider: string;
+  authType: "oauth_subscription";
+  model: string;
+}
+
 export type ConfiguredProviderOptions = Pick<
   ResolveCallSiteOpts,
   "forceOverrideProfile" | "overrideProfile" | "selectionSeed"
->;
+> & {
+  /**
+   * Resolve one exact personal connection and model without auto-selection or
+   * fallback. Intended for resumable jobs whose provider identity is part of
+   * their durable contract.
+   */
+  requiredConnection?: RequiredProviderConnection;
+};
+
+export class RequiredProviderConnectionError extends Error {
+  constructor(
+    readonly reason:
+      | "not_found"
+      | "provider_mismatch"
+      | "auth_mismatch"
+      | "model_incompatible",
+    message: string,
+  ) {
+    super(message);
+    this.name = "RequiredProviderConnectionError";
+  }
+}
 
 /**
  * Cached promise for the lazy initialization path inside
@@ -87,6 +115,9 @@ export class CallSiteConfiguredProvider implements Provider {
       config: {
         ...config,
         callSite: config?.callSite ?? this.callSite,
+        ...(this.routingOptions.requiredConnection
+          ? { model: this.routingOptions.requiredConnection.model }
+          : {}),
         ...(config?.forceOverrideProfile === undefined &&
         this.routingOptions.forceOverrideProfile !== undefined
           ? { forceOverrideProfile: this.routingOptions.forceOverrideProfile }
@@ -125,8 +156,9 @@ export async function resolveConfiguredProvider(
   opts: ConfiguredProviderOptions = {},
 ): Promise<ConfiguredProviderResult | null> {
   const config = getConfig();
+  const requiredConnection = opts.requiredConnection;
 
-  if (listProviders().length === 0) {
+  if (!requiredConnection && listProviders().length === 0) {
     if (!lazyInitPromise) {
       lazyInitPromise = initializeProviders(config).finally(() => {
         lazyInitPromise = null;
@@ -139,9 +171,43 @@ export async function resolveConfiguredProvider(
     }
   }
 
-  const resolved = resolveCallSiteConfig(callSite, config.llm, opts);
-  const inferenceProvider = resolved.provider;
-  let connectionName = resolved.provider_connection;
+  const resolved = requiredConnection
+    ? undefined
+    : resolveCallSiteConfig(callSite, config.llm, opts);
+  const inferenceProvider = requiredConnection?.provider ?? resolved!.provider;
+  const resolvedModel = requiredConnection?.model ?? resolved!.model;
+  let connectionName =
+    requiredConnection?.name ?? resolved!.provider_connection;
+
+  if (requiredConnection) {
+    const connection = getConnection(getDb(), requiredConnection.name);
+    if (!connection) {
+      throw new RequiredProviderConnectionError(
+        "not_found",
+        `Required provider connection "${requiredConnection.name}" is not configured.`,
+      );
+    }
+    if (connection.provider !== requiredConnection.provider) {
+      throw new RequiredProviderConnectionError(
+        "provider_mismatch",
+        `Required provider connection "${requiredConnection.name}" is not an ${requiredConnection.provider} connection.`,
+      );
+    }
+    if (connection.auth.type !== requiredConnection.authType) {
+      throw new RequiredProviderConnectionError(
+        "auth_mismatch",
+        `Required provider connection "${requiredConnection.name}" does not use ${requiredConnection.authType} authentication.`,
+      );
+    }
+    if (
+      !isConnectionCompatibleWithModel(connection, requiredConnection.model)
+    ) {
+      throw new RequiredProviderConnectionError(
+        "model_incompatible",
+        `Model "${requiredConnection.model}" is not compatible with provider connection "${requiredConnection.name}".`,
+      );
+    }
+  }
 
   // Connection-aware path: every dispatch goes through `provider_connection`.
   // The boot-time backfill ensures every profile has one in production.
@@ -159,18 +225,18 @@ export async function resolveConfiguredProvider(
         const active = candidates.find(
           (candidate) =>
             isPersonalProviderConnection(candidate) &&
-            isConnectionCompatibleWithModel(candidate, resolved.model),
+            isConnectionCompatibleWithModel(candidate, resolvedModel),
         );
         if (active) {
           connectionName = active.name;
         } else {
           const incompatMsg = describeSubscriptionModelIncompatibility(
             candidates,
-            resolved.model,
+            resolvedModel,
           );
           if (incompatMsg) {
             log.warn(
-              { callSite, inferenceProvider, model: resolved.model },
+              { callSite, inferenceProvider, model: resolvedModel },
               incompatMsg,
             );
           }
@@ -192,7 +258,7 @@ export async function resolveConfiguredProvider(
     connectionName,
     config,
     inferenceProvider,
-    resolved.model,
+    resolvedModel,
   );
   if (!connectionProvider) {
     // Soft credential failure — the connection resolved to no usable

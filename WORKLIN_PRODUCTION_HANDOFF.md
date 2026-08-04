@@ -1,22 +1,57 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-07-29
+Last refreshed: 2026-08-04
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
 ## Start Here
 
-- Repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current production runtime source: `65a02bb` (`Build real-time customer decisioning foundation`), merged through PR `#158` after every mandatory PR check passed.
+- Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
+- Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-retention-50-segment-pilot`
+- Current `main`: `a92c020` (`Restore onboarding progress and correct GitHub link`, PR `#165`).
+- Current production runtime source: `db8f349`. Public `/healthz` reports that SHA, so production is behind `main` and must be verified again after the next release.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Current production application commit: `65a02bbe74b2ec85135a3413d6ac896e25556f0f`. Public `/healthz` reports that exact SHA; `/readyz` reports the control plane and provisioner ready.
+- Public `/readyz` reports the control plane and provisioner ready. This proves deployment health, not the authenticated retention pilot flow.
 - The tenant-safe pooled code is present in the production image but every pool gate remains disabled. No pooled worker, tenant-state bucket, paid capacity, or new production secret has been created.
-- The private retention service is deployed, but customer ingestion, assistant access, external provider writes, and sending remain disabled. Do not connect real Shopify or Klaviyo customer data until database backups and point-in-time recovery are enabled and verified.
+- The private retention service is deployed, but customer ingestion, assistant access, external provider writes, and sending remain disabled. The correct Railway PostgreSQL service currently shows `No Backups` and no restore window; the workspace asks for a Pro upgrade to enable backups and point-in-time recovery. Do not connect real Shopify or Klaviyo customer data until both protections are enabled and a visible restore point is verified.
 - Browser requirement for the pilot: use the authenticated Chrome profile selected by the user. Do not switch to Safari or the in-app browser.
+
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-08-04 Same-Day Campaign Review Pilot Release Candidate
+
+Branch `assistant/retention-50-segment-pilot` adds a bounded, review-only
+Klaviyo pilot. It can validate a restricted read-only connection, import
+approved profile and event data, build up to 50 versioned Worklin audiences,
+generate two representative messages per audience through the named ChatGPT
+subscription connection, and create a Work review document. The Work UI also
+shows audience evidence and exports a non-PII CSV summary.
+
+The security boundary is enforced in service code: all segment records use
+forced organization-level row security, segment expressions are validated
+before deterministic evaluation, suppressed and unsubscribed profiles are
+excluded, generation is resumable and bounded, and preview quality checks are
+derived server-side. Browser requests cannot set internal integration binding
+IDs or route secrets. The assistant bridge exposes only the run-scoped review
+routes and rejects query strings or path injection. No Klaviyo segment, list,
+campaign, profile, approval, release, or send mutation is part of this pilot.
+
+Local verification passed focused retention, assistant, control-plane, and web
+tests; all four package typechecks; touched-file lint; diff hygiene; and a real
+PostgreSQL row-level-security integration test using a non-superuser runtime
+role. The disposable test database and role were removed after the test.
+
+Production release and authenticated browser acceptance remain pending. The
+hard gate for real customer data is the Railway retention database: its Backups
+view currently reports no backups, no restore range, and that backups/PITR
+require Pro. Keep ingestion and every external-write/send flag disabled until
+that is corrected and independently verified. The Railway database Data view
+also showed no tables, which conflicts with the earlier migration record;
+inspect the retention-service deployment and migration logs before enabling
+the browser proxy or assistant bridge.
 
 ## 2026-07-29 Customer Decisioning Foundation Deployed
 

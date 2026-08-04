@@ -205,6 +205,7 @@ function normalizeSendMessageOptions(
   delete nextConfig.overrideProfile;
   delete nextConfig.forceOverrideProfile;
   delete nextConfig.selectionSeed;
+  delete nextConfig.retryMode;
 
   if (config.callSite !== undefined) {
     const resolved = resolveCallSiteConfig(config.callSite, getConfig().llm, {
@@ -587,6 +588,7 @@ export class RetryProvider implements Provider {
     messages: Message[],
     options?: SendMessageOptions,
   ): Promise<ProviderResponse> {
+    const retriesDisabled = options?.config?.retryMode === "none";
     let lastError: unknown;
     let didRetry = false;
 
@@ -605,7 +607,11 @@ export class RetryProvider implements Provider {
       } catch (error) {
         lastError = error;
 
-        if (attempt < DEFAULT_MAX_RETRIES && isRetryableError(error)) {
+        if (
+          !retriesDisabled &&
+          attempt < DEFAULT_MAX_RETRIES &&
+          isRetryableError(error)
+        ) {
           // Prefer server-provided Retry-After; fall back to exponential backoff.
           const retryAfter =
             error instanceof ProviderError ? error.retryAfterMs : undefined;

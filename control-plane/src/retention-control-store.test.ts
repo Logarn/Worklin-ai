@@ -8,6 +8,7 @@ import {
   listActiveRetentionWakeTargets,
   replaceRetentionAccessGrants,
   retentionRolesForUser,
+  retentionIntegrationCreatePayload,
   retentionIntegrationConnectionPayload,
   setRetentionIntegrationBindingStatus,
 } from "./retention-control-store.js";
@@ -29,10 +30,7 @@ describe("retention control store", () => {
       organizationId: "org-1",
       userId: "marketer-1",
       grantedByUserId: "owner-1",
-      roles: [
-        "retention_marketer",
-        "retention_campaign_approver",
-      ],
+      roles: ["retention_marketer", "retention_campaign_approver"],
       nowIso: "2026-07-28T12:00:00.000Z",
     });
     expect(
@@ -42,10 +40,7 @@ describe("retention control store", () => {
         organizationOwnerId: "owner-1",
         workspaceRole: "manager",
       }),
-    ).toEqual([
-      "retention_campaign_approver",
-      "retention_marketer",
-    ]);
+    ).toEqual(["retention_campaign_approver", "retention_marketer"]);
   });
 
   test("resolves only activated provider bindings", () => {
@@ -93,10 +88,34 @@ describe("retention control store", () => {
     );
     expect(payload).toEqual({
       id: "retention-integration-id",
-      controlPlaneConnectionId:
-        "11111111-1111-4111-8111-111111111111",
+      controlPlaneConnectionId: "11111111-1111-4111-8111-111111111111",
       webhookPath:
         "/webhooks/retention/klaviyo/11111111-1111-4111-8111-111111111111",
+    });
+  });
+
+  test("overwrites client-controlled integration routing secrets", () => {
+    expect(
+      retentionIntegrationCreatePayload(
+        {
+          provider: "klaviyo",
+          brandId: "11111111-1111-4111-8111-111111111111",
+          credential: "private-key-value",
+          controlPlaneConnectionId: "client-binding",
+          webhookSecret: "client-webhook-secret",
+          webhookRouteToken: "client-route-token",
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          webhookSecret: "server-webhook-secret",
+        },
+      ),
+    ).toEqual({
+      provider: "klaviyo",
+      brandId: "11111111-1111-4111-8111-111111111111",
+      credential: "private-key-value",
+      controlPlaneConnectionId: "22222222-2222-4222-8222-222222222222",
+      webhookSecret: "server-webhook-secret",
     });
   });
 

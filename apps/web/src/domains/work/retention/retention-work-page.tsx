@@ -22,6 +22,7 @@ import type {
   RetentionIntegrationStatus,
   RetentionStatus,
 } from "./retention-api";
+import { RetentionAudiences } from "./retention-audiences";
 import { RetentionCampaignReview } from "./retention-campaign-review";
 import { RetentionSetup } from "./retention-setup";
 import { useRetentionStatus } from "./use-retention-status";
@@ -34,10 +35,7 @@ const PROVIDERS = [
 type ProviderId = (typeof PROVIDERS)[number]["id"];
 type SourceTone = "positive" | "warning" | "negative" | "neutral";
 
-const SOURCE_STATUS: Record<
-  string,
-  { label: string; tone: SourceTone }
-> = {
+const SOURCE_STATUS: Record<string, { label: string; tone: SourceTone }> = {
   active: { label: "Connected", tone: "positive" },
   backfilling: { label: "Importing", tone: "warning" },
   pending: { label: "Connecting", tone: "neutral" },
@@ -357,7 +355,7 @@ export function RetentionWorkPage() {
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
   const query = useRetentionStatus(assistantId);
   const [activeView, setActiveView] = useState<
-    "campaigns" | "setup" | "health"
+    "campaigns" | "audiences" | "setup" | "health"
   >("campaigns");
 
   useEffect(() => {
@@ -392,8 +390,8 @@ export function RetentionWorkPage() {
             Customer decisions
           </h1>
           <p className="mt-2 max-w-2xl text-body-small-default text-[var(--content-tertiary)]">
-            Review personalized campaigns, then approve and release them
-            separately.
+            Find useful customer groups and review campaign ideas before
+            anything is sent.
           </p>
         </div>
         <div
@@ -403,6 +401,7 @@ export function RetentionWorkPage() {
         >
           {[
             { id: "campaigns" as const, label: "Campaigns" },
+            { id: "audiences" as const, label: "Audiences" },
             { id: "setup" as const, label: "Setup" },
             { id: "health" as const, label: "Data health" },
           ].map((view) => (
@@ -452,6 +451,8 @@ export function RetentionWorkPage() {
               retentionStatus={query.data ?? null}
             />
           </div>
+        ) : activeView === "audiences" ? (
+          <RetentionAudiences assistantId={assistantId} />
         ) : activeView === "setup" ? (
           <RetentionSetup assistantId={assistantId} />
         ) : (

@@ -110,7 +110,7 @@ async function retentionCampaignRequest(
   );
 }
 
-async function retentionOperatorRequest(
+export async function retentionOperatorRequest(
   context: ToolContext,
   method: "GET" | "POST",
   path: string,
