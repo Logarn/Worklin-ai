@@ -5,8 +5,6 @@ import { useIsOrgReady } from "@/hooks/use-is-org-ready";
 import {
   activateRetentionProgram,
   approveRetentionImport,
-  connectRetentionKlaviyo,
-  type ConnectKlaviyoInput,
   fetchRetentionImports,
   fetchRetentionProgramApprovalPreview,
   fetchRetentionPrograms,
@@ -97,24 +95,6 @@ export function useApproveRetentionImport(assistantId: string) {
   return useMutation({
     mutationFn: (migrationRunId: string) =>
       approveRetentionImport(assistantId, migrationRunId),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["retention", "imports", assistantId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["retention", "status", assistantId],
-        }),
-      ]);
-    },
-  });
-}
-
-export function useConnectKlaviyo(assistantId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ConnectKlaviyoInput) =>
-      connectRetentionKlaviyo(assistantId, input),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
