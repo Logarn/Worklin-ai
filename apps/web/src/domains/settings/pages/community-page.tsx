@@ -3,7 +3,6 @@ import {
     Bug,
     ExternalLink,
     GitPullRequest,
-    Globe,
     Heart,
     Play,
     Sparkles,
@@ -12,13 +11,12 @@ import {
 } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 
-import { DiscordLogo } from "@/components/icons/discord-logo";
 import { GitHubLogo } from "@/components/icons/github-logo";
+import { SlackLogo } from "@/components/icons/slack-logo";
 import { XLogo } from "@/components/icons/x-logo";
 import { YouTubeLogo } from "@/components/icons/youtube-logo";
-import { joinDiscord } from "@/hooks/use-discord-nudge";
 import { GITHUB_REPO_URL, useGitHubNudgeState } from "@/hooks/use-github-nudge";
-import { VELLUM_COMMUNITY_URL } from "@/utils/external-urls";
+import { joinSlack } from "@/hooks/use-slack-nudge";
 import { Button } from "@vellumai/design-library/components/button";
 import { Card } from "@vellumai/design-library/components/card";
 import { Tag } from "@vellumai/design-library/components/tag";
@@ -249,11 +247,11 @@ export function CommunityPage() {
         />
 
         <FeatureCard
-          accentColor="#5865F2"
-          label="Discord"
-          icon={<DiscordLogo size={20} />}
-          title="Join our community"
-          subtitle="Talk to the team, share feedback, request features, and get answers faster."
+          accentColor="#4A154B"
+          label="Private beta"
+          icon={<SlackLogo size={20} />}
+          title="Join the Worklin Slack group"
+          subtitle="Invite-only and currently open to a small group of beta testers."
           benefits={[
             { icon: Heart, text: "Talk directly with the team" },
             {
@@ -266,11 +264,9 @@ export function CommunityPage() {
             },
           ]}
           primaryAction={{
-            label: "Join Discord",
-            icon: (
-              <DiscordLogo size={16} style={{ color: "currentColor" }} />
-            ),
-            onClick: joinDiscord,
+            label: "Join Slack",
+            icon: <SlackLogo size={16} />,
+            onClick: joinSlack,
           }}
         />
       </div>
@@ -279,14 +275,7 @@ export function CommunityPage() {
         <h2 className="text-label-medium-default uppercase tracking-wider text-[color:var(--content-tertiary)]">
           More from Worklin
         </h2>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <ResourceCard
-            icon={<Globe size={20} />}
-            iconBg="#22c55e"
-            title="Community Hub"
-            description="Showcases, guides, and projects shared by the community."
-            href={VELLUM_COMMUNITY_URL}
-          />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <ResourceCard
             icon={<XLogo size={20} />}
             iconBg="var(--content-default)"

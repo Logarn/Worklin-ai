@@ -95,7 +95,7 @@ export interface ChatBodyProps {
   canStopGenerating?: boolean;
 
   /**
-   * Optional pre-rendered banner stack (mobile-app nudge / GitHub / Discord)
+   * Optional pre-rendered banner stack (mobile-app nudge / GitHub / Slack)
    * rendered alongside the scroll-to-latest button in the absolute-positioned
    * overlay above the composer. Omitted by the app-editing side panel.
    */
@@ -200,7 +200,7 @@ export function ChatBody({
   // Suppress the absolutely-positioned overlay on the empty state: its
   // `bottom-full` positioning would overlap the greeting when the outer
   // container centers greeting + composer + starters as a group.
-  // Banners (app-download nudge, GitHub star, Discord) show once the
+  // Banners (app-download nudge, GitHub star, Slack) show once the
   // user sends a message and the empty state clears. `showScrollToLatest`
   // is already false on the empty state (gated on `messages.length > 0`
   // at the call site), so this only affects `bannerSlot`.

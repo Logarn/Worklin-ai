@@ -1,1 +1,2 @@
-export const VELLUM_COMMUNITY_URL = "https://vellum.ai/community";
+export const WORKLIN_SLACK_INVITE_URL =
+  "https://join.slack.com/share/enQtMTE3NDIwMzI5NzQ5NzktZmJiYmQyZjdmOGFhZTk3ODY5NmIyODFhMDQ3M2M0MDYxNzUxODM0Y2M1YTYwMDBlY2U5NDg1ZmZlZDA5NmE2MQ";

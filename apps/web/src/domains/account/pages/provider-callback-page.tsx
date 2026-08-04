@@ -14,7 +14,7 @@ import {
 import { isLocalMode, syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOrganizationStore } from "@/stores/organization-store";
-import { VELLUM_COMMUNITY_URL } from "@/utils/external-urls";
+import { WORKLIN_SLACK_INVITE_URL } from "@/utils/external-urls";
 import { routes } from "@/utils/routes";
 
 /**
@@ -106,16 +106,16 @@ export function ProviderCallbackPage() {
       <AccountShell>
         <AccountHeading
           title="Signups are currently closed"
-          subtitle="Join the community to request access or learn when signups reopen."
+          subtitle="Our Slack group is invite-only and currently open to a small group of beta testers."
         />
         <div className="flex flex-col items-center gap-4">
           <a
-            href={VELLUM_COMMUNITY_URL}
+            href={WORKLIN_SLACK_INVITE_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--primary-base)] px-6 py-3 text-sm font-medium text-[var(--content-inset)] no-underline transition-colors hover:bg-[var(--primary-hover)]"
           >
-            Join the community
+            Join the beta Slack
           </a>
           <Link
             to={routes.account.login}

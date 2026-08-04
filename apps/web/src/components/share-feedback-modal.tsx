@@ -36,7 +36,7 @@ import { buildDiagnosticsSnapshot } from "@/lib/diagnostics";
 import { buildDebugFlagSnapshot } from "@/lib/feature-flags/debug-flag-snapshot";
 import { isElectron } from "@/runtime/is-electron";
 import { useAuthStore } from "@/stores/auth-store";
-import { VELLUM_COMMUNITY_URL } from "@/utils/external-urls";
+import { WORKLIN_SLACK_INVITE_URL } from "@/utils/external-urls";
 import { Button } from "@vellumai/design-library/components/button";
 import {
     Dropdown,
@@ -747,12 +747,12 @@ export function ShareFeedbackModal({
             <Notice tone="info">
               Tip: Get faster support by posting in our{" "}
               <a
-                href={VELLUM_COMMUNITY_URL}
+                href={WORKLIN_SLACK_INVITE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline text-[var(--content-default)]"
               >
-                Discord community
+                invite-only beta Slack group
               </a>
             </Notice>
           )}

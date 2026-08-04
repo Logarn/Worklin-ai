@@ -1,9 +1,9 @@
 /**
- * Zustand store for GitHub + Discord nudge prefs.
+ * Zustand store for GitHub + Slack nudge preferences.
  *
  * Owns whether each nudge has been actioned (starred, joined) or
  * dismissed (banner) and when. `use-github-nudge.ts` and
- * `use-discord-nudge.ts` expose thin selector hooks backed by this store.
+ * `use-slack-nudge.ts` expose thin selector hooks backed by this store.
  *
  * **Storage model:**
  *
@@ -36,10 +36,10 @@ export interface NudgeState {
   githubFirstSeenAt: number;
   /** Cumulative count of user messages sent across all conversations. */
   githubUserMessagesSeen: number;
-  discordJoined: boolean;
-  discordBannerDismissed: boolean;
-  /** Epoch ms of the first time the Discord nudge module observed the user. 0 = not yet recorded. */
-  discordFirstSeenAt: number;
+  slackJoined: boolean;
+  slackBannerDismissed: boolean;
+  /** Epoch ms of the first time the Slack nudge module observed the user. 0 = not yet recorded. */
+  slackFirstSeenAt: number;
 }
 
 export interface NudgeActions {
@@ -48,10 +48,10 @@ export interface NudgeActions {
   /** Stamp `githubFirstSeenAt` to `Date.now()` on first observation. No-op afterwards. */
   ensureGitHubFirstSeenAt: () => void;
   incrementGitHubUserMessagesSeen: (delta: number) => void;
-  markDiscordJoined: () => void;
-  dismissDiscordBanner: () => void;
-  /** Stamp `discordFirstSeenAt` to `Date.now()` on first observation. No-op afterwards. */
-  ensureDiscordFirstSeenAt: () => void;
+  markSlackJoined: () => void;
+  dismissSlackBanner: () => void;
+  /** Stamp `slackFirstSeenAt` to `Date.now()` on first observation. No-op afterwards. */
+  ensureSlackFirstSeenAt: () => void;
 }
 
 export type NudgeStore = NudgeState & NudgeActions;
@@ -66,9 +66,9 @@ const INITIAL_STATE: NudgeState = {
   githubBannerDismissedAt: 0,
   githubFirstSeenAt: 0,
   githubUserMessagesSeen: 0,
-  discordJoined: false,
-  discordBannerDismissed: false,
-  discordFirstSeenAt: 0,
+  slackJoined: false,
+  slackBannerDismissed: false,
+  slackFirstSeenAt: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -97,11 +97,11 @@ const useNudgeStoreBase = create<NudgeStore>()(
         if (delta <= 0) return;
         set({ githubUserMessagesSeen: get().githubUserMessagesSeen + delta });
       },
-      markDiscordJoined: () => set({ discordJoined: true }),
-      dismissDiscordBanner: () => set({ discordBannerDismissed: true }),
-      ensureDiscordFirstSeenAt: () => {
-        if (get().discordFirstSeenAt === 0) {
-          set({ discordFirstSeenAt: Date.now() });
+      markSlackJoined: () => set({ slackJoined: true }),
+      dismissSlackBanner: () => set({ slackBannerDismissed: true }),
+      ensureSlackFirstSeenAt: () => {
+        if (get().slackFirstSeenAt === 0) {
+          set({ slackFirstSeenAt: Date.now() });
         }
       },
     }),
@@ -114,9 +114,9 @@ const useNudgeStoreBase = create<NudgeStore>()(
         githubBannerDismissedAt: state.githubBannerDismissedAt,
         githubFirstSeenAt: state.githubFirstSeenAt,
         githubUserMessagesSeen: state.githubUserMessagesSeen,
-        discordJoined: state.discordJoined,
-        discordBannerDismissed: state.discordBannerDismissed,
-        discordFirstSeenAt: state.discordFirstSeenAt,
+        slackJoined: state.slackJoined,
+        slackBannerDismissed: state.slackBannerDismissed,
+        slackFirstSeenAt: state.slackFirstSeenAt,
       }),
     },
   ),
@@ -135,5 +135,4 @@ if (typeof window !== "undefined") {
     }
   });
 }
-
 

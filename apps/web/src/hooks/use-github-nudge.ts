@@ -3,7 +3,7 @@
  *
  * Backed by `useNudgeStore`; this file exposes the GitHub-specific
  * derived state, click handlers, and a few non-React readers used by the
- * Discord-nudge prerequisite checks.
+ * community-nudge prerequisite checks.
  *
  * The nudge is gated behind two engagement thresholds (either one
  * qualifies): a minimum account age (time since first observation) and
