@@ -221,7 +221,8 @@ Use a one-time, private migration release:
 4. Keep both write kill switches `false`.
 5. Start the release and wait for migrations `001_initial`,
    `002_privacy_workflows`, `003_program_policy_approvals`, and
-   `004_raw_payload_deletion_outbox` to be recorded.
+   `004_raw_payload_deletion_outbox`, and `005_segment_review_pilot` to be
+   recorded.
 6. Stop the temporary migration service.
 7. Apply the runtime grants below.
 8. Deploy the normal service with the runtime URL.
