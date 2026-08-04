@@ -579,7 +579,7 @@ describe("KlaviyoProviderSyncClient", () => {
     expect(request.url.origin).toBe("https://a.klaviyo.com");
     expect(request.url.pathname).toBe("/api/profiles");
     expect(request.url.searchParams.get("page[size]")).toBe("50");
-    expect(request.url.searchParams.get("sort")).toBe("updated");
+    expect(request.url.searchParams.get("sort")).toBe("-updated");
     expect(request.init?.method).toBe("GET");
     expect(request.init?.body).toBeUndefined();
     const headers = new Headers(request.init?.headers);
@@ -706,6 +706,7 @@ describe("KlaviyoProviderSyncClient", () => {
     expect(resumed.searchParams.get("filter")).toBe(
       "greater-or-equal(updated,2026-07-28T09:00:00.000Z)",
     );
+    expect(resumed.searchParams.get("sort")).toBe("updated");
   });
 
   test("rejects cross-origin, credentialed, wrong-path, and malformed next links", async () => {
@@ -883,6 +884,7 @@ describe("KlaviyoProviderSyncClient", () => {
     });
 
     expect(page.events).toHaveLength(1);
+    expect(mock.requests[0]!.url.searchParams.get("sort")).toBe("-datetime");
     expect(page.events[0]?.externalEventId).toBe(
       "klaviyo.event:event-valid-uuid",
     );
