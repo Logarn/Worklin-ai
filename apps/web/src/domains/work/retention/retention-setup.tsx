@@ -10,7 +10,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router";
+import { useNavigate } from "react-router";
 
 import type { RetentionIntegrationStatus } from "@/lib/retention/status";
 import { useRetentionStatus } from "@/lib/retention/use-retention-status";
@@ -147,6 +147,7 @@ function DataConnectionsSection({
   isPending: boolean;
   isUnavailable: boolean;
 }) {
+  const navigate = useNavigate();
   const isConnected = integration !== null && integration.status !== "revoked";
   const statusLabel = isPending
     ? "Checking Klaviyo connection"
@@ -187,10 +188,15 @@ function DataConnectionsSection({
           )}
           {statusLabel}
         </p>
-        <Button variant="outlined" size="compact" leftIcon={<Cable />} asChild>
-          <Link to={`${routes.settings.integrations}?provider=klaviyo`}>
-            {isConnected ? "View integration" : "Connect Klaviyo"}
-          </Link>
+        <Button
+          variant="outlined"
+          size="compact"
+          leftIcon={<Cable />}
+          onClick={() =>
+            navigate(`${routes.settings.integrations}?provider=klaviyo`)
+          }
+        >
+          {isConnected ? "View integration" : "Connect Klaviyo"}
         </Button>
       </div>
     </section>
