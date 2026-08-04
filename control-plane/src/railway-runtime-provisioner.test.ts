@@ -53,7 +53,9 @@ function config(
   return {
     enabled: true,
     retentionAssistantBridgeEnabled: true,
-    controlPlaneInternalUrl: "http://worklin-control-plane.railway.internal:8082",
+    brandIntelligenceArchiveBridgeEnabled: false,
+    controlPlaneInternalUrl:
+      "http://worklin-control-plane.railway.internal:8082",
     retentionGatewayIngressSecret: "r".repeat(32),
     apiEndpoint: "https://backboard.railway.test/graphql/v2",
     projectToken: "project-token",
@@ -140,6 +142,20 @@ describe("railwayProvisionerConfigFromEnv", () => {
         }),
       ),
     ).toContain("GATEWAY_INGRESS_SECRET");
+  });
+
+  test("fails closed when archive-only bridge routing is incomplete", () => {
+    const parsed = railwayProvisionerConfigFromEnv({
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "true",
+      WORKLIN_RAILWAY_PROJECT_TOKEN: "token",
+      WORKLIN_RAILWAY_PROJECT_ID: "project",
+      WORKLIN_RAILWAY_ENVIRONMENT_ID: "environment",
+      WORKLIN_RAILWAY_MAX_RUNTIME_SERVICES: "5",
+      WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BRIDGE_ENABLED: "true",
+    });
+    expect(railwayProvisionerConfigurationError(parsed)).toContain(
+      "CONTROL_PLANE_INTERNAL_URL",
+    );
   });
 
   test("pins retries to the control-plane release when a Git commit is available", () => {
@@ -347,7 +363,10 @@ describe("provisionRailwayRuntime", () => {
       stack: stack(),
       runtimeActorSigningKey: "a".repeat(64),
       allowServiceCreation: true,
-      config: config({ mountPath: "/runtime/customer" }),
+      config: config({
+        mountPath: "/runtime/customer",
+        brandIntelligenceArchiveBridgeEnabled: true,
+      }),
       fetchImpl,
       sleep: async (delayMs) => {
         clock += delayMs;
@@ -384,6 +403,7 @@ describe("provisionRailwayRuntime", () => {
       RUNTIME_ASSISTANT_SCOPE_MODE: "enforce",
       ACTOR_TOKEN_SIGNING_KEY: "a".repeat(64),
       WORKLIN_RETENTION_ASSISTANT_BRIDGE_ENABLED: "true",
+      WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BRIDGE_ENABLED: "true",
       WORKLIN_CONTROL_PLANE_INTERNAL_URL:
         "http://worklin-control-plane.railway.internal:8082",
       WORKLIN_RETENTION_GATEWAY_INGRESS_SECRET: "r".repeat(32),

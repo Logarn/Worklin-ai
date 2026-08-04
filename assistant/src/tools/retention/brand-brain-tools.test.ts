@@ -409,6 +409,10 @@ describe("Brand Brain skill tools", () => {
     expect(result.isError).toBe(false);
     expect(parsed.saved).toBe(true);
     expect(parsed.artifactSaved).toBe(true);
+    expect(parsed.offVolumeArchive).toEqual({
+      status: "skipped",
+      reason: "platform_context_missing",
+    });
     expect(parsed.snapshotId).toStartWith("brand_research_");
     const stored = JSON.parse(
       (await executeBrandBrainRead({}, context)).content,
@@ -435,6 +439,10 @@ describe("Brand Brain skill tools", () => {
     expect(artifacts[0]?.title).toBe("Competitor Intelligence");
     expect(artifacts[0]?.metadata?.snapshotId).toBe(parsed.snapshotId);
     expect(artifacts[0]?.metadata?.researchHistoryPreserved).toBe(true);
+    expect(artifacts[0]?.metadata?.offVolumeArchive).toEqual({
+      status: "skipped",
+      reason: "platform_context_missing",
+    });
     const document = getDocumentById(parsed.artifactSurfaceId);
     expect(document?.content).toContain("# Acme Studio Brand Research");
     expect(document?.content).toContain("### [Rival Studio]");

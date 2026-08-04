@@ -257,15 +257,15 @@ single-source claim or opaque provider estimate cannot exceed medium.
 A deep report is accepted only at 80 out of 100 or higher, with no category
 below 60 percent of its available points.
 
-| Category | Points |
-| --- | ---: |
-| Coverage | 15 |
-| Evidence quality and traceability | 20 |
-| Hypothesis discipline | 15 |
-| Quantification | 15 |
-| Strategic synthesis | 15 |
-| Visual reasoning | 10 |
-| Transparency, risk and limitations | 10 |
+| Category                           | Points |
+| ---------------------------------- | -----: |
+| Coverage                           |     15 |
+| Evidence quality and traceability  |     20 |
+| Hypothesis discipline              |     15 |
+| Quantification                     |     15 |
+| Strategic synthesis                |     15 |
+| Visual reasoning                   |     10 |
+| Transparency, risk and limitations |     10 |
 
 The report must also satisfy all blocking rules:
 
@@ -359,6 +359,71 @@ Every brand-scoped turn receives a compact Brand Context Pack containing:
 Raw reports and media do not enter every prompt. A read-only Brand
 Intelligence query tool provides module, competitor, date-range, filter,
 sorting and pagination access when deeper detail is needed.
+
+## Storage And Recovery
+
+Brand Brain is the live source of truth for agent work. A successful research
+save updates Brand Brain first, writes the normal local immutable snapshot, and
+then queues a best-effort off-volume archive. Archive latency or failure never
+turns a valid Brand Brain save into a failed user task.
+
+The pilot archive stores one private, immutable JSON manifest for each accepted
+research snapshot. The manifest contains the full Brand Brain revision, full
+research report, quality result, provenance, source links, and the inventory of
+visual evidence. Public image and email-preview assets are copied when they are
+safe and available. Video metadata, source links, transcripts, and thumbnails
+are retained, but full video files are not copied in the pilot tier.
+
+Objects are isolated by organization, assistant, and permanent brand ID. Stable
+snapshot IDs and SHA-256 checksums make retries idempotent and avoid duplicate
+copies within a brand. The application exposes no public bucket URL, presigned
+download route, or browser credential. Failed asset copies leave an explicit
+gap in the manifest instead of pretending the archive is complete.
+
+Pilot cost controls are enforced before upload:
+
+- 8 GiB across the entire archive;
+- 1.5 GiB per brand;
+- a warning at 70 percent of either limit;
+- no automatic quota increase;
+- at most 24 visual assets per snapshot;
+- at most 10 MiB per visual asset; and
+- at most 8 MiB for one submitted research payload.
+
+The current archive is a recovery source, not the context agents read on every
+turn. Restoring an older snapshot is an operator action: inspect the immutable
+manifest, validate its tenant and evidence, and publish an approved Brand Brain
+revision through the normal Brand Brain save contract. Automatic rollback is
+intentionally absent so an old snapshot cannot silently overwrite newer
+approved context.
+
+### Railway Configuration
+
+Create one private production Railway bucket and use reference variables from
+the bucket service. `BUCKET` is the S3 API bucket name; do not use the display
+name in `RAILWAY_BUCKET_NAME`.
+
+| Control-plane variable                                    | Value                                                                                   |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_ENABLED`              | `true`                                                                                  |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BUCKET`               | `${{brand-intelligence-archive.BUCKET}}`                                                |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_S3_ENDPOINT`          | `${{brand-intelligence-archive.ENDPOINT}}`                                              |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_S3_REGION`            | `${{brand-intelligence-archive.REGION}}`                                                |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_S3_ACCESS_KEY_ID`     | `${{brand-intelligence-archive.ACCESS_KEY_ID}}`                                         |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_S3_SECRET_ACCESS_KEY` | `${{brand-intelligence-archive.SECRET_ACCESS_KEY}}`                                     |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_S3_URL_STYLE`         | `virtual` for current Railway buckets; use the bucket Credentials tab for older buckets |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_GLOBAL_MAX_BYTES`     | 8589934592                                                                              |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_PER_BRAND_MAX_BYTES`  | 1610612736                                                                              |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_WARNING_PERCENT`      | `70`                                                                                    |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_MAX_JOB_BYTES`        | `8388608`                                                                               |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_MAX_ASSET_BYTES`      | `10485760`                                                                              |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_MAX_VISUAL_ASSETS`    | `24`                                                                                    |
+| `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_FETCH_TIMEOUT_MS`     | `10000`                                                                                 |
+
+Set `WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_BRIDGE_ENABLED=true` on each assistant
+runtime that may save brand research. The runtime receives no bucket
+credentials; it may only submit a tenant-bound archive request through the
+existing authenticated control-plane bridge.
 
 ## Public-Evidence Limits
 
