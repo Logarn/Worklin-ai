@@ -10,7 +10,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-klaviyo-integration-home`
 - Current deployed product release: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f` (`Support all Klaviyo custom properties`, PR `#171`).
 - Current production control-plane source: `a5bc6240f756cc5f8fe4544a8ba66a8fd523be8f`. Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
-- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`.
+- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
@@ -82,15 +82,41 @@ research run. Current visual media is retained as source URLs and metadata, not
 as copied image or video bytes; durable binary archiving remains a later object
 storage decision and must not be enabled without cost approval.
 
+Production deployment and release verification passed for the browser-launch
+surfaces:
+
+- Vercel deployed PR `#170` as a Ready production release and then promoted the
+  later `main` release for PR `#171`; the later release contains PR `#170` as an
+  ancestor, and `https://worklin-ai.vercel.app/assistant` returns HTTP 200.
+- Railway deployment `09b97408-fe6a-4b05-a6fb-4287795156a3` succeeded for the
+  `Worklin-ai` control-plane service from the exact PR `#170` merge SHA.
+- Public `/healthz` reported the PR `#170` merge SHA after that deployment. It
+  now reports the later PR `#171` SHA, while `/readyz` still returns `ok: true`,
+  `runtimeMode: "control-plane"`, and `provisionerReady: true`.
+- The main web, assistant, gateway, and Storybook workflows passed. The full PR
+  assistant test also completed successfully.
+- The native macOS workflow failed before application build because its GitHub
+  App token retry could not generate a token. This does not block the web
+  release and remains outside the browser-launch scope.
+
+Authenticated Chrome verification passed for the existing Hangaritas account:
+the canonical Work artifacts page loaded after a production reload and kept the
+user signed in. Hangaritas currently has no saved production artifacts, so this
+proves the deployed authenticated shell, not a completed production research
+run. Do not claim a live competitor-intelligence artifact until a real provider
+run passes validation and saves it into Hangaritas Brand Brain.
+
 Local verification passed the focused assistant Brand Brain tests (`15`),
 retention-domain tests (`34`), control-plane research tests (`21`), isolated web
 tests (`7`), all four relevant typechecks, the exact Vercel production build,
 desktop visual checks, and mobile visual checks. The expected local auth and
 feature-flag proxy calls returned connection errors because those backend
 services were intentionally not started; the artifact itself rendered and
-interacted correctly. The change is included in the current successful Vercel
-and Railway control-plane release. An authenticated production check of the
-competitor artifact itself remains pending.
+interacted correctly. No new paid service, provider run, customer-data import,
+or billable storage was created during deployment. The change is included in
+the current successful Vercel and Railway control-plane release. The
+authenticated production shell passed; the competitor artifact itself remains
+pending until a real validated research run saves it into Brand Brain.
 
 ## 2026-08-04 Same-Day Campaign Review Pilot Deployed Behind Safety Gates
 
