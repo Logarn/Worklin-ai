@@ -1,7 +1,21 @@
 import { isHttpAuthDisabled } from "../../config/env.js";
 import { findGuardianForChannel } from "../../contacts/contact-store.js";
+import { healGuardianBindingDrift } from "../guardian-vellum-migration.js";
 import { httpError } from "../http-errors.js";
 import type { AuthContext } from "./types.js";
+
+function isAuthenticatedIsolatedPlatformOwner(
+  authContext: AuthContext,
+): boolean {
+  const tenant = authContext.tenantContext;
+  return (
+    authContext.principalType === "actor" &&
+    tenant !== undefined &&
+    authContext.pooledWorkerLease === undefined &&
+    tenant.assistantId === authContext.assistantId &&
+    tenant.actorId === authContext.actorPrincipalId
+  );
+}
 
 /**
  * Verify the actor from AuthContext is the bound guardian for the vellum channel.
@@ -22,6 +36,13 @@ export function requireBoundGuardian(
       403,
     );
   }
+
+  if (isAuthenticatedIsolatedPlatformOwner(authContext)) {
+    healGuardianBindingDrift(authContext.actorPrincipalId, {
+      platformOwnerBound: true,
+    });
+  }
+
   const guardianResult = findGuardianForChannel("vellum");
   if (!guardianResult) {
     // No guardian yet — in pre-bootstrap state, allow through
