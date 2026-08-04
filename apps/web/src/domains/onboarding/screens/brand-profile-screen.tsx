@@ -27,8 +27,6 @@ export function BrandProfileScreen({
   onSkip,
 }: BrandProfileScreenProps) {
   const electron = isElectron();
-  const canContinue =
-    brandName.trim().length > 0 || websiteUrl.trim().length > 0;
 
   return (
     <OnboardingLayout showCreatureFooter={false}>
@@ -104,7 +102,6 @@ export function BrandProfileScreen({
             variant="primary"
             size="regular"
             fullWidth
-            disabled={!canContinue}
             onClick={onContinue}
             className={`${electron ? "h-9" : "h-11 text-base"}`}
           >

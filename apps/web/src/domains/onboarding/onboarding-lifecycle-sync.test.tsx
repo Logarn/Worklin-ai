@@ -122,6 +122,7 @@ const fetchAssistantCharacterProfileMock = mock(() =>
 );
 const saveAssistantCharacterProfileMock = mock(async () => true);
 const saveCharacterTraitsMock = mock(async () => true);
+const enqueueBrandResearchRunMock = mock(async () => null);
 const invalidateQueriesMock = mock(() => {});
 const queryClientMock = {
   fetchQuery: mock(async () => []),
@@ -213,6 +214,10 @@ mock.module("@/assistant/avatar-api", () => ({
   fetchCharacterTraits: fetchCharacterTraitsMock,
   saveAssistantCharacterProfile: saveAssistantCharacterProfileMock,
   saveCharacterTraits: saveCharacterTraitsMock,
+}));
+
+mock.module("@/lib/brand-research", () => ({
+  enqueueBrandResearchRun: enqueueBrandResearchRunMock,
 }));
 
 mock.module("@/lib/sync/query-tags", () => ({
@@ -965,6 +970,7 @@ describe("onboarding lifecycle sync", () => {
       userName: "Alice",
       googleConnected: false,
       initialMessage: "Hi Spiky Spark, I'm Alice. Nice to meet you.",
+      skills: ["worklin-brand-research"],
     });
 
     await waitFor(() => expect(checkAssistantMock).toHaveBeenCalled());
@@ -1101,6 +1107,7 @@ describe("onboarding lifecycle sync", () => {
       userName: "Alice",
       googleConnected: false,
       initialMessage: DEFAULT_PRECHAT_INITIAL_MESSAGE,
+      skills: ["worklin-brand-research"],
     });
   });
 
@@ -1180,6 +1187,7 @@ describe("onboarding lifecycle sync", () => {
       cohort: ACTIVATION_FLOW_COHORT,
       initialMessage: "Hi Spiky Spark, I'm Alice. Nice to meet you.",
       bootstrapTemplate: ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE,
+      skills: ["worklin-brand-research"],
     });
   });
 
@@ -1278,7 +1286,7 @@ describe("onboarding lifecycle sync", () => {
       cohort: recipe.cohort,
       initialMessage: recipe.initialMessage,
       bootstrapTemplate: recipe.bootstrapTemplate,
-      skills: recipe.skills,
+      skills: ["content-automation", "worklin-brand-research"],
     });
   });
 

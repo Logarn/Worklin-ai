@@ -8,9 +8,7 @@ import {
   getArtifactDisplayFilter,
 } from "./artifact-display";
 
-function artifact(
-  overrides: Partial<RegistryArtifact> = {},
-): RegistryArtifact {
+function artifact(overrides: Partial<RegistryArtifact> = {}): RegistryArtifact {
   return {
     id: "artifact-1",
     brandId: "brand-1",
@@ -33,10 +31,18 @@ function artifact(
 
 describe("artifact display mapping", () => {
   test("groups open-ended artifact types under stable filters", () => {
-    expect(getArtifactDisplayFilter(artifact({ artifactType: "email_copy" }))).toBe("copy");
-    expect(getArtifactDisplayFilter(artifact({ artifactType: "product_image" }))).toBe("images");
-    expect(getArtifactDisplayFilter(artifact({ artifactType: "facebook_post" }))).toBe("social");
-    expect(artifactMatchesFilter(artifact({ resourceType: "app" }), "apps")).toBe(true);
+    expect(
+      getArtifactDisplayFilter(artifact({ artifactType: "email_copy" })),
+    ).toBe("copy");
+    expect(
+      getArtifactDisplayFilter(artifact({ artifactType: "product_image" })),
+    ).toBe("images");
+    expect(
+      getArtifactDisplayFilter(artifact({ artifactType: "facebook_post" })),
+    ).toBe("social");
+    expect(
+      artifactMatchesFilter(artifact({ resourceType: "app" }), "apps"),
+    ).toBe(true);
     expect(artifactMatchesFilter(artifact(), "all")).toBe(true);
   });
 
@@ -60,14 +66,66 @@ describe("artifact display mapping", () => {
         "unassigned",
       ),
     ).toBe("/assistant/work/brands/unassigned/artifacts/apps/app-1");
-    expect(getArtifactDestination(artifact({ sourceExists: false }), "brand-1")).toBeUndefined();
+    expect(
+      getArtifactDestination(artifact({ sourceExists: false }), "brand-1"),
+    ).toBeUndefined();
+  });
+
+  test("keeps Brand Research visible as an openable Work document", () => {
+    const research = artifact({
+      artifactType: "brand_research",
+      resourceType: "document",
+      resourceId: "brand-research:brand-1",
+    });
+    expect(getArtifactDisplayFilter(research)).toBe("documents");
+    expect(artifactMatchesFilter(research, "all")).toBe(true);
+    expect(getArtifactDestination(research, "brand-1")).toBe(
+      "/assistant/documents/brand-research:brand-1",
+    );
+  });
+
+  test("opens structured competitor intelligence in its tabbed Work view", () => {
+    const intelligence = artifact({
+      id: "document:brand-research:brand-1",
+      artifactType: "competitor_intelligence",
+      resourceType: "document",
+      resourceId: "brand-research:brand-1",
+      metadata: { competitorIntelligence: { version: "brand_research_v1" } },
+    });
+
+    expect(getArtifactDestination(intelligence, "brand-1")).toBe(
+      "/assistant/work/brands/brand-1/artifacts/intelligence/document:brand-research:brand-1",
+    );
+  });
+
+  test("opens deep brand intelligence in the same Work intelligence view", () => {
+    const intelligence = artifact({
+      id: "document:brand-intelligence:brand-1",
+      artifactType: "brand_intelligence",
+      resourceType: "document",
+      resourceId: "brand-intelligence:brand-1",
+      metadata: {
+        brandIntelligence: {
+          version: "brand_research_v1",
+          intelligence: { contractVersion: "brand_intelligence_v1" },
+        },
+      },
+    });
+
+    expect(getArtifactDestination(intelligence, "brand-1")).toBe(
+      "/assistant/work/brands/brand-1/artifacts/intelligence/document:brand-intelligence:brand-1",
+    );
   });
 
   test("describes broken links, containers, and metadata succinctly", () => {
-    expect(getArtifactDetail(artifact({ sourceExists: false }))).toBe("Source is unavailable");
+    expect(getArtifactDetail(artifact({ sourceExists: false }))).toBe(
+      "Source is unavailable",
+    );
     expect(getArtifactDetail(artifact({ childCount: 2 }))).toBe("2 items");
     expect(
-      getArtifactDetail(artifact({ metadata: { description: "Approved campaign visual" } })),
+      getArtifactDetail(
+        artifact({ metadata: { description: "Approved campaign visual" } }),
+      ),
     ).toBe("Approved campaign visual");
   });
 });

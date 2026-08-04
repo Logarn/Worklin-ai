@@ -41,6 +41,18 @@ export interface BrandBrainSelector {
   websiteUrl?: string;
 }
 
+function validateBrandId(value: string): string {
+  const brandId = value.trim();
+  if (
+    brandId.length < 3 ||
+    brandId.length > 128 ||
+    !/^[a-z0-9][a-z0-9._:-]*$/i.test(brandId)
+  ) {
+    throw new Error("Brand ID must be a stable, URL-safe identifier.");
+  }
+  return brandId;
+}
+
 function normalizeWebsite(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -136,6 +148,11 @@ export function getStoredBrandBrain(
   const profiles = allStoredBrandBrains();
   if (profiles.length === 0) return undefined;
 
+  if (selector.brandId) {
+    const brandId = validateBrandId(selector.brandId);
+    return profiles.find((profile) => profile.brandId === brandId);
+  }
+
   if (selector.conversationId) {
     const scope = getDb()
       .select()
@@ -151,13 +168,6 @@ export function getStoredBrandBrain(
       ? profiles.find((profile) => profile.brandId === scope.brandId)
       : undefined;
     if (scoped) return scoped;
-  }
-
-  if (selector.brandId) {
-    const byId = profiles.find(
-      (profile) => profile.brandId === selector.brandId,
-    );
-    if (byId) return byId;
   }
 
   const website = normalizeWebsite(selector.websiteUrl);
@@ -177,11 +187,17 @@ export function getStoredBrandBrain(
     if (byName) return byName;
   }
 
-  return profiles.length === 1 ? profiles[0] : undefined;
+  const hasSelector = Boolean(
+    selector.conversationId ||
+    selector.brandName?.trim() ||
+    selector.websiteUrl?.trim(),
+  );
+  return !hasSelector && profiles.length === 1 ? profiles[0] : undefined;
 }
 
 export function saveBrandBrain(params: {
   brain: BrandBrainContext;
+  brandId?: string;
   source: BrandBrainSource;
   conversationId?: string;
   eventType?: string;
@@ -192,7 +208,9 @@ export function saveBrandBrain(params: {
     throw new Error(`Unsupported Brand Brain version: ${brain.version}`);
   }
   const db = getDb();
-  const brandId = deriveRetentionBrandId(brain);
+  const brandId = params.brandId
+    ? validateBrandId(params.brandId)
+    : deriveRetentionBrandId(brain);
   const now = Date.now();
   const existing = db
     .select()

@@ -252,12 +252,7 @@ export function PreChatFlow() {
       return false;
     }
 
-    if (
-      !isNative &&
-      !localMode &&
-      handoffAssistantId &&
-      (brandName.trim() || websiteUrl.trim())
-    ) {
+    if (!isNative && !localMode && handoffAssistantId) {
       // Queueing is durable and deliberately best-effort here: onboarding
       // should never wait on research or strand the user at the handoff.
       void enqueueBrandResearchRun({

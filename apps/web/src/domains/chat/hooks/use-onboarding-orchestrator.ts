@@ -24,7 +24,10 @@ import { type MutableRefObject, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { useConversationStore } from "@/stores/conversation-store";
-import { type PreChatOnboardingContext } from "@/domains/onboarding/prechat";
+import {
+  type PreChatOnboardingContext,
+  peekPendingPreChatContext,
+} from "@/domains/onboarding/prechat";
 import { createDraftConversationId } from "@/domains/chat/utils/conversation-selection";
 import { routes } from "@/utils/routes";
 
@@ -69,13 +72,12 @@ export function useOnboardingOrchestrator(): UseOnboardingOrchestratorResult {
   }, [searchParams, navigate]);
 
   // Derive onboardingTasksEmpty from the pending context in sessionStorage.
-  // Runs once on mount — if initial message key is present, this is an
-  // onboarding mount, so peek at the context for the tasks-empty flag.
+  // Runs once on mount — if onboarding context exists, derive whether the
+  // user skipped task selection so the onboarding choice card can stay hidden.
   useEffect(() => {
     try {
-      const raw = globalThis.sessionStorage?.getItem("onboarding.prechat.pendingContext");
-      if (!raw) return;
-      const ctx = JSON.parse(raw) as { tasks?: string[] };
+      const ctx = peekPendingPreChatContext();
+      if (!ctx) return;
       if (Array.isArray(ctx.tasks) && ctx.tasks.length === 0) {
         setOnboardingTasksEmpty(true);
       }

@@ -118,6 +118,8 @@ export const routes = {
     retention: r("/assistant/work/retention"),
     brandArtifacts: (brandId: string) =>
       `${r("/assistant/work/brands")}/${brandId}/artifacts`,
+    competitorIntelligence: (brandId: string, artifactId: string) =>
+      `${r("/assistant/work/brands")}/${brandId}/artifacts/intelligence/${artifactId}`,
     app: (brandId: string, appId: string) =>
       `${r("/assistant/work/brands")}/${brandId}/artifacts/apps/${appId}`,
     copybookMonth: (

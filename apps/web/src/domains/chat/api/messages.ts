@@ -579,6 +579,10 @@ export async function postChatMessage(
       onboardingDict.occupation = normalizedOnboarding.occupation;
     if (normalizedOnboarding.assistantName !== undefined)
       onboardingDict.assistantName = normalizedOnboarding.assistantName;
+    if (normalizedOnboarding.brandName !== undefined)
+      onboardingDict.brandName = normalizedOnboarding.brandName;
+    if (normalizedOnboarding.websiteUrl !== undefined)
+      onboardingDict.websiteUrl = normalizedOnboarding.websiteUrl;
     if (normalizedOnboarding.googleConnected !== undefined)
       onboardingDict.googleConnected = normalizedOnboarding.googleConnected;
     if (normalizedOnboarding.googleScopes !== undefined)

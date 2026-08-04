@@ -259,6 +259,22 @@ export const routeTree = [
     },
   },
 
+  ...(import.meta.env.DEV
+    ? [
+        {
+          path: "/assistant/brand-research-preview",
+          ErrorBoundary: RouteErrorBoundary,
+          HydrateFallback: RootHydrateFallback,
+          lazy: {
+            Component: () =>
+              import(
+                "@/domains/work/brand-research-preview-page"
+              ).then((m) => m.BrandResearchPreviewPage),
+          },
+        },
+      ]
+    : []),
+
   // Command palette — focused floating Electron BrowserWindow opened by
   // the app menu's Cmd/Ctrl+K accelerator. Standalone and unauthenticated
   // so it does not depend on ChatLayout being mounted in the main window.
@@ -881,6 +897,15 @@ export const routeTree = [
                             import("@/domains/work/brand-artifacts-page").then(
                               (m) => m.BrandArtifactsPage,
                             ),
+                        },
+                      },
+                      {
+                        path: "work/brands/:brandId/artifacts/intelligence/:artifactId",
+                        lazy: {
+                          Component: () =>
+                            import(
+                              "@/domains/work/competitor-intelligence-page"
+                            ).then((m) => m.CompetitorIntelligencePage),
                         },
                       },
                       {

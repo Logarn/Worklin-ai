@@ -166,6 +166,8 @@ describe("postChatMessage onboarding payload", () => {
       userName: "Ada",
       occupation: "Software Engineer",
       assistantName: "Vel",
+      brandName: "Acme Studio",
+      websiteUrl: "https://acme.example",
     });
     // Profile seeding is fire-and-forget — flush the microtask queue so
     // the concurrent writes settle before we assert.
@@ -179,6 +181,8 @@ describe("postChatMessage onboarding payload", () => {
       userName: "Ada",
       occupation: "Software Engineer",
       assistantName: "Vel",
+      brandName: "Acme Studio",
+      websiteUrl: "https://acme.example",
     });
 
     const writes = getWorkspaceWriteBodies();

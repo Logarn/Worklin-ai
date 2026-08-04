@@ -34,12 +34,18 @@ brand identity, research scope, legal posture, or requested deliverable.
 2. Normalize the seed. Resolve the canonical public website, official social
    profiles, product or service lines, category, and likely geographic scope.
    Treat a supplied URL as a starting point, not proof of ownership or truth.
-3. Run a bounded research program. The main assistant is the coordinator. It
-   may spawn a supervisor and focused specialist researchers beneath that
-   supervisor, up to two child levels total. Never allow a child to raise its
-   own depth, budget, permissions, or concurrency. If subagents are
-   unavailable, run the same work sequentially with the available public web
-   tools and preserve the same track coverage.
+3. Run a bounded research program. The main assistant is the coordinator. For
+   the standard eight-track run, spawn one direct researcher per track with the
+   exact label `brand-research:<track>`. Do not add a supervisor to that
+   standard run because the root can have only eight direct descendants. The
+   competitors researcher may spawn up to three leaf specialists, one for each
+   selected competitor, using labels `brand-research:competitors:1` through
+   `brand-research:competitors:3`. Those specialists must not spawn children.
+   A smaller custom run may use a supervisor and specialists beneath it, up to
+   two child levels total. Never allow a child to raise its own depth, budget,
+   permissions, or concurrency. If subagents are unavailable, run the same
+   work sequentially with the available public web tools and preserve the same
+   track coverage.
 4. Give every researcher a narrow question, a source budget, and an explicit
    instruction to return evidence URLs, observed dates, confidence, unknowns,
    and contradictions. Do not ask workers for polished copy.
@@ -79,6 +85,22 @@ evidence exists:
   public interviews, and dated trend evidence. Separate customer evidence from
   analyst interpretation and financial or investor signals from buyer intent.
 
+## Competitor Watch
+
+Keep the deep comparison set to two or three evidence-backed competitors.
+Provider suggestions are discovery leads, not facts. Verify each selected
+company from public sources, then assign one leaf specialist per competitor.
+Each specialist may use up to eight public sources and must return:
+
+- competitor class and inclusion rationale
+- positioning, offers, pricing posture, and visible proof
+- paid-media, social, SEO/content, email, and lifecycle signals when observable
+- product, launch, merchandising, and partnership moves
+- visible differentiation, contradictions, confidence, and research gaps
+
+Do not pad the set when fewer than two credible competitors are observable.
+Do not access private inboxes, authenticated tools, or hidden campaign data.
+
 ## Evidence Rules
 
 For each meaningful finding, store:
@@ -86,9 +108,23 @@ For each meaningful finding, store:
 - a stable evidence ID
 - source title and URL
 - source type and observed date
+- provider ID when evidence came from an explicitly connected provider
 - the exact observation in concise paraphrase
 - confidence: `high`, `medium`, or `low`
 - whether it is a fact, qualified inference, or open question
+
+When a source exposes a public visual asset, also preserve a bounded visual
+evidence record for the Work artifact:
+
+- kind: ad, email, social, product, landing page, brand, or competitor
+- public source URL and observed date
+- public image, thumbnail, or video URL when available
+- provider and evidence IDs
+- concise caption and any display or coverage caveats
+
+Never manufacture a preview image, use a credential-bearing URL, embed private
+HTML, or treat a visual asset as proof of performance. A missing preview is an
+explicit text-only fallback, not a failed research track.
 
 Use public read-only sources. Do not bypass robots, authentication,
 paywalls, rate limits, access controls, or terms of service. Do not collect
@@ -104,24 +140,29 @@ empty:
 1. `query`: brand name, canonical public URL, scope, and generated timestamp
 2. `executiveSummary`: the few highest-confidence strategic observations
 3. `identity`: category, positioning, offers, and audience signals
-4. `competitorLandscape`: named competitors, rationale, positioning, notable
-   moves, evidence IDs, and confidence
+4. `competitorLandscape`: two or three named competitors with classification,
+   rationale, positioning, offers, pricing posture, channel signals,
+   differentiators, notable moves, gaps, evidence IDs, and confidence
 5. `channelFindings`: SEO/content, social, email/lifecycle, SMS, and
    product/launch observations
 6. `marketSignals`, `customerSignals`, and `trendSignals`
 7. `evidence`: the provenance ledger
-8. `gaps`: missing access, contradictory sources, stale evidence, and the next
+8. `visualEvidence`: bounded, source-linked ad, email, social, product,
+   landing-page, brand, and competitor previews when public media exists
+9. `gaps`: missing access, contradictory sources, stale evidence, and the next
    questions worth answering
-9. `recommendations`: `now`, `next`, and `later` actions with rationale and
-   evidence IDs
-10. `safety`: `readOnly: true`, `publicSourcesOnly: true`,
+10. `recommendations`: an array of action objects. Every object must contain
+    `priority` (`now`, `next`, or `later`), `action`, `rationale`, and
+    `evidenceIds`. Never return an object keyed by `now`, `next`, and `later`.
+11. `safety`: `readOnly: true`, `publicSourcesOnly: true`,
     `unsupportedClaimsExcluded: true`, and caveats
 
 When the report is complete, call `brand_research_save` with the structured
-report. This persists research context on the matching Brand Brain while
-keeping it explicitly unapproved. The onboarding control plane also records a
-durable research run with queued, running, partial, complete, failed, and
-cancelled states. Never claim completion until the report and its evidence
+report. This persists research context on the matching Brand Brain and creates
+the source data for the tabbed **Competitor Intelligence** Work artifact while
+keeping findings explicitly unapproved. The onboarding control plane also
+records a durable research run with queued, running, partial, complete, failed,
+and cancelled states. Never claim completion until the report and its evidence
 have actually been saved. If the save tool or a research provider is
 unavailable, preserve the partial report and name the exact gap; do not claim
 that it was saved or that the missing track was researched.

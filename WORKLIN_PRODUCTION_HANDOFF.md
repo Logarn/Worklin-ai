@@ -21,6 +21,35 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
+## 2026-08-04 Competitor Intelligence Release Candidate
+
+Branch `assistant/brand-intelligence-production` adds the evidence-backed
+competitor-intelligence artifact, deeper asynchronous brand research, bounded
+research providers, scheduled refresh support, and Brand Brain persistence.
+The customer UI stays inside Worklin and uses plain labels for competitors,
+Meta ads, TikTok, Google ads, and emails. Provider names and credentials are
+not exposed to customers, and missing measurements remain explicitly missing.
+
+Brand Brain is the canonical current context for agents. A validated refresh
+updates the latest Brand Brain profile and creates a deterministic, immutable
+copy of the full research report in the existing append-only retention source
+snapshot store. Identical retries deduplicate; materially changed reports add a
+new historical copy. The Work artifact renders the saved report and its source
+references rather than calling the research provider whenever a user opens the
+page. Provider calls occur only for a new, retried, manual, or scheduled
+research run. Current visual media is retained as source URLs and metadata, not
+as copied image or video bytes; durable binary archiving remains a later object
+storage decision and must not be enabled without cost approval.
+
+Local verification passed the focused assistant Brand Brain tests (`15`),
+retention-domain tests (`34`), control-plane research tests (`21`), isolated web
+tests (`7`), all four relevant typechecks, the exact Vercel production build,
+desktop visual checks, and mobile visual checks. The expected local auth and
+feature-flag proxy calls returned connection errors because those backend
+services were intentionally not started; the artifact itself rendered and
+interacted correctly. Merge, deployment, deployed-SHA verification, and an
+authenticated production browser check remain pending.
+
 ## 2026-08-04 Same-Day Campaign Review Pilot Release Candidate
 
 Branch `assistant/retention-50-segment-pilot` adds a bounded, review-only

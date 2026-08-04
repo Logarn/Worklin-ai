@@ -26,7 +26,7 @@ const RESEARCH_PROVIDERS: Array<{
   id: WorkspaceResearchProviderId;
   label: string;
 }> = [
-  { id: "meld", label: "Meld" },
+  { id: "trendtrack", label: "Market Intelligence" },
   { id: "instagram", label: "Instagram" },
   { id: "facebook", label: "Facebook" },
   { id: "linkedin", label: "LinkedIn" },
@@ -44,7 +44,7 @@ export function WorkspacePage() {
   const [inviteRole, setInviteRole] = useState<WorkspaceRole>("collaborator");
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [providerId, setProviderId] =
-    useState<WorkspaceResearchProviderId>("meld");
+    useState<WorkspaceResearchProviderId>("trendtrack");
   const [providerCredential, setProviderCredential] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { data, isLoading } = useQuery({
@@ -454,7 +454,7 @@ export function WorkspacePage() {
                 >
                   <span>
                     {provider.label}:{" "}
-                    {connected ? "Connected" : "Not connected"}
+                    {connected ? "Credential saved" : "Not configured"}
                   </span>
                   {connected && (
                     <Button

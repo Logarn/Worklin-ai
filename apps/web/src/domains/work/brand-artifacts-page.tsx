@@ -415,7 +415,10 @@ export function BrandArtifactsPage() {
             </button>
           </div>
           <div className="mx-auto w-full max-w-6xl">
-            <BrandResearchStatus assistantId={assistantId} />
+            <BrandResearchStatus
+              assistantId={assistantId}
+              brandName={brandName}
+            />
           </div>
           <div className="mx-auto mt-5 flex w-full max-w-6xl flex-col gap-3">
             <Input
