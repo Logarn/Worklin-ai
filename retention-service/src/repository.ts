@@ -57,6 +57,8 @@ import {
   type RawPayloadStore,
 } from "./raw-payload-store.js";
 
+const PROVIDER_PAGE_INGEST_CONCURRENCY = 6;
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(",")}]`;
@@ -2246,16 +2248,28 @@ export class RetentionRepository {
       let appendedCount = 0;
       let duplicateCount = 0;
       const rejectedCount = page.rejectedCount ?? 0;
-      for (const event of page.events) {
-        const result = await this.appendSourceEvent(organizationId, {
-          ...event,
-          integrationId: payload.integrationId,
-          provider: integration.provider,
-          signatureVerified: false,
-          ingestionChannel: "provider_sync",
-        });
-        if (result.duplicate) duplicateCount += 1;
-        else appendedCount += 1;
+      for (
+        let offset = 0;
+        offset < page.events.length;
+        offset += PROVIDER_PAGE_INGEST_CONCURRENCY
+      ) {
+        const results = await Promise.all(
+          page.events
+            .slice(offset, offset + PROVIDER_PAGE_INGEST_CONCURRENCY)
+            .map((event) =>
+              this.appendSourceEvent(organizationId, {
+                ...event,
+                integrationId: payload.integrationId,
+                provider: integration.provider,
+                signatureVerified: false,
+                ingestionChannel: "provider_sync",
+              }),
+            ),
+        );
+        for (const result of results) {
+          if (result.duplicate) duplicateCount += 1;
+          else appendedCount += 1;
+        }
       }
 
       await this.database.withTenant(organizationId, async (tx) => {
