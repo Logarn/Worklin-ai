@@ -645,12 +645,13 @@
       "name": "plan-skill",
       "description": "Use when an agent needs to create, revise, or review implementation plans in the repository's plans/ directory, especially when the user asks for a plan before implementation, asks to standardize planning, asks to incorporate reviewer feedback into a plan, or asks whether an existing plan follows repo methodology.",
       "metadata": {
+        "emoji": "🧭",
         "vellum": {
           "category": "development",
           "display-name": "Implementation Planning"
         }
       },
-      "updatedAt": "2026-08-04T15:12:31.000Z"
+      "updatedAt": "2026-08-04T15:21:51.000Z"
     },
     {
       "id": "public-ingress",
