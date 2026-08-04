@@ -1,6 +1,10 @@
 ---
 name: plan-skill
 description: Use when an agent needs to create, revise, or review implementation plans in the repository's plans/ directory, especially when the user asks for a plan before implementation, asks to standardize planning, asks to incorporate reviewer feedback into a plan, or asks whether an existing plan follows repo methodology.
+metadata:
+  vellum:
+    category: "development"
+    display-name: "Implementation Planning"
 ---
 
 # Plan Skill
