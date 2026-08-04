@@ -8,7 +8,7 @@ import {
   KlaviyoProviderSyncClient,
   ProviderSyncError,
   ShopifyProviderSyncClient,
-  isAllowlistedKlaviyoTraitKey,
+  isApprovedKlaviyoTraitKey,
 } from "./provider-sync.js";
 
 type FetchImplementation = (
@@ -528,20 +528,23 @@ describe("ShopifyProviderSyncClient", () => {
 });
 
 describe("KlaviyoProviderSyncClient", () => {
-  test("matches stored prefixed traits to raw approved property names", () => {
+  test("matches stored prefixed traits to the configured property access mode", () => {
     expect(
-      isAllowlistedKlaviyoTraitKey("klaviyo.Customer stage", [
+      isApprovedKlaviyoTraitKey("klaviyo.Customer stage", "allowlist", [
         "Customer stage",
       ]),
     ).toBe(true);
     expect(
-      isAllowlistedKlaviyoTraitKey("klaviyo.Unapproved property", [
+      isApprovedKlaviyoTraitKey("klaviyo.Unapproved property", "allowlist", [
         "Customer stage",
       ]),
     ).toBe(false);
     expect(
-      isAllowlistedKlaviyoTraitKey("Customer stage", ["Customer stage"]),
-    ).toBe(false);
+      isApprovedKlaviyoTraitKey("klaviyo.Unapproved property", "all", [
+        "Customer stage",
+      ]),
+    ).toBe(true);
+    expect(isApprovedKlaviyoTraitKey("Customer stage", "all", [])).toBe(false);
   });
   test("uses pinned read-only profile requests and applies the property allowlist", async () => {
     const nextCursor = "bmV4dDo6cHJvZmlsZS0x";
@@ -635,6 +638,34 @@ describe("KlaviyoProviderSyncClient", () => {
     expect(JSON.stringify(page.events)).not.toContain(
       "must not leave the adapter",
     );
+  });
+
+  test("imports every safe custom property when all-property access is approved", async () => {
+    const profile = klaviyoProfile();
+    const attributes = (profile.attributes ?? {}) as Record<string, unknown>;
+    attributes.properties = {
+      ...((attributes.properties ?? {}) as Record<string, unknown>),
+      $source: "quiz",
+      constructor: "must remain blocked",
+    };
+    const mock = captureFetch([jsonResponse(klaviyoDocument([profile]))]);
+    const client = new KlaviyoProviderSyncClient({
+      privateApiKey: "klaviyo-private-key",
+      propertyAccessMode: "all",
+      propertyAllowlist: [],
+      fetch: mock.fetch,
+      now,
+    });
+
+    const page = await client.historicalBackfillPage({
+      integrationId,
+      resource: "profiles",
+    });
+    const serialized = JSON.stringify(page.events);
+    expect(serialized).toContain("klaviyo.Favorite category");
+    expect(serialized).toContain("klaviyo.Unapproved secret");
+    expect(serialized).toContain("klaviyo.$source");
+    expect(serialized).not.toContain("must remain blocked");
   });
 
   test("rebuilds cursor requests locally and ignores all other next-link query state", async () => {
@@ -894,6 +925,18 @@ describe("KlaviyoProviderSyncClient", () => {
         new KlaviyoProviderSyncClient({
           privateApiKey: "klaviyo-private-key",
           propertyAllowlist: ["__proto__"],
+        }),
+    ).toThrow(
+      expect.objectContaining({
+        code: "invalid_configuration",
+      }),
+    );
+    expect(
+      () =>
+        new KlaviyoProviderSyncClient({
+          privateApiKey: "klaviyo-private-key",
+          propertyAccessMode: "all",
+          propertyAllowlist: ["Customer stage"],
         }),
     ).toThrow(
       expect.objectContaining({

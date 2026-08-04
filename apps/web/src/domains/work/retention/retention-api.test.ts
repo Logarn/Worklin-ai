@@ -489,7 +489,8 @@ describe("Klaviyo connection API", () => {
       brandName: "Example Brand",
       websiteUrl: "https://example.com/",
       credential: "pk_private",
-      propertyAllowlist: ["Lead Magnet"],
+      propertyAccessMode: "all",
+      propertyAllowlist: [],
     });
 
     expect(requests[0]).toEqual({
@@ -506,7 +507,8 @@ describe("Klaviyo connection API", () => {
       brandId: BRAND_ID,
       provider: "klaviyo",
       credential: "pk_private",
-      propertyAllowlist: ["Lead Magnet"],
+      propertyAccessMode: "all",
+      propertyAllowlist: [],
     });
     expect(result).toEqual({
       brandId: BRAND_ID,

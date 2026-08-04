@@ -70,7 +70,8 @@ describe("integration credential validation", () => {
         controlPlaneConnectionId: "connection-example",
         credential: "pk_example_private_key",
         webhookSecret: "example-webhook-secret",
-        propertyAllowlist: ["Customer stage"],
+        propertyAccessMode: "all",
+        propertyAllowlist: [],
       }),
     ).rejects.toMatchObject({
       code: "klaviyo_credentials_rejected",

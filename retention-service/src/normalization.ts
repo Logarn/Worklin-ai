@@ -20,15 +20,10 @@ const consentSchema = z
 
 const traitSchema = z
   .object({
-    key: z.string().trim().min(1).max(128),
+    key: z.string().trim().min(1).max(512),
     value: z.unknown(),
     evidenceKind: z.enum(["observed", "declared", "imported"]),
-    sensitivity: z.enum([
-      "standard",
-      "personal",
-      "sensitive",
-      "restricted",
-    ]),
+    sensitivity: z.enum(["standard", "personal", "sensitive", "restricted"]),
     confidence: z.number().min(0).max(1),
     expiresAt: z.string().datetime().optional(),
   })
@@ -38,7 +33,7 @@ const normalizedSourcePayloadSchema = z
   .object({
     customer: customerSchema.optional(),
     consent: consentSchema.optional(),
-    traits: z.array(traitSchema).max(500).optional(),
+    traits: z.array(traitSchema).max(2_000).optional(),
     commerce: z.record(z.string(), z.unknown()).optional(),
     delivery: z.record(z.string(), z.unknown()).optional(),
     source: z.record(z.string(), z.unknown()),

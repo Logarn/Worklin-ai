@@ -15,6 +15,7 @@ import type { RetentionIntegrationStatus } from "@/lib/retention/status";
 import { Button } from "@vellumai/design-library/components/button";
 import { Card } from "@vellumai/design-library/components/card";
 import { Input } from "@vellumai/design-library/components/input";
+import { Toggle } from "@vellumai/design-library/components/toggle";
 
 export function isKlaviyoConnected(
   integration: RetentionIntegrationStatus | null,
@@ -124,11 +125,11 @@ export function KlaviyoIntegrationModal({
   assistantId: string;
   onClose: () => void;
 }) {
-  const { status, connect, integration } =
-    useKlaviyoIntegration(assistantId);
+  const { status, connect, integration } = useKlaviyoIntegration(assistantId);
   const [brandName, setBrandName] = useState("");
   const [website, setWebsite] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [useAllProperties, setUseAllProperties] = useState(true);
   const [properties, setProperties] = useState([""]);
   const [formError, setFormError] = useState<string | null>(null);
   const connected = isKlaviyoConnected(integration) || connect.isSuccess;
@@ -172,7 +173,8 @@ export function KlaviyoIntegrationModal({
         brandName: name,
         ...(websiteUrl ? { websiteUrl } : {}),
         credential,
-        propertyAllowlist,
+        propertyAccessMode: useAllProperties ? "all" : "allowlist",
+        propertyAllowlist: useAllProperties ? [] : propertyAllowlist,
       },
       {
         onError: (error) => setFormError(connectionErrorMessage(error)),
@@ -318,68 +320,89 @@ export function KlaviyoIntegrationModal({
                 />
               </div>
 
-              <fieldset className="mt-5">
-                <legend className="text-body-small-default text-[var(--content-default)]">
-                  Approved profile properties
-                </legend>
-                <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
-                  Add only the Klaviyo fields Worklin may use, such as lead
-                  magnet or product interest.
-                </p>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  {properties.map((property, index) => (
-                    <div
-                      key={index}
-                      className="flex min-w-0 items-end gap-2"
-                    >
-                      <Input
-                        aria-label={`Approved property ${index + 1}`}
-                        placeholder="Property name"
-                        value={property}
-                        onChange={(event) =>
-                          setProperties((current) =>
-                            current.map((item, itemIndex) =>
-                              itemIndex === index ? event.target.value : item,
-                            ),
-                          )
-                        }
-                        disabled={connect.isPending}
-                        wrapperClassName="min-w-0 flex-1"
-                        fullWidth
-                      />
-                      <button
-                        type="button"
-                        className="mb-px flex size-10 shrink-0 items-center justify-center rounded-md text-[var(--content-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--content-default)] disabled:opacity-50"
-                        aria-label={`Remove approved property ${index + 1}`}
-                        title="Remove property"
-                        disabled={connect.isPending || properties.length === 1}
-                        onClick={() =>
-                          setProperties((current) =>
-                            current.filter(
-                              (_, itemIndex) => itemIndex !== index,
-                            ),
-                          )
-                        }
-                      >
-                        <X className="size-4" aria-hidden="true" />
-                      </button>
-                    </div>
-                  ))}
+              <div className="mt-5 flex items-start justify-between gap-4 border-y border-[var(--border-base)] py-4">
+                <div className="min-w-0">
+                  <p className="text-body-small-default text-[var(--content-default)]">
+                    Use all custom properties
+                  </p>
+                  <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+                    Gives Worklin the fullest read-only picture for finding
+                    useful non-buyer audiences. Sensitive details remain
+                    protected and cannot be sent from this review pilot.
+                  </p>
                 </div>
-                <Button
-                  className="mt-3"
-                  type="button"
-                  size="compact"
-                  variant="ghost"
-                  leftIcon={<Plus />}
+                <Toggle
+                  aria-label="Use all custom properties"
+                  checked={useAllProperties}
                   disabled={connect.isPending}
-                  onClick={() =>
-                    setProperties((current) => [...current, ""])
-                  }
-                >
-                  Add property
-                </Button>
-              </fieldset>
+                  onChange={() => {
+                    setUseAllProperties((current) => !current);
+                    setFormError(null);
+                  }}
+                />
+              </div>
+
+              {!useAllProperties ? (
+                <fieldset className="mt-5">
+                  <legend className="text-body-small-default text-[var(--content-default)]">
+                    Selected profile properties
+                  </legend>
+                  <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+                    Add the Klaviyo fields Worklin may read, such as lead magnet
+                    or product interest.
+                  </p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {properties.map((property, index) => (
+                      <div key={index} className="flex min-w-0 items-end gap-2">
+                        <Input
+                          aria-label={`Approved property ${index + 1}`}
+                          placeholder="Property name"
+                          value={property}
+                          onChange={(event) =>
+                            setProperties((current) =>
+                              current.map((item, itemIndex) =>
+                                itemIndex === index ? event.target.value : item,
+                              ),
+                            )
+                          }
+                          disabled={connect.isPending}
+                          wrapperClassName="min-w-0 flex-1"
+                          fullWidth
+                        />
+                        <button
+                          type="button"
+                          className="mb-px flex size-10 shrink-0 items-center justify-center rounded-md text-[var(--content-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--content-default)] disabled:opacity-50"
+                          aria-label={`Remove approved property ${index + 1}`}
+                          title="Remove property"
+                          disabled={
+                            connect.isPending || properties.length === 1
+                          }
+                          onClick={() =>
+                            setProperties((current) =>
+                              current.filter(
+                                (_, itemIndex) => itemIndex !== index,
+                              ),
+                            )
+                          }
+                        >
+                          <X className="size-4" aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <Button
+                    className="mt-3"
+                    type="button"
+                    size="compact"
+                    variant="ghost"
+                    leftIcon={<Plus />}
+                    disabled={connect.isPending}
+                    onClick={() => setProperties((current) => [...current, ""])}
+                  >
+                    Add property
+                  </Button>
+                </fieldset>
+              ) : null}
 
               {formError ? (
                 <p

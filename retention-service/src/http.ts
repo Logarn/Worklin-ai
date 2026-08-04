@@ -26,18 +26,52 @@ const brandInputSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
-const integrationInputSchema = z.object({
-  brandId: z.string().uuid(),
-  provider: z.enum(["shopify", "klaviyo"]),
-  controlPlaneConnectionId: z.string().trim().min(1).max(256),
-  externalAccountId: z.string().trim().min(1).max(512).optional(),
-  credential: z.string().min(1).max(16_384).optional(),
-  webhookSecret: z.string().min(8).max(16_384),
-  propertyAllowlist: z
-    .array(z.string().trim().min(1).max(128))
-    .max(500)
-    .optional(),
-});
+const klaviyoPropertyNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(504)
+  .refine(
+    (value) =>
+      !/[\u0000-\u001f\u007f]/u.test(value) &&
+      !["__proto__", "constructor", "prototype"].includes(value),
+    "Property name is invalid.",
+  );
+
+const integrationInputSchema = z
+  .object({
+    brandId: z.string().uuid(),
+    provider: z.enum(["shopify", "klaviyo"]),
+    controlPlaneConnectionId: z.string().trim().min(1).max(256),
+    externalAccountId: z.string().trim().min(1).max(512).optional(),
+    credential: z.string().min(1).max(16_384).optional(),
+    webhookSecret: z.string().min(8).max(16_384),
+    propertyAccessMode: z.enum(["allowlist", "all"]).optional(),
+    propertyAllowlist: z.array(klaviyoPropertyNameSchema).max(500).optional(),
+  })
+  .superRefine((input, context) => {
+    if (
+      input.propertyAccessMode === "all" &&
+      (input.propertyAllowlist?.length ?? 0) > 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["propertyAllowlist"],
+        message: "An allowlist cannot be combined with all-property access.",
+      });
+    }
+    if (
+      input.provider !== "klaviyo" &&
+      (input.propertyAccessMode !== undefined ||
+        (input.propertyAllowlist?.length ?? 0) > 0)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["propertyAccessMode"],
+        message: "Klaviyo property settings require the Klaviyo provider.",
+      });
+    }
+  });
 
 const programInputSchema = z.object({
   brandId: z.string().uuid(),
