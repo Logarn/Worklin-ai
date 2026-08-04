@@ -839,6 +839,54 @@ describe("KlaviyoProviderSyncClient", () => {
     });
     expect(JSON.stringify(page.events)).not.toContain("Private note");
     expect(page.events[1]?.occurredAt).toBe("2026-07-28T10:00:00.000Z");
+    expect(page.rejectedCount).toBe(0);
+  });
+
+  test("counts malformed Klaviyo records without blocking valid events", async () => {
+    const validEvent = {
+      type: "event",
+      id: "event-valid",
+      attributes: {
+        uuid: "event-valid-uuid",
+        datetime: "2026-07-28T11:00:00.000Z",
+        timestamp: 1_753_703_200,
+        event_properties: {},
+      },
+      relationships: {},
+    };
+    const malformedEvent = {
+      type: "event",
+      id: "event-malformed",
+      attributes: {
+        datetime: "not-a-date",
+        event_properties: {},
+      },
+      relationships: {},
+    };
+    const mock = captureFetch([
+      jsonResponse(
+        klaviyoDocument([validEvent, malformedEvent], {
+          included: [null],
+        }),
+      ),
+    ]);
+    const client = new KlaviyoProviderSyncClient({
+      privateApiKey: "klaviyo-private-key",
+      propertyAllowlist: [],
+      fetch: mock.fetch,
+      now,
+    });
+
+    const page = await client.historicalBackfillPage({
+      integrationId,
+      resource: "events",
+    });
+
+    expect(page.events).toHaveLength(1);
+    expect(page.events[0]?.externalEventId).toBe(
+      "klaviyo.event:event-valid-uuid",
+    );
+    expect(page.rejectedCount).toBe(2);
   });
 
   test("keeps an existing watermark when every returned event is older", async () => {
@@ -919,7 +967,7 @@ describe("KlaviyoProviderSyncClient", () => {
     }
   });
 
-  test("rejects malformed JSON:API resources and invalid property allowlists", async () => {
+  test("rejects malformed documents and counts malformed resources", async () => {
     expect(
       () =>
         new KlaviyoProviderSyncClient({
@@ -977,14 +1025,12 @@ describe("KlaviyoProviderSyncClient", () => {
     ).rejects.toMatchObject({
       code: "malformed_provider_response",
     });
-    await expect(
-      client.historicalBackfillPage({
-        integrationId,
-        resource: "profiles",
-      }),
-    ).rejects.toMatchObject({
-      code: "malformed_provider_response",
+    const page = await client.historicalBackfillPage({
+      integrationId,
+      resource: "profiles",
     });
+    expect(page.events).toEqual([]);
+    expect(page.rejectedCount).toBe(1);
   });
 
   test("surfaces Retry-After metadata and keeps the private key out of errors", async () => {
