@@ -792,6 +792,17 @@ export const routeTree = [
                         ),
                     },
                   },
+                  // Customer decisions uses the tenant-isolated retention
+                  // service. It does not require a running chat daemon.
+                  {
+                    path: "work/retention",
+                    lazy: {
+                      Component: () =>
+                        import(
+                          "@/domains/work/retention/retention-work-page"
+                        ).then((m) => m.RetentionWorkPage),
+                    },
+                  },
                   // Everything below requires a resolved assistantId AND an
                   // active daemon. The gate defers child rendering until the
                   // lifecycle resolves so route components can rely on a
@@ -879,15 +890,6 @@ export const routeTree = [
                             import("@/domains/work/work-page").then(
                               (m) => m.WorkPage,
                             ),
-                        },
-                      },
-                      {
-                        path: "work/retention",
-                        lazy: {
-                          Component: () =>
-                            import(
-                              "@/domains/work/retention/retention-work-page"
-                            ).then((m) => m.RetentionWorkPage),
                         },
                       },
                       {

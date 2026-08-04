@@ -12,9 +12,9 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { ApiError } from "@/utils/api-errors";
 
 import { WorkSectionNav } from "../work-section-nav";
@@ -351,7 +351,31 @@ function RetentionErrorState({
 }
 
 export function RetentionWorkPage() {
-  const assistantId = useActiveAssistantId();
+  const activeAssistantId =
+    useResolvedAssistantsStore.use.activeAssistantId();
+  const selectedAssistantId =
+    useResolvedAssistantsStore.use.selectedAssistantId();
+  const assistantId = activeAssistantId ?? selectedAssistantId;
+
+  if (!assistantId) {
+    return (
+      <PageShell className="flex items-center justify-center px-6 py-12">
+        <div className="max-w-md text-center" role="status">
+          <h1 className="text-title-small text-[var(--content-emphasised)]">
+            Customer decisions is getting ready
+          </h1>
+          <p className="mt-2 text-body-small-default text-[var(--content-tertiary)]">
+            Choose an assistant to open this workspace.
+          </p>
+        </div>
+      </PageShell>
+    );
+  }
+
+  return <RetentionWorkPageContent assistantId={assistantId} />;
+}
+
+function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
   const query = useRetentionStatus(assistantId);
   const [activeView, setActiveView] = useState<
