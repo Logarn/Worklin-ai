@@ -1,6 +1,6 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-08-04
+Last refreshed: 2026-08-05
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
@@ -8,8 +8,8 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
 - Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-klaviyo-integration-home`
-- Current merged and deployed control-plane release: `2b5ffac616d6f3878bd221533aab09fef8cf055e` (`Heal tenant owner approval bindings`, PR `#179`). Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
-- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`.
+- Current merged and deployed control-plane release: `a77dcdb83ba5ae0a6af41ef3c86d0955d5e95e03` (`Validate retention segment expressions strictly`, PR `#184`). Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
+- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`; production-handoff refresh PR `#180` merged as `8d47b10`; retention review bridge repair PR `#181` merged as `ac33d53`; brand-intelligence archive PR `#182` merged as `0af1b9a`; small-tranche retention review PR `#183` merged as `623310b`; retention-expression validation PR `#184` merged as `a77dcdb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
 - Production backend/runtime: `https://worklin-ai-production.up.railway.app`
@@ -20,6 +20,73 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Browser requirement for the pilot: use an authenticated in-app browser or the authenticated Chrome profile selected by the user. The in-app Klaviyo connection dialog was verified against production on 2026-08-04.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-08-05 Brand Intelligence Archive Live
+
+PR `#182` merged as
+`0af1b9ac1b5b8cd0362cf2cd280c54b38774b7bc`. Brand Brain remains the
+canonical current context used by agents. Each validated competitor-intelligence
+save now writes Brand Brain first and then queues an immutable recovery and
+evidence snapshot in the private Railway bucket
+`brand-intelligence-archive`. An archive failure cannot block or roll back the
+Brand Brain save.
+
+The archive stores the complete Brand Brain and research report, evidence and
+quality metadata, and safe copies of public image or email-preview assets. It
+does not copy full video files: video records retain their source URL,
+thumbnail, transcript, and metadata. Objects are addressed by SHA-256 digest,
+so identical retries reuse the existing object. Cost guards are enforced in
+application code: an 8 GiB global maximum, a 1.5 GiB maximum per brand, a 70%
+warning threshold, and no automatic quota increase. The current full global
+and Hangaritas usage is 83,773 bytes and the warning state is false.
+
+Production proof used the real Hangaritas Brand Brain
+`brand_d9a5c205e5aefe076c326bcb`. The assistant called the gateway archive bridge,
+which authenticated against the control plane at the private Railway address
+`http://worklin-ai.railway.internal:8080`. Job
+`brand_archive_16881cdeec23b99697132dfc61231b45d617784f9ab428ffdf3fd95241ddb9ed`
+completed at `2026-08-05T01:51:30.289Z`. Snapshot
+`brand_research_f114e4921b04f47a772bf8bcae9b6e0c526a73756e978566d5dbc4ee567b8403`
+is present in the private bucket as an 83,773-byte JSON object with catalog
+checksum
+`15ac86df9fefbf58429d01dc044615c82977a156ece72362422297caafb92892`.
+A second identical production request returned the same completed job with
+`idempotent: true`; no duplicate bytes were stored.
+
+All four active customer runtimes have the archive bridge enabled with their
+own organization and assistant scopes. The three GitHub-backed runtime
+deployments for PR `#182` succeeded as
+`b9a75563-d66f-4e22-8248-3ff5307e3f5d`,
+`66ef3203-f88b-4414-bca5-adbece28ca8d`, and
+`396a9550-110a-4151-aed0-5cdd3eb70768`; the legacy runtime package deployment
+`e881b516-a1b4-42cb-ae06-207f6391d605` also succeeded. After the private bridge
+address was corrected, follow-up deployments
+`b527ff01-09c3-4358-b336-8edf632b44c1`,
+`618e719f-7498-475d-ac2c-3c52cfc3c090`, and
+`f2634ca4-8681-4992-89db-6757ddc1f46a` succeeded. The fourth runtime is now on
+the later successful PR `#184` deployment
+`77c1f5ac-2a2e-487b-ab55-4600ec5ce2de`; it contains the archive code and passed
+the real Hangaritas archive smoke test. Do not replace that later deployment
+with the older PR `#182` package.
+
+The fourth runtime exposed pre-existing SQLite index corruption during rollout.
+No customer rows were discarded. Two preserved backups exist at
+`/data/workspace/data/db/backups/assistant.db.pre-reindex-20260805T003618Z.sqlite`
+and
+`/data/workspace/data/db/backups/assistant.db.pre-full-reindex-20260805T014107Z.sqlite`.
+A full `REINDEX` and WAL checkpoint repaired the affected indexes. The restored
+database passed `PRAGMA integrity_check` and `PRAGMA foreign_key_check`, and the
+later PR `#184` deployment still reports `ok`. Verified retained counts were 1
+Brand Brain, 169 conversations, 6,612 memory segments, and 278 model-usage
+events.
+
+One rollout mistake must remain visible: the first repair command accidentally
+created temporary Railway project
+`9855c6aa-8231-46a3-93c8-86c936bb78c6`. It was caught immediately and
+permanently deleted, including its temporary service and deployment. No orphan
+project remains. The archive protects Brand Intelligence snapshots; it is not
+a managed backup for every conversation or the whole runtime database. Restore
+is currently an operator procedure, not a customer-facing button.
 
 ## 2026-08-04 Dr Rachael Live Import And Runtime Recovery
 
@@ -129,9 +196,10 @@ snapshot store. Identical retries deduplicate; materially changed reports add a
 new historical copy. The Work artifact renders the saved report and its source
 references rather than calling the research provider whenever a user opens the
 page. Provider calls occur only for a new, retried, manual, or scheduled
-research run. Current visual media is retained as source URLs and metadata, not
-as copied image or video bytes; durable binary archiving remains a later object
-storage decision and must not be enabled without cost approval.
+research run. At the time PR `#170` shipped, visual media was retained only as
+source URLs and metadata. The later, explicitly approved PR `#182` archive
+supersedes that limitation for safe public images and email previews while
+continuing to exclude full video files.
 
 Production deployment and release verification passed for the browser-launch
 surfaces:
@@ -150,7 +218,8 @@ surfaces:
   App token retry could not generate a token. This does not block the web
   release and remains outside the browser-launch scope.
 
-Authenticated Chrome verification passed for the existing Hangaritas account:
+At that PR `#170` verification point, authenticated Chrome passed for the
+existing Hangaritas account:
 the canonical Work artifacts page loaded after a production reload and kept the
 user signed in. Hangaritas currently has no saved production artifacts, so this
 proves the deployed authenticated shell, not a completed production research
@@ -164,10 +233,9 @@ desktop visual checks, and mobile visual checks. The expected local auth and
 feature-flag proxy calls returned connection errors because those backend
 services were intentionally not started; the artifact itself rendered and
 interacted correctly. No new paid service, provider run, customer-data import,
-or billable storage was created during deployment. The change is included in
-the current successful Vercel and Railway control-plane release. The
-authenticated production shell passed; the competitor artifact itself remains
-pending until a real validated research run saves it into Brand Brain.
+or billable storage was created during that PR `#170` deployment. The later PR
+`#182` storage approval and production proof are recorded in the 2026-08-05
+section above.
 
 ## 2026-08-04 Same-Day Campaign Review Pilot Deployed Behind Safety Gates
 
