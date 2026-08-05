@@ -297,7 +297,7 @@ describe("retention campaign review pilot", () => {
         brandId: BRAND_ID,
         maxSegments: 1,
         sampleLimitPerSegment: 2,
-        trancheSize: 10,
+        trancheSize: 2,
       },
     });
     expect(JSON.stringify(providerPrompts)).not.toContain(
@@ -339,9 +339,14 @@ describe("retention campaign review pilot", () => {
     const requests: Array<{ method: string; path: string; body?: unknown }> =
       [];
     const documentInputs: Record<string, unknown>[] = [];
+    const providerCalls: SendMessageOptions[] = [];
     const provider: Provider = {
       name: "openai",
-      async sendMessage(): Promise<ProviderResponse> {
+      async sendMessage(
+        _messages: Message[],
+        options?: SendMessageOptions,
+      ): Promise<ProviderResponse> {
+        providerCalls.push(options ?? {});
         throw new ProviderError("usage limit reached", "openai", 429);
       },
     };
@@ -365,6 +370,14 @@ describe("retention campaign review pilot", () => {
       providerConnection: "chatgpt-subscription",
     });
     expect(documentInputs).toHaveLength(0);
+    expect(providerCalls).toHaveLength(1);
+    expect(
+      (
+        providerCalls[0]?.tools?.[0]?.input_schema as {
+          properties?: { proposals?: { maxItems?: number } };
+        }
+      ).properties?.proposals?.maxItems,
+    ).toBe(2);
     const completion = requests.find((request) =>
       request.path.endsWith("/complete"),
     );
