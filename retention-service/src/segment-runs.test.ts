@@ -120,6 +120,39 @@ describe("segment run expression boundary", () => {
     ).toMatchObject({ ok: false, code: "invalid_segment_expression" });
   });
 
+  test("accepts exact imported Klaviyo keys with punctuation", () => {
+    const expression = {
+      type: "predicate" as const,
+      namespace: "trait" as const,
+      key: "klaviyo.Source quiz?",
+      operator: "exists" as const,
+    };
+
+    expect(
+      validateSafeSegmentExpression(expression, {
+        allowedTraitKeys: new Set(["klaviyo.Source quiz?"]),
+      }),
+    ).toEqual({ ok: true });
+    expect(validateSafeSegmentExpression(expression)).toMatchObject({
+      ok: false,
+      code: "unsafe_segment_reference",
+    });
+  });
+
+  test("rejects sensitive Klaviyo keys even when imported", () => {
+    expect(
+      validateSafeSegmentExpression(
+        {
+          type: "predicate",
+          namespace: "trait",
+          key: "klaviyo.health_status",
+          operator: "exists",
+        },
+        { allowedTraitKeys: new Set(["klaviyo.health_status"]) },
+      ),
+    ).toMatchObject({ ok: false, code: "unsafe_segment_reference" });
+  });
+
   test("keeps membership separate from campaign eligibility", () => {
     expect(campaignEligibility(state)).toEqual({
       eligible: true,

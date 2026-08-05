@@ -51,6 +51,8 @@ const SAFE_FIXED_KEYS = {
 } as const;
 
 const TRAIT_KEY_PATTERN = /^klaviyo\.[\p{L}\p{N}][\p{L}\p{N} _.-]{0,127}$/u;
+const SENSITIVE_TRAIT_KEY =
+  /(?:health|medical|diagnosis|religion|race|ethnicity|sexual|pregnan|disab|politic|marital|married|single_status|financial_hardship)/iu;
 const SEGMENT_NAMESPACES = new Set([
   "consent",
   "evidence",
@@ -145,6 +147,7 @@ function hasSafeRuntimeShape(value: unknown): boolean {
 
 export function validateSafeSegmentExpression(
   expression: WorklinSegmentExpression,
+  options: { allowedTraitKeys?: ReadonlySet<string> } = {},
 ): { ok: true } | { ok: false; code: string; message: string } {
   if (!hasSafeRuntimeShape(expression)) {
     return {
@@ -166,7 +169,12 @@ export function validateSafeSegmentExpression(
   }
   for (const reference of structural.value.references) {
     if (reference.namespace === "trait") {
-      if (!TRAIT_KEY_PATTERN.test(reference.key)) {
+      if (
+        SENSITIVE_TRAIT_KEY.test(reference.key) ||
+        (options.allowedTraitKeys
+          ? !options.allowedTraitKeys.has(reference.key)
+          : !TRAIT_KEY_PATTERN.test(reference.key))
+      ) {
         return {
           ok: false,
           code: "unsafe_segment_reference",
