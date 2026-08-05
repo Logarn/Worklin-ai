@@ -64,6 +64,7 @@ import {
   type RuntimeAction,
 } from "./runtime-action-capabilities.js";
 import { requestRailwayRuntimeRestart } from "./runtime-restart.js";
+import { runtimeFetch } from "./runtime-fetch.js";
 import { ensureArtifactSharingSchema } from "./artifact-sharing-store.js";
 import {
   acceptArtifactInvitation,
@@ -1132,7 +1133,7 @@ async function verifyShareableArtifact(
   });
   headers.set("Connection", "close");
   applyRuntimeTenantHeaders(headers, tenantContext);
-  const response = await fetch(target, {
+  const response = await runtimeFetch(target, {
     headers,
   });
   return response.ok;
@@ -2503,7 +2504,7 @@ const brandResearchRuntimeClient: BrandResearchRuntimeClient = {
       runtimeStack,
     );
     headers.set("Content-Type", "application/json");
-    const response = await fetch(target, {
+    const response = await runtimeFetch(target, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -2567,7 +2568,7 @@ const brandResearchRuntimeClient: BrandResearchRuntimeClient = {
       "/messages",
     );
     target.searchParams.set("conversationId", run.parent_task_id);
-    const response = await fetch(target, {
+    const response = await runtimeFetch(target, {
       headers: runtimeResearchHeaders(assistant, run.user_id, runtimeStack),
     });
     if (response.status === 404 || response.status === 503) {
@@ -2598,7 +2599,7 @@ const brandResearchRuntimeClient: BrandResearchRuntimeClient = {
       assistant.id,
       `/conversations/${encodeURIComponent(run.parent_task_id)}/cancel`,
     );
-    await fetch(target, {
+    await runtimeFetch(target, {
       method: "POST",
       headers: runtimeResearchHeaders(assistant, run.user_id, runtimeStack),
     });
@@ -3964,7 +3965,7 @@ async function proxySharedArtifact(
         : Buffer.from(parseTextBody(req));
   const abortLifecycle = createRuntimeProxyAbortLifecycle(req, res);
   try {
-    const response = await fetch(target, {
+    const response = await runtimeFetch(target, {
       method: req.method,
       headers,
       body: bodyBuffer ? new Uint8Array(bodyBuffer) : undefined,
@@ -4137,7 +4138,7 @@ async function proxyLiveVoiceProviderCallback(
         return;
       }
     }
-    const response = await fetch(target, {
+    const response = await runtimeFetch(target, {
       method: "POST",
       headers,
       body,
@@ -4509,7 +4510,7 @@ async function proxyToGateway(
       }
     }
 
-    const response = await fetch(target, {
+    const response = await runtimeFetch(target, {
       method: req.method,
       headers,
       body,
@@ -4530,7 +4531,7 @@ async function proxyToGateway(
     ) {
       let runtimeReady = false;
       try {
-        const readiness = await fetch(
+        const readiness = await runtimeFetch(
           new URL("/readyz", routingPolicy.stack.gateway_url!),
           { signal: AbortSignal.timeout(3_000) },
         );
