@@ -1377,6 +1377,7 @@ describe("control-plane runtime provisioning guards", () => {
       fetch(request) {
         runtimeAuthorization = request.headers.get("authorization") ?? "";
         runtimeTenantHeaders = {
+          connection: request.headers.get("connection") ?? "",
           version:
             request.headers.get("x-worklin-tenant-context-version") ?? "",
           organization: request.headers.get("x-worklin-org-id") ?? "",
@@ -1511,6 +1512,7 @@ describe("control-plane runtime provisioning guards", () => {
       request_id: runtimeTenantHeaders.request,
     });
     expect(runtimeTenantHeaders).toEqual({
+      connection: "close",
       version: "1",
       organization: "org-token",
       user: "user-token",
