@@ -263,6 +263,34 @@ function parseProviderCursor(value: unknown): ProviderIntegrationCursor {
     : { version: 1 };
 }
 
+function segmentTraitAllowlistFromDossier(value: unknown): ReadonlySet<string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return new Set();
+  }
+  const grammar = (value as Record<string, unknown>).expressionGrammar;
+  if (!grammar || typeof grammar !== "object" || Array.isArray(grammar)) {
+    return new Set();
+  }
+  const namespaces = (grammar as Record<string, unknown>).namespaces;
+  if (
+    !namespaces ||
+    typeof namespaces !== "object" ||
+    Array.isArray(namespaces)
+  ) {
+    return new Set();
+  }
+  const traits = (namespaces as Record<string, unknown>).trait;
+  return new Set(
+    (Array.isArray(traits) ? traits : []).filter(
+      (trait): trait is string =>
+        typeof trait === "string" &&
+        trait.trim().length > 0 &&
+        trait.length <= 160 &&
+        !/[\u0000-\u001f\u007f]/u.test(trait),
+    ),
+  );
+}
+
 interface ProcessedSourceEvent {
   id: string;
   brand_id: string;
@@ -4593,6 +4621,7 @@ export class RetentionRepository {
           tranche_size: number;
           completed_segment_count: number;
           evidence_cutoff_at: Date;
+          account_dossier_ciphertext: string;
           lease_owner: string | null;
           lease_expires_at: Date | null;
         }>
@@ -4605,6 +4634,7 @@ export class RetentionRepository {
           tranche_size,
           completed_segment_count,
           evidence_cutoff_at,
+          account_dossier_ciphertext,
           lease_owner,
           lease_expires_at
         FROM retention_segment_runs
@@ -4633,6 +4663,14 @@ export class RetentionRepository {
         );
       }
       const remaining = run.max_segments - run.completed_segment_count;
+      const allowedTraitKeys = segmentTraitAllowlistFromDossier(
+        JSON.parse(
+          this.crypto.decrypt(
+            run.account_dossier_ciphertext,
+            `${context.organizationId}:segment-run:${input.runId}:dossier`,
+          ),
+        ),
+      );
       if (
         input.definitions.length > run.tranche_size ||
         input.definitions.length > 10 ||
@@ -4705,7 +4743,10 @@ export class RetentionRepository {
         }
         names.add(normalizedName);
         assertConfidence(definition.confidence);
-        const validation = validateSafeSegmentExpression(definition.expression);
+        const validation = validateSafeSegmentExpression(
+          definition.expression,
+          { allowedTraitKeys },
+        );
         if (!validation.ok) {
           throw new RetentionServiceError(
             validation.code,

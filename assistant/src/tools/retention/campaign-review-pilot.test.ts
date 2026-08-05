@@ -27,15 +27,16 @@ function proposal(overrides: Record<string, unknown> = {}) {
         {
           type: "predicate",
           namespace: "metric",
-          key: "order_count",
-          operator: "equals",
+          key: "source_event_count",
+          operator: "greater_than",
           value: 0,
         },
         {
           type: "predicate",
           namespace: "evidence",
-          key: "product_view_30d",
-          operator: "exists",
+          key: "event_type",
+          operator: "contains",
+          value: "product_view",
         },
       ],
     },
@@ -171,6 +172,53 @@ function successfulDependencies(
           dossierSha256: "a".repeat(64),
           dossier: {
             aggregates: { recentBrowsers: 120 },
+            availableTraits: [
+              {
+                key: "klaviyo.Source quiz?",
+                customerCount: 12,
+                observedValues: [],
+              },
+              {
+                key: "klaviyo.health_status",
+                customerCount: 2,
+                observedValues: [],
+              },
+            ],
+            expressionGrammar: {
+              namespaces: {
+                profile: [
+                  "status",
+                  "has_email",
+                  "has_phone",
+                  "created_at",
+                  "source_updated_at",
+                ],
+                consent: ["email"],
+                metric: [
+                  "source_event_count",
+                  "klaviyo_event_count",
+                  "days_since_last_event",
+                ],
+                evidence: ["provider", "event_type"],
+                trait: ["klaviyo.Source quiz?", "klaviyo.health_status"],
+              },
+              operators: [
+                "equals",
+                "not_equals",
+                "exists",
+                "not_exists",
+                "contains",
+                "not_contains",
+                "in",
+                "not_in",
+                "greater_than",
+                "greater_than_or_equal",
+                "less_than",
+                "less_than_or_equal",
+                "after",
+                "before",
+              ],
+            },
             email: "must-not-reach-model@example.com",
             notes: "Imported from must-not-reach-model@example.com",
           },
@@ -297,7 +345,7 @@ describe("retention campaign review pilot", () => {
         brandId: BRAND_ID,
         maxSegments: 1,
         sampleLimitPerSegment: 2,
-        trancheSize: 2,
+        trancheSize: 3,
       },
     });
     expect(JSON.stringify(providerPrompts)).not.toContain(
@@ -378,7 +426,7 @@ describe("retention campaign review pilot", () => {
           properties?: { proposals?: { maxItems?: number } };
         }
       ).properties?.proposals?.maxItems,
-    ).toBe(2);
+    ).toBe(3);
     const toolSchema = providerCalls[0]?.tools?.[0]?.input_schema as {
       $defs?: { segmentExpression?: unknown };
       properties?: {
@@ -393,6 +441,9 @@ describe("retention campaign review pilot", () => {
     expect(
       toolSchema.properties?.proposals?.items?.properties?.expression,
     ).toEqual({ $ref: "#/$defs/segmentExpression" });
+    const schemaJson = JSON.stringify(toolSchema);
+    expect(schemaJson).toContain("klaviyo.Source quiz?");
+    expect(schemaJson).not.toContain("klaviyo.health_status");
     const completion = requests.find((request) =>
       request.path.endsWith("/complete"),
     );
@@ -443,6 +494,77 @@ describe("retention campaign review pilot", () => {
     expect(completion?.body).toMatchObject({
       outcome: "pause",
       errorCode: "direct_identifier_in_model_output",
+      definitions: [],
+    });
+  });
+
+  test("accepts an imported punctuated Klaviyo property", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const dependencies = successfulDependencies(
+      providerReturning({
+        proposals: [
+          proposal({
+            expression: {
+              type: "predicate",
+              namespace: "trait",
+              key: "klaviyo.Source quiz?",
+              operator: "exists",
+            },
+          }),
+        ],
+      }),
+      requests,
+      [],
+    );
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ status: "completed" });
+  });
+
+  test("pauses when the model references a field outside the frozen dossier", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const dependencies = successfulDependencies(
+      providerReturning({
+        proposals: [
+          proposal({
+            expression: {
+              type: "predicate",
+              namespace: "trait",
+              key: "klaviyo.Unlisted property?",
+              operator: "exists",
+            },
+          }),
+        ],
+      }),
+      requests,
+      [],
+    );
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "unsafe_segment_reference",
+      resumable: true,
+    });
+    expect(
+      requests.find((request) => request.path.endsWith("/complete"))?.body,
+    ).toMatchObject({
+      outcome: "pause",
+      errorCode: "unsafe_segment_reference",
       definitions: [],
     });
   });

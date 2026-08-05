@@ -25,7 +25,7 @@ const PROMPT_VERSION = "retention_campaign_review_v1";
 const STRUCTURED_TOOL_NAME = "submit_retention_segment_tranche";
 const DOCUMENT_SUFFIX = "Customer Segments & Campaign Ideas";
 const MAX_SEGMENTS = 50;
-const MAX_SEGMENTS_PER_TRANCHE = 2;
+const MAX_SEGMENTS_PER_TRANCHE = 3;
 const MAX_SERVICE_TRANCHE_SIZE = 10;
 const SAMPLE_MESSAGES_PER_SEGMENT = 2;
 const MAX_SAMPLE_MESSAGES = 100;
@@ -224,6 +224,13 @@ interface ClaimState {
   modelContext: unknown;
 }
 
+type SegmentReferenceAllowlist = Readonly<
+  Record<
+    "consent" | "evidence" | "metric" | "profile" | "trait",
+    ReadonlySet<string>
+  >
+>;
+
 interface RequestJsonResult {
   body: unknown;
 }
@@ -294,7 +301,7 @@ export async function executeRetentionCampaignReviewPilot(
     }
 
     if (run.status === "completed") {
-      return finishCompletedRun(run, context, dependencies);
+      return await finishCompletedRun(run, context, dependencies);
     }
     if (run.status === "failed") {
       return errorResult(
@@ -430,7 +437,7 @@ export async function executeRetentionCampaignReviewPilot(
         );
       }
       if (run.status === "completed") {
-        return finishCompletedRun(run, context, dependencies);
+        return await finishCompletedRun(run, context, dependencies);
       }
     }
 
@@ -578,7 +585,10 @@ async function generateTranche(
     cachedInputTokens?: number;
   };
 }> {
-  const modelContext = sanitizeForModel(claim.modelContext);
+  const modelContext = sanitizeSegmentModelContext(
+    sanitizeForModel(claim.modelContext),
+  );
+  const referenceAllowlist = segmentReferenceAllowlist(modelContext);
   const serializedContext = JSON.stringify(modelContext);
   if (Buffer.byteLength(serializedContext, "utf8") > MAX_MODEL_CONTEXT_BYTES) {
     throw new PilotError(
@@ -591,7 +601,10 @@ async function generateTranche(
     name: STRUCTURED_TOOL_NAME,
     description:
       "Return evidence-backed Worklin segment proposals and review-only campaign samples.",
-    input_schema: trancheOutputJsonSchema(claim.requestedSegments),
+    input_schema: trancheOutputJsonSchema(
+      claim.requestedSegments,
+      referenceAllowlist,
+    ),
   };
   const response = await provider.sendMessage(
     [userMessage(buildPrompt(serializedContext, claim.requestedSegments))],
@@ -628,7 +641,7 @@ async function generateTranche(
       "The model returned an invalid or oversized segment result.",
     );
   }
-  validateProposals(parsed.data.proposals);
+  validateProposals(parsed.data.proposals, referenceAllowlist);
   return {
     proposals: parsed.data.proposals,
     usage: {
@@ -641,8 +654,12 @@ async function generateTranche(
   };
 }
 
-function validateProposals(proposals: SegmentProposal[]): void {
+function validateProposals(
+  proposals: SegmentProposal[],
+  referenceAllowlist?: SegmentReferenceAllowlist,
+): void {
   const names = new Set<string>();
+  const messageFingerprints = new Set<string>();
   for (const proposal of proposals) {
     const normalizedName = proposal.name.toLocaleLowerCase();
     if (names.has(normalizedName)) {
@@ -664,6 +681,7 @@ function validateProposals(proposals: SegmentProposal[]): void {
         expressionValidation.error.message,
       );
     }
+    validateServiceCompatibleExpression(expression, referenceAllowlist);
     if (containsSensitiveExpressionKey(expression)) {
       throw new PilotError(
         "sensitive_segment_expression",
@@ -677,12 +695,14 @@ function validateProposals(proposals: SegmentProposal[]): void {
         "The model attempted to state or imply a sensitive personal guess.",
       );
     }
-    validateCampaignPreviewQuality(proposal);
+    validateCampaignPreviewQuality(proposal, messageFingerprints);
   }
 }
 
-function validateCampaignPreviewQuality(proposal: SegmentProposal): void {
-  const normalizedMessages = new Set<string>();
+function validateCampaignPreviewQuality(
+  proposal: SegmentProposal,
+  messageFingerprints: Set<string>,
+): void {
   for (const message of proposal.representativeMessages) {
     if (
       wordCount(message.subject) < 2 ||
@@ -698,13 +718,13 @@ function validateCampaignPreviewQuality(proposal: SegmentProposal): void {
       .toLocaleLowerCase()
       .replace(/\s+/gu, " ")
       .trim();
-    if (normalizedMessages.has(normalized)) {
+    if (messageFingerprints.has(normalized)) {
       throw new PilotError(
         "campaign_preview_quality_failed",
-        "The campaign samples were repetitive.",
+        "The campaign samples were repetitive across the generated tranche.",
       );
     }
-    normalizedMessages.add(normalized);
+    messageFingerprints.add(normalized);
   }
 }
 
@@ -1068,6 +1088,7 @@ function buildPrompt(
     "Never output an email address, phone number, full customer name, provider identifier, or internal lease data. customerReference must be an opaque archetype label such as archetype_example_1.",
     "Every expression must be a Worklin expression using predicate, all, any, or not nodes. Predicate namespaces are consent, evidence, metric, profile, and trait.",
     'Use exactly these node shapes: {"type":"predicate","namespace":"metric","key":"source_event_count","operator":"greater_than","value":0}; {"type":"all","expressions":[...]}; {"type":"any","expressions":[...]}; or {"type":"not","expression":{...}}. exists and not_exists omit value; every other operator includes value.',
+    "Use only namespace and key pairs listed under expressionGrammar.namespaces. Copy every key exactly, including punctuation.",
     "Return false for both safety flags. If the evidence cannot support a safe proposal, return fewer proposals.",
     "Evidence packet:",
     serializedContext,
@@ -1138,11 +1159,14 @@ function buildDocumentMarkdown(
   return lines.join("\n");
 }
 
-function trancheOutputJsonSchema(maxItems: number): Record<string, unknown> {
+function trancheOutputJsonSchema(
+  maxItems: number,
+  referenceAllowlist: SegmentReferenceAllowlist,
+): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
-    $defs: segmentExpressionJsonSchemaDefinitions(),
+    $defs: segmentExpressionJsonSchemaDefinitions(referenceAllowlist),
     required: ["proposals"],
     properties: {
       proposals: {
@@ -1242,7 +1266,9 @@ function trancheOutputJsonSchema(maxItems: number): Record<string, unknown> {
   };
 }
 
-function segmentExpressionJsonSchemaDefinitions(): Record<string, unknown> {
+function segmentExpressionJsonSchemaDefinitions(
+  referenceAllowlist: SegmentReferenceAllowlist,
+): Record<string, unknown> {
   const scalar = {
     anyOf: [
       { type: "string", maxLength: 512 },
@@ -1256,7 +1282,14 @@ function segmentExpressionJsonSchemaDefinitions(): Record<string, unknown> {
     namespace: {
       enum: ["consent", "evidence", "metric", "profile", "trait"],
     },
-    key: { type: "string", minLength: 1, maxLength: 160 },
+    key: {
+      type: "string",
+      enum: [
+        ...new Set(
+          Object.values(referenceAllowlist).flatMap((keys) => [...keys]),
+        ),
+      ].sort(),
+    },
   };
 
   return {
@@ -1358,6 +1391,7 @@ const INTERNAL_KEY =
   /(?:lease|token|checksum|secret|credential|claim_id|job_id)/iu;
 const SENSITIVE_KEY =
   /(?:health|medical|diagnosis|religion|race|ethnicity|sexual|pregnan|disab|politic|marital|married|single_status|financial_hardship)/iu;
+const SEGMENT_MODEL_KEY_MAX_LENGTH = 160;
 
 function sanitizeForModel(value: unknown, depth = 0): unknown {
   if (depth > 8) return "[omitted]";
@@ -1386,6 +1420,146 @@ function sanitizeForModel(value: unknown, depth = 0): unknown {
     result[key] = sanitizeForModel(nested, depth + 1);
   }
   return result;
+}
+
+function sanitizeSegmentModelContext(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const root = { ...(value as Record<string, unknown>) };
+  const grammar =
+    root.expressionGrammar &&
+    typeof root.expressionGrammar === "object" &&
+    !Array.isArray(root.expressionGrammar)
+      ? { ...(root.expressionGrammar as Record<string, unknown>) }
+      : {};
+  const namespaces =
+    grammar.namespaces &&
+    typeof grammar.namespaces === "object" &&
+    !Array.isArray(grammar.namespaces)
+      ? { ...(grammar.namespaces as Record<string, unknown>) }
+      : {};
+
+  for (const namespace of [
+    "consent",
+    "evidence",
+    "metric",
+    "profile",
+    "trait",
+  ] as const) {
+    const keys = Array.isArray(namespaces[namespace])
+      ? namespaces[namespace]
+      : [];
+    namespaces[namespace] = keys.filter(
+      (key): key is string =>
+        isSafeSegmentModelKey(key) &&
+        (namespace !== "trait" || !SENSITIVE_KEY.test(key)),
+    );
+  }
+  grammar.namespaces = namespaces;
+  root.expressionGrammar = grammar;
+
+  const allowedTraits = new Set(
+    (namespaces.trait as string[] | undefined) ?? [],
+  );
+  if (Array.isArray(root.availableTraits)) {
+    root.availableTraits = root.availableTraits.filter((item) => {
+      const trait = recordValue(item);
+      const key = stringValue(trait.key);
+      return allowedTraits.has(key);
+    });
+  }
+  return root;
+}
+
+function isSafeSegmentModelKey(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= SEGMENT_MODEL_KEY_MAX_LENGTH &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function segmentReferenceAllowlist(value: unknown): SegmentReferenceAllowlist {
+  const root = recordValue(value);
+  const grammar = recordValue(root.expressionGrammar);
+  const namespaces = recordValue(grammar.namespaces);
+  const keys = (
+    namespace: keyof SegmentReferenceAllowlist,
+  ): ReadonlySet<string> =>
+    new Set(
+      (Array.isArray(namespaces[namespace])
+        ? namespaces[namespace]
+        : []
+      ).filter(isSafeSegmentModelKey),
+    );
+  return {
+    consent: keys("consent"),
+    evidence: keys("evidence"),
+    metric: keys("metric"),
+    profile: keys("profile"),
+    trait: keys("trait"),
+  };
+}
+
+function validateServiceCompatibleExpression(
+  expression: WorklinSegmentExpression,
+  referenceAllowlist?: SegmentReferenceAllowlist,
+): void {
+  if (expression.type === "predicate") {
+    if (
+      referenceAllowlist &&
+      !referenceAllowlist[expression.namespace].has(expression.key)
+    ) {
+      throw new PilotError(
+        "unsafe_segment_reference",
+        "The model used a customer field that was not included in the approved evidence grammar.",
+      );
+    }
+    if (
+      (expression.operator === "in" || expression.operator === "not_in") &&
+      !Array.isArray(expression.value)
+    ) {
+      throw new PilotError(
+        "invalid_segment_expression",
+        "List segment operators require a list value.",
+      );
+    }
+    if (
+      [
+        "greater_than",
+        "greater_than_or_equal",
+        "less_than",
+        "less_than_or_equal",
+      ].includes(expression.operator) &&
+      typeof expression.value !== "number"
+    ) {
+      throw new PilotError(
+        "invalid_segment_expression",
+        "Numeric segment operators require a numeric value.",
+      );
+    }
+    if (
+      (expression.operator === "after" || expression.operator === "before") &&
+      (typeof expression.value !== "string" ||
+        !Number.isFinite(Date.parse(expression.value)))
+    ) {
+      throw new PilotError(
+        "invalid_segment_expression",
+        "Date segment operators require a valid date value.",
+      );
+    }
+    return;
+  }
+  if (expression.type === "not") {
+    validateServiceCompatibleExpression(
+      expression.expression,
+      referenceAllowlist,
+    );
+    return;
+  }
+  for (const child of expression.expressions) {
+    validateServiceCompatibleExpression(child, referenceAllowlist);
+  }
 }
 
 function redactDirectIdentifiers(value: string): string {
