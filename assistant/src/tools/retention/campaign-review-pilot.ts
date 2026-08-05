@@ -222,6 +222,10 @@ interface ClaimState {
   dossierSha256: string;
   requestedSegments: number;
   modelContext: unknown;
+  existingSegments: Array<{
+    name: string;
+    expression: WorklinSegmentExpression;
+  }>;
 }
 
 type SegmentReferenceAllowlist = Readonly<
@@ -539,6 +543,7 @@ function parseClaimState(
   const remainingSegments = integerValue(limits.remainingSegments);
   const trancheSize = integerValue(limits.trancheSize);
   const sampleLimitPerSegment = integerValue(limits.sampleLimitPerSegment);
+  const existingSegments = parseExistingSegments(claim.existingSegments);
   if (
     runId !== run.id ||
     !leaseOwner.startsWith("segment-run:") ||
@@ -551,7 +556,8 @@ function parseClaimState(
     remainingSegments !== run.maxSegments - run.completedSegments ||
     trancheSize < 1 ||
     trancheSize > MAX_SERVICE_TRANCHE_SIZE ||
-    sampleLimitPerSegment !== SAMPLE_MESSAGES_PER_SEGMENT
+    sampleLimitPerSegment !== SAMPLE_MESSAGES_PER_SEGMENT ||
+    existingSegments.length !== completedSegments
   ) {
     throw new PilotError(
       "retention_service_response_invalid",
@@ -570,7 +576,37 @@ function parseClaimState(
     dossierSha256,
     requestedSegments,
     modelContext: claim.dossier,
+    existingSegments,
   };
+}
+
+function parseExistingSegments(value: unknown): ClaimState["existingSegments"] {
+  if (!Array.isArray(value) || value.length > MAX_SEGMENTS) {
+    throw new PilotError(
+      "retention_service_response_invalid",
+      "The customer-intelligence service returned invalid prior audiences.",
+    );
+  }
+  const names = new Set<string>();
+  return value.map((item) => {
+    const record = recordValue(item);
+    const name = stringValue(record.name).trim();
+    const expression = SegmentExpressionSchema.safeParse(record.expression);
+    const normalizedName = name.toLocaleLowerCase();
+    if (
+      name.length === 0 ||
+      name.length > 200 ||
+      names.has(normalizedName) ||
+      !expression.success
+    ) {
+      throw new PilotError(
+        "retention_service_response_invalid",
+        "The customer-intelligence service returned invalid prior audiences.",
+      );
+    }
+    names.add(normalizedName);
+    return { name, expression: expression.data };
+  });
 }
 
 async function generateTranche(
@@ -589,7 +625,10 @@ async function generateTranche(
     sanitizeForModel(claim.modelContext),
   );
   const referenceAllowlist = segmentReferenceAllowlist(modelContext);
-  const serializedContext = JSON.stringify(modelContext);
+  const serializedContext = JSON.stringify({
+    evidence: modelContext,
+    previouslyGeneratedAudiences: claim.existingSegments,
+  });
   if (Buffer.byteLength(serializedContext, "utf8") > MAX_MODEL_CONTEXT_BYTES) {
     throw new PilotError(
       "segment_claim_context_too_large",
@@ -641,7 +680,11 @@ async function generateTranche(
       "The model returned an invalid or oversized segment result.",
     );
   }
-  validateProposals(parsed.data.proposals, referenceAllowlist);
+  validateProposals(
+    parsed.data.proposals,
+    referenceAllowlist,
+    claim.existingSegments,
+  );
   return {
     proposals: parsed.data.proposals,
     usage: {
@@ -657,8 +700,16 @@ async function generateTranche(
 function validateProposals(
   proposals: SegmentProposal[],
   referenceAllowlist?: SegmentReferenceAllowlist,
+  existingSegments: ClaimState["existingSegments"] = [],
 ): void {
-  const names = new Set<string>();
+  const names = new Set(
+    existingSegments.map((segment) => segment.name.toLocaleLowerCase()),
+  );
+  const expressionFingerprints = new Set(
+    existingSegments.map((segment) =>
+      segmentExpressionFingerprint(segment.expression),
+    ),
+  );
   const messageFingerprints = new Set<string>();
   for (const proposal of proposals) {
     const normalizedName = proposal.name.toLocaleLowerCase();
@@ -682,6 +733,14 @@ function validateProposals(
       );
     }
     validateServiceCompatibleExpression(expression, referenceAllowlist);
+    const expressionFingerprint = segmentExpressionFingerprint(expression);
+    if (expressionFingerprints.has(expressionFingerprint)) {
+      throw new PilotError(
+        "duplicate_segment_proposal",
+        "The model returned a segment that duplicates an audience already saved in this run.",
+      );
+    }
+    expressionFingerprints.add(expressionFingerprint);
     if (containsSensitiveExpressionKey(expression)) {
       throw new PilotError(
         "sensitive_segment_expression",
@@ -697,6 +756,32 @@ function validateProposals(
     }
     validateCampaignPreviewQuality(proposal, messageFingerprints);
   }
+}
+
+function segmentExpressionFingerprint(
+  expression: WorklinSegmentExpression,
+): string {
+  if (expression.type === "predicate") {
+    return JSON.stringify({
+      type: expression.type,
+      namespace: expression.namespace,
+      key: expression.key,
+      operator: expression.operator,
+      ...(expression.value !== undefined ? { value: expression.value } : {}),
+    });
+  }
+  if (expression.type === "not") {
+    return JSON.stringify({
+      type: expression.type,
+      expression: segmentExpressionFingerprint(expression.expression),
+    });
+  }
+  return JSON.stringify({
+    type: expression.type,
+    expressions: expression.expressions
+      .map(segmentExpressionFingerprint)
+      .sort(),
+  });
 }
 
 function validateCampaignPreviewQuality(
@@ -1083,12 +1168,13 @@ function buildPrompt(
 ): string {
   return [
     `Propose up to ${requestedSegments} distinct, useful retention audiences from the supplied aggregate evidence. Do not pad the result.`,
+    "The evidence packet includes previouslyGeneratedAudiences. Do not repeat, rename, narrowly restate, or reuse the same targeting expression as any of them. Propose only materially different audiences supported by the evidence.",
     `Create exactly ${SAMPLE_MESSAGES_PER_SEGMENT} concise representative email messages per proposed audience.`,
     "Use only factual signals present in the evidence. Do not infer or mention health, religion, race, ethnicity, political views, sexuality, pregnancy, disability, marital status, financial hardship, or other sensitive personal facts.",
     "Never output an email address, phone number, full customer name, provider identifier, or internal lease data. customerReference must be an opaque archetype label such as archetype_example_1.",
     "Every expression must be a Worklin expression using predicate, all, any, or not nodes. Predicate namespaces are consent, evidence, metric, profile, and trait.",
     'Use exactly these node shapes: {"type":"predicate","namespace":"metric","key":"source_event_count","operator":"greater_than","value":0}; {"type":"all","expressions":[...]}; {"type":"any","expressions":[...]}; or {"type":"not","expression":{...}}. exists and not_exists omit value; every other operator includes value.',
-    "Use only namespace and key pairs listed under expressionGrammar.namespaces. Copy every key exactly, including punctuation.",
+    "Use only namespace and key pairs listed under evidence.expressionGrammar.namespaces. Copy every key exactly, including punctuation.",
     "Return false for both safety flags. If the evidence cannot support a safe proposal, return fewer proposals.",
     "Evidence packet:",
     serializedContext,

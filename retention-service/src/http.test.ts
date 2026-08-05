@@ -265,6 +265,7 @@ describe("retention operator HTTP boundary", () => {
             leaseExpiresAt: "2026-07-28T12:02:00.000Z",
             dossierSha256: "d".repeat(64),
             dossier: { customerCount: 10 },
+            existingSegments: [],
             limits: {
               maxSegments: 20,
               completedSegments: 0,

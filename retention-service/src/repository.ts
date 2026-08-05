@@ -4458,6 +4458,10 @@ export class RetentionRepository {
     leaseExpiresAt: string;
     dossierSha256: string;
     dossier: unknown;
+    existingSegments: Array<{
+      name: string;
+      expression: WorklinSegmentExpression;
+    }>;
     limits: {
       maxSegments: number;
       completedSegments: number;
@@ -4559,6 +4563,19 @@ export class RetentionRepository {
         resourceType: "segment_run",
         resourceId: input.runId,
       });
+      const existingSegments = await tx<
+        Array<{
+          name: string;
+          expression: WorklinSegmentExpression;
+        }>
+      >`
+        SELECT name, expression
+        FROM retention_segment_definitions
+        WHERE org_id = ${context.organizationId}
+          AND source_run_id = ${input.runId}
+        ORDER BY created_at, id
+        LIMIT 50
+      `;
       return {
         runId: input.runId,
         leaseOwner,
@@ -4570,6 +4587,7 @@ export class RetentionRepository {
             `${context.organizationId}:segment-run:${input.runId}:dossier`,
           ),
         ),
+        existingSegments,
         limits: {
           maxSegments: run.max_segments,
           completedSegments: run.completed_segment_count,
