@@ -25,7 +25,8 @@ const PROMPT_VERSION = "retention_campaign_review_v1";
 const STRUCTURED_TOOL_NAME = "submit_retention_segment_tranche";
 const DOCUMENT_SUFFIX = "Customer Segments & Campaign Ideas";
 const MAX_SEGMENTS = 50;
-const MAX_SEGMENTS_PER_TRANCHE = 10;
+const MAX_SEGMENTS_PER_TRANCHE = 2;
+const MAX_SERVICE_TRANCHE_SIZE = 10;
 const SAMPLE_MESSAGES_PER_SEGMENT = 2;
 const MAX_SAMPLE_MESSAGES = 100;
 const MAX_MODEL_CALLS = 5;
@@ -483,7 +484,7 @@ function parseClaimState(
     completedSegments !== run.completedSegments ||
     remainingSegments !== run.maxSegments - run.completedSegments ||
     trancheSize < 1 ||
-    trancheSize > MAX_SEGMENTS_PER_TRANCHE ||
+    trancheSize > MAX_SERVICE_TRANCHE_SIZE ||
     sampleLimitPerSegment !== SAMPLE_MESSAGES_PER_SEGMENT
   ) {
     throw new PilotError(
