@@ -373,6 +373,61 @@ function isNonEmpty(value: string): boolean {
   return value.trim().length > 0;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSegmentPredicateNamespace(
+  value: unknown,
+): value is SegmentPredicateNamespace {
+  return (
+    value === "consent" ||
+    value === "evidence" ||
+    value === "metric" ||
+    value === "profile" ||
+    value === "trait"
+  );
+}
+
+function isSegmentPredicateOperator(
+  value: unknown,
+): value is SegmentPredicateOperator {
+  return (
+    value === "after" ||
+    value === "before" ||
+    value === "contains" ||
+    value === "equals" ||
+    value === "exists" ||
+    value === "greater_than" ||
+    value === "greater_than_or_equal" ||
+    value === "in" ||
+    value === "less_than" ||
+    value === "less_than_or_equal" ||
+    value === "not_contains" ||
+    value === "not_equals" ||
+    value === "not_exists" ||
+    value === "not_in"
+  );
+}
+
+function isRetentionScalar(value: unknown): value is RetentionScalar {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function isSegmentPredicateValue(
+  value: unknown,
+): value is RetentionScalar | readonly RetentionScalar[] {
+  return (
+    isRetentionScalar(value) ||
+    (Array.isArray(value) && value.every(isRetentionScalar))
+  );
+}
+
 function isConfidence(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
@@ -481,7 +536,7 @@ function validateApprovalMaterial(
 }
 
 export function validateWorklinSegmentExpression(
-  expression: WorklinSegmentExpression,
+  expression: unknown,
   options: SegmentExpressionValidationOptions = {},
 ): RetentionContractResult<SegmentExpressionValidation> {
   const maxDepth = options.maxDepth ?? 12;
@@ -491,7 +546,7 @@ export function validateWorklinSegmentExpression(
   let deepestNode = 0;
 
   const visit = (
-    node: WorklinSegmentExpression,
+    node: unknown,
     depth: number,
   ): RetentionContractError | null => {
     nodeCount += 1;
@@ -505,11 +560,24 @@ export function validateWorklinSegmentExpression(
       };
     }
 
+    if (!isRecord(node) || typeof node.type !== "string") {
+      return {
+        code: "invalid_segment_expression",
+        message: "Segment expression nodes must be typed objects.",
+      };
+    }
+
     if (node.type === "predicate") {
-      if (!isNonEmpty(node.key)) {
+      if (
+        !isSegmentPredicateNamespace(node.namespace) ||
+        typeof node.key !== "string" ||
+        !isNonEmpty(node.key) ||
+        !isSegmentPredicateOperator(node.operator)
+      ) {
         return {
           code: "invalid_segment_expression",
-          message: "Segment predicate keys must not be empty.",
+          message:
+            "Segment predicates require a supported namespace, key, and operator.",
         };
       }
 
@@ -517,7 +585,8 @@ export function validateWorklinSegmentExpression(
         node.operator === "exists" || node.operator === "not_exists";
       if (
         (expectsNoValue && node.value !== undefined) ||
-        (!expectsNoValue && node.value === undefined)
+        (!expectsNoValue &&
+          (node.value === undefined || !isSegmentPredicateValue(node.value)))
       ) {
         return {
           code: "invalid_segment_expression",
@@ -534,10 +603,23 @@ export function validateWorklinSegmentExpression(
     }
 
     if (node.type === "not") {
+      if (!("expression" in node)) {
+        return {
+          code: "invalid_segment_expression",
+          message: "Segment not expressions require one child expression.",
+        };
+      }
       return visit(node.expression, depth + 1);
     }
 
-    if (node.expressions.length === 0) {
+    if (node.type !== "all" && node.type !== "any") {
+      return {
+        code: "invalid_segment_expression",
+        message: "Segment expressions use predicate, all, any, or not nodes.",
+      };
+    }
+
+    if (!Array.isArray(node.expressions) || node.expressions.length === 0) {
       return {
         code: "invalid_segment_expression",
         message: `Segment ${node.type} expressions must contain at least one child.`,

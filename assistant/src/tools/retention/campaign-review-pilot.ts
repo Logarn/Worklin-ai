@@ -77,11 +77,70 @@ const RepresentativeMessageSchema = z
   })
   .strict();
 
+const RetentionScalarSchema = z.union([
+  z.string().max(512),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+
+const SegmentPredicateSchema = z
+  .object({
+    type: z.literal("predicate"),
+    namespace: z.enum(["consent", "evidence", "metric", "profile", "trait"]),
+    key: z.string().trim().min(1).max(160),
+    operator: z.enum([
+      "after",
+      "before",
+      "contains",
+      "equals",
+      "exists",
+      "greater_than",
+      "greater_than_or_equal",
+      "in",
+      "less_than",
+      "less_than_or_equal",
+      "not_contains",
+      "not_equals",
+      "not_exists",
+      "not_in",
+    ]),
+    value: z
+      .union([RetentionScalarSchema, z.array(RetentionScalarSchema).max(100)])
+      .optional(),
+  })
+  .strict();
+
+const SegmentExpressionSchema: z.ZodType<WorklinSegmentExpression> = z.lazy(
+  () =>
+    z.discriminatedUnion("type", [
+      SegmentPredicateSchema,
+      z
+        .object({
+          type: z.literal("all"),
+          expressions: z.array(SegmentExpressionSchema).min(1).max(40),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("any"),
+          expressions: z.array(SegmentExpressionSchema).min(1).max(40),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("not"),
+          expression: SegmentExpressionSchema,
+        })
+        .strict(),
+    ]),
+);
+
 const SegmentProposalSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
     description: z.string().trim().min(1).max(1_000),
-    expression: z.unknown(),
+    expression: SegmentExpressionSchema,
     evidence: z.array(EvidenceSchema).min(1).max(10),
     confidence: z.number().min(0).max(1),
     campaignConcept: CampaignConceptSchema,
@@ -594,7 +653,7 @@ function validateProposals(proposals: SegmentProposal[]): void {
     }
     names.add(normalizedName);
 
-    const expression = proposal.expression as WorklinSegmentExpression;
+    const expression = proposal.expression;
     const expressionValidation = validateWorklinSegmentExpression(expression, {
       maxDepth: 6,
       maxNodes: 40,
@@ -1008,6 +1067,7 @@ function buildPrompt(
     "Use only factual signals present in the evidence. Do not infer or mention health, religion, race, ethnicity, political views, sexuality, pregnancy, disability, marital status, financial hardship, or other sensitive personal facts.",
     "Never output an email address, phone number, full customer name, provider identifier, or internal lease data. customerReference must be an opaque archetype label such as archetype_example_1.",
     "Every expression must be a Worklin expression using predicate, all, any, or not nodes. Predicate namespaces are consent, evidence, metric, profile, and trait.",
+    'Use exactly these node shapes: {"type":"predicate","namespace":"metric","key":"source_event_count","operator":"greater_than","value":0}; {"type":"all","expressions":[...]}; {"type":"any","expressions":[...]}; or {"type":"not","expression":{...}}. exists and not_exists omit value; every other operator includes value.',
     "Return false for both safety flags. If the evidence cannot support a safe proposal, return fewer proposals.",
     "Evidence packet:",
     serializedContext,
@@ -1082,6 +1142,7 @@ function trancheOutputJsonSchema(maxItems: number): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
+    $defs: segmentExpressionJsonSchemaDefinitions(),
     required: ["proposals"],
     properties: {
       proposals: {
@@ -1104,7 +1165,7 @@ function trancheOutputJsonSchema(maxItems: number): Record<string, unknown> {
           properties: {
             name: { type: "string", minLength: 1, maxLength: 200 },
             description: { type: "string", minLength: 1, maxLength: 1_000 },
-            expression: { type: "object" },
+            expression: { $ref: "#/$defs/segmentExpression" },
             evidence: {
               type: "array",
               minItems: 1,
@@ -1176,6 +1237,116 @@ function trancheOutputJsonSchema(maxItems: number): Record<string, unknown> {
             },
           },
         },
+      },
+    },
+  };
+}
+
+function segmentExpressionJsonSchemaDefinitions(): Record<string, unknown> {
+  const scalar = {
+    anyOf: [
+      { type: "string", maxLength: 512 },
+      { type: "number" },
+      { type: "boolean" },
+      { type: "null" },
+    ],
+  };
+  const predicateProperties = {
+    type: { const: "predicate" },
+    namespace: {
+      enum: ["consent", "evidence", "metric", "profile", "trait"],
+    },
+    key: { type: "string", minLength: 1, maxLength: 160 },
+  };
+
+  return {
+    segmentExpression: {
+      oneOf: [
+        { $ref: "#/$defs/predicateWithoutValue" },
+        { $ref: "#/$defs/predicateWithValue" },
+        { $ref: "#/$defs/allExpression" },
+        { $ref: "#/$defs/anyExpression" },
+        { $ref: "#/$defs/notExpression" },
+      ],
+    },
+    predicateWithoutValue: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "namespace", "key", "operator"],
+      properties: {
+        ...predicateProperties,
+        operator: { enum: ["exists", "not_exists"] },
+      },
+    },
+    predicateWithValue: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "namespace", "key", "operator", "value"],
+      properties: {
+        ...predicateProperties,
+        operator: {
+          enum: [
+            "after",
+            "before",
+            "contains",
+            "equals",
+            "greater_than",
+            "greater_than_or_equal",
+            "in",
+            "less_than",
+            "less_than_or_equal",
+            "not_contains",
+            "not_equals",
+            "not_in",
+          ],
+        },
+        value: {
+          anyOf: [
+            scalar,
+            {
+              type: "array",
+              maxItems: 100,
+              items: scalar,
+            },
+          ],
+        },
+      },
+    },
+    allExpression: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "expressions"],
+      properties: {
+        type: { const: "all" },
+        expressions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 40,
+          items: { $ref: "#/$defs/segmentExpression" },
+        },
+      },
+    },
+    anyExpression: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "expressions"],
+      properties: {
+        type: { const: "any" },
+        expressions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 40,
+          items: { $ref: "#/$defs/segmentExpression" },
+        },
+      },
+    },
+    notExpression: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "expression"],
+      properties: {
+        type: { const: "not" },
+        expression: { $ref: "#/$defs/segmentExpression" },
       },
     },
   };

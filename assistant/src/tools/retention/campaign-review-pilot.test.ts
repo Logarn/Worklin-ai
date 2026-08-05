@@ -374,10 +374,25 @@ describe("retention campaign review pilot", () => {
     expect(
       (
         providerCalls[0]?.tools?.[0]?.input_schema as {
+          $defs?: { segmentExpression?: unknown };
           properties?: { proposals?: { maxItems?: number } };
         }
       ).properties?.proposals?.maxItems,
     ).toBe(2);
+    const toolSchema = providerCalls[0]?.tools?.[0]?.input_schema as {
+      $defs?: { segmentExpression?: unknown };
+      properties?: {
+        proposals?: {
+          items?: {
+            properties?: { expression?: Record<string, unknown> };
+          };
+        };
+      };
+    };
+    expect(toolSchema.$defs?.segmentExpression).toBeDefined();
+    expect(
+      toolSchema.properties?.proposals?.items?.properties?.expression,
+    ).toEqual({ $ref: "#/$defs/segmentExpression" });
     const completion = requests.find((request) =>
       request.path.endsWith("/complete"),
     );
@@ -428,6 +443,46 @@ describe("retention campaign review pilot", () => {
     expect(completion?.body).toMatchObject({
       outcome: "pause",
       errorCode: "direct_identifier_in_model_output",
+      definitions: [],
+    });
+  });
+
+  test("pauses with a typed error when the model nests campaign fields inside the expression", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const malformed = proposal({
+      expression: {
+        all: [],
+        confidence: 0.8,
+        campaignConcept: proposal().campaignConcept,
+        representativeMessages: proposal().representativeMessages,
+        safety: proposal().safety,
+      },
+    });
+    const dependencies = successfulDependencies(
+      providerReturning({ proposals: [malformed] }),
+      requests,
+      [],
+    );
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "structured_segment_output_invalid",
+      resumable: true,
+    });
+    const completion = requests.find((request) =>
+      request.path.endsWith("/complete"),
+    );
+    expect(completion?.body).toMatchObject({
+      outcome: "pause",
+      errorCode: "structured_segment_output_invalid",
       definitions: [],
     });
   });
