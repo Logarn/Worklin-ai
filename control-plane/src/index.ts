@@ -1130,6 +1130,7 @@ async function verifyShareableArtifact(
       role: "owner",
     })}`,
   });
+  headers.set("Connection", "close");
   applyRuntimeTenantHeaders(headers, tenantContext);
   const response = await fetch(target, {
     headers,
@@ -2428,6 +2429,7 @@ function runtimeResearchHeaders(
   const headers = new Headers({
     Authorization: `Bearer ${mintActorToken(runtimeStack, tenantContext)}`,
   });
+  headers.set("Connection", "close");
   applyRuntimeTenantHeaders(headers, tenantContext);
   return headers;
 }
@@ -3800,6 +3802,7 @@ function copyProxyHeaders(req: Request): Headers {
     if (
       normalized === "host" ||
       normalized === "cookie" ||
+      normalized === "connection" ||
       normalized === "content-length" ||
       normalized === "authorization" ||
       normalized === POOLED_MODEL_KEY_CAPABILITY_HEADER
@@ -3811,6 +3814,16 @@ function copyProxyHeaders(req: Request): Headers {
       headers.set(key, value);
     }
   }
+  return headers;
+}
+
+function runtimeProxyHeaders(req: Request): Headers {
+  const headers = copyProxyHeaders(req);
+  // Railway replaces a private service instance during deploys while its DNS
+  // name remains stable. Do not leave a pooled socket pointing at the removed
+  // instance, or subsequent authenticated requests can hang behind a healthy
+  // /readyz response until the control plane itself restarts.
+  headers.set("Connection", "close");
   return headers;
 }
 
@@ -3934,7 +3947,7 @@ async function proxySharedArtifact(
   const target = new URL(runtimeStack.gateway_url);
   target.pathname = `/v1/assistants/${encodeURIComponent(assistant.id)}/shared-artifacts/${encodeURIComponent(artifactId)}${suffix}`;
   target.search = url.search;
-  const headers = copyProxyHeaders(req);
+  const headers = runtimeProxyHeaders(req);
   headers.set(
     "Authorization",
     `Bearer ${mintActorToken(runtimeStack, tenantContext, {
@@ -4088,6 +4101,7 @@ async function proxyLiveVoiceProviderCallback(
       `Bearer ${pooledGatewayIngressToken}`,
     );
   }
+  headers.set("Connection", "close");
 
   const body = Buffer.isBuffer(req.body)
     ? new Uint8Array(req.body)
@@ -4460,7 +4474,7 @@ async function proxyToGateway(
     target.pathname = url.pathname;
     target.search = url.search;
 
-    const headers = copyProxyHeaders(req);
+    const headers = runtimeProxyHeaders(req);
     headers.set("Authorization", `Bearer ${actorToken}`);
     applyRuntimeTenantHeaders(headers, tenantContext);
     if (pooledRequestHandle && pooledLeaseBinding) {
