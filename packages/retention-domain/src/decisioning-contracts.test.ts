@@ -150,12 +150,29 @@ describe("shared retention decision contracts", () => {
       },
       { maxDepth: 2 },
     );
+    const missingChildren = validateWorklinSegmentExpression({
+      type: "all",
+    });
+    const unknownNode = validateWorklinSegmentExpression({
+      type: "campaign",
+      expressions: [],
+    });
+    const invalidScalar = validateWorklinSegmentExpression({
+      type: "predicate",
+      namespace: "metric",
+      key: "order_count",
+      operator: "equals",
+      value: { accidental: "nested object" },
+    });
 
     expect(missingValue.ok).toBe(false);
     if (!missingValue.ok) {
       expect(missingValue.error.code).toBe("invalid_segment_expression");
     }
     expect(tooDeep.ok).toBe(false);
+    expect(missingChildren.ok).toBe(false);
+    expect(unknownNode.ok).toBe(false);
+    expect(invalidScalar.ok).toBe(false);
   });
 
   test("requires inferred traits to retain model and evidence provenance", () => {
