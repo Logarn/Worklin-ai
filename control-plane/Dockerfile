@@ -9,6 +9,9 @@ RUN bun install --frozen-lockfile
 
 EXPOSE 8080
 
-ENV WORKLIN_CONTROL_PLANE_PORT=8080
+# Railway keeps a private service hostname while replacing its instance IP.
+# Keep that address cache brief so runtime deploys do not stall user requests.
+ENV WORKLIN_CONTROL_PLANE_PORT=8080 \
+    BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS=1
 
 CMD ["bun", "run", "src/index.ts"]

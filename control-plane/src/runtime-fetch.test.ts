@@ -25,4 +25,14 @@ describe("runtimeFetch", () => {
     expect(response.status).toBe(204);
     expect(receivedInit?.keepalive).toBe(false);
   });
+
+  test("bounds private runtime DNS caching in the control-plane container", async () => {
+    const dockerfile = await Bun.file(
+      new URL("../Dockerfile", import.meta.url),
+    ).text();
+
+    expect(dockerfile).toContain(
+      "BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS=1",
+    );
+  });
 });
