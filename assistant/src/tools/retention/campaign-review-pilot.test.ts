@@ -79,6 +79,26 @@ function proposal(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function numberedProposal(index: number) {
+  return proposal({
+    name: `Audience ${index}`,
+    expression: {
+      type: "predicate",
+      namespace: "metric",
+      key: "source_event_count",
+      operator: "greater_than",
+      value: index,
+    },
+    representativeMessages: proposal().representativeMessages.map(
+      (message, messageIndex) => ({
+        ...message,
+        subject: `${message.subject} ${index}`,
+        body: `${message.body} Audience ${index}, version ${messageIndex + 1}.`,
+      }),
+    ),
+  });
+}
+
 function providerReturning(
   input: Record<string, unknown>,
   calls: SendMessageOptions[] = [],
@@ -133,6 +153,10 @@ function successfulDependencies(
 ): CampaignReviewPilotDependencies {
   let activeMaxSegments = 1;
   let completedSegmentCount = 0;
+  const existingSegments: Array<{
+    name: string;
+    expression: unknown;
+  }> = [];
   return {
     resolveProvider: async () => provider,
     operatorRequest: async (_context, method, path, body) => {
@@ -170,6 +194,7 @@ function successfulDependencies(
           leaseOwner: LEASE_OWNER,
           leaseExpiresAt: "2026-07-28T12:02:00.000Z",
           dossierSha256: "a".repeat(64),
+          existingSegments,
           dossier: {
             aggregates: { recentBrowsers: 120 },
             availableTraits: [
@@ -237,8 +262,14 @@ function successfulDependencies(
       if (path.endsWith("/complete")) {
         const completion = body as {
           outcome: "continue" | "pause" | "complete";
-          definitions: unknown[];
+          definitions: Array<{ name: string; expression: unknown }>;
         };
+        existingSegments.push(
+          ...completion.definitions.map((definition) => ({
+            name: definition.name,
+            expression: definition.expression,
+          })),
+        );
         completedSegmentCount += completion.definitions.length;
         return json({
           runId: RUN_ID,
@@ -451,6 +482,116 @@ describe("retention campaign review pilot", () => {
       leaseOwner: LEASE_OWNER,
       outcome: "pause",
       errorCode: "provider_quota",
+      definitions: [],
+    });
+  });
+
+  test("gives later tranches the audiences already saved in the run", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const prompts: string[] = [];
+    const tranches = [
+      [numberedProposal(1), numberedProposal(2), numberedProposal(3)],
+      [numberedProposal(4)],
+    ];
+    let callIndex = 0;
+    const provider: Provider = {
+      name: "openai",
+      async sendMessage(messages: Message[]): Promise<ProviderResponse> {
+        prompts.push(JSON.stringify(messages));
+        return {
+          content: [
+            {
+              type: "tool_use",
+              id: `tool-${callIndex + 1}`,
+              name: "submit_retention_segment_tranche",
+              input: { proposals: tranches[callIndex++] },
+            },
+          ],
+          model: "gpt-5.4",
+          usage: { inputTokens: 400, outputTokens: 900 },
+          stopReason: "tool_use",
+        };
+      },
+    };
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 4 },
+      context(),
+      successfulDependencies(provider, requests, []),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(prompts).toHaveLength(2);
+    const promptText = (value: string) =>
+      (
+        JSON.parse(value) as Array<{
+          content: Array<{ text: string }>;
+        }>
+      )[0]!.content[0]!.text;
+    expect(promptText(prompts[0]!)).toContain(
+      '"previouslyGeneratedAudiences":[]',
+    );
+    expect(promptText(prompts[1]!)).toContain('"name":"Audience 1"');
+    expect(promptText(prompts[1]!)).toContain('"name":"Audience 3"');
+    expect(
+      requests.filter((request) => request.path.endsWith("/complete")),
+    ).toHaveLength(2);
+  });
+
+  test("pauses before storage when a later tranche repeats prior targeting", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const first = [
+      numberedProposal(1),
+      numberedProposal(2),
+      numberedProposal(3),
+    ];
+    let callIndex = 0;
+    const provider: Provider = {
+      name: "openai",
+      async sendMessage(): Promise<ProviderResponse> {
+        const repeated = proposal({
+          name: "Renamed audience",
+          expression: first[0]!.expression,
+        });
+        return {
+          content: [
+            {
+              type: "tool_use",
+              id: `tool-${callIndex + 1}`,
+              name: "submit_retention_segment_tranche",
+              input: {
+                proposals: callIndex++ === 0 ? first : [repeated],
+              },
+            },
+          ],
+          model: "gpt-5.4",
+          usage: { inputTokens: 400, outputTokens: 900 },
+          stopReason: "tool_use",
+        };
+      },
+    };
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 4 },
+      context(),
+      successfulDependencies(provider, requests, []),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "duplicate_segment_proposal",
+      completedSegments: 3,
+    });
+    const completions = requests.filter((request) =>
+      request.path.endsWith("/complete"),
+    );
+    expect(completions).toHaveLength(2);
+    expect(completions[1]?.body).toMatchObject({
+      outcome: "pause",
+      errorCode: "duplicate_segment_proposal",
       definitions: [],
     });
   });

@@ -153,7 +153,7 @@ describe("segment review repository with PostgreSQL", () => {
         const completed = await repository.completeSegmentRun(owner, {
           runId: run.id,
           leaseOwner: claimed.leaseOwner,
-          outcome: "complete",
+          outcome: "continue",
           definitions: [
             {
               name: "Reachable profiles",
@@ -180,10 +180,31 @@ describe("segment review repository with PostgreSQL", () => {
             },
           ],
         });
-        expect(completed.status).toBe("completed");
+        expect(completed.status).toBe("queued");
         expect(completed.definitions[0]).toMatchObject({
           memberCount: 2,
           eligibleCount: 1,
+        });
+        const continuation = await repository.claimSegmentRun(owner, {
+          runId: run.id,
+        });
+        expect(continuation.existingSegments).toEqual([
+          {
+            name: "Reachable profiles",
+            expression: {
+              type: "predicate",
+              namespace: "profile",
+              key: "has_email",
+              operator: "equals",
+              value: true,
+            },
+          },
+        ]);
+        await repository.completeSegmentRun(owner, {
+          runId: run.id,
+          leaseOwner: continuation.leaseOwner,
+          outcome: "complete",
+          definitions: [],
         });
 
         const listed = await repository.listSegments(owner, {
