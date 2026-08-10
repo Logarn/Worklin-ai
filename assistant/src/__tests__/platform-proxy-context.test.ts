@@ -17,7 +17,10 @@ const originalAssistantApiKey = process.env.ASSISTANT_API_KEY;
 const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
 const originalPlatformAssistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
 const originalActorTokenSigningKey = process.env.ACTOR_TOKEN_SIGNING_KEY;
-const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+const originalConcurrentProvider =
+  process.env.CONCURRENT_RUNTIME_MANAGED_PROVIDER;
+const originalConcurrentModel = process.env.CONCURRENT_RUNTIME_MANAGED_MODEL;
+const originalMoonshotApiKey = process.env.MOONSHOT_API_KEY;
 
 afterAll(() => {
   if (originalAssistantApiKey === undefined) {
@@ -40,10 +43,21 @@ afterAll(() => {
   } else {
     process.env.ACTOR_TOKEN_SIGNING_KEY = originalActorTokenSigningKey;
   }
-  if (originalAnthropicApiKey === undefined) {
-    delete process.env.ANTHROPIC_API_KEY;
+  if (originalConcurrentProvider === undefined) {
+    delete process.env.CONCURRENT_RUNTIME_MANAGED_PROVIDER;
   } else {
-    process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+    process.env.CONCURRENT_RUNTIME_MANAGED_PROVIDER =
+      originalConcurrentProvider;
+  }
+  if (originalConcurrentModel === undefined) {
+    delete process.env.CONCURRENT_RUNTIME_MANAGED_MODEL;
+  } else {
+    process.env.CONCURRENT_RUNTIME_MANAGED_MODEL = originalConcurrentModel;
+  }
+  if (originalMoonshotApiKey === undefined) {
+    delete process.env.MOONSHOT_API_KEY;
+  } else {
+    process.env.MOONSHOT_API_KEY = originalMoonshotApiKey;
   }
 });
 
@@ -52,7 +66,9 @@ beforeEach(() => {
   delete process.env.WORKLIN_RUNTIME_MODE;
   delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
   delete process.env.ACTOR_TOKEN_SIGNING_KEY;
-  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.CONCURRENT_RUNTIME_MANAGED_PROVIDER;
+  delete process.env.CONCURRENT_RUNTIME_MANAGED_MODEL;
+  delete process.env.MOONSHOT_API_KEY;
 });
 
 mock.module("../config/env.js", () => ({
@@ -184,7 +200,9 @@ describe("resolveManagedProxyContext", () => {
 
   test("resolves a managed provider without tenant SQLite state", async () => {
     process.env.WORKLIN_RUNTIME_MODE = "concurrent_service";
-    process.env.ANTHROPIC_API_KEY = "company-managed-key";
+    process.env.CONCURRENT_RUNTIME_MANAGED_PROVIDER = "kimi";
+    process.env.CONCURRENT_RUNTIME_MANAGED_MODEL = "kimi-k2.6";
+    process.env.MOONSHOT_API_KEY = "company-managed-key";
 
     expect(await getConfiguredProvider("mainAgent")).toBeNull();
     const provider = await runWithConcurrentManagedProviderContext(
@@ -192,7 +210,7 @@ describe("resolveManagedProxyContext", () => {
       () => getConfiguredProvider("mainAgent"),
     );
 
-    expect(provider?.name).toBe("anthropic");
+    expect(provider?.name).toBe("kimi");
   });
 
   test("fails closed when the concurrent managed key is missing", async () => {

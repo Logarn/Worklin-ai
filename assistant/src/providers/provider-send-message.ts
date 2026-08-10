@@ -23,8 +23,8 @@ import {
 } from "./connection-resolution.js";
 import type { ProviderConnection } from "./inference/auth.js";
 import { getConnection, listConnections } from "./inference/connections.js";
+import { getConcurrentManagedProviderConfig } from "./platform-proxy/concurrent-provider-config.js";
 import { concurrentManagedProviderContextIsActive } from "./platform-proxy/concurrent-request-context.js";
-import { PLATFORM_PROVIDER_META } from "./platform-proxy/constants.js";
 import { initializeProviders, listProviders } from "./registry.js";
 import { resolveProviderFromConnection } from "./registry.js";
 import type {
@@ -60,6 +60,7 @@ export type ConfiguredProviderOptions = Pick<
    * their durable contract.
    */
   requiredConnection?: RequiredProviderConnection;
+  modelOverride?: string;
 };
 
 export class RequiredProviderConnectionError extends Error {
@@ -93,21 +94,14 @@ async function resolveConcurrentManagedProvider(
     return null;
   }
 
-  const resolved = resolveCallSiteConfig(callSite, config.llm, opts);
-  const providerMeta = PLATFORM_PROVIDER_META[resolved.provider];
-  if (!providerMeta?.managed) {
-    log.warn(
-      { callSite, provider: resolved.provider },
-      "Concurrent managed inference rejected a non-managed provider",
-    );
-    return null;
-  }
+  const managed = getConcurrentManagedProviderConfig();
+  if (!managed) return null;
 
   const connection: ProviderConnection = {
-    name: `${resolved.provider}-managed`,
-    provider: resolved.provider,
+    name: `${managed.provider}-managed`,
+    provider: managed.provider,
     auth: { type: "platform" },
-    label: providerMeta.name,
+    label: managed.displayName,
     baseUrl: null,
     models: null,
     createdAt: 0,
@@ -115,12 +109,15 @@ async function resolveConcurrentManagedProvider(
     isManaged: true,
   };
   const provider = await resolveProviderFromConnection(connection, config, {
-    model: resolved.model,
+    model: managed.model,
   });
   if (!provider) return null;
   return {
-    provider: new CallSiteConfiguredProvider(provider, callSite, opts),
-    configuredProviderName: resolved.provider,
+    provider: new CallSiteConfiguredProvider(provider, callSite, {
+      ...opts,
+      modelOverride: managed.model,
+    }),
+    configuredProviderName: managed.provider,
   };
 }
 
@@ -162,7 +159,9 @@ export class CallSiteConfiguredProvider implements Provider {
         callSite: config?.callSite ?? this.callSite,
         ...(this.routingOptions.requiredConnection
           ? { model: this.routingOptions.requiredConnection.model }
-          : {}),
+          : config?.model === undefined && this.routingOptions.modelOverride
+            ? { model: this.routingOptions.modelOverride }
+            : {}),
         ...(config?.forceOverrideProfile === undefined &&
         this.routingOptions.forceOverrideProfile !== undefined
           ? { forceOverrideProfile: this.routingOptions.forceOverrideProfile }

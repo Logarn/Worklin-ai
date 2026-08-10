@@ -1,3 +1,4 @@
+import { assertConcurrentManagedProviderConfiguration } from "../providers/platform-proxy/concurrent-provider-config.js";
 import {
   initAuthSigningKey,
   resolveSigningKey,
@@ -26,11 +27,7 @@ const databaseUrl = process.env.CONCURRENT_RUNTIME_DATABASE_URL?.trim();
 if (!databaseUrl) {
   throw new Error("CONCURRENT_RUNTIME_DATABASE_URL is required.");
 }
-if (!process.env.ANTHROPIC_API_KEY?.trim()) {
-  throw new Error(
-    "ANTHROPIC_API_KEY is required for concurrent managed inference.",
-  );
-}
+assertConcurrentManagedProviderConfiguration();
 
 initAuthSigningKey(resolveSigningKey());
 

@@ -82,10 +82,11 @@ The old combined volume remains detached and quarantined.
 
 Deploy a separate private runtime service with
 `WORKLIN_RUNTIME_MODE=concurrent_service`, an explicit shared actor-token
-signing key, a company-owned `ANTHROPIC_API_KEY`, and application/migration
-PostgreSQL URLs. Provider resolution is allowed only inside a validated tenant
-request and key-bearing adapters are not cached between turns. Configure the
-public control plane with the private gateway URL and start with `internal` or
+signing key, an explicit `CONCURRENT_RUNTIME_MANAGED_PROVIDER`, its
+company-owned provider API key, and application/migration PostgreSQL URLs.
+Provider resolution is allowed only inside a validated tenant request and
+key-bearing adapters are not cached between turns. Configure the public
+control plane with the private gateway URL and start with `internal` or
 `canary` placement plus an explicit assistant or user allowlist.
 
 Do not enable `new_assistants` for production until the RLS integration,

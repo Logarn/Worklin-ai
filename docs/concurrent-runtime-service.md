@@ -35,7 +35,7 @@ scopes.
 Managed-model inference is available only inside the validated request-local
 tenant context. The shared process does not switch a global assistant ID,
 read personal provider credentials, or cache a key-bearing adapter across
-requests. A company-owned Anthropic key is stored only in the service's secret
+requests. A company-owned provider key is stored only in the service's secret
 environment; tenant identity is carried separately in usage attribution.
 
 ## Supported Contract
@@ -128,7 +128,9 @@ RUNTIME_ASSISTANT_SCOPE_MODE=tenant_context
 CONCURRENT_RUNTIME_DATABASE_URL=<application PostgreSQL URL>
 CONCURRENT_RUNTIME_MIGRATION_DATABASE_URL=<optional migration PostgreSQL URL>
 ACTOR_TOKEN_SIGNING_KEY=<shared 64-hex control-plane signing key>
-ANTHROPIC_API_KEY=<company-owned managed inference key>
+CONCURRENT_RUNTIME_MANAGED_PROVIDER=<catalog provider id>
+CONCURRENT_RUNTIME_MANAGED_MODEL=<optional model id; defaults to provider default>
+<PROVIDER_API_KEY_ENV>=<company-owned managed inference key>
 ```
 
 `WORKLIN_PLATFORM_ASSISTANT_ID` must be unset. The entrypoint starts the
