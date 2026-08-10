@@ -9,7 +9,10 @@
  *   - service_account      → reject (v2 not yet shipped)
  */
 
-import { isPooledWorkerRuntime } from "../../config/env.js";
+import {
+  isConcurrentServiceRuntime,
+  isPooledWorkerRuntime,
+} from "../../config/env.js";
 import {
   buildManagedBaseUrl,
   resolveManagedProxyContext,
@@ -67,6 +70,22 @@ export async function resolveAuth(
     }
 
     case "platform": {
+      if (isConcurrentServiceRuntime()) {
+        const providerEnvVar = getLlmProviderEnvVar(provider);
+        const providerEnvKey = providerEnvVar
+          ? process.env[providerEnvVar]?.trim()
+          : undefined;
+        return providerEnvKey
+          ? {
+              ok: true,
+              resolved: {
+                kind: "header",
+                headers: { Authorization: `Bearer ${providerEnvKey}` },
+                ...(safeBaseUrl ? { baseUrl: safeBaseUrl } : {}),
+              },
+            }
+          : { ok: false, error: { code: "platform_unavailable" } };
+      }
       // Pooled v1 is BYOK-only. Managed credentials and provider environment
       // variables are worker-global and must never be used for a tenant turn.
       if (isPooledWorkerRuntime()) {

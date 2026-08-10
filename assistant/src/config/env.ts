@@ -267,6 +267,10 @@ export function isPooledWorkerRuntime(): boolean {
   );
 }
 
+export function isConcurrentServiceRuntime(): boolean {
+  return str("WORKLIN_RUNTIME_MODE")?.toLowerCase() === "concurrent_service";
+}
+
 export function getRuntimeWorkerStackId(): string {
   return str("WORKLIN_RUNTIME_WORKER_STACK_ID") ?? "";
 }

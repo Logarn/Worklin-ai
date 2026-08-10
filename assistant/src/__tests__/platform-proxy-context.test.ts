@@ -17,6 +17,7 @@ const originalAssistantApiKey = process.env.ASSISTANT_API_KEY;
 const originalRuntimeMode = process.env.WORKLIN_RUNTIME_MODE;
 const originalPlatformAssistantId = process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
 const originalActorTokenSigningKey = process.env.ACTOR_TOKEN_SIGNING_KEY;
+const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
 afterAll(() => {
   if (originalAssistantApiKey === undefined) {
@@ -39,6 +40,11 @@ afterAll(() => {
   } else {
     process.env.ACTOR_TOKEN_SIGNING_KEY = originalActorTokenSigningKey;
   }
+  if (originalAnthropicApiKey === undefined) {
+    delete process.env.ANTHROPIC_API_KEY;
+  } else {
+    process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+  }
 });
 
 beforeEach(() => {
@@ -46,10 +52,15 @@ beforeEach(() => {
   delete process.env.WORKLIN_RUNTIME_MODE;
   delete process.env.WORKLIN_PLATFORM_ASSISTANT_ID;
   delete process.env.ACTOR_TOKEN_SIGNING_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
 });
 
 mock.module("../config/env.js", () => ({
   getPlatformBaseUrl: () => mockPlatformBaseUrl,
+  isConcurrentServiceRuntime: () =>
+    process.env.WORKLIN_RUNTIME_MODE?.trim().toLowerCase() ===
+    "concurrent_service",
+  isPooledWorkerRuntime: () => false,
 }));
 
 mock.module("../security/secure-keys.js", () => ({
@@ -61,12 +72,28 @@ mock.module("../security/secure-keys.js", () => ({
   },
 }));
 
+import { runWithConcurrentManagedProviderContext } from "../providers/platform-proxy/concurrent-request-context.js";
 import {
   buildManagedBaseUrl,
   hasManagedProxyPrereqs,
   managedFallbackEnabledFor,
   resolveManagedProxyContext,
 } from "../providers/platform-proxy/context.js";
+import { getConfiguredProvider } from "../providers/provider-send-message.js";
+
+function concurrentContext(assistantId: string, requestId: string) {
+  return {
+    version: 1 as const,
+    organizationId: "org-abc",
+    userId: "user-123",
+    assistantId,
+    actorId: "actor-123",
+    requestId,
+    authorizationVersion: 1,
+    configVersion: 1,
+    runtimeGeneration: 1,
+  };
+}
 
 describe("resolveManagedProxyContext", () => {
   beforeEach(() => {
@@ -153,6 +180,30 @@ describe("resolveManagedProxyContext", () => {
 
     const ctx = await resolveManagedProxyContext();
     expect(ctx.enabled).toBe(false);
+  });
+
+  test("resolves a managed provider without tenant SQLite state", async () => {
+    process.env.WORKLIN_RUNTIME_MODE = "concurrent_service";
+    process.env.ANTHROPIC_API_KEY = "company-managed-key";
+
+    expect(await getConfiguredProvider("mainAgent")).toBeNull();
+    const provider = await runWithConcurrentManagedProviderContext(
+      concurrentContext("assistant-1", "request-1"),
+      () => getConfiguredProvider("mainAgent"),
+    );
+
+    expect(provider?.name).toBe("anthropic");
+  });
+
+  test("fails closed when the concurrent managed key is missing", async () => {
+    process.env.WORKLIN_RUNTIME_MODE = "concurrent_service";
+
+    const provider = await runWithConcurrentManagedProviderContext(
+      concurrentContext("assistant-1", "request-1"),
+      () => getConfiguredProvider("mainAgent"),
+    );
+
+    expect(provider).toBeNull();
   });
 
   test("strips trailing slashes from platform URL", async () => {

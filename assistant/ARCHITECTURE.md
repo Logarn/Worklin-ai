@@ -80,6 +80,13 @@ acceptance is idempotent, turns serialize per conversation, scheduling is fair
 across tenants, and run leases fence replica crashes. Unsupported capabilities
 return `requires_dedicated_runtime`.
 
+Managed inference is also request-scoped. The turn executor places the
+immutable tenant context in `AsyncLocalStorage` and resolves the company-owned
+managed provider only while that scope is active. Concurrent mode does not
+read personal provider credentials, and key-bearing provider adapters are
+never cached between turns. The shared provider credential stays in the
+service's secret environment and usage attribution remains tenant-scoped.
+
 See
 [`../docs/concurrent-runtime-service.md`](../docs/concurrent-runtime-service.md)
 for placement, persistence, deployment, and release gates.

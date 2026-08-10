@@ -4,6 +4,7 @@
  * and response extraction helpers.
  */
 
+import { isConcurrentServiceRuntime } from "../config/env.js";
 import {
   resolveCallSiteConfig,
   type ResolveCallSiteOpts,
@@ -20,8 +21,12 @@ import {
   isPersonalProviderConnection,
   tryResolveProviderForConnectionName,
 } from "./connection-resolution.js";
+import type { ProviderConnection } from "./inference/auth.js";
 import { getConnection, listConnections } from "./inference/connections.js";
+import { concurrentManagedProviderContextIsActive } from "./platform-proxy/concurrent-request-context.js";
+import { PLATFORM_PROVIDER_META } from "./platform-proxy/constants.js";
 import { initializeProviders, listProviders } from "./registry.js";
+import { resolveProviderFromConnection } from "./registry.js";
 import type {
   ContentBlock,
   Message,
@@ -78,6 +83,46 @@ export class RequiredProviderConnectionError extends Error {
  * each triggering a redundant `initializeProviders` call.
  */
 let lazyInitPromise: Promise<void> | null = null;
+
+async function resolveConcurrentManagedProvider(
+  callSite: LLMCallSite,
+  config: ReturnType<typeof getConfig>,
+  opts: ConfiguredProviderOptions,
+): Promise<ConfiguredProviderResult | null> {
+  if (opts.requiredConnection || !concurrentManagedProviderContextIsActive()) {
+    return null;
+  }
+
+  const resolved = resolveCallSiteConfig(callSite, config.llm, opts);
+  const providerMeta = PLATFORM_PROVIDER_META[resolved.provider];
+  if (!providerMeta?.managed) {
+    log.warn(
+      { callSite, provider: resolved.provider },
+      "Concurrent managed inference rejected a non-managed provider",
+    );
+    return null;
+  }
+
+  const connection: ProviderConnection = {
+    name: `${resolved.provider}-managed`,
+    provider: resolved.provider,
+    auth: { type: "platform" },
+    label: providerMeta.name,
+    baseUrl: null,
+    models: null,
+    createdAt: 0,
+    updatedAt: 0,
+    isManaged: true,
+  };
+  const provider = await resolveProviderFromConnection(connection, config, {
+    model: resolved.model,
+  });
+  if (!provider) return null;
+  return {
+    provider: new CallSiteConfiguredProvider(provider, callSite, opts),
+    configuredProviderName: resolved.provider,
+  };
+}
 
 export class CallSiteConfiguredProvider implements Provider {
   public readonly name: string;
@@ -157,6 +202,10 @@ export async function resolveConfiguredProvider(
 ): Promise<ConfiguredProviderResult | null> {
   const config = getConfig();
   const requiredConnection = opts.requiredConnection;
+
+  if (isConcurrentServiceRuntime()) {
+    return resolveConcurrentManagedProvider(callSite, config, opts);
+  }
 
   if (!requiredConnection && listProviders().length === 0) {
     if (!lazyInitPromise) {

@@ -211,9 +211,13 @@ export function createAdapterFromConnection(
   // Usage-attribution headers (`X-Vellum-*`) are only meaningful when the
   // request is routed through the Vellum-managed proxy — they carry billing
   // metadata for our own backend. Forwarding them to a third-party endpoint
-  // would leak internal Vellum metadata, so gate on the auth type:
-  // `platform` is the only auth that flows through our proxy.
-  const isManagedProxy = connection.auth.type === "platform";
+  // would leak internal Vellum metadata. Platform auth with a managed base
+  // URL identifies the proxy path; concurrent managed inference can use a
+  // company key directly and therefore has no managed base URL.
+  const isManagedProxy =
+    connection.auth.type === "platform" &&
+    resolvedAuth.kind === "header" &&
+    Boolean(resolvedAuth.baseUrl);
   return new UsageTrackingProvider(
     new RetryProvider(adapter, {
       forwardUsageAttributionHeaders: isManagedProxy,

@@ -1,5 +1,8 @@
 import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
-import { isPooledWorkerRuntime } from "../config/env.js";
+import {
+  isConcurrentServiceRuntime,
+  isPooledWorkerRuntime,
+} from "../config/env.js";
 import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import type { AssistantConfig } from "../config/schema.js";
 import { type LLMConfig } from "../config/schemas/llm.js";
@@ -264,7 +267,7 @@ export async function resolveProviderFromConnection(
 ): Promise<Provider | null> {
   const model = opts.model ?? resolveModel(config, connection.provider);
   const cacheKey = getConnectionProviderCacheKey(connection, model);
-  const cacheable = !isPooledWorkerRuntime();
+  const cacheable = !isPooledWorkerRuntime() && !isConcurrentServiceRuntime();
   const cached = cacheable ? connectionProviders.get(cacheKey) : undefined;
   if (cached) return cached;
 

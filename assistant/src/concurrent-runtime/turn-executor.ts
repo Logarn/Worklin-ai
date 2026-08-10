@@ -1,5 +1,6 @@
 import type { TenantExecutionContext } from "@vellumai/service-contracts/tenant-context";
 
+import { runWithConcurrentManagedProviderContext } from "../providers/platform-proxy/concurrent-request-context.js";
 import {
   extractAllText,
   getConfiguredProvider,
@@ -42,40 +43,42 @@ export class ConfiguredProviderTurnExecutor implements ConcurrentTurnExecutor {
     signal: AbortSignal;
     callbacks: ConcurrentTurnCallbacks;
   }): Promise<string> {
-    const provider = await getConfiguredProvider("mainAgent", {
-      selectionSeed: input.context.conversationId,
-    });
-    if (!provider) {
-      throw new Error("No configured LLM provider is available.");
-    }
+    return runWithConcurrentManagedProviderContext(input.context, async () => {
+      const provider = await getConfiguredProvider("mainAgent", {
+        selectionSeed: input.context.conversationId,
+      });
+      if (!provider) {
+        throw new Error("No configured LLM provider is available.");
+      }
 
-    let callbackChain = Promise.resolve();
-    const onEvent = (event: ProviderEvent) => {
-      if (event.type !== "text_delta" || !event.text) return;
-      callbackChain = callbackChain.then(() =>
-        input.callbacks.onTextDelta(event.text),
-      );
-    };
-    const response = await provider.sendMessage(
-      providerMessages(input.messages),
-      {
-        systemPrompt: this.options.systemPrompt,
-        signal: input.signal,
-        onEvent,
-        config: {
-          callSite: "mainAgent",
-          selectionSeed: input.context.conversationId,
-          usageTracking: "manual",
-          usageAttributionHeaders: {
-            "X-Worklin-Organization-Id": input.context.organizationId,
-            "X-Worklin-Assistant-Id": input.context.assistantId,
-            "X-Worklin-User-Id": input.context.userId,
-            "X-Worklin-Request-Id": input.context.requestId,
+      let callbackChain = Promise.resolve();
+      const onEvent = (event: ProviderEvent) => {
+        if (event.type !== "text_delta" || !event.text) return;
+        callbackChain = callbackChain.then(() =>
+          input.callbacks.onTextDelta(event.text),
+        );
+      };
+      const response = await provider.sendMessage(
+        providerMessages(input.messages),
+        {
+          systemPrompt: this.options.systemPrompt,
+          signal: input.signal,
+          onEvent,
+          config: {
+            callSite: "mainAgent",
+            selectionSeed: input.context.conversationId,
+            usageTracking: "manual",
+            usageAttributionHeaders: {
+              "X-Worklin-Organization-Id": input.context.organizationId,
+              "X-Worklin-Assistant-Id": input.context.assistantId,
+              "X-Worklin-User-Id": input.context.userId,
+              "X-Worklin-Request-Id": input.context.requestId,
+            },
           },
         },
-      },
-    );
-    await callbackChain;
-    return extractAllText(response);
+      );
+      await callbackChain;
+      return extractAllText(response);
+    });
   }
 }
