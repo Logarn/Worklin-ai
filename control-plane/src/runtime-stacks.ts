@@ -60,11 +60,7 @@ export interface RuntimeStackConfig {
   legacySharedRuntimeUserEmailHashes: readonly string[];
   pooledRuntimeCanaryAssistantIds: readonly string[];
   pooledRuntimeCanaryUserEmailHashes: readonly string[];
-  concurrentRuntimeMode:
-    | "disabled"
-    | "internal"
-    | "canary"
-    | "new_assistants";
+  concurrentRuntimeMode: "disabled" | "internal" | "canary" | "new_assistants";
   concurrentRuntimeGatewayUrl: string | null;
   concurrentRuntimeAssistantIds: readonly string[];
   concurrentRuntimeUserIds: readonly string[];
@@ -436,19 +432,17 @@ export function getRuntimeStackForAssistant(
 ): RuntimeStackRow | null {
   if (assistant.runtime_stack_id) {
     const byId = db
-      .query<
-        RuntimeStackRow,
-        [string, string]
-      >("SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?")
+      .query<RuntimeStackRow, [string, string]>(
+        "SELECT * FROM runtime_stacks WHERE id = ? AND assistant_id = ?",
+      )
       .get(assistant.runtime_stack_id, assistant.id);
     if (byId) return byId;
   }
   return (
     db
-      .query<
-        RuntimeStackRow,
-        [string]
-      >("SELECT * FROM runtime_stacks WHERE assistant_id = ?")
+      .query<RuntimeStackRow, [string]>(
+        "SELECT * FROM runtime_stacks WHERE assistant_id = ?",
+      )
       .get(assistant.id) ?? null
   );
 }
@@ -638,6 +632,61 @@ function recoverUnallocatedStackToLegacySharedRuntime(
   return getRuntimeStackById(db, stack.id) ?? stack;
 }
 
+function recoverUnallocatedStackToConcurrentRuntime(
+  db: Database,
+  assistant: AssistantRuntimeRow,
+  stack: RuntimeStackRow,
+  config: RuntimeStackConfig,
+  nowIso: () => string,
+): RuntimeStackRow {
+  if (
+    !shouldUseConcurrentRuntime(config, assistant) ||
+    !config.concurrentRuntimeGatewayUrl ||
+    stack.provider !== "railway" ||
+    (stack.status !== "failed" && stack.status !== "provisioning") ||
+    stack.gateway_url !== null ||
+    stack.service_ref !== null ||
+    stack.workspace_volume_ref !== null
+  ) {
+    return stack;
+  }
+
+  db.query(
+    `
+    UPDATE runtime_stacks
+    SET status = 'active',
+        provider = 'concurrent_service',
+        gateway_url = ?,
+        public_ingress_url = ?,
+        workspace_volume_ref = NULL,
+        service_ref = 'concurrent-runtime',
+        service_capacity_reserved = 0,
+        service_create_attempted_at = NULL,
+        volume_create_attempted_at = NULL,
+        provisioning_lease_token = NULL,
+        provisioning_lease_expires_at = NULL,
+        actor_signing_key_scope = ?,
+        last_health_status = 'ready',
+        last_error = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND provider = 'railway'
+      AND status IN ('failed', 'provisioning')
+      AND gateway_url IS NULL
+      AND service_ref IS NULL
+      AND workspace_volume_ref IS NULL
+  `,
+  ).run(
+    config.concurrentRuntimeGatewayUrl,
+    config.publicIngressUrl,
+    GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+    nowIso(),
+    stack.id,
+  );
+
+  return getRuntimeStackById(db, stack.id) ?? stack;
+}
+
 export function ensureRuntimeStackForAssistant(
   db: Database,
   assistant: AssistantRuntimeRow,
@@ -659,10 +708,17 @@ export function ensureRuntimeStackForAssistant(
       config,
       nowIso,
     );
-    return recoverUnallocatedStackToLegacySharedRuntime(
+    const concurrent = recoverUnallocatedStackToConcurrentRuntime(
       db,
       assistant,
       revalidated,
+      config,
+      nowIso,
+    );
+    return recoverUnallocatedStackToLegacySharedRuntime(
+      db,
+      assistant,
+      concurrent,
       config,
       nowIso,
     );
@@ -753,10 +809,9 @@ export function getRuntimeStackById(
 ): RuntimeStackRow | null {
   return (
     db
-      .query<
-        RuntimeStackRow,
-        [string]
-      >("SELECT * FROM runtime_stacks WHERE id = ?")
+      .query<RuntimeStackRow, [string]>(
+        "SELECT * FROM runtime_stacks WHERE id = ?",
+      )
       .get(stackId) ?? null
   );
 }

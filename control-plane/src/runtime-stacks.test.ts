@@ -139,6 +139,14 @@ describe("runtime stack provisioning defaults", () => {
       config(),
       NOW,
     );
+    recordRuntimeStackService(db, existing.id, "service-1", NOW);
+    markRuntimeStackActive(
+      db,
+      existing.id,
+      "http://dedicated-runtime.test",
+      "ready",
+      NOW,
+    );
 
     const unchanged = ensureRuntimeStackForAssistant(
       db,
@@ -153,7 +161,52 @@ describe("runtime stack provisioning defaults", () => {
 
     expect(unchanged.id).toBe(existing.id);
     expect(unchanged.provider).toBe("railway");
-    expect(unchanged.status).toBe("provisioning");
+    expect(unchanged.status).toBe("active");
+    expect(unchanged.service_ref).toBe("service-1");
+    expect(unchanged.gateway_url).toBe("http://dedicated-runtime.test");
+  });
+
+  test("recovers an eligible unallocated failed Railway stack as a concurrent tenant", () => {
+    const db = setupDb();
+    const initial = ensureRuntimeStackForAssistant(
+      db,
+      assistant(),
+      config(),
+      NOW,
+    );
+    markRuntimeStackFailed(db, initial.id, "service limit reached", NOW);
+    const concurrentConfig = config({
+      concurrentRuntimeMode: "canary",
+      concurrentRuntimeGatewayUrl:
+        "http://concurrent-runtime.railway.internal:8080",
+      concurrentRuntimeAssistantIds: ["asst-1"],
+    });
+
+    const recovered = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      concurrentConfig,
+      NOW,
+    );
+    const repeated = ensureRuntimeStackForAssistant(
+      db,
+      assistant({ runtime_stack_id: initial.id }),
+      concurrentConfig,
+      NOW,
+    );
+
+    expect(recovered).toMatchObject({
+      id: initial.id,
+      status: "active",
+      provider: "concurrent_service",
+      gateway_url: "http://concurrent-runtime.railway.internal:8080",
+      workspace_volume_ref: null,
+      service_ref: "concurrent-runtime",
+      actor_signing_key_scope: GLOBAL_ACTOR_SIGNING_KEY_SCOPE,
+      last_health_status: "ready",
+      last_error: null,
+    });
+    expect(repeated).toEqual(recovered);
   });
 
   test("supports explicit suspend and delete lifecycle transitions", () => {
@@ -207,10 +260,9 @@ describe("runtime stack provisioning defaults", () => {
     ).toBe("provisioning");
 
     const row = db
-      .query<
-        { runtime_stack_id: string | null },
-        []
-      >("SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'")
+      .query<{ runtime_stack_id: string | null }, []>(
+        "SELECT runtime_stack_id FROM assistants WHERE id = 'asst-1'",
+      )
       .get();
     expect(row?.runtime_stack_id).toBe(stack.id);
   });
@@ -416,10 +468,9 @@ describe("runtime stack provisioning defaults", () => {
     expect(second.id).toBe(first.id);
     expect(
       db
-        .query<
-          { count: number },
-          []
-        >("SELECT COUNT(*) AS count FROM runtime_stacks WHERE assistant_id = 'asst-1'")
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM runtime_stacks WHERE assistant_id = 'asst-1'",
+        )
         .get()?.count,
     ).toBe(1);
   });
@@ -445,10 +496,9 @@ describe("runtime stack provisioning defaults", () => {
     );
 
     const count = db
-      .query<
-        { count: number },
-        []
-      >("SELECT COUNT(*) AS count FROM runtime_stacks")
+      .query<{ count: number }, []>(
+        "SELECT COUNT(*) AS count FROM runtime_stacks",
+      )
       .get();
     expect(second.id).toBe(first.id);
     expect(second).toMatchObject({
@@ -1143,9 +1193,7 @@ describe("runtimeStackConfigFromEnv", () => {
         "http://gateway.test",
         "https://worklin.example.com",
       ),
-    ).toThrow(
-      "WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL is required",
-    );
+    ).toThrow("WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL is required");
   });
 
   test("parses concurrent new-assistant placement and allowlists", () => {

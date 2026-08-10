@@ -99,8 +99,10 @@ WORKLIN_CONCURRENT_RUNTIME_USER_IDS=user-123,user-456
 
 `internal` and `canary` require a matching assistant or user allowlist entry.
 `new_assistants` assigns every newly created runtime stack to the concurrent
-service. Existing runtime-stack rows are never converted by changing these
-variables. Migration between providers requires a separate fenced data
+service. Existing allocated runtime-stack rows are never converted by changing
+these variables. An eligible failed or provisioning Railway row that has no
+service, volume, or gateway allocation is recovered in place when allowlisted.
+Migration between allocated providers requires a separate fenced data
 migration.
 
 An eligible stack is created immediately with:
