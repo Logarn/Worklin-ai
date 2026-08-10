@@ -16,6 +16,7 @@ import type {
   AcceptedConcurrentRun,
   ClaimedConcurrentRun,
   CompleteConcurrentRunInput,
+  ConcurrentConversation,
   ConcurrentEvent,
   ConcurrentMessage,
   ConcurrentRun,
@@ -40,6 +41,17 @@ interface MessageRow {
   content: string;
   client_message_id: string | null;
   created_at: Date | string;
+}
+
+interface ConversationRow {
+  organization_id: string;
+  assistant_id: string;
+  conversation_id: string;
+  first_user_message: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  last_message_at: Date | string | null;
+  is_processing: boolean;
 }
 
 interface RunRow {
@@ -95,6 +107,24 @@ function mapMessage(row: MessageRow): ConcurrentMessage {
       ? { clientMessageId: row.client_message_id }
       : {}),
     createdAt: iso(row.created_at),
+  };
+}
+
+function conversationTitle(content: string | null): string {
+  const normalized = content?.replace(/\s+/g, " ").trim() ?? "";
+  return normalized.slice(0, 80) || "New conversation";
+}
+
+function mapConversation(row: ConversationRow): ConcurrentConversation {
+  return {
+    id: row.conversation_id,
+    organizationId: row.organization_id,
+    assistantId: row.assistant_id,
+    title: conversationTitle(row.first_user_message),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    ...(row.last_message_at ? { lastMessageAt: iso(row.last_message_at) } : {}),
+    isProcessing: row.is_processing,
   };
 }
 
@@ -667,6 +697,118 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
         ORDER BY turn_sequence, turn_position
       `;
       return rows.map(mapMessage);
+    });
+  }
+
+  async listConversations(
+    context: TenantExecutionContext,
+    input: { limit: number; offset: number },
+  ): Promise<ConcurrentConversation[]> {
+    return this.transaction(async (tx) => {
+      await setTenantContext(tx, context);
+      const rows = await tx<ConversationRow[]>`
+        SELECT
+          conversation.organization_id,
+          conversation.assistant_id,
+          conversation.conversation_id,
+          conversation.created_at,
+          GREATEST(
+            conversation.updated_at,
+            COALESCE(last_message.created_at, conversation.updated_at)
+          ) AS updated_at,
+          first_message.content AS first_user_message,
+          last_message.created_at AS last_message_at,
+          EXISTS (
+            SELECT 1
+            FROM concurrent_runs AS active_run
+            WHERE active_run.organization_id = conversation.organization_id
+              AND active_run.assistant_id = conversation.assistant_id
+              AND active_run.conversation_id = conversation.conversation_id
+              AND active_run.status IN ('queued', 'processing')
+          ) AS is_processing
+        FROM concurrent_conversations AS conversation
+        LEFT JOIN LATERAL (
+          SELECT LEFT(message.content, 512) AS content
+          FROM concurrent_messages AS message
+          WHERE message.organization_id = conversation.organization_id
+            AND message.assistant_id = conversation.assistant_id
+            AND message.conversation_id = conversation.conversation_id
+            AND message.role = 'user'
+          ORDER BY message.turn_sequence, message.turn_position
+          LIMIT 1
+        ) AS first_message ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT message.created_at
+          FROM concurrent_messages AS message
+          WHERE message.organization_id = conversation.organization_id
+            AND message.assistant_id = conversation.assistant_id
+            AND message.conversation_id = conversation.conversation_id
+          ORDER BY message.turn_sequence DESC, message.turn_position DESC
+          LIMIT 1
+        ) AS last_message ON TRUE
+        WHERE conversation.organization_id = ${context.organizationId}
+          AND conversation.assistant_id = ${context.assistantId}
+        ORDER BY
+          COALESCE(last_message.created_at, conversation.updated_at) DESC,
+          conversation.conversation_id
+        LIMIT ${input.limit}
+        OFFSET ${input.offset}
+      `;
+      return rows.map(mapConversation);
+    });
+  }
+
+  async getConversation(
+    context: TenantExecutionContext,
+    conversationId: string,
+  ): Promise<ConcurrentConversation | null> {
+    return this.transaction(async (tx) => {
+      await setTenantContext(tx, context);
+      const [row] = await tx<ConversationRow[]>`
+        SELECT
+          conversation.organization_id,
+          conversation.assistant_id,
+          conversation.conversation_id,
+          conversation.created_at,
+          GREATEST(
+            conversation.updated_at,
+            COALESCE(last_message.created_at, conversation.updated_at)
+          ) AS updated_at,
+          first_message.content AS first_user_message,
+          last_message.created_at AS last_message_at,
+          EXISTS (
+            SELECT 1
+            FROM concurrent_runs AS active_run
+            WHERE active_run.organization_id = conversation.organization_id
+              AND active_run.assistant_id = conversation.assistant_id
+              AND active_run.conversation_id = conversation.conversation_id
+              AND active_run.status IN ('queued', 'processing')
+          ) AS is_processing
+        FROM concurrent_conversations AS conversation
+        LEFT JOIN LATERAL (
+          SELECT LEFT(message.content, 512) AS content
+          FROM concurrent_messages AS message
+          WHERE message.organization_id = conversation.organization_id
+            AND message.assistant_id = conversation.assistant_id
+            AND message.conversation_id = conversation.conversation_id
+            AND message.role = 'user'
+          ORDER BY message.turn_sequence, message.turn_position
+          LIMIT 1
+        ) AS first_message ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT message.created_at
+          FROM concurrent_messages AS message
+          WHERE message.organization_id = conversation.organization_id
+            AND message.assistant_id = conversation.assistant_id
+            AND message.conversation_id = conversation.conversation_id
+          ORDER BY message.turn_sequence DESC, message.turn_position DESC
+          LIMIT 1
+        ) AS last_message ON TRUE
+        WHERE conversation.organization_id = ${context.organizationId}
+          AND conversation.assistant_id = ${context.assistantId}
+          AND conversation.conversation_id = ${conversationId}
+      `;
+      return row ? mapConversation(row) : null;
     });
   }
 

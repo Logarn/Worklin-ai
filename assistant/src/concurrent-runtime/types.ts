@@ -19,6 +19,17 @@ export interface ConcurrentMessage {
   createdAt: string;
 }
 
+export interface ConcurrentConversation {
+  id: string;
+  organizationId: string;
+  assistantId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt?: string;
+  isProcessing: boolean;
+}
+
 export interface ConcurrentRun {
   id: string;
   organizationId: string;

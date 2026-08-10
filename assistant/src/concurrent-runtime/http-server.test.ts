@@ -6,6 +6,7 @@ import type {
 } from "@vellumai/service-contracts/tenant-context";
 
 import type { Scope } from "../runtime/auth/types.js";
+import { APP_VERSION } from "../version.js";
 import type {
   ConcurrentAuthenticatedTenant,
   ConcurrentAuthenticationResult,
@@ -65,7 +66,7 @@ function createHarness() {
     service,
     authenticate,
   });
-  return { handler, service };
+  return { handler, service, store, tenant };
 }
 
 describe("concurrent runtime HTTP handler", () => {
@@ -107,6 +108,119 @@ describe("concurrent runtime HTTP handler", () => {
         { role: "assistant", content: "reply:hello" },
       ],
     });
+
+    const listResponse = await handler(
+      new Request("http://runtime.test/v1/conversations?limit=50&offset=0"),
+    );
+    expect(listResponse.status).toBe(200);
+    expect(await listResponse.json()).toMatchObject({
+      conversations: [
+        {
+          id: "conversation-123",
+          title: "hello",
+          conversationType: "standard",
+          source: "vellum",
+          isProcessing: false,
+        },
+      ],
+      nextOffset: 1,
+      hasMore: false,
+    });
+
+    const detailResponse = await handler(
+      new Request("http://runtime.test/v1/conversations/conversation-123"),
+    );
+    expect(detailResponse.status).toBe(200);
+    expect(await detailResponse.json()).toMatchObject({
+      conversation: {
+        id: "conversation-123",
+        title: "hello",
+        isProcessing: false,
+      },
+    });
+  });
+
+  test("exposes read-only web bootstrap compatibility routes", async () => {
+    const { handler, service } = createHarness();
+    await service.initialize();
+
+    const identity = await handler(
+      new Request("http://runtime.test/v1/identity"),
+    );
+    expect(identity.status).toBe(200);
+    expect(await identity.json()).toMatchObject({
+      name: "Worklin",
+      version: APP_VERSION,
+    });
+
+    const health = await handler(new Request("http://runtime.test/v1/healthz"));
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({
+      status: "ok",
+      version: APP_VERSION,
+      capabilities: { memoryOptOut: true },
+    });
+
+    const pending = await handler(
+      new Request("http://runtime.test/v1/pending-interactions"),
+    );
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toEqual({ interactions: [] });
+
+    const config = await handler(new Request("http://runtime.test/v1/config"));
+    expect(config.status).toBe(200);
+  });
+
+  test("conversation listings remain isolated between logical tenants", async () => {
+    const store = new InMemoryConcurrentRuntimeStore();
+    const service = new ConcurrentRuntimeService({
+      store,
+      executor: new EchoExecutor(),
+      maxConcurrentTurns: 4,
+      maxConcurrentTurnsPerTenant: 2,
+      leaseDurationMs: 30_000,
+    });
+    await service.initialize();
+    const handler = createConcurrentRuntimeHttpHandler({
+      store,
+      service,
+      authenticate(request) {
+        return {
+          ok: true,
+          tenant: authenticatedTenant(
+            request.headers.get("x-test-assistant") ?? "assistant-a",
+          ),
+        };
+      },
+    });
+    for (const [assistantId, content] of [
+      ["assistant-a", "tenant A secret"],
+      ["assistant-b", "tenant B secret"],
+    ]) {
+      const response = await handler(
+        new Request("http://runtime.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-test-assistant": assistantId,
+          },
+          body: JSON.stringify({ conversationId: "shared-id", content }),
+        }),
+      );
+      expect(response.status).toBe(202);
+    }
+    await service.onIdle();
+
+    const tenantAList = await handler(
+      new Request("http://runtime.test/v1/conversations", {
+        headers: { "x-test-assistant": "assistant-a" },
+      }),
+    );
+    const tenantABody = await tenantAList.json();
+    expect(tenantABody).toMatchObject({
+      conversations: [{ id: "shared-id", title: "tenant A secret" }],
+    });
+    expect(JSON.stringify(tenantABody)).not.toContain("tenant B secret");
   });
 
   test("fails closed for unsupported capabilities", async () => {

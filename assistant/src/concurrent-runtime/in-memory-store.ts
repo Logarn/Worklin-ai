@@ -15,6 +15,7 @@ import type {
   AcceptedConcurrentRun,
   ClaimedConcurrentRun,
   CompleteConcurrentRunInput,
+  ConcurrentConversation,
   ConcurrentEvent,
   ConcurrentMessage,
   ConcurrentRun,
@@ -370,6 +371,39 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
     ).map(cloneMessage);
   }
 
+  async listConversations(
+    context: TenantExecutionContext,
+    input: { limit: number; offset: number },
+  ): Promise<ConcurrentConversation[]> {
+    assertContext(context);
+    return [...this.messages.values()]
+      .filter(
+        (messages) =>
+          messages[0]?.organizationId === context.organizationId &&
+          messages[0]?.assistantId === context.assistantId,
+      )
+      .map((messages) => this.conversationSummary(context, messages))
+      .sort(
+        (a, b) =>
+          Date.parse(b.lastMessageAt ?? b.updatedAt) -
+          Date.parse(a.lastMessageAt ?? a.updatedAt),
+      )
+      .slice(input.offset, input.offset + input.limit);
+  }
+
+  async getConversation(
+    context: TenantExecutionContext,
+    conversationId: string,
+  ): Promise<ConcurrentConversation | null> {
+    assertContext(context);
+    const messages = this.messages.get(
+      tenantConversationScopeKey(context, conversationId),
+    );
+    return messages?.length
+      ? this.conversationSummary(context, messages)
+      : null;
+  }
+
   async hasActiveRun(
     context: TenantExecutionContext,
     conversationId: string,
@@ -446,6 +480,35 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
     return this.runs.get(
       JSON.stringify([tenantExecutionScopeKey(context), runId]),
     );
+  }
+
+  private conversationSummary(
+    context: TenantExecutionContext,
+    messages: readonly ConcurrentMessage[],
+  ): ConcurrentConversation {
+    const first = messages[0]!;
+    const last = messages.at(-1)!;
+    const firstUserMessage = messages.find(
+      (message) => message.role === "user",
+    );
+    const normalizedTitle =
+      firstUserMessage?.content.replace(/\s+/g, " ").trim() ?? "";
+    return {
+      id: first.conversationId,
+      organizationId: context.organizationId,
+      assistantId: context.assistantId,
+      title: normalizedTitle.slice(0, 80) || "New conversation",
+      createdAt: first.createdAt,
+      updatedAt: last.createdAt,
+      lastMessageAt: last.createdAt,
+      isProcessing: [...this.runs.values()].some(
+        (run) =>
+          run.organizationId === context.organizationId &&
+          run.assistantId === context.assistantId &&
+          run.conversationId === first.conversationId &&
+          (run.status === "queued" || run.status === "processing"),
+      ),
+    };
   }
 
   private requireLeasedRun(

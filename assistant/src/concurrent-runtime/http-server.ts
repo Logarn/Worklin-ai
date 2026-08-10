@@ -9,7 +9,9 @@ import {
   formatSseHeartbeat,
 } from "@vellumai/skill-host-contracts";
 
+import { getConcurrentManagedProviderConfig } from "../providers/platform-proxy/concurrent-provider-config.js";
 import type { Scope } from "../runtime/auth/types.js";
+import { APP_VERSION } from "../version.js";
 import {
   authenticateConcurrentRuntimeRequest,
   type ConcurrentAuthenticatedTenant,
@@ -17,6 +19,7 @@ import {
 } from "./auth.js";
 import { ConcurrentRuntimeService } from "./service.js";
 import type { ConcurrentRuntimeStore } from "./store.js";
+import type { ConcurrentConversation } from "./types.js";
 
 const DEFAULT_EVENT_POLL_INTERVAL_MS = 250;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 7_000;
@@ -156,6 +159,29 @@ function wireMessage(message: {
   };
 }
 
+function epoch(value: string): number {
+  return Date.parse(value);
+}
+
+function wireConversation(
+  conversation: ConcurrentConversation,
+): Record<string, unknown> {
+  return {
+    id: conversation.id,
+    title: conversation.title,
+    createdAt: epoch(conversation.createdAt),
+    updatedAt: epoch(conversation.updatedAt),
+    lastMessageAt: conversation.lastMessageAt
+      ? epoch(conversation.lastMessageAt)
+      : null,
+    conversationType: "standard",
+    source: "vellum",
+    conversationOriginChannel: "vellum",
+    groupId: null,
+    isProcessing: conversation.isProcessing,
+  };
+}
+
 function eventEnvelope(event: {
   id: string;
   conversationId: string;
@@ -196,8 +222,172 @@ export function createConcurrentRuntimeHttpHandler(
       return json({
         status: "ok",
         mode: "concurrent_service",
-        capabilities: ["interactive_chat"],
+        capabilities: ["interactive_chat", "conversation_history"],
       });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/healthz") {
+      const auth = authenticated(request, "chat.read", authenticate);
+      if (!auth.ok) return auth.response;
+      const memoryMb = process.memoryUsage().rss / 1024 / 1024;
+      return json({
+        status: "ok",
+        timestamp: new Date().toISOString(),
+        version: APP_VERSION,
+        disk: null,
+        memory: { currentMb: memoryMb, maxMb: memoryMb },
+        cpu: { currentPercent: 0, maxCores: 1 },
+        migrations: { dbVersion: 1, lastWorkspaceMigrationId: null },
+        ces: { connected: false },
+        capabilities: { memoryOptOut: true },
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/identity") {
+      const auth = authenticated(request, "chat.read", authenticate);
+      if (!auth.ok) return auth.response;
+      return json({
+        name: "Worklin",
+        role: "Assistant",
+        personality: "Helpful, direct, and collaborative",
+        emoji: "🌱",
+        home: "/data/workspace",
+        version: APP_VERSION,
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/auth/info") {
+      const auth = authenticated(request, "chat.read", authenticate);
+      if (!auth.ok) return auth.response;
+      return json({
+        platformUrl: null,
+        assistantId: auth.tenant.claim.assistant_id,
+        organizationId: auth.tenant.claim.organization_id,
+        userId: auth.tenant.claim.user_id,
+        authenticated: true,
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/config") {
+      const auth = authenticated(request, "settings.read", authenticate);
+      if (!auth.ok) return auth.response;
+      const provider = getConcurrentManagedProviderConfig();
+      return json({
+        llm: provider
+          ? {
+              default: {
+                provider: provider.provider,
+                model: provider.model,
+              },
+            }
+          : undefined,
+      });
+    }
+
+    if (
+      request.method === "GET" &&
+      pathname === "/v1/inference/provider-connections"
+    ) {
+      const auth = authenticated(request, "settings.read", authenticate);
+      if (!auth.ok) return auth.response;
+      return json({ connections: [] });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/disk-pressure/status") {
+      const auth = authenticated(request, "settings.read", authenticate);
+      if (!auth.ok) return auth.response;
+      return json({
+        status: {
+          enabled: false,
+          state: "disabled",
+          locked: false,
+          acknowledged: false,
+          overrideActive: false,
+          effectivelyLocked: false,
+          lockId: null,
+          usagePercent: null,
+          thresholdPercent: 100,
+          path: null,
+          lastCheckedAt: null,
+          blockedCapabilities: [],
+          error: null,
+        },
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/pending-interactions") {
+      const auth = authenticated(request, "approval.read", authenticate);
+      if (!auth.ok) return auth.response;
+      return json({ interactions: [] });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/home/feed") {
+      const auth = authenticated(request, "chat.read", authenticate);
+      if (!auth.ok) return auth.response;
+      const now = new Date().toISOString();
+      return json({
+        items: [],
+        updatedAt: now,
+        contextBanner: {
+          greeting: "What should we work on?",
+          timeAwayLabel: "",
+          newCount: 0,
+        },
+        suggestedPrompts: [],
+      });
+    }
+
+    if (request.method === "GET" && pathname === "/v1/conversations") {
+      const auth = authenticated(request, "chat.read", authenticate);
+      if (!auth.ok) return auth.response;
+      const rawLimit = integerQuery(url, "limit", 50);
+      const offset = integerQuery(url, "offset", 0);
+      if (rawLimit === null || rawLimit < 1 || offset === null) {
+        return errorResponse(
+          400,
+          "INVALID_REQUEST",
+          "Conversation pagination is invalid.",
+        );
+      }
+      const limit = Math.min(rawLimit, 100);
+      const excludedBucket =
+        url.searchParams.has("conversationType") ||
+        url.searchParams.get("archiveStatus") === "archived";
+      const rows = excludedBucket
+        ? []
+        : await options.store.listConversations(executionContext(auth.tenant), {
+            limit: limit + 1,
+            offset,
+          });
+      const conversations = rows.slice(0, limit);
+      return json({
+        conversations: conversations.map(wireConversation),
+        nextOffset: offset + conversations.length,
+        hasMore: rows.length > limit,
+      });
+    }
+
+    const conversationMatch = pathname.match(/^\/v1\/conversations\/([^/]+)$/);
+    if (request.method === "GET" && conversationMatch) {
+      const auth = authenticated(request, "chat.read", authenticate);
+      if (!auth.ok) return auth.response;
+      let conversationId: string;
+      try {
+        conversationId = decodeURIComponent(conversationMatch[1]!);
+      } catch {
+        return errorResponse(
+          400,
+          "INVALID_REQUEST",
+          "Conversation id is invalid.",
+        );
+      }
+      const conversation = await options.store.getConversation(
+        executionContext(auth.tenant, { conversationId }),
+        conversationId,
+      );
+      return conversation
+        ? json({ conversation: wireConversation(conversation) })
+        : errorResponse(404, "NOT_FOUND", "Conversation not found.");
     }
 
     if (request.method === "POST" && pathname === "/v1/messages") {

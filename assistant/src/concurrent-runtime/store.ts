@@ -5,6 +5,7 @@ import type {
   AcceptedConcurrentRun,
   ClaimedConcurrentRun,
   CompleteConcurrentRunInput,
+  ConcurrentConversation,
   ConcurrentEvent,
   ConcurrentMessage,
   ConcurrentRun,
@@ -61,6 +62,16 @@ export interface ConcurrentRuntimeStore {
     context: TenantExecutionContext,
     conversationId: string,
   ): Promise<ConcurrentMessage[]>;
+
+  listConversations(
+    context: TenantExecutionContext,
+    input: { limit: number; offset: number },
+  ): Promise<ConcurrentConversation[]>;
+
+  getConversation(
+    context: TenantExecutionContext,
+    conversationId: string,
+  ): Promise<ConcurrentConversation | null>;
 
   hasActiveRun(
     context: TenantExecutionContext,

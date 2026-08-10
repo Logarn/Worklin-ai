@@ -44,8 +44,12 @@ The first deployment slice supports:
 
 - `POST /v1/messages`;
 - `GET /v1/messages?conversationId=...`;
+- `GET /v1/conversations` and `GET /v1/conversations/:id`;
 - `GET /v1/events` with durable replay and heartbeat frames;
 - `POST /v1/conversations/:id/cancel`;
+- read-only web bootstrap endpoints for identity, authentication status,
+  configuration, provider-connection status, pending interactions, home feed,
+  and disk-pressure status;
 - `/health`, `/healthz`, and `/readyz`.
 
 Messages are accepted idempotently, return `202`, and are executed through a
@@ -54,6 +58,11 @@ different conversations can run concurrently. Retrying the accepted request
 with the same idempotency key reclaims queued runs and processing runs whose
 lease expired. SSE subscribers that cannot keep up are shed with structured
 logging and Sentry reporting instead of growing an unbounded in-memory buffer.
+
+Conversation summaries and details are derived from the same tenant-scoped
+PostgreSQL transcript and never read process-global workspace state. Empty
+bootstrap responses advertise only capabilities the concurrent tier actually
+implements.
 
 All other `/v1/*` routes return `requires_dedicated_runtime`. Attachments,
 onboarding bootstrap payloads, slash commands, personal provider credentials,
