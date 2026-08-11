@@ -52,6 +52,7 @@ import {
   validateSafeSegmentExpression,
   type SegmentCustomerState,
 } from "./segment-runs.js";
+import { SegmentDiscoveryProfiler } from "./segment-discovery.js";
 import {
   rawPayloadReference,
   type RawPayloadStore,
@@ -4237,8 +4238,13 @@ export class RetentionRepository {
         unsubscribed_count: "0",
         suppressed_count: "0",
       };
+      const discovery = await this.buildSegmentDiscoverySummary(tx, {
+        organizationId: context.organizationId,
+        brandId: input.brandId,
+        evidenceCutoff,
+      });
       const dossier = {
-        version: "segment_account_dossier_v1",
+        version: "segment_account_dossier_v2",
         brand: {
           name: brand.name,
           websiteUrl: brand.website_url,
@@ -4266,6 +4272,8 @@ export class RetentionRepository {
           count: Number(row.event_count),
           latestAt: row.latest_at.toISOString(),
         })),
+        profileCoverage: discovery.profileCoverage,
+        behaviorCombinations: discovery.behaviorCombinations,
         availableTraits: traitSummary.map((row) => ({
           key: row.trait_key,
           customerCount: Number(row.customer_count),
@@ -9754,22 +9762,17 @@ export class RetentionRepository {
     }
   }
 
-  private async evaluateSegmentMemberships(
+  private async forEachSegmentCustomerBatch(
     tx: RetentionTransactionSql,
     input: {
       organizationId: string;
       brandId: string;
-      runId: string;
       evidenceCutoff: Date;
-      definitions: StoredSegmentDefinition[];
     },
-  ): Promise<Map<string, { memberCount: number; eligibleCount: number }>> {
-    const counts = new Map(
-      input.definitions.map((definition) => [
-        definition.id,
-        { memberCount: 0, eligibleCount: 0 },
-      ]),
-    );
+    visitor: (
+      customers: Array<{ customerId: string; state: SegmentCustomerState }>,
+    ) => Promise<void> | void,
+  ): Promise<void> {
     let lastCustomerId: string | null = null;
     while (true) {
       const customers: Array<{
@@ -9904,14 +9907,9 @@ export class RetentionRepository {
         traitsByCustomer.set(row.customer_id, traits);
       }
 
-      const membershipRows: Array<{
-        org_id: string;
-        segment_definition_id: string;
-        segment_run_id: string;
-        customer_id: string;
-        campaign_eligible: boolean;
-        eligibility_reason: string;
-        evidence_cutoff_at: Date;
+      const states: Array<{
+        customerId: string;
+        state: SegmentCustomerState;
       }> = [];
       for (const customer of customers) {
         const events = eventsByCustomer.get(customer.id) ?? [];
@@ -9958,16 +9956,73 @@ export class RetentionRepository {
           },
           trait: traitsByCustomer.get(customer.id) ?? {},
         };
-        const eligibility = campaignEligibility(state);
+        states.push({ customerId: customer.id, state });
+      }
+      await visitor(states);
+      lastCustomerId = customers.at(-1)!.id;
+    }
+  }
+
+  private async buildSegmentDiscoverySummary(
+    tx: RetentionTransactionSql,
+    input: {
+      organizationId: string;
+      brandId: string;
+      evidenceCutoff: Date;
+    },
+  ): Promise<ReturnType<SegmentDiscoveryProfiler["summary"]>> {
+    const profiler = new SegmentDiscoveryProfiler();
+    await this.forEachSegmentCustomerBatch(tx, input, (customers) => {
+      for (const customer of customers) profiler.observeSignals(customer.state);
+    });
+    profiler.prepareCombinations();
+    await this.forEachSegmentCustomerBatch(tx, input, (customers) => {
+      for (const customer of customers) {
+        profiler.observeCombinations(customer.state);
+      }
+    });
+    return profiler.summary();
+  }
+
+  private async evaluateSegmentMemberships(
+    tx: RetentionTransactionSql,
+    input: {
+      organizationId: string;
+      brandId: string;
+      runId: string;
+      evidenceCutoff: Date;
+      definitions: StoredSegmentDefinition[];
+    },
+  ): Promise<Map<string, { memberCount: number; eligibleCount: number }>> {
+    const counts = new Map(
+      input.definitions.map((definition) => [
+        definition.id,
+        { memberCount: 0, eligibleCount: 0 },
+      ]),
+    );
+    await this.forEachSegmentCustomerBatch(tx, input, async (customers) => {
+      const membershipRows: Array<{
+        org_id: string;
+        segment_definition_id: string;
+        segment_run_id: string;
+        customer_id: string;
+        campaign_eligible: boolean;
+        eligibility_reason: string;
+        evidence_cutoff_at: Date;
+      }> = [];
+      for (const customer of customers) {
+        const eligibility = campaignEligibility(customer.state);
         for (const definition of input.definitions) {
-          if (!evaluateSegmentExpression(definition.expression, state)) {
+          if (
+            !evaluateSegmentExpression(definition.expression, customer.state)
+          ) {
             continue;
           }
           membershipRows.push({
             org_id: input.organizationId,
             segment_definition_id: definition.id,
             segment_run_id: input.runId,
-            customer_id: customer.id,
+            customer_id: customer.customerId,
             campaign_eligible: eligibility.eligible,
             eligibility_reason: eligibility.reason,
             evidence_cutoff_at: input.evidenceCutoff,
@@ -9998,8 +10053,7 @@ export class RetentionRepository {
             evaluated_at = now()
         `;
       }
-      lastCustomerId = customers.at(-1)!.id;
-    }
+    });
     return counts;
   }
 

@@ -16,6 +16,10 @@ import {
 const BRAND_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const RUN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const LEASE_OWNER = "segment-run:cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const FIRST_EMAIL_BODY =
+  "Still comparing options? We made the next step easier. Start with the result you want most, then use our short guide to compare the choices that support it. You will see what each option is designed to do, who it tends to suit, and the practical differences worth noticing before you decide. There is no need to work through every detail at once. Pick the outcome that matters today and follow the matching recommendation. If you are still unsure after reading, keep the guide nearby and return when the timing feels right. Explore the guide to find a clear, comfortable place to begin.";
+const SECOND_EMAIL_BODY =
+  "Not sure where to begin? Instead of comparing every option at the same time, narrow the decision to one question: what would make the biggest difference for you right now? Our quick guide organizes the choices around common goals, useful tradeoffs, and simple next steps. It is designed to help you understand the range without pressure or guesswork. Read the section that matches your priority, note the option that feels most practical, and ignore the rest until you need it. When you are ready, use the guide to choose the path that fits your needs and your pace.";
 
 function proposal(overrides: Record<string, unknown> = {}) {
   return {
@@ -60,15 +64,17 @@ function proposal(overrides: Record<string, unknown> = {}) {
         customerReference: "archetype_example_1",
         subject: "A simpler way to choose",
         preheader: "A short guide to finding the right option.",
-        body: "Still comparing options? This short guide makes it easier to choose based on what matters most to you.",
-        rationale: "Addresses demonstrated browsing without inventing intent.",
+        body: FIRST_EMAIL_BODY,
+        rationale:
+          "Addresses demonstrated browsing with practical decision support without inventing personal intent.",
       },
       {
         customerReference: "archetype_example_2",
         subject: "Start with what fits",
         preheader: "Use this quick guide before you decide.",
-        body: "Not sure where to begin? See the key differences and choose the option that fits your needs.",
-        rationale: "Uses the same evidence with a different practical angle.",
+        body: SECOND_EMAIL_BODY,
+        rationale:
+          "Uses the same evidence with a distinct goal-first decision approach and no personal guess.",
       },
     ],
     safety: {
@@ -322,11 +328,18 @@ function successfulDependencies(
         opened: true,
       });
     },
+    saveToCopybook: () => ({
+      saved: true,
+      copybookId: "copybook-1",
+      monthId: "month-1",
+      documentSurfaceId: "copybook-doc-1",
+      campaignsCreated: 1,
+    }),
   };
 }
 
 describe("retention campaign review pilot", () => {
-  test("completes one structured tranche and creates a review-only document", async () => {
+  test("completes one structured tranche and saves review drafts to Copybook", async () => {
     const requests: Array<{ method: string; path: string; body?: unknown }> =
       [];
     const documentInputs: Record<string, unknown>[] = [];
@@ -383,6 +396,7 @@ describe("retention campaign review pilot", () => {
       "must-not-reach-model@example.com",
     );
     expect(JSON.stringify(providerPrompts)).toContain("[redacted]");
+    expect(JSON.stringify(providerPrompts)).toContain("complete email drafts");
 
     const completion = requests.find((request) =>
       request.path.endsWith("/complete"),
@@ -397,7 +411,7 @@ describe("retention campaign review pilot", () => {
             qualityStatus: "passed",
             modelProvider: "openai",
             modelId: "gpt-5.4",
-            promptVersion: "retention_campaign_review_v1",
+            promptVersion: "retention_campaign_review_v2",
             usage: { inputTokens: 400, outputTokens: 900 },
           },
         },
@@ -405,12 +419,12 @@ describe("retention campaign review pilot", () => {
     });
     expect(completion?.body).not.toHaveProperty("claimId");
     expect(completion?.body).not.toHaveProperty("leaseToken");
-    expect(documentInputs).toHaveLength(1);
-    expect(documentInputs[0]?.title).toBe(
-      "Example Brand: Customer Segments & Campaign Ideas",
-    );
-    expect(documentInputs[0]?.initial_content).toContain("Review only");
-    expect(JSON.stringify(sent)).toContain("Campaign Review Ready");
+    expect(documentInputs).toHaveLength(0);
+    expect(JSON.parse(result.content)).toMatchObject({
+      document: { surfaceId: "copybook-doc-1" },
+      copybook: { saved: true, campaignsCreated: 1 },
+    });
+    expect(JSON.stringify(sent)).toContain("Copybook Drafts Ready");
     expect(JSON.stringify(sent)).toContain("No Klaviyo writes or sends");
   });
 
@@ -710,6 +724,63 @@ describe("retention campaign review pilot", () => {
     });
   });
 
+  test("rejects an obvious single-signal audience when profile combinations are available", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const dependencies = successfulDependencies(
+      providerReturning({
+        proposals: [
+          proposal({
+            expression: {
+              type: "predicate",
+              namespace: "evidence",
+              key: "event_type",
+              operator: "contains",
+              value: "product_view",
+            },
+          }),
+        ],
+      }),
+      requests,
+      [],
+    );
+    const originalRequest = dependencies.operatorRequest;
+    dependencies.operatorRequest = async (toolContext, method, path, body) => {
+      const result = await originalRequest(toolContext, method, path, body);
+      if (!path.endsWith("/claim") || result.isError) return result;
+      const claim = JSON.parse(result.content) as Record<string, unknown>;
+      claim.dossier = {
+        ...(claim.dossier as Record<string, unknown>),
+        profileCoverage: {
+          profilesAnalyzed: 120,
+          allActiveProfilesIncluded: true,
+        },
+        behaviorCombinations: [
+          {
+            memberCount: 24,
+            signals: [
+              { label: "Recent product activity" },
+              { label: "Imported quiz preference" },
+            ],
+          },
+        ],
+      };
+      return json(claim);
+    };
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "segment_proposal_too_obvious",
+    });
+  });
+
   test("pauses with a typed error when the model nests campaign fields inside the expression", async () => {
     const requests: Array<{ method: string; path: string; body?: unknown }> =
       [];
@@ -783,6 +854,10 @@ describe("retention campaign review pilot", () => {
         },
         resolveProvider: async () => null,
         createDocument: () => json({}),
+        saveToCopybook: () => ({
+          saved: false,
+          reason: "brand_brain_required",
+        }),
       },
     );
 
