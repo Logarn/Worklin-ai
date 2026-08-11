@@ -16,12 +16,17 @@ import type { Provider } from "../../providers/types.js";
 import { ProviderError } from "../../util/errors.js";
 import { executeDocumentCreate } from "../document/document-tool.js";
 import type { ToolContext, ToolExecutionResult } from "../types.js";
+import {
+  type CampaignReviewCopybookInput,
+  type CampaignReviewCopybookResult,
+  saveCampaignReviewToCopybook,
+} from "./campaign-review-copybook.js";
 import { retentionOperatorRequest } from "./central-service.js";
 
 const PROVIDER_CONNECTION = "chatgpt-subscription";
 const PROVIDER_NAME = "openai";
 const MODEL = "gpt-5.4";
-const PROMPT_VERSION = "retention_campaign_review_v1";
+const PROMPT_VERSION = "retention_campaign_review_v2";
 const STRUCTURED_TOOL_NAME = "submit_retention_segment_tranche";
 const DOCUMENT_SUFFIX = "Customer Segments & Campaign Ideas";
 const MAX_SEGMENTS = 50;
@@ -72,7 +77,7 @@ const RepresentativeMessageSchema = z
       .regex(/^archetype_[a-z0-9_-]{1,64}$/u),
     subject: z.string().trim().min(1).max(160),
     preheader: z.string().trim().min(1).max(220),
-    body: z.string().trim().min(1).max(2_000),
+    body: z.string().trim().min(1).max(5_000),
     rationale: z.string().trim().min(1).max(700),
   })
   .strict();
@@ -182,6 +187,10 @@ export interface CampaignReviewPilotDependencies {
   operatorRequest: OperatorRequest;
   resolveProvider: () => Promise<Provider | null>;
   createDocument: typeof executeDocumentCreate;
+  saveToCopybook: (
+    input: CampaignReviewCopybookInput,
+    context: ToolContext,
+  ) => CampaignReviewCopybookResult;
 }
 
 const defaultDependencies: CampaignReviewPilotDependencies = {
@@ -196,6 +205,7 @@ const defaultDependencies: CampaignReviewPilotDependencies = {
       },
     }),
   createDocument: executeDocumentCreate,
+  saveToCopybook: saveCampaignReviewToCopybook,
 };
 
 class PilotError extends Error {
@@ -639,7 +649,7 @@ async function generateTranche(
   const tool: ToolDefinition = {
     name: STRUCTURED_TOOL_NAME,
     description:
-      "Return evidence-backed Worklin segment proposals and review-only campaign samples.",
+      "Return evidence-backed Worklin segment proposals and complete review-only email drafts.",
     input_schema: trancheOutputJsonSchema(
       claim.requestedSegments,
       referenceAllowlist,
@@ -684,6 +694,7 @@ async function generateTranche(
     parsed.data.proposals,
     referenceAllowlist,
     claim.existingSegments,
+    hasBehaviorCombinations(modelContext),
   );
   return {
     proposals: parsed.data.proposals,
@@ -701,6 +712,7 @@ function validateProposals(
   proposals: SegmentProposal[],
   referenceAllowlist?: SegmentReferenceAllowlist,
   existingSegments: ClaimState["existingSegments"] = [],
+  requireMultiSignal = false,
 ): void {
   const names = new Set(
     existingSegments.map((segment) => segment.name.toLocaleLowerCase()),
@@ -732,6 +744,14 @@ function validateProposals(
         expressionValidation.error.message,
       );
     }
+    if (requireMultiSignal) {
+      if (strategicPredicateFingerprints(expression).size < 2) {
+        throw new PilotError(
+          "segment_proposal_too_obvious",
+          "The model returned a single-signal audience even though stronger cross-signal evidence was available.",
+        );
+      }
+    }
     validateServiceCompatibleExpression(expression, referenceAllowlist);
     const expressionFingerprint = segmentExpressionFingerprint(expression);
     if (expressionFingerprints.has(expressionFingerprint)) {
@@ -756,6 +776,26 @@ function validateProposals(
     }
     validateCampaignPreviewQuality(proposal, messageFingerprints);
   }
+}
+
+function strategicPredicateFingerprints(
+  expression: WorklinSegmentExpression,
+): ReadonlySet<string> {
+  if (expression.type === "predicate") {
+    return new Set(
+      ["evidence", "metric", "trait"].includes(expression.namespace)
+        ? [segmentExpressionFingerprint(expression)]
+        : [],
+    );
+  }
+  if (expression.type === "not") {
+    return strategicPredicateFingerprints(expression.expression);
+  }
+  return new Set(
+    expression.expressions.flatMap((child) => [
+      ...strategicPredicateFingerprints(child),
+    ]),
+  );
 }
 
 function segmentExpressionFingerprint(
@@ -791,8 +831,9 @@ function validateCampaignPreviewQuality(
   for (const message of proposal.representativeMessages) {
     if (
       wordCount(message.subject) < 2 ||
-      wordCount(message.body) < 10 ||
-      wordCount(message.rationale) < 5
+      wordCount(message.body) < 80 ||
+      wordCount(message.body) > 300 ||
+      wordCount(message.rationale) < 8
     ) {
       throw new PilotError(
         "campaign_preview_quality_failed",
@@ -913,11 +954,36 @@ async function finishCompletedRun(
   assertNoDirectIdentifiers(documentTitle);
   const markdown = buildDocumentMarkdown(documentTitle, segments);
   assertNoDirectIdentifiers(markdown);
-  const documentResult = dependencies.createDocument(
-    { title: documentTitle, initial_content: markdown },
-    context,
-  );
-  const document = parseDocumentResult(documentResult);
+  let copybook: CampaignReviewCopybookResult;
+  try {
+    copybook = dependencies.saveToCopybook(
+      {
+        runId: run.id,
+        brandName: storedResult.brandName,
+        markdown,
+        campaigns: segments.map((segment) => ({
+          title: segment.name,
+          ...(segment.memberCount !== undefined
+            ? { memberCount: segment.memberCount }
+            : {}),
+          ...(segment.eligibleCount !== undefined
+            ? { eligibleCount: segment.eligibleCount }
+            : {}),
+        })),
+      },
+      context,
+    );
+  } catch {
+    copybook = { saved: false, reason: "copybook_document_unavailable" };
+  }
+  const document = copybook.saved
+    ? { surfaceId: copybook.documentSurfaceId, opened: false }
+    : parseDocumentResult(
+        dependencies.createDocument(
+          { title: documentTitle, initial_content: markdown },
+          context,
+        ),
+      );
   const sampleCount = segments.reduce(
     (total, segment) => total + segment.representativeMessages.length,
     0,
@@ -929,12 +995,13 @@ async function finishCompletedRun(
     surfaceId: `retention-review-result-${randomUUID()}`,
     surfaceType: "work_result",
     display: "inline",
-    title: "Campaign Review Ready",
+    title: copybook.saved ? "Copybook Drafts Ready" : "Campaign Review Ready",
     data: {
       eyebrow: "Worklin retention",
       status: "completed",
-      summary:
-        "Worklin prepared editable segment and campaign ideas for human review. Nothing was written to or sent through Klaviyo.",
+      summary: copybook.saved
+        ? "Worklin added complete, editable email drafts to this brand's Copybook for human review. Nothing was written to or sent through Klaviyo."
+        : "Worklin prepared complete email drafts in an editable Work document. Add a matching Brand Brain to place future runs directly in Copybook. Nothing was written to or sent through Klaviyo.",
       metrics: [
         {
           label: "Audiences",
@@ -943,9 +1010,9 @@ async function finishCompletedRun(
           tone: "positive",
         },
         {
-          label: "Sample messages",
+          label: "Email drafts",
           value: sampleCount,
-          detail: "Two review examples per audience",
+          detail: "Two complete alternatives per audience",
           tone: "neutral",
         },
         {
@@ -958,13 +1025,15 @@ async function finishCompletedRun(
       sections: [
         {
           id: "artifact",
-          title: "Editable result",
+          title: copybook.saved ? "Copybook" : "Editable result",
           type: "artifacts",
           items: [
             {
               id: document.surfaceId,
               title: documentTitle,
-              description: "Open the Worklin document to edit the ideas.",
+              description: copybook.saved
+                ? "Open this month's Copybook to review and edit the drafts."
+                : "Open the Worklin document to edit the drafts.",
               status: "Ready",
               tone: "positive",
             },
@@ -990,6 +1059,14 @@ async function finishCompletedRun(
       title: documentTitle,
       opened: document.opened,
     },
+    copybook: copybook.saved
+      ? {
+          saved: true,
+          copybookId: copybook.copybookId,
+          monthId: copybook.monthId,
+          campaignsCreated: copybook.campaignsCreated,
+        }
+      : { saved: false, reason: copybook.reason },
   });
 }
 
@@ -1167,9 +1244,11 @@ function buildPrompt(
   requestedSegments: number,
 ): string {
   return [
-    `Propose up to ${requestedSegments} distinct, useful retention audiences from the supplied aggregate evidence. Do not pad the result.`,
+    `Propose up to ${requestedSegments} distinct, useful retention audiences from the supplied account-wide evidence. Do not pad the result.`,
+    "Study evidence.profileCoverage and evidence.behaviorCombinations first. When combinations are present, every proposed audience must combine at least two independent strategic signals from evidence, metric, or trait fields. Prefer non-obvious relationships that explain a useful customer moment, not generic groups such as all subscribers, all openers, or everyone with an email address.",
+    "Use behaviorCombinations as anonymous evidence, then write a valid Worklin expression that recreates the combination. Do not claim causation from correlation, and do not use a small cohort merely because it is small.",
     "The evidence packet includes previouslyGeneratedAudiences. Do not repeat, rename, narrowly restate, or reuse the same targeting expression as any of them. Propose only materially different audiences supported by the evidence.",
-    `Create exactly ${SAMPLE_MESSAGES_PER_SEGMENT} concise representative email messages per proposed audience.`,
+    `Create exactly ${SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts per proposed audience. Each body must be 120 to 250 words, ready for a marketer to edit and use, with a clear opening, useful substance, and one natural call to action. The two drafts must use materially different creative approaches rather than superficial rewrites.`,
     "Use only factual signals present in the evidence. Do not infer or mention health, religion, race, ethnicity, political views, sexuality, pregnancy, disability, marital status, financial hardship, or other sensitive personal facts.",
     "Never output an email address, phone number, full customer name, provider identifier, or internal lease data. customerReference must be an opaque archetype label such as archetype_example_1.",
     "Every expression must be a Worklin expression using predicate, all, any, or not nodes. Predicate namespaces are consent, evidence, metric, profile, and trait.",
@@ -1190,7 +1269,7 @@ function buildDocumentMarkdown(
     "",
     "> Review only. Worklin has not created, changed, scheduled, or sent anything in Klaviyo.",
     "",
-    `Prepared ${segments.length} evidence-backed audience ideas with ${segments.length * SAMPLE_MESSAGES_PER_SEGMENT} representative messages.`,
+    `Prepared ${segments.length} evidence-backed audience ideas with ${segments.length * SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts.`,
     "",
   ];
   segments.forEach((segment, index) => {
@@ -1224,12 +1303,12 @@ function buildDocumentMarkdown(
         ? [`- **Offer:** ${escapeMarkdown(segment.campaignConcept.offer)}`]
         : []),
       "",
-      "### Representative messages",
+      "### Complete email drafts",
       "",
     );
     segment.representativeMessages.forEach((message, messageIndex) => {
       lines.push(
-        `#### Example ${messageIndex + 1}`,
+        `#### Draft ${messageIndex + 1}`,
         "",
         `**Subject:** ${escapeMarkdown(message.subject)}`,
         "",
@@ -1328,7 +1407,7 @@ function trancheOutputJsonSchema(
                   },
                   subject: { type: "string", maxLength: 160 },
                   preheader: { type: "string", maxLength: 220 },
-                  body: { type: "string", maxLength: 2_000 },
+                  body: { type: "string", maxLength: 5_000 },
                   rationale: { type: "string", maxLength: 700 },
                 },
               },
@@ -1554,6 +1633,14 @@ function sanitizeSegmentModelContext(value: unknown): unknown {
     });
   }
   return root;
+}
+
+function hasBehaviorCombinations(value: unknown): boolean {
+  const root = recordValue(value);
+  return (
+    Array.isArray(root.behaviorCombinations) &&
+    root.behaviorCombinations.length > 0
+  );
 }
 
 function isSafeSegmentModelKey(value: unknown): value is string {

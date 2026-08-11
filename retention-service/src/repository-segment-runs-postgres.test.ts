@@ -150,6 +150,15 @@ describe("segment review repository with PostgreSQL", () => {
         const claimed = await repository.claimSegmentRun(owner, {
           runId: run.id,
         });
+        expect(claimed.dossier).toMatchObject({
+          version: "segment_account_dossier_v2",
+          profileCoverage: {
+            profilesAnalyzed: 2,
+            eligibleProfiles: 1,
+            allActiveProfilesIncluded: true,
+          },
+          behaviorCombinations: [],
+        });
         const completed = await repository.completeSegmentRun(owner, {
           runId: run.id,
           leaseOwner: claimed.leaseOwner,
