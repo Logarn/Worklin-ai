@@ -252,7 +252,13 @@ function connectedGitHubAccount(): OAuthConnection {
   };
 }
 
-function renderModal() {
+function renderModal({
+  hostedManagedAvailable = true,
+  advancedSetupAvailable = true,
+}: {
+  hostedManagedAvailable?: boolean;
+  advancedSetupAvailable?: boolean;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -267,6 +273,8 @@ function renderModal() {
         displayName="GitHub"
         description="Repositories and issues"
         logoUrl={null}
+        hostedManagedAvailable={hostedManagedAvailable}
+        advancedSetupAvailable={advancedSetupAvailable}
         platformGate="full"
         onClose={() => {}}
       />
@@ -488,6 +496,28 @@ afterEach(() => {
 });
 
 describe("IntegrationDetailModal managed OAuth", () => {
+  test("opens directly in advanced setup when Worklin does not host the provider login", () => {
+    const view = renderModal({ hostedManagedAvailable: false });
+
+    expect(view.getByText("Your Own OAuth setup")).toBeTruthy();
+    expect(
+      view.getByText(/Advanced setup is for teams that already have their own/),
+    ).toBeTruthy();
+    expect(view.queryByRole("tab", { name: "Managed" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Connect Account" })).toBeNull();
+  });
+
+  test("does not open a runtime setup that cannot finish on this assistant", () => {
+    const view = renderModal({
+      hostedManagedAvailable: false,
+      advancedSetupAvailable: false,
+    });
+
+    expect(view.getByText(/needs a dedicated assistant/)).toBeTruthy();
+    expect(view.queryByText("Your Own OAuth setup")).toBeNull();
+    expect(view.queryByRole("tab")).toBeNull();
+  });
+
   test("starts authorization for a configured provider", async () => {
     const view = renderModal();
     const connectButton = await view.findByRole("button", {
@@ -562,6 +592,24 @@ describe("IntegrationDetailModal managed OAuth", () => {
     const reopened = renderModal();
     expect(reopened.getByText("Your Own OAuth setup")).toBeTruthy();
     expect(reopened.queryByRole("tab", { name: "Managed" })).toBeNull();
+  });
+
+  test("does not offer a dead own-app fallback on a pooled assistant", async () => {
+    startResult = {
+      error: { error: { code: "NOT_FOUND", message: "Not found" } },
+      response: new Response(null, { status: 501 }),
+    };
+    const view = renderModal({ advancedSetupAvailable: false });
+
+    fireEvent.click(
+      await view.findByRole("button", { name: "Connect Account" }),
+    );
+
+    await waitFor(() => {
+      expect(view.getByRole("alert").textContent).toContain("Try again later.");
+    });
+    expect(view.getByRole("alert").textContent).not.toContain("Your Own");
+    expect(view.queryByRole("button", { name: "Use Your Own" })).toBeNull();
   });
 
   test("preserves a typed authentication failure from connection preflight", async () => {

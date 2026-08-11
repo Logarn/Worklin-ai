@@ -3,9 +3,9 @@ import { ChevronDown, Loader2, Pencil, XCircle } from "lucide-react";
 import { useState } from "react";
 
 import {
-    assistantsOauthConnectionsListQueryKey,
-    assistantsOauthConnectionsListSetQueryData,
-    useAssistantsOauthDisconnectByConnectionCreateMutation,
+  assistantsOauthConnectionsListQueryKey,
+  assistantsOauthConnectionsListSetQueryData,
+  useAssistantsOauthDisconnectByConnectionCreateMutation,
 } from "@/generated/api/@tanstack/react-query.gen";
 import type { OAuthConnection } from "@/generated/api/types.gen";
 import { useIsMobile } from "@/hooks/use-is-mobile";
@@ -29,6 +29,9 @@ interface IntegrationRowProps {
   description: string | null;
   logoUrl: string | null;
   connection: OAuthConnection | null;
+  hostedManagedAvailable?: boolean;
+  advancedSetupAvailable?: boolean;
+  connectionStatusUnavailable?: boolean;
   platformGate: PlatformGateState;
   onConfigure: () => void;
 }
@@ -49,6 +52,9 @@ export function IntegrationRow({
   description,
   logoUrl,
   connection,
+  hostedManagedAvailable = true,
+  advancedSetupAvailable = true,
+  connectionStatusUnavailable = false,
   platformGate,
   onConfigure,
 }: IntegrationRowProps) {
@@ -65,26 +71,27 @@ export function IntegrationRow({
 
   const connectionsOpts = { path: { assistant_id: assistantId } };
 
-  const disconnectOAuth = useAssistantsOauthDisconnectByConnectionCreateMutation({
-    onSuccess(_data, variables) {
-      toast.success(`${displayName} account disconnected.`);
-      const connectionId = variables.path.connection_id;
-      assistantsOauthConnectionsListSetQueryData(
-        queryClient,
-        connectionsOpts,
-        (old) => old?.filter((c) => c.id !== connectionId),
-      );
-      queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
-    },
-    onError(error) {
-      const detail = extractErrorMessage(
-        error,
-        undefined,
-        `Failed to disconnect ${displayName} account.`,
-      );
-      toast.error(detail);
-    },
-  });
+  const disconnectOAuth =
+    useAssistantsOauthDisconnectByConnectionCreateMutation({
+      onSuccess(_data, variables) {
+        toast.success(`${displayName} account disconnected.`);
+        const connectionId = variables.path.connection_id;
+        assistantsOauthConnectionsListSetQueryData(
+          queryClient,
+          connectionsOpts,
+          (old) => old?.filter((c) => c.id !== connectionId),
+        );
+        queryClient.invalidateQueries({ queryKey: connectionsQueryKey });
+      },
+      onError(error) {
+        const detail = extractErrorMessage(
+          error,
+          undefined,
+          `Failed to disconnect ${displayName} account.`,
+        );
+        toast.error(detail);
+      },
+    });
 
   const handleDisable = () => {
     if (!connection?.id) {
@@ -106,7 +113,10 @@ export function IntegrationRow({
   return (
     <>
       <Card.Root>
-        <Card.Body padding="sm" className="flex items-center gap-4 px-4">
+        <Card.Body
+          padding="sm"
+          className="flex flex-wrap items-center gap-4 px-4"
+        >
           <IntegrationIcon
             providerKey={providerKey}
             displayName={displayName}
@@ -141,14 +151,46 @@ export function IntegrationRow({
                 isMobile={isMobile}
               />
             </div>
-          ) : (
+          ) : hostedManagedAvailable && connectionStatusUnavailable ? (
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              <span className="inline-flex shrink-0 rounded-full bg-[var(--surface-active)] px-2.5 py-1 text-label-small-default text-[var(--content-secondary)]">
+                Status unavailable
+              </span>
+              <Button
+                variant="primary"
+                className="shrink-0"
+                aria-label={`Enable ${displayName}`}
+                disabled
+              >
+                Enable
+              </Button>
+            </div>
+          ) : hostedManagedAvailable ? (
             <Button
               variant="primary"
               onClick={onConfigure}
               className="shrink-0"
+              aria-label={`Enable ${displayName}`}
             >
               Enable
             </Button>
+          ) : (
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              <span className="inline-flex shrink-0 rounded-full bg-[var(--surface-active)] px-2.5 py-1 text-label-small-default text-[var(--content-secondary)]">
+                {advancedSetupAvailable
+                  ? "Advanced setup"
+                  : "Dedicated assistant needed"}
+              </span>
+              <Button
+                variant="outlined"
+                onClick={onConfigure}
+                className="shrink-0"
+                aria-label={`Manage ${displayName} setup`}
+                disabled={!advancedSetupAvailable}
+              >
+                Manage setup
+              </Button>
+            </div>
           )}
         </Card.Body>
       </Card.Root>

@@ -15,6 +15,7 @@ export interface ManagedTabProps {
   oauthInProgress: boolean;
   connectError: string | null;
   managedUnsupported: boolean;
+  allowYourOwn?: boolean;
   disconnectingId: string | null;
   onConnect: () => void;
   onDisconnect: (connection: OAuthConnection) => void;
@@ -31,6 +32,7 @@ export function ManagedTab({
   oauthInProgress,
   connectError,
   managedUnsupported,
+  allowYourOwn = true,
   disconnectingId,
   onConnect,
   onDisconnect,
@@ -73,7 +75,7 @@ export function ManagedTab({
           <ManagedOAuthErrorNotice
             displayName={displayName}
             message={connectError}
-            onUseYourOwn={onUseYourOwn}
+            onUseYourOwn={allowYourOwn ? onUseYourOwn : undefined}
           />
         ) : (
           <p className="text-body-medium-default text-[var(--content-secondary)]">
@@ -102,7 +104,7 @@ export function ManagedTab({
           <ManagedOAuthErrorNotice
             displayName={displayName}
             message={connectError}
-            onUseYourOwn={onUseYourOwn}
+            onUseYourOwn={allowYourOwn ? onUseYourOwn : undefined}
           />
         </div>
       ) : null}
@@ -170,7 +172,7 @@ function ManagedOAuthErrorNotice({
 }: {
   displayName: string;
   message: string;
-  onUseYourOwn: () => void;
+  onUseYourOwn?: () => void;
 }) {
   return (
     <Notice
@@ -178,14 +180,16 @@ function ManagedOAuthErrorNotice({
       title={`Could not connect ${displayName}`}
       className="text-left"
       actions={
-        <Button
-          type="button"
-          variant="outlined"
-          size="compact"
-          onClick={onUseYourOwn}
-        >
-          Use Your Own
-        </Button>
+        onUseYourOwn ? (
+          <Button
+            type="button"
+            variant="outlined"
+            size="compact"
+            onClick={onUseYourOwn}
+          >
+            Use Your Own
+          </Button>
+        ) : undefined
       }
     >
       {message}
