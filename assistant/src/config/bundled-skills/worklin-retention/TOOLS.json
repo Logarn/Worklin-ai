@@ -12,7 +12,7 @@
     },
     {
       "name": "retention_campaign_review_pilot",
-      "description": "Start or safely resume a bounded, review-only Worklin audience run using only the named ChatGPT subscription connection. Produces at most 50 Worklin segment proposals and 100 representative messages, creates an editable review document, and never writes to or sends through Klaviyo.",
+      "description": "Create or safely resume this week's bounded, review-only campaigns for the connected brand. Uses a frozen cohort of at most 500 consented profiles, the ready Brand Brain, and only the named ChatGPT subscription connection. Produces at most 50 Worklin audience proposals and 100 complete review messages, writes them to Copybook, and never writes to or sends through Klaviyo.",
       "category": "retention",
       "risk": "medium",
       "input_schema": {
@@ -22,7 +22,7 @@
           "brand_id": {
             "type": "string",
             "format": "uuid",
-            "description": "Central Worklin brand UUID."
+            "description": "Optional central Worklin brand UUID. Omit when the workspace has one connected Klaviyo brand."
           },
           "run_id": {
             "type": "string",
@@ -37,7 +37,7 @@
             "description": "Maximum useful audiences to prepare. Worklin may return fewer when evidence is insufficient."
           }
         },
-        "required": ["brand_id"]
+        "required": []
       },
       "executor": "tools/retention-campaign-review-pilot.ts",
       "execution_target": "host"

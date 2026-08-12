@@ -283,6 +283,7 @@ const segmentRunCreateSchema = z.object({
   maxSegments: z.number().int().min(1).max(50),
   sampleLimitPerSegment: z.number().int().min(1).max(2),
   trancheSize: z.number().int().min(1).max(10),
+  cohortCount: z.number().int().min(0).max(500).optional(),
   evidenceCutoffAt: z.string().datetime(),
   duplicate: z.boolean(),
 });
@@ -293,6 +294,7 @@ const segmentRunDetailSchema = z.object({
   status: segmentRunStatusSchema,
   maxSegments: z.number().int().min(1).max(50),
   sampleLimitPerSegment: z.number().int().min(1).max(2),
+  cohortCount: z.number().int().min(0).max(500).optional(),
   completedSegmentCount: z.number().int().nonnegative(),
   lastErrorCode: z.string().nullable(),
   updatedAt: z.string().datetime(),
@@ -356,6 +358,7 @@ export interface RetentionSegmentRun {
   status: z.infer<typeof segmentRunStatusSchema>;
   maxSegments: number;
   sampleLimitPerSegment: number;
+  cohortCount?: number;
   completedSegments: number;
   totalSegments: number;
   lastErrorCode: string | null;
@@ -761,6 +764,7 @@ export async function startRetentionSegmentRun(
     status: parsed.data.status,
     maxSegments: parsed.data.maxSegments,
     sampleLimitPerSegment: parsed.data.sampleLimitPerSegment,
+    cohortCount: parsed.data.cohortCount,
     completedSegments: 0,
     totalSegments: parsed.data.maxSegments,
     lastErrorCode: null,
@@ -796,6 +800,7 @@ export async function fetchRetentionSegmentRun(
     status: parsed.data.status,
     maxSegments: parsed.data.maxSegments,
     sampleLimitPerSegment: parsed.data.sampleLimitPerSegment,
+    cohortCount: parsed.data.cohortCount,
     completedSegments: parsed.data.completedSegmentCount,
     totalSegments: parsed.data.maxSegments,
     lastErrorCode: parsed.data.lastErrorCode,

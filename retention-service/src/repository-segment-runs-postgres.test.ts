@@ -151,9 +151,14 @@ describe("segment review repository with PostgreSQL", () => {
           runId: run.id,
         });
         expect(claimed.dossier).toMatchObject({
-          version: "segment_account_dossier_v2",
+          version: "segment_account_dossier_v3",
+          cohort: {
+            requestedProfiles: 500,
+            frozenProfiles: 1,
+            includesOnlyCurrentlySubscribedProfiles: true,
+          },
           profileCoverage: {
-            profilesAnalyzed: 2,
+            profilesAnalyzed: 1,
             eligibleProfiles: 1,
             allActiveProfilesIncluded: true,
           },
@@ -191,7 +196,7 @@ describe("segment review repository with PostgreSQL", () => {
         });
         expect(completed.status).toBe("queued");
         expect(completed.definitions[0]).toMatchObject({
-          memberCount: 2,
+          memberCount: 1,
           eligibleCount: 1,
         });
         const continuation = await repository.claimSegmentRun(owner, {
@@ -220,7 +225,7 @@ describe("segment review repository with PostgreSQL", () => {
           brandId: brand.id,
         });
         expect(listed.segments).toEqual([
-          expect.objectContaining({ memberCount: 2, eligibleCount: 1 }),
+          expect.objectContaining({ memberCount: 1, eligibleCount: 1 }),
         ]);
         const listedForRun = await repository.listSegmentsForRun(owner, run.id);
         expect(listedForRun).toEqual({
