@@ -31,6 +31,8 @@ interface IntegrationDetailModalProps {
   displayName: string;
   description: string | null;
   logoUrl: string | null;
+  hostedManagedAvailable: boolean;
+  advancedSetupAvailable: boolean;
   platformGate: PlatformGateState;
   onClose: () => void;
 }
@@ -46,14 +48,21 @@ export function IntegrationDetailModal({
   displayName,
   description,
   logoUrl,
+  hostedManagedAvailable,
+  advancedSetupAvailable,
   platformGate,
   onClose,
 }: IntegrationDetailModalProps) {
   const queryClient = useQueryClient();
-  const managedAvailable = platformGate === "full";
+  const managedAvailable = hostedManagedAvailable && platformGate === "full";
+  const cachedManagedUnsupported = isManagedOAuthProviderUnsupported(
+    assistantId,
+    providerKey,
+  );
   const [activeTab, setActiveTab] = useState<ModalTab>(
-    platformGate === "gated" ||
-      isManagedOAuthProviderUnsupported(assistantId, providerKey)
+    !hostedManagedAvailable ||
+      (advancedSetupAvailable &&
+        (platformGate === "gated" || cachedManagedUnsupported))
       ? "your-own"
       : "managed",
   );
@@ -89,6 +98,7 @@ export function IntegrationDetailModal({
     providerKey,
     displayName,
     managedAvailable,
+    ownAppFallbackAvailable: advancedSetupAvailable,
     connectionsQueryKey,
   });
 
@@ -151,8 +161,8 @@ export function IntegrationDetailModal({
   };
 
   const subtitle = description
-    ? `Configure ${displayName} OAuth for ${description}`
-    : `Configure ${displayName} OAuth`;
+    ? `Connect ${displayName} for ${description}`
+    : `Connect ${displayName}`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -175,7 +185,7 @@ export function IntegrationDetailModal({
                 id="integration-modal-title"
                 className="text-title-small text-[var(--content-default)]"
               >
-                {displayName} OAuth
+                {displayName}
               </h2>
               <p className="text-body-small-default text-[var(--content-tertiary)]">
                 {subtitle}
@@ -192,28 +202,49 @@ export function IntegrationDetailModal({
         </div>
 
         <div className="space-y-4 px-5 py-4">
-          {platformGate !== "gated" && !managedUnsupported && (
-            <div
-              role="tablist"
-              aria-label="OAuth mode"
-              className="flex w-full rounded-md border border-[var(--border-base)] bg-[var(--surface-base)] p-0.5 dark:border-[var(--border-base)] dark:bg-[var(--surface-base)]/40"
-            >
-              <TabButton
-                active={activeTab === "managed"}
-                onClick={() => setActiveTab("managed")}
-              >
-                Managed
-              </TabButton>
-              <TabButton
-                active={activeTab === "your-own"}
-                onClick={() => setActiveTab("your-own")}
-              >
-                Your Own
-              </TabButton>
-            </div>
-          )}
+          {!hostedManagedAvailable && advancedSetupAvailable ? (
+            <Notice tone="info">
+              Advanced setup is for teams that already have their own{" "}
+              {displayName} developer app. Worklin&apos;s one-click connection
+              is not available for this app yet.
+            </Notice>
+          ) : null}
 
-          {activeTab === "managed" && platformGate !== "gated" ? (
+          {!hostedManagedAvailable && !advancedSetupAvailable ? (
+            <Notice tone="info">
+              This connection needs a dedicated assistant. It is listed here so
+              you can see what Worklin supports without being sent into a setup
+              that cannot finish.
+            </Notice>
+          ) : null}
+
+          {hostedManagedAvailable &&
+            advancedSetupAvailable &&
+            platformGate !== "gated" &&
+            !managedUnsupported && (
+              <div
+                role="tablist"
+                aria-label="OAuth mode"
+                className="flex w-full rounded-md border border-[var(--border-base)] bg-[var(--surface-base)] p-0.5 dark:border-[var(--border-base)] dark:bg-[var(--surface-base)]/40"
+              >
+                <TabButton
+                  active={activeTab === "managed"}
+                  onClick={() => setActiveTab("managed")}
+                >
+                  Managed
+                </TabButton>
+                <TabButton
+                  active={activeTab === "your-own"}
+                  onClick={() => setActiveTab("your-own")}
+                >
+                  Your Own
+                </TabButton>
+              </div>
+            )}
+
+          {hostedManagedAvailable &&
+          activeTab === "managed" &&
+          platformGate !== "gated" ? (
             platformGate === "disabled" ? (
               <Notice tone="info">
                 Log in to the Worklin platform to manage OAuth connections.
@@ -229,6 +260,7 @@ export function IntegrationDetailModal({
                 oauthInProgress={oauthInProgress}
                 connectError={connectError}
                 managedUnsupported={managedUnsupported}
+                allowYourOwn={advancedSetupAvailable}
                 disconnectingId={
                   disconnectOAuth.isPending ? pendingDisconnectId : null
                 }
@@ -237,14 +269,14 @@ export function IntegrationDetailModal({
                 onUseYourOwn={() => setActiveTab("your-own")}
               />
             )
-          ) : (
+          ) : advancedSetupAvailable ? (
             <YourOwnTab
               assistantId={assistantId}
               providerKey={providerKey}
               displayName={displayName}
               logoUrl={logoUrl}
             />
-          )}
+          ) : null}
         </div>
 
         <div className="flex justify-end border-t border-[var(--border-base)] px-5 py-3 dark:border-[var(--border-base)]">

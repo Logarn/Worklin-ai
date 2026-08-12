@@ -13,6 +13,7 @@ interface UseOAuthConnectOptions {
   providerKey: string;
   displayName: string;
   managedAvailable: boolean;
+  ownAppFallbackAvailable?: boolean;
   connectionsQueryKey: QueryKey;
 }
 
@@ -30,6 +31,7 @@ export function useOAuthConnect({
   providerKey,
   displayName,
   managedAvailable,
+  ownAppFallbackAvailable = true,
   connectionsQueryKey,
 }: UseOAuthConnectOptions): UseOAuthConnectResult {
   const queryClient = useQueryClient();
@@ -40,10 +42,24 @@ export function useOAuthConnect({
     isManagedOAuthProviderUnsupported(assistantId, providerKey),
   );
 
-  const showConnectError = useCallback((message: string) => {
-    setConnectError(message);
-    toast.error(message);
-  }, []);
+  const showConnectError = useCallback(
+    (message: string) => {
+      const customerMessage = ownAppFallbackAvailable
+        ? message
+        : message
+            .replace(
+              " Try again, or choose Your Own to connect with your OAuth app.",
+              " Try again later.",
+            )
+            .replace(
+              " Choose Your Own to connect with your OAuth app.",
+              " Try again later.",
+            );
+      setConnectError(customerMessage);
+      toast.error(customerMessage);
+    },
+    [ownAppFallbackAvailable],
+  );
 
   useEffect(() => {
     activeRequestRef.current?.abort();
