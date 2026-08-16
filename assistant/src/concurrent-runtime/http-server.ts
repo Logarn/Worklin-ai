@@ -9,7 +9,10 @@ import {
   formatSseHeartbeat,
 } from "@vellumai/skill-host-contracts";
 
-import { getConcurrentManagedProviderConfig } from "../providers/platform-proxy/concurrent-provider-config.js";
+import {
+  type ConcurrentManagedProviderConfig,
+  getConcurrentManagedProviderConfig,
+} from "../providers/platform-proxy/concurrent-provider-config.js";
 import type { Scope } from "../runtime/auth/types.js";
 import { APP_VERSION } from "../version.js";
 import {
@@ -24,6 +27,7 @@ import type { ConcurrentConversation } from "./types.js";
 const DEFAULT_EVENT_POLL_INTERVAL_MS = 250;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 7_000;
 const MAX_CONTENT_LENGTH = 1_000_000;
+const CONCURRENT_MANAGED_PROFILE_NAME = "worklin-managed";
 
 export interface ConcurrentHttpLogger {
   info(fields: Record<string, unknown>, message: string): void;
@@ -53,6 +57,7 @@ export interface ConcurrentRuntimeHttpHandlerOptions {
     request: Request,
     requiredScope: Scope,
   ) => ConcurrentAuthenticationResult;
+  getManagedProviderConfig?: () => ConcurrentManagedProviderConfig | null;
 }
 
 interface SendMessageBody {
@@ -208,6 +213,8 @@ export function createConcurrentRuntimeHttpHandler(
     options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const authenticate =
     options.authenticate ?? authenticateConcurrentRuntimeRequest;
+  const getManagedProviderConfig =
+    options.getManagedProviderConfig ?? getConcurrentManagedProviderConfig;
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -271,13 +278,33 @@ export function createConcurrentRuntimeHttpHandler(
     if (request.method === "GET" && pathname === "/v1/config") {
       const auth = authenticated(request, "settings.read", authenticate);
       if (!auth.ok) return auth.response;
-      const provider = getConcurrentManagedProviderConfig();
+      const provider = getManagedProviderConfig();
       return json({
         llm: provider
           ? {
               default: {
                 provider: provider.provider,
                 model: provider.model,
+              },
+              profiles: {
+                [CONCURRENT_MANAGED_PROFILE_NAME]: {
+                  provider: provider.provider,
+                  model: provider.model,
+                  source: "managed",
+                  label: "Worklin managed model",
+                  description:
+                    "Managed by Worklin for fast, always-ready conversations.",
+                  status: "active",
+                },
+              },
+              profileOrder: [CONCURRENT_MANAGED_PROFILE_NAME],
+              activeProfile: CONCURRENT_MANAGED_PROFILE_NAME,
+            }
+          : undefined,
+        services: provider
+          ? {
+              inference: {
+                mode: "managed",
               },
             }
           : undefined,
