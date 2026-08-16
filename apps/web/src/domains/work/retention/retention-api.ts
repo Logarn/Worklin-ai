@@ -300,6 +300,22 @@ const segmentRunDetailSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
+const segmentEvidenceItemSchema = z.object({
+  signal: z.string(),
+  explanation: z.string(),
+  strength: z.enum(["strong", "medium", "weak"]),
+  source: z.enum(["metric", "event", "imported_trait", "consent"]),
+});
+
+const segmentEvidenceSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}, segmentEvidenceItemSchema);
+
 const segmentSchema = z.object({
   id: uuidSchema,
   name: z.string(),
@@ -317,14 +333,7 @@ const segmentSchema = z.object({
         timing: z.string(),
         callToAction: z.string(),
       }),
-      evidence: z.array(
-        z.object({
-          signal: z.string(),
-          explanation: z.string(),
-          strength: z.enum(["strong", "medium", "weak"]),
-          source: z.enum(["metric", "event", "imported_trait", "consent"]),
-        }),
-      ),
+      evidence: z.array(segmentEvidenceSchema),
       qualityStatus: z.enum(["passed", "needs_review", "blocked"]),
       samples: z.array(
         z.object({

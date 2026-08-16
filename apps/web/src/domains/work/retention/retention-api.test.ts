@@ -823,12 +823,12 @@ describe("retention audience API", () => {
                 callToAction: "Find your best fit",
               },
               evidence: [
-                {
+                JSON.stringify({
                   signal: "Recent product view",
                   explanation: "Viewed a product in the last seven days",
                   strength: "strong",
                   source: "event",
-                },
+                }),
               ],
               qualityStatus: "passed",
               samples: [
@@ -855,6 +855,7 @@ describe("retention audience API", () => {
     expect(segments[0]?.description).toBe(
       "People showing recent product interest.",
     );
+    expect(segments[0]?.evidence[0]?.signal).toBe("Recent product view");
     expect(segments[0]?.sampleMessages[0]).not.toHaveProperty(
       "customerReference",
     );
