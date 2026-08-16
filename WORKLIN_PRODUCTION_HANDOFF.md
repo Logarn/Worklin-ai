@@ -7,8 +7,8 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 ## Start Here
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-klaviyo-integration-home`
-- Current merged and deployed control-plane release: `a77dcdb83ba5ae0a6af41ef3c86d0955d5e95e03` (`Validate retention segment expressions strictly`, PR `#184`). Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
+- Current release worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
+- Current merged and deployed control-plane release: `0d00613576be14d58a34305961d6b7dd33b3c7af` (`Save retention micro-campaigns to Copybook`, PR `#202`). Public `/healthz` reports that SHA and `/readyz` reports the control plane and provisioner ready.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`; production-handoff refresh PR `#180` merged as `8d47b10`; retention review bridge repair PR `#181` merged as `ac33d53`; brand-intelligence archive PR `#182` merged as `0af1b9a`; small-tranche retention review PR `#183` merged as `623310b`; retention-expression validation PR `#184` merged as `a77dcdb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
@@ -55,23 +55,36 @@ conversation plus its run, messages, and events were removed. Retention audit
 rows remain as immutable historical audit entries and should not be treated as
 visible customer, brand, or campaign state.
 
-Local micro-segment to micro-campaign work is verified but not yet merged at
-the time of this handoff refresh. It adds privacy-safe cross-signal
+Micro-segment to micro-campaign work is merged and deployed in PR `#202`. It
+adds privacy-safe cross-signal
 `microSegmentOpportunities`, requires stronger multi-axis audience proposals
 when that evidence exists, rejects generic campaign samples that ignore the
 micro-campaign angle or call to action, persists micro-campaign strategy and
 representative drafts into Copybook metadata, and changes the audience UI/export
 language from broad audiences to review-only micro-segment/micro-campaign
 packages. It also lets Settings show Klaviyo connection status without requiring
-a selected brand. The current local branch adds a direct **Save to Copybook**
+a selected brand. The deployed release adds a direct **Save to Copybook**
 action on the Audiences page and opens the exact concurrent-runtime proxy routes
 needed to create brand shells, copybooks, months, and review-only campaign
-records without depending on the chat composer. PR #202 now also normalizes the
+records without depending on the chat composer. PR `#202` also normalizes the
 saved campaign metadata to the Copybook retention-segment shape and renders
 visible subject/body snippets in the Copybook month outline, so saved
 micro-campaigns are inspectable as real copy rather than hidden metadata.
 
-Current focused verification for this local branch state:
+Live browser verification after deploying PR `#202` found a separate wake-up
+bug: the account still had two non-default test assistants, `Browser Release`
+and `Browser Live`. `Browser Live` was failed with last error `Railway runtime
+workspace quota (1) has been reached`; `Browser Release` was still
+`provisioning`. The default `Worklin` assistant was healthy and active on the
+concurrent-service runtime, but the browser had remembered the failed
+assistant, so the page showed `Assistant is crash looping`. Hotfix branch
+`assistant/failed-assistant-fallback` changes the lifecycle service so a
+remembered selected assistant with `runtime_status: "failed"` is cleared and
+the default assistant is retried. The focused regression
+`src/assistant/lifecycle-service.test.ts` passes locally, but this hotfix is not
+merged or deployed yet at this handoff point.
+
+Current focused verification for PR `#202` and the follow-up hotfix branch:
 
 - `assistant`: `bun test src/memory/artifact-store.test.ts src/runtime/routes/artifact-routes.test.ts src/tools/retention/campaign-review-copybook.test.ts src/tools/retention/campaign-review-pilot.test.ts`
 - `apps/web`: `bun test src/domains/work/retention/retention-audiences.test.tsx src/domains/work/retention/retention-api.test.ts src/domains/copybooks/components/copybook-month-nav.test.tsx`
@@ -79,6 +92,9 @@ Current focused verification for this local branch state:
 - `assistant`: touched-file ESLint and `bunx tsc --noEmit --pretty false`
 - `apps/web`: touched-file ESLint and `bun run typecheck`
 - `control-plane`: `bunx tsc --noEmit --pretty false`
+- Hotfix branch: `bun test src/assistant/lifecycle-service.test.ts`,
+  `bunx eslint src/assistant/lifecycle-service.ts src/assistant/lifecycle-service.test.ts`,
+  `bun run typecheck`, and `git diff --check`.
 
 ## 2026-08-05 Brand Intelligence Archive Live
 

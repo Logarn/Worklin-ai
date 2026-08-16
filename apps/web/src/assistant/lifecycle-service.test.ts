@@ -316,6 +316,57 @@ describe("lifecycleService — server state projection", () => {
     });
   });
 
+  test("falls back to the default assistant when the remembered selection is failed", async () => {
+    useResolvedAssistantsStore
+      .getState()
+      .setSelectedAssistant("asst-failed-selected");
+    getAssistantMock
+      .mockImplementationOnce(async (assistantId?: string) => ({
+        ok: true,
+        status: 200,
+        data: {
+          id: assistantId ?? "asst-failed-selected",
+          status: "initializing",
+          runtime_status: "failed",
+          is_local: false,
+        },
+      }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        data: {
+          id: "asst-default",
+          status: "active",
+          runtime_status: "active",
+          is_local: false,
+          maintenance_mode: { enabled: false },
+        },
+      }));
+    lifecycleService.setInputs({
+      ...baseInputs,
+      queryClient: makeQueryClient(),
+      selectedPlatformAssistantId: "asst-failed-selected",
+    });
+
+    await lifecycleService.checkAssistant();
+
+    expect(getAssistantMock).toHaveBeenNthCalledWith(
+      1,
+      "asst-failed-selected",
+    );
+    expect(getAssistantMock).toHaveBeenNthCalledWith(2);
+    expect(
+      useResolvedAssistantsStore.getState().selectedAssistantId,
+    ).toBeNull();
+    expect(
+      useResolvedAssistantsStore.getState().activeAssistantId,
+    ).toBe("asst-default");
+    expect(useAssistantLifecycleStore.getState().assistantState).toMatchObject({
+      kind: "active",
+      isLocal: false,
+    });
+  });
+
   test("cleanup result publishes an operational-status polling id without activating the assistant", async () => {
     getAssistantMock.mockImplementationOnce(async () => ({
       ok: true,
