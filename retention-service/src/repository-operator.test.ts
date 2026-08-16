@@ -172,6 +172,7 @@ describe("retention operator repository", () => {
 
     const result = await setup.repository.cancelCampaign(context, {
       campaignId,
+      brandId,
       reason,
     });
 
@@ -231,6 +232,7 @@ describe("retention operator repository", () => {
     try {
       await setup.repository.cancelCampaign(context, {
         campaignId,
+        brandId,
         reason: "Cancel before sending.",
       });
       throw new Error("Expected cancellation to fail.");

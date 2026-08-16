@@ -473,6 +473,7 @@ function useApproverDisplayName(): string {
 function CampaignActions({
   assistantId,
   campaign,
+  selectedBrandId,
   preview,
   approvalPreview,
   reviewStale,
@@ -481,6 +482,7 @@ function CampaignActions({
 }: {
   assistantId: string;
   campaign: RetentionCampaignSummary;
+  selectedBrandId: string | null;
   preview: RetentionCampaignPreview;
   approvalPreview: RetentionCampaignApprovalPreview;
   reviewStale: boolean;
@@ -488,8 +490,14 @@ function CampaignActions({
   sendEnabled: boolean;
 }) {
   const approverName = useApproverDisplayName();
-  const approvalMutation = useApproveRetentionCampaign(assistantId);
-  const releaseMutation = useReleaseRetentionCampaign(assistantId);
+  const approvalMutation = useApproveRetentionCampaign(
+    assistantId,
+    selectedBrandId!,
+  );
+  const releaseMutation = useReleaseRetentionCampaign(
+    assistantId,
+    selectedBrandId!,
+  );
   const [releaseKey, setReleaseKey] = useState<string | null>(null);
 
   const approvalResult =
@@ -699,15 +707,21 @@ function CampaignActions({
 function CampaignReviewDetail({
   assistantId,
   campaign,
+  selectedBrandId,
   externalWritesEnabled,
   sendEnabled,
 }: {
   assistantId: string;
   campaign: RetentionCampaignSummary;
+  selectedBrandId: string | null;
   externalWritesEnabled: boolean;
   sendEnabled: boolean;
 }) {
-  const review = useRetentionCampaignReview(assistantId, campaign.id);
+  const review = useRetentionCampaignReview(
+    assistantId,
+    campaign.id,
+    selectedBrandId,
+  );
   const preview = review.preview.data;
   const approvalPreview = review.approvalPreview.data;
 
@@ -842,6 +856,7 @@ function CampaignReviewDetail({
         <CampaignActions
           assistantId={assistantId}
           campaign={campaign}
+          selectedBrandId={selectedBrandId}
           preview={preview}
           approvalPreview={approvalPreview}
           reviewStale={reviewStale}
@@ -866,15 +881,17 @@ function CampaignReviewDetail({
 
 export function RetentionCampaignReview({
   assistantId,
+  selectedBrandId,
   retentionStatus,
 }: {
   assistantId: string;
+  selectedBrandId: string | null;
   retentionStatus: Pick<
     RetentionStatus,
     "externalWritesEnabled" | "sendEnabled"
   > | null;
 }) {
-  const campaignsQuery = useRetentionCampaigns(assistantId);
+  const campaignsQuery = useRetentionCampaigns(assistantId, selectedBrandId);
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(
     null,
   );
@@ -884,6 +901,12 @@ export function RetentionCampaignReview({
   );
 
   useEffect(() => {
+    if (!selectedBrandId) {
+      if (selectedCampaignId !== null) {
+        setSelectedCampaignId(null);
+      }
+      return;
+    }
     if (campaigns.length === 0) {
       setSelectedCampaignId(null);
       return;
@@ -894,14 +917,27 @@ export function RetentionCampaignReview({
     ) {
       setSelectedCampaignId(campaigns[0]?.id ?? null);
     }
-  }, [campaigns, selectedCampaignId]);
+  }, [campaigns, selectedBrandId, selectedCampaignId]);
 
-  const selectedCampaign = useMemo(
-    () =>
-      campaigns.find((campaign) => campaign.id === selectedCampaignId) ??
-      null,
-    [campaigns, selectedCampaignId],
-  );
+  if (!selectedBrandId) {
+    return (
+      <section
+        className="mx-auto flex w-full max-w-5xl flex-col gap-4 rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] p-6"
+        aria-label="Select a retention brand"
+      >
+        <h2 className="text-title-small text-[var(--content-emphasised)]">
+          Select a brand
+        </h2>
+        <p className="text-body-small-default text-[var(--content-tertiary)]">
+          Choose a brand first so each campaign list stays isolated.
+        </p>
+      </section>
+    );
+  }
+
+  const selectedCampaign = selectedBrandId
+    ? campaigns.find((campaign) => campaign.id === selectedCampaignId) ?? null
+    : null;
 
   return (
     <section aria-labelledby="campaign-review-heading">
@@ -979,13 +1015,14 @@ export function RetentionCampaignReview({
 
         <div className="min-w-0">
           {selectedCampaign ? (
-            <CampaignReviewDetail
-              key={selectedCampaign.id}
-              assistantId={assistantId}
-              campaign={selectedCampaign}
-              externalWritesEnabled={
-                retentionStatus?.externalWritesEnabled ?? false
-              }
+          <CampaignReviewDetail
+            key={selectedCampaign.id}
+            assistantId={assistantId}
+            campaign={selectedCampaign}
+            selectedBrandId={selectedBrandId}
+            externalWritesEnabled={
+              retentionStatus?.externalWritesEnabled ?? false
+            }
               sendEnabled={retentionStatus?.sendEnabled ?? false}
             />
           ) : (

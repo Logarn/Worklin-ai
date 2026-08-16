@@ -21,20 +21,19 @@ function shouldRetry(failureCount: number, error: unknown): boolean {
   return failureCount < 2;
 }
 
-export function useRetentionAudiences(assistantId: string) {
+export function useRetentionAudiences(
+  assistantId: string,
+  selectedBrandId: string | null = null,
+) {
   const isOrgReady = useIsOrgReady();
+  const brandId = selectedBrandId;
   const imports = useQuery({
-    queryKey: ["retention", "imports", assistantId],
-    queryFn: () => fetchRetentionImports(assistantId),
-    enabled: isOrgReady,
+    queryKey: ["retention", "imports", assistantId, brandId],
+    queryFn: () => fetchRetentionImports(assistantId, brandId!),
+    enabled: isOrgReady && Boolean(brandId),
     staleTime: 15_000,
     retry: shouldRetry,
   });
-  const brandId = imports.data
-    ?.filter((item) => item.provider === "klaviyo")
-    .sort((left, right) =>
-      right.updatedAt.localeCompare(left.updatedAt),
-    )[0]?.brandId;
   const segments = useQuery({
     queryKey: ["retention", "segments", assistantId, brandId],
     queryFn: () => fetchRetentionSegments(assistantId, brandId!),

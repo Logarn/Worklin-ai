@@ -203,9 +203,15 @@ function DataConnectionsSection({
   );
 }
 
-export function RetentionSetup({ assistantId }: { assistantId: string }) {
-  const setup = useRetentionSetup(assistantId);
-  const retentionStatus = useRetentionStatus(assistantId);
+export function RetentionSetup({
+  assistantId,
+  selectedBrandId,
+}: {
+  assistantId: string;
+  selectedBrandId: string | null;
+}) {
+  const setup = useRetentionSetup(assistantId, selectedBrandId);
+  const retentionStatus = useRetentionStatus(assistantId, selectedBrandId);
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(
     null,
   );
@@ -216,15 +222,36 @@ export function RetentionSetup({ assistantId }: { assistantId: string }) {
   const policy = useRetentionProgramApprovalPreview(
     assistantId,
     selectedProgramId,
+    selectedBrandId,
   );
-  const activate = useActivateRetentionProgram(assistantId);
-  const pause = usePauseRetentionProgram(assistantId);
-  const approveImport = useApproveRetentionImport(assistantId);
+  const activate = useActivateRetentionProgram(
+    assistantId,
+    selectedBrandId,
+  );
+  const pause = usePauseRetentionProgram(assistantId, selectedBrandId);
+  const approveImport = useApproveRetentionImport(assistantId, selectedBrandId);
 
   const loading = setup.programs.isPending || setup.imports.isPending;
   const loadError = setup.programs.isError || setup.imports.isError;
   const programs = setup.programs.data ?? [];
   const imports = setup.imports.data ?? [];
+
+  if (!selectedBrandId) {
+    return (
+      <section
+        className="mx-auto flex w-full max-w-5xl flex-col gap-4 rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] p-6"
+        aria-label="Select a retention brand"
+      >
+        <h2 className="text-title-small text-[var(--content-emphasised)]">
+          Select a brand
+        </h2>
+        <p className="text-body-small-default text-[var(--content-tertiary)]">
+          Open Setup for a specific brand so retention programs and imports stay
+          separated.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-10">

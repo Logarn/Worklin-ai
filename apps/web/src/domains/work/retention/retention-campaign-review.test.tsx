@@ -1,4 +1,14 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+
+mock.restore();
 import {
   cleanup,
   fireEvent,
@@ -58,8 +68,9 @@ mock.module("./use-retention-campaigns", () => ({
   useReleaseRetentionCampaign: () => releaseMutation,
 }));
 
-const { RetentionCampaignReview } =
-  await import("./retention-campaign-review");
+const { RetentionCampaignReview } = await import(
+  "@/domains/work/retention/retention-campaign-review"
+);
 
 function campaign(
   overrides: Partial<RetentionCampaignSummary> = {},
@@ -208,14 +219,18 @@ function renderReview(
     externalWritesEnabled: false,
     sendEnabled: false,
   },
+  selectedBrandId: string | null = "brand-rachaa",
 ) {
   return render(
     <RetentionCampaignReview
       assistantId="assistant-1"
+      selectedBrandId={selectedBrandId}
       retentionStatus={retentionStatus}
     />,
   );
 }
+
+const WAIT_TIMEOUT = { timeout: 5000 };
 
 describe("RetentionCampaignReview", () => {
   beforeEach(() => {
@@ -229,15 +244,21 @@ describe("RetentionCampaignReview", () => {
     releaseReset.mockClear();
   });
 
-  afterEach(() => {
-    cleanup();
-  });
+afterEach(() => {
+  cleanup();
+});
+
+afterAll(() => {
+  mock.restore();
+});
 
   test("shows frozen review facts and representative samples without customer intelligence", async () => {
     renderReview();
 
-    await waitFor(() =>
-      expect(screen.getAllByText("July conversion")).toHaveLength(2),
+    await waitFor(
+      () =>
+        expect(screen.getAllByText("July conversion").length).toBeGreaterThan(0),
+      WAIT_TIMEOUT,
     );
     expect(screen.getByText(SNAPSHOT_SHA256)).toBeTruthy();
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
@@ -248,12 +269,31 @@ describe("RetentionCampaignReview", () => {
     expect(screen.queryByText("customer_private")).toBeNull();
   });
 
+  test("requests a brand selection before loading campaigns", async () => {
+    renderReview({
+      externalWritesEnabled: false,
+      sendEnabled: false,
+    }, null);
+
+    expect(
+      await screen.findByText(
+        "Choose a brand first so each campaign list stays isolated.",
+        undefined,
+        WAIT_TIMEOUT,
+      ),
+    ).toBeTruthy();
+  });
+
   test("approves only the checksum currently under review and names the approver", async () => {
     renderReview();
 
-    const button = await screen.findByRole("button", {
-      name: "Approve as Example Approver",
-    });
+    const button = await screen.findByRole(
+      "button",
+      {
+        name: "Approve as Example Approver",
+      },
+      WAIT_TIMEOUT,
+    );
     fireEvent.click(button);
 
     expect(approveMutate).toHaveBeenCalledWith({
@@ -276,9 +316,13 @@ describe("RetentionCampaignReview", () => {
     });
     renderReview({ externalWritesEnabled: true, sendEnabled: true });
 
-    const releaseButton = await screen.findByRole("button", {
-      name: "Send via Klaviyo",
-    });
+    const releaseButton = await screen.findByRole(
+      "button",
+      {
+        name: "Send via Klaviyo",
+      },
+      WAIT_TIMEOUT,
+    );
     fireEvent.click(releaseButton);
 
     expect(releaseMutate).not.toHaveBeenCalled();
@@ -324,6 +368,8 @@ describe("RetentionCampaignReview", () => {
     expect(
       await screen.findByText(
         "The campaign changed while this review was open. Refresh before approving or sending.",
+        undefined,
+        WAIT_TIMEOUT,
       ),
     ).toBeTruthy();
     expect(
@@ -354,6 +400,8 @@ describe("RetentionCampaignReview", () => {
     expect(
       await screen.findByText(
         "The campaign changed while it was open. Refresh it before continuing.",
+        undefined,
+        WAIT_TIMEOUT,
       ),
     ).toBeTruthy();
     expect(

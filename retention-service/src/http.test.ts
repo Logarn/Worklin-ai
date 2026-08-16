@@ -162,6 +162,75 @@ describe("retention operator HTTP boundary", () => {
     });
   });
 
+  test("status requires an explicit brandId", async () => {
+    const calls: Array<{ brandId?: string }> = [];
+    const deps = dependencies({
+      status: async (_context, input) => {
+        calls.push(input ?? {});
+        return {
+          organizationId,
+          integrations: [
+            {
+              brandId,
+              brandName: "Example brand",
+              provider: "klaviyo",
+              status: "connected",
+              lastWebhookAt: null,
+              lastPolledAt: null,
+              lastReconciledAt: null,
+              lastErrorCode: null,
+            },
+          ],
+          jobs: {},
+          externalWritesEnabled: false,
+          sendEnabled: false,
+        };
+      },
+    });
+
+    const response = await createRetentionHttpHandler(deps)(
+      new Request("http://retention.internal/v1/retention/status", {
+        headers: { authorization: `Bearer ${token(["retention:read"])}` },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(calls).toEqual([]);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "invalid_request",
+      },
+    });
+  });
+
+  test("status accepts an explicit brandId filter", async () => {
+    const calls: Array<{ brandId?: string }> = [];
+    const deps = dependencies({
+      status: async (_context, input) => {
+        calls.push(input ?? {});
+        return {
+          organizationId,
+          integrations: [],
+          jobs: {},
+          externalWritesEnabled: false,
+          sendEnabled: false,
+        };
+      },
+    });
+
+    const response = await createRetentionHttpHandler(deps)(
+      new Request(
+        `http://retention.internal/v1/retention/status?brandId=${brandId}`,
+        {
+          headers: { authorization: `Bearer ${token(["retention:read"])}` },
+        },
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{ brandId }]);
+  });
+
   test("wakes only the authenticated tenant with write permission", async () => {
     const awakened: string[] = [];
     const deps = dependencies();
@@ -818,6 +887,42 @@ describe("retention operator HTTP boundary", () => {
     });
   });
 
+  test("requires a brand ID for program list", async () => {
+    const handler = createRetentionHttpHandler(dependencies());
+    const response = await handler(
+      new Request("http://retention.internal/v1/retention/programs", {
+        headers: {
+          authorization: `Bearer ${token(["retention:read"])}`,
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  test("requires a brand ID for campaign list", async () => {
+    const handler = createRetentionHttpHandler(dependencies());
+    const response = await handler(
+      new Request("http://retention.internal/v1/retention/campaigns", {
+        headers: {
+          authorization: `Bearer ${token(["retention:read"])}`,
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  test("requires a brand ID for import list", async () => {
+    const handler = createRetentionHttpHandler(dependencies());
+    const response = await handler(
+      new Request("http://retention.internal/v1/retention/imports", {
+        headers: {
+          authorization: `Bearer ${token(["retention:read"])}`,
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
   test("binds customer explanations to the route customer", async () => {
     const received: Record<string, unknown> = {};
     const handler = createRetentionHttpHandler(
@@ -899,10 +1004,10 @@ describe("retention operator HTTP boundary", () => {
             messageSamples: [],
           };
         },
-        analyzeCampaignOutcomes: async (_context, id) => {
-          calls.push(`outcomes:${id}`);
+        analyzeCampaignOutcomes: async (_context, input) => {
+          calls.push(`outcomes:${input.campaignId}:${input.brandId}`);
           return {
-            campaignId: id,
+            campaignId: input.campaignId,
             campaignStatus: "draft",
             dispatches: [],
             recipientStatuses: {},
@@ -924,7 +1029,7 @@ describe("retention operator HTTP boundary", () => {
     const responses = await Promise.all([
       handler(
         new Request(
-          "http://retention.internal/v1/retention/campaigns?limit=7",
+          `http://retention.internal/v1/retention/campaigns?brandId=${brandId}&limit=7`,
           { headers },
         ),
       ),
@@ -942,7 +1047,7 @@ describe("retention operator HTTP boundary", () => {
       ),
       handler(
         new Request(
-          `http://retention.internal/v1/retention/campaigns/${campaignId}/outcomes`,
+          `http://retention.internal/v1/retention/campaigns/${campaignId}/outcomes?brandId=${brandId}`,
           { headers },
         ),
       ),
@@ -955,7 +1060,7 @@ describe("retention operator HTTP boundary", () => {
         `list:7`,
         `audience:${audienceId}:4`,
         `campaign:${campaignId}:3`,
-        `outcomes:${campaignId}`,
+        `outcomes:${campaignId}:${brandId}`,
       ].sort(),
     );
   });
@@ -964,7 +1069,7 @@ describe("retention operator HTTP boundary", () => {
     const handler = createRetentionHttpHandler(dependencies());
     const withoutPermission = await handler(
       new Request(
-        `http://retention.internal/v1/retention/campaigns/${campaignId}/cancel`,
+        `http://retention.internal/v1/retention/campaigns/${campaignId}/cancel?brandId=${brandId}`,
         {
           method: "POST",
           headers: {
@@ -979,7 +1084,7 @@ describe("retention operator HTTP boundary", () => {
 
     const missingReason = await handler(
       new Request(
-        `http://retention.internal/v1/retention/campaigns/${campaignId}/cancel`,
+        `http://retention.internal/v1/retention/campaigns/${campaignId}/cancel?brandId=${brandId}`,
         {
           method: "POST",
           headers: {
@@ -1017,7 +1122,7 @@ describe("retention operator HTTP boundary", () => {
     );
     const response = await handler(
       new Request(
-        `http://retention.internal/v1/retention/campaigns/${campaignId}/cancel`,
+        `http://retention.internal/v1/retention/campaigns/${campaignId}/cancel?brandId=${brandId}`,
         {
           method: "POST",
           headers: {
@@ -1034,6 +1139,7 @@ describe("retention operator HTTP boundary", () => {
     expect(response.status).toBe(200);
     expect(received).toEqual({
       organizationId,
+      brandId,
       campaignId,
       reason: "Campaign is no longer needed.",
     });
@@ -1060,7 +1166,7 @@ describe("retention operator HTTP boundary", () => {
     );
     const denied = await handler(
       new Request(
-        `http://retention.internal/v1/retention/programs/${programId}/activate`,
+        `http://retention.internal/v1/retention/programs/${programId}/activate?brandId=${brandId}`,
         {
           method: "POST",
           headers: {
@@ -1075,7 +1181,7 @@ describe("retention operator HTTP boundary", () => {
 
     const accepted = await handler(
       new Request(
-        `http://retention.internal/v1/retention/programs/${programId}/activate`,
+        `http://retention.internal/v1/retention/programs/${programId}/activate?brandId=${brandId}`,
         {
           method: "POST",
           headers: {
@@ -1093,6 +1199,7 @@ describe("retention operator HTTP boundary", () => {
     expect(accepted.status).toBe(200);
     expect(received).toEqual({
       organizationId,
+      brandId,
       programId,
       expectedPolicySha256: snapshotSha256,
       note: "Reviewed policy.",
