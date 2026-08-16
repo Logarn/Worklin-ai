@@ -138,13 +138,34 @@ describe("RetentionAudiences", () => {
           timing: "Within two days",
           callToAction: "Find your best fit",
         },
-        sampleMessages: [],
+        sampleMessages: [
+          {
+            subject: "Still deciding?",
+            preheader: "A simple way to choose",
+            body: "Here is a clearer way to find the right option.",
+            explanation: "Supports an active product decision.",
+            qualityStatus: "passed",
+          },
+          {
+            subject: "Blocked draft",
+            preheader: null,
+            body: "This should not be exported.",
+            explanation: "Withheld by quality review.",
+            qualityStatus: "blocked",
+          },
+        ],
         updatedAt: "2026-08-04T10:01:00.000Z",
       },
     ]);
 
+    expect(csv).toContain("Micro-segment");
     expect(csv).toContain('"Recent browsers, ""high intent"""');
     expect(csv).toContain("82");
+    expect(csv).toContain("Still deciding?");
+    expect(csv).toContain("Supports an active product decision.");
+    expect(csv).toContain(",1,");
+    expect(csv).not.toContain("Blocked draft");
+    expect(csv).not.toContain("This should not be exported.");
     expect(csv).not.toContain("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
     expect(csv).not.toContain("email address");
   });
@@ -264,8 +285,11 @@ describe("RetentionAudiences", () => {
       screen.getByTestId("location").dataset.search,
     );
     const prompt = search.get("prompt") ?? "";
-    expect(prompt).toBe("Create this week's email campaigns for this brand.");
+    expect(prompt).toBe(
+      "Create this week's email campaigns for this brand using the audience review I just started. Keep it review-only.",
+    );
     expect(prompt).not.toContain("credential");
+    expect(prompt).not.toContain(RUN_ID);
   });
 
   test("renders useful evidence, campaign direction, and responsive samples", () => {
@@ -347,9 +371,18 @@ describe("RetentionAudiences", () => {
     expect(screen.getByText("18")).toBeTruthy();
     expect(screen.getByText("16")).toBeTruthy();
     expect(screen.getByText("High confidence · 82%")).toBeTruthy();
+    expect(screen.getByText("MICRO-SEGMENT")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Micro-campaign package: 16 reachable profiles, 2 reviewable email drafts, built around: Lead with the product category they explored.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create campaigns" })).toBeTruthy();
+    expect(screen.getByText("Micro-campaign")).toBeTruthy();
     expect(
       screen.getByText("Turn active interest into a first order."),
     ).toBeTruthy();
+    expect(screen.getByText("Representative email drafts")).toBeTruthy();
     expect(screen.getByText("Still deciding?")).toBeTruthy();
     expect(screen.getByText("Needs review")).toBeTruthy();
     expect(article?.querySelector("dl")?.className).toContain("sm:grid-cols-3");

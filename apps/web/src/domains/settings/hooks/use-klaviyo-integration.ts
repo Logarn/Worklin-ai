@@ -8,7 +8,8 @@ import { useRetentionStatus } from "@/lib/retention/use-retention-status";
 
 export function useKlaviyoIntegration(assistantId: string | null) {
   const queryClient = useQueryClient();
-  const status = useRetentionStatus(assistantId);
+  const status = useRetentionStatus(assistantId, null, { global: true });
+  const statusLoading = status.fetchStatus !== "idle" && status.isPending;
   const connect = useMutation({
     mutationFn: (input: ConnectKlaviyoInput) =>
       connectRetentionKlaviyo(assistantId!, input),
@@ -28,5 +29,5 @@ export function useKlaviyoIntegration(assistantId: string | null) {
       (candidate) => candidate.provider.toLowerCase() === "klaviyo",
     ) ?? null;
 
-  return { status, connect, integration };
+  return { status, statusLoading, connect, integration };
 }

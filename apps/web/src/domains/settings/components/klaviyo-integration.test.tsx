@@ -18,6 +18,7 @@ const connectMutate = mock(
 mock.module("@/domains/settings/hooks/use-klaviyo-integration", () => ({
   useKlaviyoIntegration: () => ({
     status: { isPending: false, isError: false },
+    statusLoading: false,
     connect: {
       mutate: connectMutate,
       isPending: false,

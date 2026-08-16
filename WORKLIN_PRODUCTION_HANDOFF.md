@@ -1,6 +1,6 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-08-05
+Last refreshed: 2026-08-16
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
@@ -20,6 +20,47 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Browser requirement for the pilot: use an authenticated in-app browser or the authenticated Chrome profile selected by the user. The in-app Klaviyo connection dialog was verified against production on 2026-08-04.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-08-16 Visible Workspace Reset And Micro-Campaign Work
+
+The owner confirmed a visible Worklin reset for the active production account.
+Before mutation, a control-plane SQLite backup was created inside the Railway
+control-plane volume at
+`/data/control-plane-reset-backups/control-plane-before-visible-reset-20260816T064217Z.sqlite`.
+The previous account assistant
+`worklin-7f96cf07-5398-462a-a2f2-472ea6ec0adc` was removed from the assistant
+list, its runtime stack `rt-e370b4ad-0109-4a28-a42f-5504b48eab5f` was marked
+`deleted`, and visible Klaviyo/OAuth/brand-research rows tied to that assistant
+were removed. The corrupted runtime volume was not physically destroyed; it is
+quarantined by being unrouted from the control plane.
+
+Authenticated browser verification after the reset opened a clean
+`New conversation` screen with assistant status `READY`. The account now has
+fresh assistant `worklin-0cf09eb4-49b5-4cd8-b65d-556c0859df1e`, runtime stack
+`rt-918787a9-bc5c-412e-87cb-6ce502c5ae67`, and an active concurrent-service
+runtime at `http://worklin-concurrent-runtime.railway.internal:8080`. The
+control-plane query showed zero retention integration bindings carried over for
+the reset account. This was a visible product reset, not a deep purge of raw
+retention-service import data.
+
+Local micro-segment to micro-campaign work is verified but not yet merged at
+the time of this handoff refresh. It adds privacy-safe cross-signal
+`microSegmentOpportunities`, requires stronger multi-axis audience proposals
+when that evidence exists, rejects generic campaign samples that ignore the
+micro-campaign angle or call to action, persists micro-campaign strategy and
+representative drafts into Copybook metadata, and changes the audience UI/export
+language from broad audiences to review-only micro-segment/micro-campaign
+packages. It also lets Settings show Klaviyo connection status without requiring
+a selected brand.
+
+Verification completed locally for this work:
+
+- `retention-service`: `bun test src/segment-discovery.test.ts src/http.test.ts src/repository-segment-runs-postgres.test.ts`
+- `assistant`: `bun test src/tools/retention/campaign-review-pilot.test.ts src/tools/retention/campaign-review-copybook.test.ts`
+- `apps/web`: `bun test src/domains/work/retention/retention-audiences.test.tsx src/domains/work/retention/retention-api.test.ts src/domains/settings/components/klaviyo-integration.test.tsx src/domains/copybooks/components/copybook-month-nav.test.tsx`
+- `assistant`: touched-file ESLint and `bunx tsc --noEmit --pretty false`
+- `apps/web`: touched-file ESLint and `bun run typecheck`
+- `retention-service`: `bunx tsc --noEmit --pretty false`
 
 ## 2026-08-05 Brand Intelligence Archive Live
 

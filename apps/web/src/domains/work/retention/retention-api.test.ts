@@ -126,6 +126,30 @@ describe("fetchRetentionStatus", () => {
     });
   });
 
+  test("can request organization-level retention status without a brand", async () => {
+    const request = mock(async () => ({
+      data: {
+        organizationId: "org-1",
+        integrations: [],
+        jobs: {},
+        externalWritesEnabled: false,
+        sendEnabled: false,
+      },
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    }));
+    client.get = request as typeof client.get;
+
+    await fetchRetentionStatus("assistant-1");
+
+    expect(request).toHaveBeenCalledWith({
+      url: "/v1/retention/status",
+      query: {},
+      headers: { "X-Worklin-Assistant-Id": "assistant-1" },
+      throwOnError: false,
+    });
+  });
+
   test("rejects malformed status responses", async () => {
     const brandId = "22222222-2222-4222-8222-222222222222";
     client.get = mock(async () => ({

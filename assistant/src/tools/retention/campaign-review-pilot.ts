@@ -768,7 +768,7 @@ async function generateTranche(
     parsed.data.proposals,
     referenceAllowlist,
     claim.existingSegments,
-    hasBehaviorCombinations(modelContext),
+    minimumStrategicSignals(modelContext),
   );
   return {
     proposals: parsed.data.proposals,
@@ -786,7 +786,7 @@ function validateProposals(
   proposals: SegmentProposal[],
   referenceAllowlist?: SegmentReferenceAllowlist,
   existingSegments: ClaimState["existingSegments"] = [],
-  requireMultiSignal = false,
+  minimumStrategicSignalCount = 0,
 ): void {
   const names = new Set(
     existingSegments.map((segment) => segment.name.toLocaleLowerCase()),
@@ -818,11 +818,13 @@ function validateProposals(
         expressionValidation.error.message,
       );
     }
-    if (requireMultiSignal) {
-      if (strategicPredicateFingerprints(expression).size < 2) {
+    if (minimumStrategicSignalCount > 0) {
+      if (
+        strategicPredicateAxes(expression).size < minimumStrategicSignalCount
+      ) {
         throw new PilotError(
           "segment_proposal_too_obvious",
-          "The model returned a single-signal audience even though stronger cross-signal evidence was available.",
+          "The model returned a shallow audience even though stronger cross-signal evidence was available.",
         );
       }
     }
@@ -852,22 +854,22 @@ function validateProposals(
   }
 }
 
-function strategicPredicateFingerprints(
+function strategicPredicateAxes(
   expression: WorklinSegmentExpression,
 ): ReadonlySet<string> {
   if (expression.type === "predicate") {
     return new Set(
       ["evidence", "metric", "trait"].includes(expression.namespace)
-        ? [segmentExpressionFingerprint(expression)]
+        ? [`${expression.namespace}:${expression.key}`]
         : [],
     );
   }
   if (expression.type === "not") {
-    return strategicPredicateFingerprints(expression.expression);
+    return strategicPredicateAxes(expression.expression);
   }
   return new Set(
     expression.expressions.flatMap((child) => [
-      ...strategicPredicateFingerprints(child),
+      ...strategicPredicateAxes(child),
     ]),
   );
 }
@@ -902,6 +904,7 @@ function validateCampaignPreviewQuality(
   proposal: SegmentProposal,
   messageFingerprints: Set<string>,
 ): void {
+  const anchorTerms = campaignAnchorTerms(proposal.campaignConcept);
   for (const message of proposal.representativeMessages) {
     if (
       wordCount(message.subject) < 2 ||
@@ -912,6 +915,16 @@ function validateCampaignPreviewQuality(
       throw new PilotError(
         "campaign_preview_quality_failed",
         "A campaign sample was too thin to be useful for human review.",
+      );
+    }
+    const copyText = `${message.subject}\n${message.preheader}\n${message.body}`;
+    if (
+      anchorTerms.length > 0 &&
+      !anchorTerms.some((term) => copyText.toLocaleLowerCase().includes(term))
+    ) {
+      throw new PilotError(
+        "campaign_preview_quality_failed",
+        "A campaign sample did not reflect the proposed micro-campaign angle or call to action.",
       );
     }
     const normalized = `${message.subject}\n${message.body}`
@@ -926,6 +939,53 @@ function validateCampaignPreviewQuality(
     }
     messageFingerprints.add(normalized);
   }
+}
+
+const CAMPAIGN_ANCHOR_STOPWORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "around",
+  "before",
+  "built",
+  "call",
+  "clear",
+  "could",
+  "email",
+  "every",
+  "first",
+  "from",
+  "have",
+  "help",
+  "into",
+  "lead",
+  "make",
+  "more",
+  "next",
+  "only",
+  "people",
+  "product",
+  "that",
+  "their",
+  "them",
+  "they",
+  "this",
+  "turn",
+  "with",
+  "your",
+]);
+
+function campaignAnchorTerms(
+  concept: SegmentProposal["campaignConcept"],
+): string[] {
+  return [concept.angle, concept.callToAction, concept.offer ?? ""].flatMap(
+    (value) =>
+      value
+        .toLocaleLowerCase()
+        .match(/[a-z0-9][a-z0-9'-]{3,}/gu)
+        ?.filter((term) => !CAMPAIGN_ANCHOR_STOPWORDS.has(term))
+        .slice(0, 8) ?? [],
+  );
 }
 
 function completionDefinitions(
@@ -1041,12 +1101,17 @@ async function finishCompletedRun(
         markdown,
         campaigns: segments.map((segment) => ({
           title: segment.name,
+          description: segment.description,
+          confidence: segment.confidence,
           ...(segment.memberCount !== undefined
             ? { memberCount: segment.memberCount }
             : {}),
           ...(segment.eligibleCount !== undefined
             ? { eligibleCount: segment.eligibleCount }
             : {}),
+          evidence: segment.evidence,
+          campaignConcept: segment.campaignConcept,
+          representativeMessages: segment.representativeMessages,
         })),
       },
       context,
@@ -1324,8 +1389,9 @@ function buildPrompt(
 ): string {
   return [
     `Propose up to ${requestedSegments} distinct, useful retention audiences from the supplied account-wide evidence. Do not pad the result.`,
-    "Study evidence.profileCoverage and evidence.behaviorCombinations first. When combinations are present, every proposed audience must combine at least two independent strategic signals from evidence, metric, or trait fields. Prefer non-obvious relationships that explain a useful customer moment, not generic groups such as all subscribers, all openers, or everyone with an email address.",
-    "Use behaviorCombinations as anonymous evidence, then write a valid Worklin expression that recreates the combination. Do not claim causation from correlation, and do not use a small cohort merely because it is small.",
+    "Study evidence.profileCoverage, evidence.microSegmentOpportunities, and evidence.behaviorCombinations first. Prefer microSegmentOpportunities when present: they are privacy-safe three-signal customer moments designed for smaller, less obvious campaigns.",
+    "When microSegmentOpportunities are present, every proposed audience should combine three distinct strategic signal axes from evidence, metric, or trait fields. When only behaviorCombinations are present, combine at least two distinct strategic signal axes. Prefer non-obvious relationships that explain a useful customer moment, not generic groups such as all subscribers, all openers, or everyone with an email address.",
+    "Use microSegmentOpportunities and behaviorCombinations as anonymous evidence, then write a valid Worklin expression that recreates the selected customer moment. Do not claim causation from correlation, and do not use a small cohort merely because it is small.",
     "Write every campaign in the supplied brandContext. Use its real products, positioning, approved voice, CTAs, rules, compliance limits, and competitor context. Do not copy a competitor or invent a product, claim, price, testimonial, ingredient, benefit, or offer that the Brand Brain does not support.",
     "The evidence packet includes previouslyGeneratedAudiences. Do not repeat, rename, narrowly restate, or reuse the same targeting expression as any of them. Propose only materially different audiences supported by the evidence.",
     `Create exactly ${SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts per proposed audience. Each body must be 120 to 250 words, ready for a marketer to edit and use, with a clear opening, useful substance, and one natural call to action. The two drafts must use materially different creative approaches rather than superficial rewrites.`,
@@ -1428,10 +1494,23 @@ function buildDocumentMarkdown(
     "",
     `Prepared ${segments.length} evidence-backed audience ideas from one frozen cohort of ${cohortCount.toLocaleString()} currently consented profiles, with ${segments.length * SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts.`,
     "",
+    "## Micro-campaign map",
+    "",
+    "| Micro-segment | Eligible now | Campaign objective | Angle |",
+    "| --- | ---: | --- | --- |",
+    ...segments.map(
+      (segment) =>
+        `| ${escapeMarkdown(segment.name)} | ${
+          segment.eligibleCount?.toLocaleString() ?? "Unknown"
+        } | ${escapeMarkdown(segment.campaignConcept.objective)} | ${escapeMarkdown(
+          segment.campaignConcept.angle,
+        )} |`,
+    ),
+    "",
   ];
   segments.forEach((segment, index) => {
     lines.push(
-      `## ${index + 1}. ${escapeMarkdown(segment.name)}`,
+      `## ${index + 1}. Micro-segment: ${escapeMarkdown(segment.name)}`,
       "",
       escapeMarkdown(segment.description),
       "",
@@ -1450,7 +1529,7 @@ function buildDocumentMarkdown(
           `- **${escapeMarkdown(evidence.strength)}:** ${escapeMarkdown(evidence.signal)}. ${escapeMarkdown(evidence.explanation)}`,
       ),
       "",
-      "### Campaign idea",
+      "### Micro-campaign",
       "",
       `- **Objective:** ${escapeMarkdown(segment.campaignConcept.objective)}`,
       `- **Angle:** ${escapeMarkdown(segment.campaignConcept.angle)}`,
@@ -1792,12 +1871,21 @@ function sanitizeSegmentModelContext(value: unknown): unknown {
   return root;
 }
 
-function hasBehaviorCombinations(value: unknown): boolean {
+function minimumStrategicSignals(value: unknown): number {
   const root = recordValue(value);
-  return (
+  if (
+    Array.isArray(root.microSegmentOpportunities) &&
+    root.microSegmentOpportunities.length > 0
+  ) {
+    return 3;
+  }
+  if (
     Array.isArray(root.behaviorCombinations) &&
     root.behaviorCombinations.length > 0
-  );
+  ) {
+    return 2;
+  }
+  return 0;
 }
 
 function isSafeSegmentModelKey(value: unknown): value is string {

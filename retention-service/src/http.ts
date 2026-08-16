@@ -302,7 +302,7 @@ const importReviewQuerySchema = z.object({
 });
 
 const statusQuerySchema = z.object({
-  brandId: z.string().uuid(),
+  brandId: z.string().uuid().optional(),
 });
 
 const brandActionQuerySchema = z.object({

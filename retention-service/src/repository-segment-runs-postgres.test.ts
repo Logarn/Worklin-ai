@@ -163,6 +163,7 @@ describe("segment review repository with PostgreSQL", () => {
             allActiveProfilesIncluded: true,
           },
           behaviorCombinations: [],
+          microSegmentOpportunities: [],
         });
         const completed = await repository.completeSegmentRun(owner, {
           runId: run.id,

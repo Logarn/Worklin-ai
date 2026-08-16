@@ -39,25 +39,35 @@ function csvCell(value: string | number): string {
 export function retentionAudienceSummaryCsv(
   segments: RetentionSegment[],
 ): string {
-  const rows = segments.map((segment) => [
-    segment.name,
-    segment.description,
-    segment.totalCount,
-    segment.eligibleCount,
-    Math.round(segment.confidence * 100),
-    changeLabel(segment.changeSincePriorRun),
-    segment.evidence
-      .map((item) => `${item.signal}: ${item.explanation}`)
-      .join(" | "),
-    segment.campaignConcept?.objective ?? "",
-    segment.campaignConcept?.angle ?? "",
-    segment.campaignConcept?.timing ?? "",
-    segment.campaignConcept?.callToAction ?? "",
-    segment.campaignConcept?.offer ?? "",
-  ]);
+  const rows = segments.map((segment) => {
+    const reviewableSamples = segment.sampleMessages.filter(
+      (sample) => sample.qualityStatus !== "blocked",
+    );
+    return [
+      segment.name,
+      segment.description,
+      segment.totalCount,
+      segment.eligibleCount,
+      Math.round(segment.confidence * 100),
+      changeLabel(segment.changeSincePriorRun),
+      segment.evidence
+        .map((item) => `${item.signal}: ${item.explanation}`)
+        .join(" | "),
+      segment.campaignConcept?.objective ?? "",
+      segment.campaignConcept?.angle ?? "",
+      segment.campaignConcept?.timing ?? "",
+      segment.campaignConcept?.callToAction ?? "",
+      segment.campaignConcept?.offer ?? "",
+      reviewableSamples.length,
+      reviewableSamples.map((sample) => sample.subject).join(" | "),
+      reviewableSamples
+        .map((sample) => sample.explanation)
+        .join(" | "),
+    ];
+  });
   return [
     [
-      "Audience",
+      "Micro-segment",
       "Definition",
       "People",
       "Can receive email",
@@ -69,6 +79,9 @@ export function retentionAudienceSummaryCsv(
       "Timing",
       "Call to action",
       "Offer",
+      "Reviewable draft count",
+      "Sample subjects",
+      "Sample rationale",
     ],
     ...rows,
   ]
@@ -94,7 +107,7 @@ export function retentionCampaignReviewPrompt(
   _brandId: string,
   _runId: string,
 ): string {
-  return "Create this week's email campaigns for this brand.";
+  return "Create this week's email campaigns for this brand using the audience review I just started. Keep it review-only.";
 }
 
 function storedRunKey(assistantId: string, brandId: string | null): string {
@@ -272,15 +285,29 @@ function SampleMessage({
 }
 
 function AudienceRow({ segment }: { segment: RetentionSegment }) {
+  const draftCount = segment.sampleMessages.filter(
+    (sample) => sample.qualityStatus !== "blocked",
+  ).length;
   return (
     <article className="rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] p-5 sm:p-6">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div className="min-w-0">
+          <p className="mb-2 text-label-small text-[var(--content-tertiary)]">
+            MICRO-SEGMENT
+          </p>
           <h2 className="break-words text-title-small text-[var(--content-emphasised)]">
             {segment.name}
           </h2>
           <p className="mt-2 max-w-3xl text-body-small-default text-[var(--content-secondary)]">
             {segment.description}
+          </p>
+          <p className="mt-3 max-w-3xl text-body-small-default text-[var(--content-default)]">
+            Micro-campaign package: {segment.eligibleCount.toLocaleString()}{" "}
+            reachable profiles, {draftCount.toLocaleString()} reviewable email{" "}
+            {draftCount === 1 ? "draft" : "drafts"}
+            {segment.campaignConcept
+              ? `, built around: ${segment.campaignConcept.angle}`
+              : ""}
           </p>
         </div>
         <span className="shrink-0 text-body-small-default text-[var(--content-success)]">
@@ -350,7 +377,7 @@ function AudienceRow({ segment }: { segment: RetentionSegment }) {
 
         <section aria-label={`Campaign concept for ${segment.name}`}>
           <h3 className="text-body-medium-default text-[var(--content-emphasised)]">
-            Campaign idea
+            Micro-campaign
           </h3>
           {segment.campaignConcept ? (
             <div className="mt-3 border-l-2 border-[var(--content-success)] pl-4">
@@ -383,7 +410,7 @@ function AudienceRow({ segment }: { segment: RetentionSegment }) {
         aria-label={`Message samples for ${segment.name}`}
       >
         <h3 className="text-body-medium-default text-[var(--content-emphasised)]">
-          Representative emails
+          Representative email drafts
         </h3>
         {segment.sampleMessages.length > 0 ? (
           <div className="mt-4 grid gap-5 lg:grid-cols-2">
@@ -591,7 +618,7 @@ export function RetentionAudiences({
                   : resumable
                     ? "Resume review"
                     : segments.length > 0
-                      ? "Refresh audiences"
+                      ? "Create campaigns"
                       : "Find audiences"}
               </Button>
               {segments.length > 0 ? (

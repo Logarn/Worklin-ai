@@ -64,7 +64,36 @@ describe("campaign review Copybook writer", () => {
       markdown:
         "# Customer campaign drafts\n\n## Audience one\n\n**Subject:** A useful next step\n\nComplete editable email copy.",
       campaigns: [
-        { title: "Audience one", memberCount: 42, eligibleCount: 37 },
+        {
+          title: "Audience one",
+          description: "People showing high intent without a first purchase.",
+          confidence: 0.82,
+          memberCount: 42,
+          eligibleCount: 37,
+          evidence: [
+            {
+              signal: "Viewed buying guide twice",
+              explanation: "Strong consideration behavior.",
+              strength: "strong",
+              source: "event",
+            },
+          ],
+          campaignConcept: {
+            objective: "Convert non-buyers",
+            angle: "Remove first-purchase uncertainty",
+            timing: "This week",
+            callToAction: "Choose a starter bundle",
+          },
+          representativeMessages: [
+            {
+              customerReference: "archetype_high_intent",
+              subject: "A useful next step",
+              preheader: "Start with the simplest option.",
+              body: "Complete editable email copy.",
+              rationale: "This draft speaks to a buyer who needs clarity.",
+            },
+          ],
+        },
       ],
     };
 
@@ -91,12 +120,31 @@ describe("campaign review Copybook writer", () => {
     expect(detail.months).toHaveLength(1);
     expect(detail.months[0]?.campaigns).toEqual([
       expect.objectContaining({
-        title: "Audience one",
+        title: "Audience one - Convert non-buyers",
         status: "brief_draft",
         metadata: expect.objectContaining({
           reviewOnly: true,
+          microSegmentName: "Audience one",
+          campaignObjective: "Convert non-buyers",
+          campaignAngle: "Remove first-purchase uncertainty",
+          campaignTiming: "This week",
+          campaignCallToAction: "Choose a starter bundle",
+          sampleCount: 1,
+          draftSubjects: ["A useful next step"],
+          description: "People showing high intent without a first purchase.",
+          confidence: 0.82,
           memberCount: 42,
           eligibleCount: 37,
+          campaignConcept: expect.objectContaining({
+            objective: "Convert non-buyers",
+            angle: "Remove first-purchase uncertainty",
+          }),
+          representativeMessages: [
+            expect.objectContaining({
+              subject: "A useful next step",
+              body: "Complete editable email copy.",
+            }),
+          ],
         }),
       }),
     ]);
