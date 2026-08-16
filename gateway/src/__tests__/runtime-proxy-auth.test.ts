@@ -334,6 +334,50 @@ describe("runtime proxy auth enforcement", () => {
     }
   });
 
+  test("local self token accepts the selected hatch name as a route alias", async () => {
+    let capturedHeaders: Headers | undefined;
+    fetchMock = mock(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        capturedHeaders = init?.headers as unknown as Headers;
+        return Response.json({ ok: true });
+      },
+    );
+    const localToken = mintToken({
+      aud: "vellum-gateway",
+      sub: "actor:self:vellum-principal-local-user",
+      scope_profile: "actor_client_v1",
+      policy_epoch: CURRENT_POLICY_EPOCH,
+      ttlSeconds: 300,
+    });
+    const handler = createRuntimeProxyHandler(
+      makeConfig({
+        defaultAssistantId: "self",
+        unmappedPolicy: "default",
+        runtimeAssistantScopeMode: "off",
+      }),
+    );
+
+    const res = await handler(
+      new Request(
+        "http://localhost:7830/v1/assistants/browser-e2e-ready/health",
+        { headers: { authorization: `Bearer ${localToken}` } },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedHeaders!.get("x-vellum-platform-owner")).toBe("true");
+    const exchangeToken = capturedHeaders!
+      .get("authorization")!
+      .replace(/^Bearer /, "");
+    const verified = verifyToken(exchangeToken, "vellum-daemon");
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.claims.sub).toBe(
+        "actor:self:vellum-principal-local-user",
+      );
+    }
+  });
+
   test("assistant-scoped URL rejects a token for another assistant", async () => {
     mockUpstream();
     const handler = createRuntimeProxyHandler(makeConfig());

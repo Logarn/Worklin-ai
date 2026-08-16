@@ -133,6 +133,25 @@ function bindPlatformOwnerClaims(
   };
 }
 
+function resolveActorScopeAssistantId(
+  config: GatewayConfig,
+  claims: TokenClaims,
+  requestedAssistantId: string | null,
+): string | null {
+  const subject = parseSub(claims.sub);
+  const isLocalSelfAlias =
+    config.runtimeAssistantScopeMode !== "enforce" &&
+    config.runtimeAssistantScopeMode !== "claim_once" &&
+    config.defaultAssistantId === "self" &&
+    subject.ok &&
+    subject.principalType === "actor" &&
+    subject.assistantId === "self";
+
+  // Local hatches expose their instance name in web routes while the single
+  // daemon behind that gateway is canonically scoped as `self`.
+  return isLocalSelfAlias ? "self" : requestedAssistantId;
+}
+
 export function createRuntimeProxyHandler(
   config: GatewayConfig,
   gatewayHandlers: RuntimeProxyGatewayHandlers = {},
@@ -197,7 +216,11 @@ export function createRuntimeProxyHandler(
         return Response.json({ error: "Unauthorized" }, { status: 401 });
       }
       let exchangeClaims = result.claims;
-      let actorScopeAssistantId = assistantScopedPath?.assistantId ?? null;
+      let actorScopeAssistantId = resolveActorScopeAssistantId(
+        config,
+        result.claims,
+        assistantScopedPath?.assistantId ?? null,
+      );
       if (
         config.runtimeAssistantScopeMode === "enforce" ||
         config.runtimeAssistantScopeMode === "claim_once"
