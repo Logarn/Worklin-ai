@@ -5,6 +5,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  calculateDatabaseBackupCapacity,
   checkDatabaseHealth,
   createLocalDatabaseBackup,
 } from "../db-protection.js";
@@ -75,5 +76,35 @@ describe("createLocalDatabaseBackup", () => {
     expect(entries.every((entry) => entry.endsWith(".sqlite"))).toBe(true);
     expect(entries.some((entry) => entry.includes("-1-"))).toBe(false);
     expect(entries.some((entry) => entry.includes("-4-"))).toBe(true);
+  });
+});
+
+describe("calculateDatabaseBackupCapacity", () => {
+  test("requires enough room for the database and a safety margin", () => {
+    const sourceSizeBytes = 700 * 1024 * 1024;
+    const capacity = calculateDatabaseBackupCapacity(
+      sourceSizeBytes,
+      160 * 1024 * 1024,
+    );
+
+    expect(capacity.sufficient).toBe(false);
+    expect(capacity.sourceSizeBytes).toBe(sourceSizeBytes);
+    expect(capacity.headroomBytes).toBe(70 * 1024 * 1024);
+    expect(capacity.requiredBytes).toBe(770 * 1024 * 1024);
+  });
+
+  test("accepts exactly the required capacity", () => {
+    const sourceSizeBytes = 10 * 1024 * 1024;
+    const requiredBytes = sourceSizeBytes + 64 * 1024 * 1024;
+
+    expect(
+      calculateDatabaseBackupCapacity(sourceSizeBytes, requiredBytes),
+    ).toMatchObject({
+      availableBytes: requiredBytes,
+      requiredBytes,
+      sourceSizeBytes,
+      headroomBytes: 64 * 1024 * 1024,
+      sufficient: true,
+    });
   });
 });
