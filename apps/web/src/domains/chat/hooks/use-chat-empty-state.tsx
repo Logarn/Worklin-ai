@@ -51,7 +51,7 @@ const WORKLIN_RETENTION_STARTERS: ConversationStarter[] = [
     id: "worklin-start-guided-onboarding",
     label: "Start guided onboarding",
     prompt:
-      "I want to onboard a new brand. Please guide me one question at a time.",
+      "I want to onboard a new retention brand. Please help me collect the brand context, products, voice, competitors, offers, and Klaviyo setup we need before creating this week's micro-campaigns.",
     category: "retention",
     batch: 0,
   },
