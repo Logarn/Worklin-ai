@@ -17,6 +17,7 @@ import {
   type BrowserOperation,
 } from "../../browser/types.js";
 import { findConversation } from "../../daemon/conversation-registry.js";
+import { surfaceProxyResolver } from "../../daemon/conversation-surfaces.js";
 import type { ContentBlock } from "../../providers/types.js";
 import { LOCAL_PRINCIPALS } from "../auth/route-policy.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
@@ -87,6 +88,20 @@ async function handleBrowserExecute({ body = {} }: RouteHandlerArgs) {
       conversationId: resolvedConversationId,
       trustClass: conversation?.trustContext?.trustClass ?? "unknown",
       transportInterface: conversation?.transportInterface,
+      ...(conversation
+        ? {
+            proxyToolResolver: (
+              toolName: string,
+              proxyInput: Record<string, unknown>,
+            ) =>
+              surfaceProxyResolver(
+                conversation,
+                toolName,
+                proxyInput,
+                conversation.abortController?.signal,
+              ),
+          }
+        : {}),
     },
   );
 

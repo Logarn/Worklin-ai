@@ -15,6 +15,7 @@
 import { useEffect } from "react";
 
 import { useSubagentStore } from "@/domains/chat/subagent-store";
+import { useViewerStore } from "@/stores/viewer-store";
 
 export function useConversationChangeEffects(
   assistantId: string | null,
@@ -26,6 +27,9 @@ export function useConversationChangeEffects(
   // This effect catches the URL-navigation path where wrappers don't run.
   useEffect(() => {
     useSubagentStore.getState().reset();
+    if (useViewerStore.getState().mainView === "browser") {
+      useViewerStore.getState().closeBrowser();
+    }
   }, [activeConversationId]);
 
   // Stable signal: changes only when the set of subagent IDs that need a
@@ -39,7 +43,7 @@ export function useConversationChangeEffects(
         ids.push(entry.subagentId);
       }
     }
-    return ids.sort().join(',');
+    return ids.sort().join(",");
   });
 
   // Auto-fetch details for subagents reconstructed from history
@@ -47,7 +51,9 @@ export function useConversationChangeEffects(
     if (!assistantId || !unfetchedSubagentKey) return;
     for (const entry of Object.values(useSubagentStore.getState().byId)) {
       if (entry.conversationId && entry.events.length === 0) {
-        void useSubagentStore.getState().fetchDetailIfNeeded(assistantId, entry.subagentId);
+        void useSubagentStore
+          .getState()
+          .fetchDetailIfNeeded(assistantId, entry.subagentId);
       }
     }
   }, [assistantId, unfetchedSubagentKey]);

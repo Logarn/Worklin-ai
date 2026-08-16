@@ -20,6 +20,10 @@ import type { SecretPrompter } from "../permissions/secret-prompter.js";
 import type { Message, ToolDefinition } from "../providers/types.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import { registerConversationSender } from "../tools/browser/browser-screencast.js";
+import {
+  markBrowserWorkspaceWorking,
+  syncBrowserWorkspaceAfterTool,
+} from "../tools/browser/browser-workspace.js";
 import type { ToolExecutor } from "../tools/executor.js";
 import { getMcpToolDefinitions } from "../tools/registry.js";
 import {
@@ -329,6 +333,7 @@ export function createToolExecutor(
       const innerRejection = rejectNonAllowlistedTool(toolName);
       if (innerRejection) return innerRejection;
 
+      await markBrowserWorkspaceWorking(toolName, toolContext);
       const result = await executor.execute(toolName, toolInput, toolContext);
       if (toolContext.approvedViaPrompt) {
         ctx.approvedViaPromptThisTurn = true;
@@ -336,9 +341,17 @@ export function createToolExecutor(
 
       runPostExecutionSideEffects(toolName, toolInput, result, { ctx });
 
+      await syncBrowserWorkspaceAfterTool(
+        toolName,
+        toolInput,
+        result,
+        toolContext,
+      );
+
       return result;
     }
 
+    await markBrowserWorkspaceWorking(executionName, toolContext);
     const result = await executor.execute(
       executionName,
       executionInput,
@@ -349,6 +362,13 @@ export function createToolExecutor(
     }
 
     runPostExecutionSideEffects(executionName, executionInput, result, { ctx });
+
+    await syncBrowserWorkspaceAfterTool(
+      executionName,
+      executionInput,
+      result,
+      toolContext,
+    );
 
     return result;
   };

@@ -47,6 +47,8 @@ import {
   type HistoryPaginationResult,
 } from "@/domains/chat/transcript/use-history-pagination";
 import { isDraftConversationId } from "@/domains/chat/utils/conversation-selection";
+import { findLatestRestorableBrowserSurface } from "@/domains/chat/utils/browser-workspace-data";
+import { useViewerStore } from "@/stores/viewer-store";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -174,13 +176,26 @@ export function useConversationHistory({
       messageCount: pagination.messages.length,
     });
 
-    if (pagination.messages.length > 0) {
-      const dismissedSurfaceIds = useChatSessionStore.getState().dismissedSurfaceIds;
-      const filteredMessages = filterDismissedSurfaces(
-        pagination.messages,
-        dismissedSurfaceIds,
-      );
+    const dismissedSurfaceIds = useChatSessionStore.getState().dismissedSurfaceIds;
+    const filteredMessages = filterDismissedSurfaces(
+      pagination.messages,
+      dismissedSurfaceIds,
+    );
 
+    if (isFreshSwitch) {
+      const browserWorkspace =
+        findLatestRestorableBrowserSurface(filteredMessages);
+      if (browserWorkspace) {
+        useViewerStore.getState().openBrowser({
+          surfaceId: browserWorkspace.surface.surfaceId,
+          data: browserWorkspace.data,
+        });
+      } else if (useViewerStore.getState().openedBrowserState) {
+        useViewerStore.getState().closeBrowser();
+      }
+    }
+
+    if (filteredMessages.length > 0) {
       recordDiagnostic("history_tq_set_messages", {
         assistantId,
         conversationId: activeConversationId,

@@ -3,6 +3,7 @@ import { beforeEach, describe, it, expect } from "bun:test";
 import {
   isAppNotFoundError,
   useViewerStore,
+  type OpenedBrowserState,
   type ToolDetailPayload,
 } from "@/stores/viewer-store";
 
@@ -18,8 +19,28 @@ beforeEach(() => {
   getState().reset();
 });
 
-const SAMPLE_APP = { appId: "app-1", dirName: "my-app", name: "My App", html: "<h1>App</h1>" };
-const SAMPLE_DOC = { surfaceId: "surf-1", conversationId: "conv-1", documentName: "README.md", content: "# Hello" };
+const SAMPLE_APP = {
+  appId: "app-1",
+  dirName: "my-app",
+  name: "My App",
+  html: "<h1>App</h1>",
+};
+const SAMPLE_DOC = {
+  surfaceId: "surf-1",
+  conversationId: "conv-1",
+  documentName: "README.md",
+  content: "# Hello",
+};
+const SAMPLE_BROWSER: OpenedBrowserState = {
+  surfaceId: "browser-1",
+  data: {
+    url: "https://example.com/",
+    title: "Example",
+    status: "ready",
+    updatedAt: 123,
+    activity: [],
+  },
+};
 const SAMPLE_TOOL: ToolDetailPayload = {
   toolCallId: "tc-1",
   toolName: "spawn_subagent",
@@ -64,7 +85,10 @@ describe("setIntelligenceTab", () => {
 
 describe("openApp", () => {
   it("sets activeAppId, clears openedAppState, switches to app view, resets minimized", () => {
-    useViewerStore.setState({ openedAppState: SAMPLE_APP, isAppMinimized: true });
+    useViewerStore.setState({
+      openedAppState: SAMPLE_APP,
+      isAppMinimized: true,
+    });
     getState().openApp("app-2");
     const state = getState();
     expect(state.mainView).toBe("app");
@@ -83,7 +107,11 @@ describe("setLoadedApp", () => {
 
 describe("handleAppLoadFailed", () => {
   it("resets to chat view and clears app state", () => {
-    useViewerStore.setState({ mainView: "app", activeAppId: "app-1", openedAppState: SAMPLE_APP });
+    useViewerStore.setState({
+      mainView: "app",
+      activeAppId: "app-1",
+      openedAppState: SAMPLE_APP,
+    });
     getState().handleAppLoadFailed();
     const state = getState();
     expect(state.mainView).toBe("chat");
@@ -94,7 +122,12 @@ describe("handleAppLoadFailed", () => {
 
 describe("closeApp", () => {
   it("resets to chat view, clears app state, and resets minimized", () => {
-    useViewerStore.setState({ mainView: "app", activeAppId: "app-1", openedAppState: SAMPLE_APP, isAppMinimized: true });
+    useViewerStore.setState({
+      mainView: "app",
+      activeAppId: "app-1",
+      openedAppState: SAMPLE_APP,
+      isAppMinimized: true,
+    });
     getState().closeApp();
     const state = getState();
     expect(state.mainView).toBe("chat");
@@ -119,7 +152,11 @@ describe("toggleAppMinimized", () => {
 
 describe("handleAppUnpinned", () => {
   it("resets to chat when the pinned app matches the active app in 'app' view", () => {
-    useViewerStore.setState({ mainView: "app", activeAppId: "app-1", openedAppState: SAMPLE_APP });
+    useViewerStore.setState({
+      mainView: "app",
+      activeAppId: "app-1",
+      openedAppState: SAMPLE_APP,
+    });
     const didClose = getState().handleAppUnpinned("app-1");
     const state = getState();
     expect(didClose).toBe(true);
@@ -403,6 +440,62 @@ describe("closeDocument", () => {
     const state = getState();
     expect(state.mainView).toBe("app");
     expect(state.openedDocumentState).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Browser workspace
+// ---------------------------------------------------------------------------
+
+describe("openBrowser", () => {
+  it("saves the current view and opens the browser workspace", () => {
+    useViewerStore.setState({ mainView: "app" });
+    getState().openBrowser(SAMPLE_BROWSER);
+
+    expect(getState().mainView).toBe("browser");
+    expect(getState().viewBeforeBrowser).toBe("app");
+    expect(getState().openedBrowserState).toBe(SAMPLE_BROWSER);
+  });
+
+  it("preserves the original return view when replacing the active browser", () => {
+    useViewerStore.setState({
+      mainView: "browser",
+      viewBeforeBrowser: "app",
+      openedBrowserState: SAMPLE_BROWSER,
+    });
+    getState().openBrowser({ ...SAMPLE_BROWSER, surfaceId: "browser-2" });
+
+    expect(getState().viewBeforeBrowser).toBe("app");
+    expect(getState().openedBrowserState?.surfaceId).toBe("browser-2");
+  });
+});
+
+describe("updateBrowser", () => {
+  it("updates only the matching browser surface", () => {
+    getState().openBrowser(SAMPLE_BROWSER);
+    getState().updateBrowser("browser-1", {
+      title: "Updated",
+      status: "working",
+    });
+    expect(getState().openedBrowserState?.data.title).toBe("Updated");
+    expect(getState().openedBrowserState?.data.status).toBe("working");
+
+    getState().updateBrowser("browser-2", { title: "Wrong browser" });
+    expect(getState().openedBrowserState?.data.title).toBe("Updated");
+  });
+});
+
+describe("closeBrowser", () => {
+  it("restores the prior view and clears browser state", () => {
+    useViewerStore.setState({
+      mainView: "browser",
+      viewBeforeBrowser: "app",
+      openedBrowserState: SAMPLE_BROWSER,
+    });
+    getState().closeBrowser();
+
+    expect(getState().mainView).toBe("app");
+    expect(getState().openedBrowserState).toBeNull();
   });
 });
 

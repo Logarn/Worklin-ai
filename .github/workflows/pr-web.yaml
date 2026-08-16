@@ -110,6 +110,10 @@ jobs:
 
       - name: Install design-library dependencies
         working-directory: packages/design-library
+        env:
+          # Web unit tests import the design system but do not launch its
+          # Storybook browser suite. Avoid a location-sensitive CDN download.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: bun install --frozen-lockfile
 
       - name: Install dependencies

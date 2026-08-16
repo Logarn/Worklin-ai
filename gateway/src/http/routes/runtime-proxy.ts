@@ -147,6 +147,26 @@ function bindPlatformOwnerClaims(
   };
 }
 
+function resolveActorScopeAssistantId(
+  config: GatewayConfig,
+  claims: TokenClaims,
+  requestedAssistantId: string | null,
+): string | null {
+  const subject = parseSub(claims.sub);
+  const isLocalSelfAlias =
+    !enforcesAssistantScope(config) &&
+    config.defaultAssistantId === "self" &&
+    subject.ok &&
+    subject.principalType === "actor" &&
+    subject.assistantId === "self" &&
+    requestedAssistantId !== null &&
+    requestedAssistantId !== "self";
+
+  // Local hatches expose their instance name in web routes while the single
+  // daemon behind that gateway is canonically scoped as `self`.
+  return isLocalSelfAlias ? "self" : requestedAssistantId;
+}
+
 export function createRuntimeProxyHandler(
   config: GatewayConfig,
   gatewayHandlers: RuntimeProxyGatewayHandlers = {},
@@ -262,14 +282,23 @@ export function createRuntimeProxyHandler(
       }
       let exchangeClaims = result.claims;
       if (assistantScopedPath && !pooledWorkerLease) {
-        const requested = requestedAssistantId(
+        const localSelfAlias = resolveActorScopeAssistantId(
+          config,
           result.claims,
-          assistantScopedPath,
+          assistantScopedPath.assistantId,
         );
-        if (!requested) {
-          return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (localSelfAlias) {
+          actorScopeAssistantId = localSelfAlias;
+        } else {
+          const requested = requestedAssistantId(
+            result.claims,
+            assistantScopedPath,
+          );
+          if (!requested) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+          }
+          actorScopeAssistantId = requested;
         }
-        actorScopeAssistantId = requested;
       }
       if (enforcesAssistantScope(config)) {
         let expectedAssistantId: string | null = null;
