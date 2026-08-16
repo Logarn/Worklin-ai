@@ -114,6 +114,7 @@ const segmentRunInputSchema = z.object({
   maxSegments: z.number().int().min(1).max(50).default(50),
   sampleLimitPerSegment: z.number().int().min(1).max(2).default(2),
   trancheSize: z.number().int().min(1).max(10).default(10),
+  cohortLimit: z.number().int().min(1).max(500).default(500),
   evidenceCutoffAt: z.string().datetime({ offset: true }).optional(),
 });
 

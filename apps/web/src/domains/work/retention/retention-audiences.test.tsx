@@ -160,7 +160,7 @@ describe("RetentionAudiences", () => {
     expect(screen.queryByRole("button", { name: /approve/iu })).toBeNull();
   });
 
-  test("resumes in chat with exact safe tool identifiers", async () => {
+  test("opens chat with a short human campaign request", async () => {
     audiencesState = {
       brandId: BRAND_ID,
       imports: {
@@ -246,15 +246,8 @@ describe("RetentionAudiences", () => {
       screen.getByTestId("location").dataset.search,
     );
     const prompt = search.get("prompt") ?? "";
-    expect(prompt).toContain("retention_campaign_review_pilot");
-    expect(prompt).toContain(`brand_id=${BRAND_ID}`);
-    expect(prompt).toContain(`run_id=${RUN_ID}`);
-    expect(prompt).toContain("review-only");
-    expect(prompt).toContain(
-      "Do not create, update, or send anything in Klaviyo",
-    );
+    expect(prompt).toBe("Create this week's email campaigns for this brand.");
     expect(prompt).not.toContain("credential");
-    expect(prompt).not.toContain("email");
   });
 
   test("renders useful evidence, campaign direction, and responsive samples", () => {

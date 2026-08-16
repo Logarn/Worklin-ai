@@ -37,6 +37,13 @@ const migrations = [
       import.meta.url,
     ),
   },
+  {
+    version: "007_frozen_segment_run_cohort",
+    url: new URL(
+      "./migrations/007_frozen_segment_run_cohort.sql",
+      import.meta.url,
+    ),
+  },
 ] as const;
 
 export class RetentionDatabase {

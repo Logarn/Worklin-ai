@@ -232,10 +232,13 @@ describe("retention operator HTTP boundary", () => {
           });
           return {
             id: segmentRunId,
+            brandName: "Example brand",
             status: "queued",
             maxSegments: input.maxSegments,
             sampleLimitPerSegment: input.sampleLimitPerSegment,
             trancheSize: input.trancheSize,
+            cohortLimit: input.cohortLimit ?? 500,
+            cohortCount: 500,
             evidenceCutoffAt: "2026-07-28T12:00:00.000Z",
             duplicate: false,
           };
@@ -243,10 +246,13 @@ describe("retention operator HTTP boundary", () => {
         getSegmentRun: async (context, runId) => ({
           id: runId,
           brandId,
+          brandName: "Example brand",
           status: "queued",
           maxSegments: 20,
           sampleLimitPerSegment: 2,
           trancheSize: 10,
+          cohortLimit: 500,
+          cohortCount: 500,
           completedSegmentCount: 0,
           evidenceCutoffAt: "2026-07-28T12:00:00.000Z",
           lastErrorCode: null,

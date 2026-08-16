@@ -164,19 +164,97 @@ function successfulDependencies(
     expression: unknown;
   }> = [];
   return {
+    loadBrandBrain: () =>
+      ({
+        brain: {
+          brandName: "Example brand",
+          websiteUrl: "https://example.com",
+          industry: "Consumer goods",
+          positioning: {
+            tagline: "A clear next step",
+            story: "Practical products for everyday needs.",
+            uniqueSellingProposition: "Clear guidance and useful products.",
+          },
+          voice: {
+            summary: "Warm, practical, and direct.",
+            sliders: {
+              formalCasual: 60,
+              seriousPlayful: 35,
+              reservedEnthusiastic: 55,
+            },
+            greetingStyle: "Warm",
+            signOffStyle: "Direct",
+            emojiUsage: "none",
+          },
+          audienceNotes: [],
+          offers: [],
+          products: [
+            {
+              id: "product-1",
+              name: "Starter product",
+              category: "Core",
+              replenishmentDays: null,
+              marginPosture: "medium",
+            },
+          ],
+          rules: [],
+          ctas: ["Explore the guide"],
+          phrases: [],
+          compliance: {
+            requiredDisclaimers: [],
+            forbiddenClaims: [],
+            cautionAreas: [],
+          },
+          readiness: {
+            status: "ready",
+            score: 100,
+            completed: [],
+            missing: [],
+            nextActions: [],
+          },
+          research: {
+            executiveSummary: ["The category relies on clear education."],
+            competitorLandscape: [
+              {
+                name: "Competitor",
+                positioning: "A broad alternative",
+                notableMoves: [],
+                evidenceIds: [],
+                confidence: "medium",
+              },
+            ],
+            gaps: [],
+          },
+          caveats: [],
+        },
+      }) as never,
     resolveProvider: async () => provider,
     operatorRequest: async (_context, method, path, body) => {
       requests.push({ method, path, body });
+      if (method === "GET" && path === "/v1/retention/status") {
+        return json({
+          integrations: [
+            {
+              brandId: BRAND_ID,
+              brandName: "Example brand",
+              provider: "klaviyo",
+              status: "active",
+            },
+          ],
+        });
+      }
       if (path === "/v1/retention/segment-runs") {
         activeMaxSegments = Number(
           (body as { maxSegments?: number } | undefined)?.maxSegments ?? 1,
         );
         return json({
           id: RUN_ID,
+          brandName: "Example brand",
           status: initialStatus,
           maxSegments: activeMaxSegments,
           sampleLimitPerSegment: 2,
           trancheSize: 10,
+          cohortCount: 500,
           completedSegmentCount: 0,
           evidenceCutoffAt: "2026-07-28T12:00:00.000Z",
         });
@@ -185,10 +263,12 @@ function successfulDependencies(
         return json({
           id: RUN_ID,
           brandId: BRAND_ID,
+          brandName: "Example brand",
           status: initialStatus,
           maxSegments: activeMaxSegments,
           sampleLimitPerSegment: 2,
           trancheSize: 10,
+          cohortCount: 500,
           completedSegmentCount: 0,
           evidenceCutoffAt: "2026-07-28T12:00:00.000Z",
           lastErrorCode: initialStatus === "paused" ? "provider_quota" : null,
@@ -390,6 +470,7 @@ describe("retention campaign review pilot", () => {
         maxSegments: 1,
         sampleLimitPerSegment: 2,
         trancheSize: 3,
+        cohortLimit: 500,
       },
     });
     expect(JSON.stringify(providerPrompts)).not.toContain(
@@ -397,6 +478,11 @@ describe("retention campaign review pilot", () => {
     );
     expect(JSON.stringify(providerPrompts)).toContain("[redacted]");
     expect(JSON.stringify(providerPrompts)).toContain("complete email drafts");
+    expect(JSON.stringify(providerPrompts)).toContain(
+      "Warm, practical, and direct",
+    );
+    expect(JSON.stringify(providerPrompts)).toContain("Starter product");
+    expect(JSON.stringify(providerPrompts)).toContain("Competitor");
 
     const completion = requests.find((request) =>
       request.path.endsWith("/complete"),
@@ -426,6 +512,57 @@ describe("retention campaign review pilot", () => {
     });
     expect(JSON.stringify(sent)).toContain("Copybook Drafts Ready");
     expect(JSON.stringify(sent)).toContain("No Klaviyo writes or sends");
+  });
+
+  test("resolves the only connected Klaviyo brand from a plain campaign request", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const result = await executeRetentionCampaignReviewPilot(
+      { max_segments: 1 },
+      context(),
+      successfulDependencies(
+        providerReturning({ proposals: [proposal()] }),
+        requests,
+        [],
+      ),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(requests[0]).toEqual({
+      method: "GET",
+      path: "/v1/retention/status",
+      body: undefined,
+    });
+    expect(requests[1]).toMatchObject({
+      method: "POST",
+      path: "/v1/retention/segment-runs",
+      body: { brandId: BRAND_ID, cohortLimit: 500 },
+    });
+  });
+
+  test("stops before generation when first-time brand onboarding is incomplete", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const dependencies = successfulDependencies(
+      providerReturning({ proposals: [proposal()] }),
+      requests,
+      [],
+    );
+    dependencies.loadBrandBrain = () => undefined;
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      error: { code: "brand_onboarding_required" },
+    });
+    expect(requests.some((request) => request.path.endsWith("/claim"))).toBe(
+      false,
+    );
   });
 
   test("pauses resumably on subscription quota without creating a document", async () => {

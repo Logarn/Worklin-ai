@@ -7,6 +7,7 @@ import {
 import type { ToolDefinition } from "@vellumai/skill-host-contracts";
 import { z } from "zod";
 
+import { getStoredBrandBrain } from "../../memory/brand-brain-store.js";
 import {
   extractToolUse,
   getConfiguredProvider,
@@ -44,7 +45,7 @@ const UUID_SCHEMA = z.string().uuid();
 
 const InputSchema = z
   .object({
-    brand_id: UUID_SCHEMA,
+    brand_id: UUID_SCHEMA.optional(),
     run_id: UUID_SCHEMA.optional(),
     max_segments: z.number().int().min(1).max(MAX_SEGMENTS).default(10),
   })
@@ -191,6 +192,7 @@ export interface CampaignReviewPilotDependencies {
     input: CampaignReviewCopybookInput,
     context: ToolContext,
   ) => CampaignReviewCopybookResult;
+  loadBrandBrain?: typeof getStoredBrandBrain;
 }
 
 const defaultDependencies: CampaignReviewPilotDependencies = {
@@ -206,6 +208,7 @@ const defaultDependencies: CampaignReviewPilotDependencies = {
     }),
   createDocument: executeDocumentCreate,
   saveToCopybook: saveCampaignReviewToCopybook,
+  loadBrandBrain: getStoredBrandBrain,
 };
 
 class PilotError extends Error {
@@ -222,6 +225,8 @@ class PilotError extends Error {
 interface RunState {
   id: string;
   brandId: string;
+  brandName: string;
+  cohortCount: number;
   status: string;
   maxSegments: number;
   completedSegments: number;
@@ -258,7 +263,7 @@ export async function executeRetentionCampaignReviewPilot(
   if (!parsedInput.success) {
     return errorResult(
       "invalid_campaign_review_input",
-      "brand_id must be a UUID, run_id must be a UUID when provided, and max_segments must be between 1 and 50.",
+      "brand_id and run_id must be UUIDs when provided, and max_segments must be between 1 and 50.",
     );
   }
   if (
@@ -272,9 +277,13 @@ export async function executeRetentionCampaignReviewPilot(
     );
   }
 
-  const { brand_id: brandId, max_segments: maxSegments } = parsedInput.data;
+  const { max_segments: maxSegments } = parsedInput.data;
 
   try {
+    const brandId = parsedInput.data.run_id
+      ? parsedInput.data.brand_id
+      : (parsedInput.data.brand_id ??
+        (await discoverCampaignBrandId(dependencies, context)));
     let run = parsedInput.data.run_id
       ? parseRunState(
           (
@@ -285,7 +294,7 @@ export async function executeRetentionCampaignReviewPilot(
               `/v1/retention/segment-runs/${parsedInput.data.run_id}`,
             )
           ).body,
-          brandId,
+          parsedInput.data.brand_id,
         )
       : parseRunState(
           (
@@ -299,6 +308,7 @@ export async function executeRetentionCampaignReviewPilot(
                 maxSegments,
                 trancheSize: MAX_SEGMENTS_PER_TRANCHE,
                 sampleLimitPerSegment: SAMPLE_MESSAGES_PER_SEGMENT,
+                cohortLimit: 500,
               },
             )
           ).body,
@@ -307,12 +317,18 @@ export async function executeRetentionCampaignReviewPilot(
           0,
         );
 
-    if (run.brandId !== brandId) {
+    if (brandId && run.brandId !== brandId) {
       return errorResult(
         "segment_run_brand_mismatch",
         "The selected segment run belongs to a different brand.",
       );
     }
+
+    const brandContext = requireCampaignBrandContext(
+      run.brandName,
+      context,
+      dependencies,
+    );
 
     if (run.status === "completed") {
       return await finishCompletedRun(run, context, dependencies);
@@ -376,7 +392,12 @@ export async function executeRetentionCampaignReviewPilot(
         cachedInputTokens?: number;
       };
       try {
-        const generated = await generateTranche(provider, claim, context);
+        const generated = await generateTranche(
+          provider,
+          claim,
+          brandContext,
+          context,
+        );
         proposals = generated.proposals;
         usage = generated.usage;
       } catch (error) {
@@ -434,7 +455,14 @@ export async function executeRetentionCampaignReviewPilot(
           definitions: completionDefinitions(proposals, usage),
         },
       );
-      run = parseRunState(completion.body, brandId, run.maxSegments);
+      run = parseRunState(
+        completion.body,
+        brandId,
+        run.maxSegments,
+        undefined,
+        run.brandName,
+        run.cohortCount,
+      );
       if (run.completedSegments > MAX_SEGMENTS) {
         throw new PilotError(
           "segment_run_limit_exceeded",
@@ -504,19 +532,28 @@ function parseRunState(
   fallbackBrandId?: string,
   fallbackMaxSegments?: number,
   fallbackCompletedSegments?: number,
+  fallbackBrandName?: string,
+  fallbackCohortCount?: number,
 ): RunState {
   const root = recordValue(value);
   const run = recordValue(root.run ?? root.segmentRun ?? root);
   const id = stringValue(run.id ?? run.runId);
   const brandId = stringValue(run.brandId) || fallbackBrandId || "";
+  const brandName =
+    stringValue(run.brandName).trim() || fallbackBrandName?.trim() || "";
   const status = stringValue(run.status);
   const maxSegments = integerValue(run.maxSegments ?? fallbackMaxSegments);
   const completedSegments = integerValue(
     run.completedSegmentCount ?? fallbackCompletedSegments,
   );
+  const cohortCount = integerValue(run.cohortCount ?? fallbackCohortCount);
   if (
     !UUID_SCHEMA.safeParse(id).success ||
     !UUID_SCHEMA.safeParse(brandId).success ||
+    brandName.length === 0 ||
+    brandName.length > 200 ||
+    cohortCount < 1 ||
+    cohortCount > 500 ||
     !["queued", "claimed", "paused", "completed", "failed"].includes(status) ||
     maxSegments < 1 ||
     maxSegments > MAX_SEGMENTS ||
@@ -531,10 +568,45 @@ function parseRunState(
   return {
     id,
     brandId,
+    brandName,
+    cohortCount,
     status,
     maxSegments,
     completedSegments,
   };
+}
+
+async function discoverCampaignBrandId(
+  dependencies: CampaignReviewPilotDependencies,
+  context: ToolContext,
+): Promise<string> {
+  const response = await requestJson(
+    dependencies,
+    context,
+    "GET",
+    "/v1/retention/status",
+  );
+  const root = recordValue(response.body);
+  const integrations = Array.isArray(root.integrations)
+    ? root.integrations
+    : [];
+  const brandIds = new Set(
+    integrations.flatMap((value) => {
+      const integration = recordValue(value);
+      const brandId = stringValue(integration.brandId);
+      return integration.provider === "klaviyo" &&
+        UUID_SCHEMA.safeParse(brandId).success
+        ? [brandId]
+        : [];
+    }),
+  );
+  if (brandIds.size !== 1) {
+    throw new PilotError(
+      "campaign_brand_required",
+      "Worklin needs one connected Klaviyo brand before it can create this week's campaigns.",
+    );
+  }
+  return [...brandIds][0]!;
 }
 
 function parseClaimState(
@@ -622,6 +694,7 @@ function parseExistingSegments(value: unknown): ClaimState["existingSegments"] {
 async function generateTranche(
   provider: Provider,
   claim: ClaimState,
+  brandContext: unknown,
   context: ToolContext,
 ): Promise<{
   proposals: SegmentProposal[];
@@ -637,6 +710,7 @@ async function generateTranche(
   const referenceAllowlist = segmentReferenceAllowlist(modelContext);
   const serializedContext = JSON.stringify({
     evidence: modelContext,
+    brandContext: sanitizeForModel(brandContext),
     previouslyGeneratedAudiences: claim.existingSegments,
   });
   if (Buffer.byteLength(serializedContext, "utf8") > MAX_MODEL_CONTEXT_BYTES) {
@@ -952,7 +1026,11 @@ async function finishCompletedRun(
   }
   const documentTitle = `${storedResult.brandName}: ${DOCUMENT_SUFFIX}`;
   assertNoDirectIdentifiers(documentTitle);
-  const markdown = buildDocumentMarkdown(documentTitle, segments);
+  const markdown = buildDocumentMarkdown(
+    documentTitle,
+    segments,
+    run.cohortCount,
+  );
   assertNoDirectIdentifiers(markdown);
   let copybook: CampaignReviewCopybookResult;
   try {
@@ -1051,6 +1129,7 @@ async function finishCompletedRun(
     runId: run.id,
     brandId: run.brandId,
     segmentCount: segments.length,
+    cohortCount: run.cohortCount,
     sampleMessageCount: sampleCount,
     providerConnection: PROVIDER_CONNECTION,
     model: MODEL,
@@ -1247,6 +1326,7 @@ function buildPrompt(
     `Propose up to ${requestedSegments} distinct, useful retention audiences from the supplied account-wide evidence. Do not pad the result.`,
     "Study evidence.profileCoverage and evidence.behaviorCombinations first. When combinations are present, every proposed audience must combine at least two independent strategic signals from evidence, metric, or trait fields. Prefer non-obvious relationships that explain a useful customer moment, not generic groups such as all subscribers, all openers, or everyone with an email address.",
     "Use behaviorCombinations as anonymous evidence, then write a valid Worklin expression that recreates the combination. Do not claim causation from correlation, and do not use a small cohort merely because it is small.",
+    "Write every campaign in the supplied brandContext. Use its real products, positioning, approved voice, CTAs, rules, compliance limits, and competitor context. Do not copy a competitor or invent a product, claim, price, testimonial, ingredient, benefit, or offer that the Brand Brain does not support.",
     "The evidence packet includes previouslyGeneratedAudiences. Do not repeat, rename, narrowly restate, or reuse the same targeting expression as any of them. Propose only materially different audiences supported by the evidence.",
     `Create exactly ${SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts per proposed audience. Each body must be 120 to 250 words, ready for a marketer to edit and use, with a clear opening, useful substance, and one natural call to action. The two drafts must use materially different creative approaches rather than superficial rewrites.`,
     "Use only factual signals present in the evidence. Do not infer or mention health, religion, race, ethnicity, political views, sexuality, pregnancy, disability, marital status, financial hardship, or other sensitive personal facts.",
@@ -1260,16 +1340,93 @@ function buildPrompt(
   ].join("\n\n");
 }
 
+function requireCampaignBrandContext(
+  brandName: string,
+  context: ToolContext,
+  dependencies: CampaignReviewPilotDependencies,
+): unknown {
+  let stored;
+  try {
+    stored = (dependencies.loadBrandBrain ?? getStoredBrandBrain)({
+      conversationId: context.conversationId,
+      brandName,
+    });
+  } catch {
+    stored = undefined;
+  }
+  if (
+    !stored ||
+    stored.brain.brandName.trim().toLocaleLowerCase() !==
+      brandName.trim().toLocaleLowerCase()
+  ) {
+    throw new PilotError(
+      "brand_onboarding_required",
+      `Finish ${brandName}'s brand onboarding before writing campaigns. Worklin still needs the website, products, voice, brand rules, and competitor research.`,
+    );
+  }
+
+  const { brain } = stored;
+  const missing: string[] = [];
+  if (!brain.websiteUrl?.trim()) missing.push("website");
+  if (brain.products.length === 0) missing.push("products");
+  if (!brain.voice.summary.trim()) missing.push("brand voice");
+  if (
+    !brain.positioning.story.trim() ||
+    !brain.positioning.uniqueSellingProposition.trim()
+  ) {
+    missing.push("positioning");
+  }
+  if (!brain.research || brain.research.competitorLandscape.length === 0) {
+    missing.push("competitor research");
+  }
+  if (brain.readiness.status !== "ready") missing.push("brand approval");
+  if (missing.length > 0) {
+    throw new PilotError(
+      "brand_onboarding_required",
+      `Finish ${brandName}'s brand onboarding before writing campaigns. Worklin still needs: ${[...new Set(missing)].join(", ")}.`,
+      { brandName, missing: [...new Set(missing)] },
+    );
+  }
+
+  return {
+    brandName: brain.brandName,
+    websiteUrl: brain.websiteUrl,
+    industry: brain.industry,
+    positioning: brain.positioning,
+    voice: brain.voice,
+    audienceNotes: brain.audienceNotes,
+    products: brain.products,
+    offers: brain.offers,
+    rules: brain.rules,
+    ctas: brain.ctas,
+    phrases: brain.phrases,
+    compliance: brain.compliance,
+    competitorContext: brain.research!.competitorLandscape.map(
+      (competitor) => ({
+        name: competitor.name,
+        classification: competitor.classification,
+        positioning: competitor.positioning,
+        offers: competitor.offers,
+        differentiators: competitor.differentiators,
+        gaps: competitor.gaps,
+      }),
+    ),
+    researchSummary: brain.research!.executiveSummary,
+    caveats: [...brain.caveats, ...brain.research!.gaps],
+  };
+}
+
 function buildDocumentMarkdown(
   documentTitle: string,
   segments: ReviewSegment[],
+  cohortCount: number,
 ): string {
   const lines = [
     `# ${escapeMarkdown(documentTitle)}`,
     "",
     "> Review only. Worklin has not created, changed, scheduled, or sent anything in Klaviyo.",
     "",
-    `Prepared ${segments.length} evidence-backed audience ideas with ${segments.length * SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts.`,
+    `Prepared ${segments.length} evidence-backed audience ideas from one frozen cohort of ${cohortCount.toLocaleString()} currently consented profiles, with ${segments.length * SAMPLE_MESSAGES_PER_SEGMENT} complete email drafts.`,
     "",
   ];
   segments.forEach((segment, index) => {

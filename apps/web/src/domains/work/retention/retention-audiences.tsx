@@ -91,10 +91,10 @@ function downloadRetentionAudienceSummary(segments: RetentionSegment[]): void {
 }
 
 export function retentionCampaignReviewPrompt(
-  brandId: string,
-  runId: string,
+  _brandId: string,
+  _runId: string,
 ): string {
-  return `Run the registered retention_campaign_review_pilot tool in review-only mode. Use exactly brand_id=${brandId} and run_id=${runId}, with the run's existing limits. Prepare the evidence-backed audience and campaign review. Do not create, update, or send anything in Klaviyo.`;
+  return "Create this week's email campaigns for this brand.";
 }
 
 function storedRunKey(assistantId: string): string {
@@ -202,6 +202,9 @@ function RunProgress({ run }: { run: RetentionSegmentRun }) {
             <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
               {run.completedSegments.toLocaleString()} of{" "}
               {run.totalSegments.toLocaleString()} audiences prepared
+              {run.cohortCount
+                ? ` from ${run.cohortCount.toLocaleString()} frozen profiles`
+                : ""}
             </p>
           </div>
         </div>

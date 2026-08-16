@@ -384,6 +384,8 @@ export class RetentionRepository {
   async status(context: TenantContext): Promise<{
     organizationId: string;
     integrations: Array<{
+      brandId: string;
+      brandName: string;
       provider: string;
       status: string;
       lastWebhookAt: string | null;
@@ -398,6 +400,8 @@ export class RetentionRepository {
     return this.database.withTenant(context.organizationId, async (tx) => {
       const integrations = await tx<
         Array<{
+          brand_id: string;
+          brand_name: string;
           provider: string;
           status: string;
           last_webhook_at: Date | null;
@@ -407,15 +411,20 @@ export class RetentionRepository {
         }>
       >`
         SELECT
-          provider,
-          status,
-          last_webhook_at,
-          last_polled_at,
-          last_reconciled_at,
-          last_error_code
-        FROM retention_integrations
-        WHERE org_id = ${context.organizationId}
-        ORDER BY provider
+          integration.brand_id,
+          brand.name AS brand_name,
+          integration.provider,
+          integration.status,
+          integration.last_webhook_at,
+          integration.last_polled_at,
+          integration.last_reconciled_at,
+          integration.last_error_code
+        FROM retention_integrations AS integration
+        INNER JOIN retention_brands AS brand
+          ON brand.org_id = integration.org_id
+          AND brand.id = integration.brand_id
+        WHERE integration.org_id = ${context.organizationId}
+        ORDER BY integration.provider, brand.name
       `;
       const jobRows = await tx<Array<{ status: string; count: string }>>`
         SELECT status, count(*)::TEXT AS count
@@ -436,6 +445,8 @@ export class RetentionRepository {
       return {
         organizationId: context.organizationId,
         integrations: integrations.map((row) => ({
+          brandId: row.brand_id,
+          brandName: row.brand_name,
           provider: row.provider,
           status: row.status,
           lastWebhookAt: row.last_webhook_at?.toISOString() ?? null,
@@ -3982,14 +3993,18 @@ export class RetentionRepository {
       maxSegments: number;
       sampleLimitPerSegment: number;
       trancheSize: number;
+      cohortLimit?: number;
       evidenceCutoffAt?: string;
     },
   ): Promise<{
     id: string;
+    brandName: string;
     status: string;
     maxSegments: number;
     sampleLimitPerSegment: number;
     trancheSize: number;
+    cohortLimit: number;
+    cohortCount: number;
     evidenceCutoffAt: string;
     duplicate: boolean;
   }> {
@@ -4024,6 +4039,18 @@ export class RetentionRepository {
       throw new RetentionServiceError(
         "invalid_tranche_size",
         "A segment run tranche must contain between 1 and 10 segments.",
+        400,
+      );
+    }
+    const cohortLimit = input.cohortLimit ?? 500;
+    if (
+      !Number.isInteger(cohortLimit) ||
+      cohortLimit < 1 ||
+      cohortLimit > 500
+    ) {
+      throw new RetentionServiceError(
+        "invalid_cohort_limit",
+        "A campaign review cohort must contain between 1 and 500 profiles.",
         400,
       );
     }
@@ -4067,6 +4094,8 @@ export class RetentionRepository {
           max_segments: number;
           sample_limit_per_segment: number;
           tranche_size: number;
+          cohort_limit: number;
+          cohort_count: number;
           evidence_cutoff_at: Date;
         }>
       >`
@@ -4076,6 +4105,8 @@ export class RetentionRepository {
           max_segments,
           sample_limit_per_segment,
           tranche_size,
+          cohort_limit,
+          cohort_count,
           evidence_cutoff_at
         FROM retention_segment_runs
         WHERE org_id = ${context.organizationId}
@@ -4084,16 +4115,83 @@ export class RetentionRepository {
         ORDER BY created_at DESC
         LIMIT 1
       `;
-      if (openRuns[0]) {
+      if (openRuns[0]?.cohort_count && openRuns[0].cohort_count > 0) {
         return {
           id: openRuns[0].id,
+          brandName: brand.name,
           status: openRuns[0].status,
           maxSegments: openRuns[0].max_segments,
           sampleLimitPerSegment: openRuns[0].sample_limit_per_segment,
           trancheSize: openRuns[0].tranche_size,
+          cohortLimit: openRuns[0].cohort_limit,
+          cohortCount: openRuns[0].cohort_count,
           evidenceCutoffAt: openRuns[0].evidence_cutoff_at.toISOString(),
           duplicate: true,
         };
+      }
+      if (openRuns[0]) {
+        await tx`
+          UPDATE retention_segment_runs
+          SET
+            status = 'failed',
+            last_error_code = 'legacy_run_requires_restart',
+            updated_at = now()
+          WHERE org_id = ${context.organizationId}
+            AND id = ${openRuns[0].id}
+        `;
+      }
+
+      const cohortRows = await tx<Array<{ id: string }>>`
+        SELECT
+          customer.id
+        FROM retention_customers AS customer
+        JOIN LATERAL (
+          SELECT state
+          FROM retention_consent_events
+          WHERE org_id = customer.org_id
+            AND customer_id = customer.id
+            AND channel = 'email'
+            AND occurred_at <= ${evidenceCutoff}
+          ORDER BY occurred_at DESC, created_at DESC
+          LIMIT 1
+        ) AS consent ON consent.state = 'subscribed'
+        LEFT JOIN LATERAL (
+          SELECT
+            max(occurred_at) AS latest_at,
+            count(*) AS event_count,
+            max(occurred_at) FILTER (
+              WHERE event_type !~* '(^|[^a-z])open(?:ed)?([^a-z]|$)'
+            ) AS latest_non_open_at,
+            count(*) FILTER (
+              WHERE event_type !~* '(^|[^a-z])open(?:ed)?([^a-z]|$)'
+            ) AS non_open_event_count
+          FROM retention_source_events
+          WHERE org_id = customer.org_id
+            AND brand_id = customer.brand_id
+            AND customer_id = customer.id
+            AND occurred_at <= ${evidenceCutoff}
+            AND processing_status IN ('processed', 'ignored')
+        ) AS activity ON true
+        WHERE customer.org_id = ${context.organizationId}
+          AND customer.brand_id = ${input.brandId}
+          AND customer.status = 'active'
+          AND customer.primary_email_ciphertext IS NOT NULL
+          AND customer.created_at <= ${evidenceCutoff}
+        ORDER BY
+          activity.latest_non_open_at DESC NULLS LAST,
+          activity.non_open_event_count DESC,
+          activity.latest_at DESC NULLS LAST,
+          activity.event_count DESC,
+          customer.id
+        LIMIT ${cohortLimit}
+      `;
+      const cohortCustomerIds = cohortRows.map((row) => row.id);
+      if (cohortCustomerIds.length === 0) {
+        throw new RetentionServiceError(
+          "live_data_required",
+          "No currently subscribed profiles are available for campaign review.",
+          409,
+        );
       }
 
       const customerSummary = await tx<
@@ -4129,6 +4227,7 @@ export class RetentionRepository {
         ) AS consent ON true
         WHERE customer.org_id = ${context.organizationId}
           AND customer.brand_id = ${input.brandId}
+          AND customer.id = ANY(${tx.array(cohortCustomerIds)}::UUID[])
           AND customer.status = 'active'
           AND customer.created_at <= ${evidenceCutoff}
       `;
@@ -4148,6 +4247,7 @@ export class RetentionRepository {
         FROM retention_source_events
         WHERE org_id = ${context.organizationId}
           AND brand_id = ${input.brandId}
+          AND customer_id = ANY(${tx.array(cohortCustomerIds)}::UUID[])
           AND occurred_at <= ${evidenceCutoff}
           AND processing_status IN ('processed', 'ignored')
         GROUP BY provider, event_type
@@ -4161,6 +4261,7 @@ export class RetentionRepository {
         FROM retention_customer_traits
         WHERE org_id = ${context.organizationId}
           AND brand_id = ${input.brandId}
+          AND customer_id = ANY(${tx.array(cohortCustomerIds)}::UUID[])
           AND observed_at <= ${evidenceCutoff}
           AND (expires_at IS NULL OR expires_at > ${evidenceCutoff})
           AND targeting_status NOT IN ('rejected', 'expired')
@@ -4191,6 +4292,7 @@ export class RetentionRepository {
           FROM retention_customer_traits
           WHERE org_id = ${context.organizationId}
             AND brand_id = ${input.brandId}
+            AND customer_id = ANY(${tx.array(cohortCustomerIds)}::UUID[])
             AND observed_at <= ${evidenceCutoff}
             AND (expires_at IS NULL OR expires_at > ${evidenceCutoff})
             AND targeting_status NOT IN ('rejected', 'expired')
@@ -4242,14 +4344,21 @@ export class RetentionRepository {
         organizationId: context.organizationId,
         brandId: input.brandId,
         evidenceCutoff,
+        customerIds: cohortCustomerIds,
       });
       const dossier = {
-        version: "segment_account_dossier_v2",
+        version: "segment_account_dossier_v3",
         brand: {
           name: brand.name,
           websiteUrl: brand.website_url,
         },
         evidenceCutoffAt: evidenceCutoff.toISOString(),
+        cohort: {
+          strategy: "recent_non_open_activity_v1",
+          requestedProfiles: cohortLimit,
+          frozenProfiles: cohortCustomerIds.length,
+          includesOnlyCurrentlySubscribedProfiles: true,
+        },
         customers: {
           total: Number(summary.customer_count),
           withEmail: Number(summary.email_count),
@@ -4340,6 +4449,9 @@ export class RetentionRepository {
           max_segments,
           sample_limit_per_segment,
           tranche_size,
+          cohort_limit,
+          cohort_count,
+          cohort_strategy,
           evidence_cutoff_at,
           account_dossier_ciphertext,
           account_dossier_sha256,
@@ -4352,6 +4464,9 @@ export class RetentionRepository {
           ${input.maxSegments},
           ${input.sampleLimitPerSegment},
           ${input.trancheSize},
+          ${cohortLimit},
+          ${cohortCustomerIds.length},
+          'recent_non_open_activity_v1',
           ${evidenceCutoff},
           ${this.crypto.encrypt(
             dossierJson,
@@ -4361,6 +4476,22 @@ export class RetentionRepository {
           ${context.userId}
         )
       `;
+      await tx`
+        INSERT INTO retention_segment_run_cohort ${tx(
+          cohortCustomerIds.map((customerId, index) => ({
+            org_id: context.organizationId,
+            segment_run_id: runId,
+            customer_id: customerId,
+            selected_rank: index + 1,
+            evidence_cutoff_at: evidenceCutoff,
+          })),
+          "org_id",
+          "segment_run_id",
+          "customer_id",
+          "selected_rank",
+          "evidence_cutoff_at",
+        )}
+      `;
       await this.audit(tx, context, {
         action: "segment_run.created",
         resourceType: "segment_run",
@@ -4369,15 +4500,20 @@ export class RetentionRepository {
           maxSegments: input.maxSegments,
           sampleLimitPerSegment: input.sampleLimitPerSegment,
           trancheSize: input.trancheSize,
+          cohortLimit,
+          cohortCount: cohortCustomerIds.length,
           evidenceCutoffAt: evidenceCutoff.toISOString(),
         },
       });
       return {
         id: runId,
+        brandName: brand.name,
         status: "queued",
         maxSegments: input.maxSegments,
         sampleLimitPerSegment: input.sampleLimitPerSegment,
         trancheSize: input.trancheSize,
+        cohortLimit,
+        cohortCount: cohortCustomerIds.length,
         evidenceCutoffAt: evidenceCutoff.toISOString(),
         duplicate: false,
       };
@@ -4390,10 +4526,13 @@ export class RetentionRepository {
   ): Promise<{
     id: string;
     brandId: string;
+    brandName: string;
     status: string;
     maxSegments: number;
     sampleLimitPerSegment: number;
     trancheSize: number;
+    cohortLimit: number;
+    cohortCount: number;
     completedSegmentCount: number;
     evidenceCutoffAt: string;
     lastErrorCode: string | null;
@@ -4406,10 +4545,13 @@ export class RetentionRepository {
         Array<{
           id: string;
           brand_id: string;
+          brand_name: string;
           status: string;
           max_segments: number;
           sample_limit_per_segment: number;
           tranche_size: number;
+          cohort_limit: number;
+          cohort_count: number;
           completed_segment_count: number;
           evidence_cutoff_at: Date;
           last_error_code: string | null;
@@ -4418,20 +4560,26 @@ export class RetentionRepository {
         }>
       >`
         SELECT
-          id,
-          brand_id,
-          status,
-          max_segments,
-          sample_limit_per_segment,
-          tranche_size,
-          completed_segment_count,
-          evidence_cutoff_at,
-          last_error_code,
-          created_at,
-          updated_at
-        FROM retention_segment_runs
-        WHERE org_id = ${context.organizationId}
-          AND id = ${runId}
+          run.id,
+          run.brand_id,
+          brand.name AS brand_name,
+          run.status,
+          run.max_segments,
+          run.sample_limit_per_segment,
+          run.tranche_size,
+          run.cohort_limit,
+          run.cohort_count,
+          run.completed_segment_count,
+          run.evidence_cutoff_at,
+          run.last_error_code,
+          run.created_at,
+          run.updated_at
+        FROM retention_segment_runs AS run
+        INNER JOIN retention_brands AS brand
+          ON brand.org_id = run.org_id
+          AND brand.id = run.brand_id
+        WHERE run.org_id = ${context.organizationId}
+          AND run.id = ${runId}
       `;
       const row = rows[0];
       if (!row) {
@@ -4444,10 +4592,13 @@ export class RetentionRepository {
       return {
         id: row.id,
         brandId: row.brand_id,
+        brandName: row.brand_name,
         status: row.status,
         maxSegments: row.max_segments,
         sampleLimitPerSegment: row.sample_limit_per_segment,
         trancheSize: row.tranche_size,
+        cohortLimit: row.cohort_limit,
+        cohortCount: row.cohort_count,
         completedSegmentCount: row.completed_segment_count,
         evidenceCutoffAt: row.evidence_cutoff_at.toISOString(),
         lastErrorCode: row.last_error_code,
@@ -9768,6 +9919,7 @@ export class RetentionRepository {
       organizationId: string;
       brandId: string;
       evidenceCutoff: Date;
+      customerIds?: string[];
     },
     visitor: (
       customers: Array<{ customerId: string; state: SegmentCustomerState }>,
@@ -9782,16 +9934,44 @@ export class RetentionRepository {
         primary_phone_ciphertext: string | null;
         created_at: Date;
         source_updated_at: Date | null;
-      }> = await tx<
-        Array<{
-          id: string;
-          status: string;
-          primary_email_ciphertext: string | null;
-          primary_phone_ciphertext: string | null;
-          created_at: Date;
-          source_updated_at: Date | null;
-        }>
-      >`
+      }> = input.customerIds
+        ? await tx<
+            Array<{
+              id: string;
+              status: string;
+              primary_email_ciphertext: string | null;
+              primary_phone_ciphertext: string | null;
+              created_at: Date;
+              source_updated_at: Date | null;
+            }>
+          >`
+            SELECT
+              id,
+              status,
+              primary_email_ciphertext,
+              primary_phone_ciphertext,
+              created_at,
+              source_updated_at
+            FROM retention_customers
+            WHERE org_id = ${input.organizationId}
+              AND brand_id = ${input.brandId}
+              AND id = ANY(${tx.array(input.customerIds)}::UUID[])
+              AND status = 'active'
+              AND created_at <= ${input.evidenceCutoff}
+              AND (${lastCustomerId}::UUID IS NULL OR id > ${lastCustomerId})
+            ORDER BY id
+            LIMIT 500
+          `
+        : await tx<
+            Array<{
+              id: string;
+              status: string;
+              primary_email_ciphertext: string | null;
+              primary_phone_ciphertext: string | null;
+              created_at: Date;
+              source_updated_at: Date | null;
+            }>
+          >`
         SELECT
           id,
           status,
@@ -9969,6 +10149,7 @@ export class RetentionRepository {
       organizationId: string;
       brandId: string;
       evidenceCutoff: Date;
+      customerIds?: string[];
     },
   ): Promise<ReturnType<SegmentDiscoveryProfiler["summary"]>> {
     const profiler = new SegmentDiscoveryProfiler();
@@ -10000,40 +10181,58 @@ export class RetentionRepository {
         { memberCount: 0, eligibleCount: 0 },
       ]),
     );
-    await this.forEachSegmentCustomerBatch(tx, input, async (customers) => {
-      const membershipRows: Array<{
-        org_id: string;
-        segment_definition_id: string;
-        segment_run_id: string;
-        customer_id: string;
-        campaign_eligible: boolean;
-        eligibility_reason: string;
-        evidence_cutoff_at: Date;
-      }> = [];
-      for (const customer of customers) {
-        const eligibility = campaignEligibility(customer.state);
-        for (const definition of input.definitions) {
-          if (
-            !evaluateSegmentExpression(definition.expression, customer.state)
-          ) {
-            continue;
+    const cohortRows = await tx<Array<{ customer_id: string }>>`
+      SELECT customer_id
+      FROM retention_segment_run_cohort
+      WHERE org_id = ${input.organizationId}
+        AND segment_run_id = ${input.runId}
+      ORDER BY selected_rank
+    `;
+    const cohortCustomerIds = cohortRows.map((row) => row.customer_id);
+    if (cohortCustomerIds.length === 0) {
+      throw new RetentionServiceError(
+        "segment_run_cohort_missing",
+        "The frozen campaign review cohort is unavailable.",
+        409,
+      );
+    }
+    await this.forEachSegmentCustomerBatch(
+      tx,
+      { ...input, customerIds: cohortCustomerIds },
+      async (customers) => {
+        const membershipRows: Array<{
+          org_id: string;
+          segment_definition_id: string;
+          segment_run_id: string;
+          customer_id: string;
+          campaign_eligible: boolean;
+          eligibility_reason: string;
+          evidence_cutoff_at: Date;
+        }> = [];
+        for (const customer of customers) {
+          const eligibility = campaignEligibility(customer.state);
+          for (const definition of input.definitions) {
+            if (
+              !evaluateSegmentExpression(definition.expression, customer.state)
+            ) {
+              continue;
+            }
+            membershipRows.push({
+              org_id: input.organizationId,
+              segment_definition_id: definition.id,
+              segment_run_id: input.runId,
+              customer_id: customer.customerId,
+              campaign_eligible: eligibility.eligible,
+              eligibility_reason: eligibility.reason,
+              evidence_cutoff_at: input.evidenceCutoff,
+            });
+            const count = counts.get(definition.id)!;
+            count.memberCount += 1;
+            if (eligibility.eligible) count.eligibleCount += 1;
           }
-          membershipRows.push({
-            org_id: input.organizationId,
-            segment_definition_id: definition.id,
-            segment_run_id: input.runId,
-            customer_id: customer.customerId,
-            campaign_eligible: eligibility.eligible,
-            eligibility_reason: eligibility.reason,
-            evidence_cutoff_at: input.evidenceCutoff,
-          });
-          const count = counts.get(definition.id)!;
-          count.memberCount += 1;
-          if (eligibility.eligible) count.eligibleCount += 1;
         }
-      }
-      if (membershipRows.length > 0) {
-        await tx`
+        if (membershipRows.length > 0) {
+          await tx`
           INSERT INTO retention_segment_memberships ${tx(
             membershipRows,
             "org_id",
@@ -10052,8 +10251,9 @@ export class RetentionRepository {
             evidence_cutoff_at = excluded.evidence_cutoff_at,
             evaluated_at = now()
         `;
-      }
-    });
+        }
+      },
+    );
     return counts;
   }
 
