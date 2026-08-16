@@ -89,6 +89,23 @@ describe("BrowserWorkspace", () => {
     expect(submitSurfaceAction).not.toHaveBeenCalled();
   });
 
+  test("refreshes by reopening the current safe URL", async () => {
+    render(<BrowserWorkspace browser={browser} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByLabelText("Refresh"));
+
+    await waitFor(() => expect(submitSurfaceAction).toHaveBeenCalledTimes(1));
+    expect(submitSurfaceAction).toHaveBeenCalledWith(
+      "assistant-1",
+      "browser-surface",
+      "agent_prompt",
+      {
+        prompt:
+          "Open https://example.com/ again to refresh the browser and continue the current task.",
+      },
+    );
+  });
+
   test("shows browser activity in newest-first order", () => {
     render(
       <BrowserWorkspace

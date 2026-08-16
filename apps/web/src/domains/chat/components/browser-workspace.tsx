@@ -1,8 +1,6 @@
 import { Tooltip } from "@vellumai/design-library";
 import {
   AlertCircle,
-  ArrowLeft,
-  ArrowRight,
   Check,
   ExternalLink,
   Globe2,
@@ -181,43 +179,15 @@ export function BrowserWorkspace({ browser, onClose }: BrowserWorkspaceProps) {
             onSubmit={handleNavigate}
             className="flex shrink-0 items-center gap-1 border-b border-[var(--border-base)] p-2"
           >
-            <Tooltip content="Back" side="bottom">
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() =>
-                  void sendBrowserPrompt(
-                    "Go back one page in the browser and continue the current task.",
-                  )
-                }
-                aria-label="Back"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-[var(--content-secondary)] hover:bg-[var(--surface-active)] disabled:opacity-40"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            </Tooltip>
-            <Tooltip content="Forward" side="bottom">
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() =>
-                  void sendBrowserPrompt(
-                    "Go forward one page in the browser and continue the current task.",
-                  )
-                }
-                aria-label="Forward"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-[var(--content-secondary)] hover:bg-[var(--surface-active)] disabled:opacity-40"
-              >
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </Tooltip>
             <Tooltip content="Refresh" side="bottom">
               <button
                 type="button"
                 disabled={disabled}
                 onClick={() =>
                   void sendBrowserPrompt(
-                    "Refresh the current browser page and continue the current task.",
+                    browser.data.url
+                      ? `Open ${browser.data.url} again to refresh the browser and continue the current task.`
+                      : "Refresh the current browser page and continue the current task.",
                   )
                 }
                 aria-label="Refresh"
