@@ -8,7 +8,7 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
 - Current release worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current merged and deployed frontend release: `9d147af2e0001070f9456daea1ede264aafb206d` (`Guide retention setup after reset`, PR `#204`). Vercel production reports success. Railway reported no deployment needed for both backend services because PR `#204` changed only the web app. Public `/readyz` reports the control plane and provisioner ready.
+- Current merged and deployed frontend release: `c91efa765509b30997754ee90075fb17d4a3bdec` (`Guide retention brand onboarding`, PR `#206`). Vercel production reports success. Railway reported no deployment needed for both backend services because PR `#206` changed only the web app. Public `/readyz` reports the control plane and provisioner ready.
 - Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`; production-handoff refresh PR `#180` merged as `8d47b10`; retention review bridge repair PR `#181` merged as `ac33d53`; brand-intelligence archive PR `#182` merged as `0af1b9a`; small-tranche retention review PR `#183` merged as `623310b`; retention-expression validation PR `#184` merged as `a77dcdb`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
@@ -98,7 +98,20 @@ confirmed those labels, the Klaviyo integration link
 `/assistant/settings/integrations?provider=klaviyo`, the brand-context link
 `/assistant/work`, and no visible stale campaigns or old brand state.
 
-Current focused verification for PRs `#202` through `#204`:
+PR `#206` is merged and deployed as
+`c91efa765509b30997754ee90075fb17d4a3bdec`. It replaces the generic
+post-reset `Add brand context` action with `Start brand onboarding`, which opens
+a guided chat for the missing Brand Brain inputs: brand context, products,
+voice, competitors, offers, and Klaviyo setup before this week's
+micro-campaigns are created. The default empty-chat guided onboarding prompt now
+uses the same retention-specific path. Live authenticated browser verification
+confirmed the Customer decisions page now shows `Connect Klaviyo` and
+`Start brand onboarding`, with `Setup` selected and no stale brand/campaign
+state visible. The browser-control sandbox could not complete a synthetic click,
+but the focused UI test proves the handler creates a draft guided-onboarding
+conversation.
+
+Current focused verification for PRs `#202` through `#206`:
 
 - `assistant`: `bun test src/memory/artifact-store.test.ts src/runtime/routes/artifact-routes.test.ts src/tools/retention/campaign-review-copybook.test.ts src/tools/retention/campaign-review-pilot.test.ts`
 - `apps/web`: `bun test src/domains/work/retention/retention-audiences.test.tsx src/domains/work/retention/retention-api.test.ts src/domains/copybooks/components/copybook-month-nav.test.tsx`
@@ -111,6 +124,9 @@ Current focused verification for PRs `#202` through `#204`:
   `bun run typecheck`, and `git diff --check`.
 - PR `#204`: `bun test src/domains/work/retention/retention-work-page.test.tsx`,
   `bunx eslint src/domains/work/retention/retention-work-page.tsx src/domains/work/retention/retention-work-page.test.tsx`,
+  `bun run typecheck`, and `git diff --check`.
+- PR `#206`: `bun test src/domains/work/retention/retention-work-page.test.tsx`,
+  `bunx eslint src/domains/work/retention/retention-work-page.tsx src/domains/work/retention/retention-work-page.test.tsx src/domains/chat/hooks/use-chat-empty-state.tsx`,
   `bun run typecheck`, and `git diff --check`.
 
 ## 2026-08-05 Brand Intelligence Archive Live
