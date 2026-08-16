@@ -9,6 +9,7 @@ const MIN_PRIVATE_COHORT_SIZE = 5;
 const MAX_CANDIDATE_SIGNALS = 48;
 const MAX_MATCHED_SIGNALS_PER_PROFILE = 12;
 const MAX_COMBINATIONS = 100;
+const MAX_MICRO_OPPORTUNITIES = 50;
 
 const UNSAFE_KEY =
   /(?:email|phone|mobile|address|full.?name|first.?name|last.?name|health|medical|diagnosis|religion|race|ethnicity|sexual|pregnan|disab|politic|marital|married|single.?status|financial.?hardship)/iu;
@@ -30,6 +31,12 @@ interface CountedSignal extends DiscoverySignal {
 interface CountedCombination {
   left: CountedSignal;
   right: CountedSignal;
+  memberCount: number;
+  eligibleCount: number;
+}
+
+interface CountedMicroOpportunity {
+  signals: [CountedSignal, CountedSignal, CountedSignal];
   memberCount: number;
   eligibleCount: number;
 }
@@ -169,9 +176,24 @@ function pairKey(left: string, right: string): string {
   return left < right ? `${left}\n${right}` : `${right}\n${left}`;
 }
 
+function tupleKey(signals: CountedSignal[]): string {
+  return signals
+    .map((item) => item.id)
+    .sort()
+    .join("\n");
+}
+
+function broadFamily(signal: CountedSignal): string {
+  return signal.family.startsWith("trait:") ? "trait" : signal.family;
+}
+
 export class SegmentDiscoveryProfiler {
   private readonly signalCounts = new Map<string, CountedSignal>();
   private readonly combinationCounts = new Map<string, CountedCombination>();
+  private readonly microOpportunityCounts = new Map<
+    string,
+    CountedMicroOpportunity
+  >();
   private candidates: CountedSignal[] = [];
   private candidateIds = new Set<string>();
   private candidateRank = new Map<string, number>();
@@ -268,6 +290,36 @@ export class SegmentDiscoveryProfiler {
         this.combinationCounts.set(key, counted);
       }
     }
+    for (let firstIndex = 0; firstIndex < matching.length; firstIndex += 1) {
+      for (
+        let secondIndex = firstIndex + 1;
+        secondIndex < matching.length;
+        secondIndex += 1
+      ) {
+        for (
+          let thirdIndex = secondIndex + 1;
+          thirdIndex < matching.length;
+          thirdIndex += 1
+        ) {
+          const signals = [
+            matching[firstIndex]!,
+            matching[secondIndex]!,
+            matching[thirdIndex]!,
+          ] as [CountedSignal, CountedSignal, CountedSignal];
+          const families = new Set(signals.map(broadFamily));
+          if (families.size < 3) continue;
+          const key = tupleKey(signals);
+          const counted = this.microOpportunityCounts.get(key) ?? {
+            signals,
+            memberCount: 0,
+            eligibleCount: 0,
+          };
+          counted.memberCount += 1;
+          if (eligible) counted.eligibleCount += 1;
+          this.microOpportunityCounts.set(key, counted);
+        }
+      }
+    }
   }
 
   summary(): {
@@ -277,6 +329,16 @@ export class SegmentDiscoveryProfiler {
       allActiveProfilesIncluded: boolean;
     };
     behaviorCombinations: Array<{
+      memberCount: number;
+      eligibleCount: number;
+      supportPercent: number;
+      lift: number;
+      signals: Array<{
+        label: string;
+        expression: WorklinSegmentExpression;
+      }>;
+    }>;
+    microSegmentOpportunities: Array<{
       memberCount: number;
       eligibleCount: number;
       supportPercent: number;
@@ -323,6 +385,48 @@ export class SegmentDiscoveryProfiler {
           expression: signal.expression,
         })),
       }));
+    const microSegmentOpportunities = [...this.microOpportunityCounts.values()]
+      .filter(
+        (item) =>
+          item.memberCount >= MIN_PRIVATE_COHORT_SIZE &&
+          item.memberCount <= Math.max(1, Math.floor(this.profileCount * 0.4)),
+      )
+      .map((item) => {
+        const expected =
+          item.signals.reduce(
+            (product, signal) => product * signal.memberCount,
+            1,
+          ) / Math.max(1, this.profileCount * this.profileCount);
+        return {
+          ...item,
+          lift: expected > 0 ? item.memberCount / expected : 0,
+        };
+      })
+      .sort((left, right) => {
+        const leftSupport = left.memberCount / Math.max(1, this.profileCount);
+        const rightSupport = right.memberCount / Math.max(1, this.profileCount);
+        return (
+          Math.abs(leftSupport - 0.12) - Math.abs(rightSupport - 0.12) ||
+          right.lift - left.lift ||
+          right.eligibleCount - left.eligibleCount ||
+          right.memberCount - left.memberCount
+        );
+      })
+      .slice(0, MAX_MICRO_OPPORTUNITIES)
+      .map((item) => ({
+        memberCount: item.memberCount,
+        eligibleCount: item.eligibleCount,
+        supportPercent: Number(
+          ((item.memberCount / Math.max(1, this.profileCount)) * 100).toFixed(
+            2,
+          ),
+        ),
+        lift: Number(item.lift.toFixed(2)),
+        signals: item.signals.map((signal) => ({
+          label: signal.label,
+          expression: signal.expression,
+        })),
+      }));
     return {
       profileCoverage: {
         profilesAnalyzed: this.profileCount,
@@ -331,6 +435,7 @@ export class SegmentDiscoveryProfiler {
           this.profileCount === this.combinationProfileCount,
       },
       behaviorCombinations: combinations,
+      microSegmentOpportunities,
     };
   }
 }

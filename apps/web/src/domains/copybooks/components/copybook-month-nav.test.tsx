@@ -32,10 +32,17 @@ const MONTHS: CopybookMonth[] = [
         monthId: "month-1",
         channel: "email",
         ordinal: 1,
-        title: "New Year launch",
+        title: "Recent browsers - Help interested non-buyers choose",
         status: "approved",
         packageId: null,
-        metadata: null,
+        metadata: {
+          source: "retention_segment_run",
+          microSegmentName: "Recent browsers without a purchase",
+          campaignAngle: "Reduce choice friction with a short product guide.",
+          eligibleCount: 108,
+          sampleCount: 2,
+          draftSubjects: ["A simpler way to choose", "Start with what fits"],
+        },
         createdAt: 1,
         updatedAt: 1,
         workItems: [],
@@ -76,17 +83,30 @@ describe("CopybookMonthNav", () => {
     expect(
       (screen.getByRole("button", { name: /March/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
-    const campaignNames = screen
+    const campaignRows = screen
       .getAllByRole("listitem")
       .map((item) => item.textContent)
       .filter(
         (text) =>
-          text?.includes("New Year launch") || text?.includes("Follow-up"),
+          text?.includes("Recent browsers") || text?.includes("Follow-up"),
       );
-    expect(campaignNames).toEqual([
-      "1. New Year launchApproved",
+    expect(campaignRows).toEqual([
+      expect.stringContaining(
+        "1. Recent browsers - Help interested non-buyers choose",
+      ),
       "2. Follow-upCopy draft",
     ]);
+    expect(campaignRows[0]).toContain(
+      "Segment: Recent browsers without a purchase",
+    );
+    expect(campaignRows[0]).toContain(
+      "Angle: Reduce choice friction with a short product guide.",
+    );
+    expect(campaignRows[0]).toContain("108 eligible");
+    expect(campaignRows[0]).toContain("2 drafts");
+    expect(campaignRows[0]).toContain(
+      "Subjects: A simpler way to choose / Start with what fits",
+    );
   });
 
   test("selects an available month", () => {

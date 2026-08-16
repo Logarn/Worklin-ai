@@ -18,8 +18,13 @@ export interface CampaignReviewCopybookInput {
   markdown: string;
   campaigns: Array<{
     title: string;
+    description?: string;
+    confidence?: number;
     memberCount?: number;
     eligibleCount?: number;
+    evidence?: unknown[];
+    campaignConcept?: unknown;
+    representativeMessages?: unknown[];
   }>;
 }
 
@@ -107,17 +112,36 @@ export function saveCampaignReviewToCopybook(
       monthId: month.id,
       channel: "email",
       ordinal: nextOrdinal,
-      title: campaign.title,
+      title: campaignRecordTitle(campaign),
       metadata: {
         source: "retention_segment_run",
         runId: input.runId,
         sourceIndex,
         reviewOnly: true,
+        microSegmentName: campaign.title,
+        sampleCount: campaign.representativeMessages?.length ?? 0,
+        ...(campaign.description ? { description: campaign.description } : {}),
+        ...(campaign.confidence !== undefined
+          ? { confidence: campaign.confidence }
+          : {}),
         ...(campaign.memberCount !== undefined
           ? { memberCount: campaign.memberCount }
           : {}),
         ...(campaign.eligibleCount !== undefined
           ? { eligibleCount: campaign.eligibleCount }
+          : {}),
+        ...(campaign.evidence ? { evidence: campaign.evidence } : {}),
+        ...(campaign.campaignConcept
+          ? {
+              campaignConcept: campaign.campaignConcept,
+              ...campaignConceptMetadata(campaign.campaignConcept),
+            }
+          : {}),
+        ...(campaign.representativeMessages
+          ? {
+              representativeMessages: campaign.representativeMessages,
+              draftSubjects: draftSubjects(campaign.representativeMessages),
+            }
           : {}),
       },
     });
@@ -132,4 +156,48 @@ export function saveCampaignReviewToCopybook(
     documentSurfaceId: month.documentSurfaceId,
     campaignsCreated,
   };
+}
+
+function campaignRecordTitle(
+  campaign: CampaignReviewCopybookInput["campaigns"][number],
+): string {
+  const concept = recordValue(campaign.campaignConcept);
+  const objective = stringValue(concept.objective).trim();
+  if (!objective) return campaign.title;
+  return `${campaign.title} - ${objective}`.slice(0, 200);
+}
+
+function campaignConceptMetadata(value: unknown): Record<string, string> {
+  const concept = recordValue(value);
+  return {
+    ...(stringValue(concept.objective)
+      ? { campaignObjective: stringValue(concept.objective) }
+      : {}),
+    ...(stringValue(concept.angle)
+      ? { campaignAngle: stringValue(concept.angle) }
+      : {}),
+    ...(stringValue(concept.timing)
+      ? { campaignTiming: stringValue(concept.timing) }
+      : {}),
+    ...(stringValue(concept.callToAction)
+      ? { campaignCallToAction: stringValue(concept.callToAction) }
+      : {}),
+  };
+}
+
+function draftSubjects(value: unknown[]): string[] {
+  return value
+    .map((item) => stringValue(recordValue(item).subject).trim())
+    .filter((subject) => subject.length > 0)
+    .slice(0, 5);
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }

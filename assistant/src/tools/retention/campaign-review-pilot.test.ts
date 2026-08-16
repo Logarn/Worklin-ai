@@ -156,6 +156,7 @@ function successfulDependencies(
   requests: Array<{ method: string; path: string; body?: unknown }>,
   documentInputs: Record<string, unknown>[],
   initialStatus: "queued" | "paused" = "queued",
+  copybookInputs: Record<string, unknown>[] = [],
 ): CampaignReviewPilotDependencies {
   let activeMaxSegments = 1;
   let completedSegmentCount = 0;
@@ -408,13 +409,16 @@ function successfulDependencies(
         opened: true,
       });
     },
-    saveToCopybook: () => ({
-      saved: true,
-      copybookId: "copybook-1",
-      monthId: "month-1",
-      documentSurfaceId: "copybook-doc-1",
-      campaignsCreated: 1,
-    }),
+    saveToCopybook: (input) => {
+      copybookInputs.push(input as unknown as Record<string, unknown>);
+      return {
+        saved: true,
+        copybookId: "copybook-1",
+        monthId: "month-1",
+        documentSurfaceId: "copybook-doc-1",
+        campaignsCreated: 1,
+      };
+    },
   };
 }
 
@@ -426,6 +430,7 @@ describe("retention campaign review pilot", () => {
     const providerCalls: SendMessageOptions[] = [];
     const providerPrompts: string[] = [];
     const sent: unknown[] = [];
+    const copybookInputs: Record<string, unknown>[] = [];
     const dependencies = successfulDependencies(
       providerReturning(
         { proposals: [proposal()] },
@@ -434,6 +439,8 @@ describe("retention campaign review pilot", () => {
       ),
       requests,
       documentInputs,
+      "queued",
+      copybookInputs,
     );
 
     const result = await executeRetentionCampaignReviewPilot(
@@ -479,6 +486,9 @@ describe("retention campaign review pilot", () => {
     expect(JSON.stringify(providerPrompts)).toContain("[redacted]");
     expect(JSON.stringify(providerPrompts)).toContain("complete email drafts");
     expect(JSON.stringify(providerPrompts)).toContain(
+      "three distinct strategic signal axes",
+    );
+    expect(JSON.stringify(providerPrompts)).toContain(
       "Warm, practical, and direct",
     );
     expect(JSON.stringify(providerPrompts)).toContain("Starter product");
@@ -510,6 +520,26 @@ describe("retention campaign review pilot", () => {
       document: { surfaceId: "copybook-doc-1" },
       copybook: { saved: true, campaignsCreated: 1 },
     });
+    expect(copybookInputs[0]?.markdown).toContain("## Micro-campaign map");
+    expect(copybookInputs[0]?.markdown).toContain(
+      "Micro-segment: Recent browsers without a purchase",
+    );
+    expect(copybookInputs[0]?.campaigns).toEqual([
+      expect.objectContaining({
+        title: "Recent browsers without a purchase",
+        campaignConcept: expect.objectContaining({
+          objective: "Help interested non-buyers choose a first product.",
+        }),
+        representativeMessages: [
+          expect.objectContaining({
+            subject: "A simpler way to choose",
+          }),
+          expect.objectContaining({
+            subject: "Start with what fits",
+          }),
+        ],
+      }),
+    ]);
     expect(JSON.stringify(sent)).toContain("Copybook Drafts Ready");
     expect(JSON.stringify(sent)).toContain("No Klaviyo writes or sends");
   });
@@ -918,6 +948,257 @@ describe("retention campaign review pilot", () => {
     });
   });
 
+  test("uses micro-segment opportunities to reject shallow audience proposals", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const providerPrompts: string[] = [];
+    const dependencies = successfulDependencies(
+      providerReturning(
+        {
+          proposals: [
+            proposal({
+              expression: {
+                type: "predicate",
+                namespace: "metric",
+                key: "days_since_last_event",
+                operator: "less_than_or_equal",
+                value: 7,
+              },
+            }),
+          ],
+        },
+        [],
+        providerPrompts,
+      ),
+      requests,
+      [],
+    );
+    const originalRequest = dependencies.operatorRequest;
+    dependencies.operatorRequest = async (toolContext, method, path, body) => {
+      const result = await originalRequest(toolContext, method, path, body);
+      if (!path.endsWith("/claim") || result.isError) return result;
+      const claim = JSON.parse(result.content) as Record<string, unknown>;
+      claim.dossier = {
+        ...(claim.dossier as Record<string, unknown>),
+        behaviorCombinations: [],
+        microSegmentOpportunities: [
+          {
+            memberCount: 18,
+            eligibleCount: 16,
+            supportPercent: 3.6,
+            lift: 2.4,
+            signals: [
+              {
+                label: "Active within 7 days",
+                expression: {
+                  type: "predicate",
+                  namespace: "metric",
+                  key: "days_since_last_event",
+                  operator: "less_than_or_equal",
+                  value: 7,
+                },
+              },
+              {
+                label: "Has product_view activity",
+                expression: {
+                  type: "predicate",
+                  namespace: "evidence",
+                  key: "event_type",
+                  operator: "contains",
+                  value: "product_view",
+                },
+              },
+              {
+                label: "klaviyo.Source quiz? is starter",
+                expression: {
+                  type: "predicate",
+                  namespace: "trait",
+                  key: "klaviyo.Source quiz?",
+                  operator: "equals",
+                  value: "starter",
+                },
+              },
+            ],
+          },
+        ],
+      };
+      return json(claim);
+    };
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(JSON.stringify(providerPrompts)).toContain(
+      "microSegmentOpportunities",
+    );
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "segment_proposal_too_obvious",
+    });
+  });
+
+  test("accepts a three-signal audience when micro-segment opportunities are present", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const threeSignalProposal = proposal({
+      expression: {
+        type: "all",
+        expressions: [
+          {
+            type: "predicate",
+            namespace: "metric",
+            key: "days_since_last_event",
+            operator: "less_than_or_equal",
+            value: 7,
+          },
+          {
+            type: "predicate",
+            namespace: "evidence",
+            key: "event_type",
+            operator: "contains",
+            value: "product_view",
+          },
+          {
+            type: "predicate",
+            namespace: "trait",
+            key: "klaviyo.Source quiz?",
+            operator: "equals",
+            value: "starter",
+          },
+        ],
+      },
+    });
+    const dependencies = successfulDependencies(
+      providerReturning({ proposals: [threeSignalProposal] }),
+      requests,
+      [],
+    );
+    const originalRequest = dependencies.operatorRequest;
+    dependencies.operatorRequest = async (toolContext, method, path, body) => {
+      const result = await originalRequest(toolContext, method, path, body);
+      if (!path.endsWith("/claim") || result.isError) return result;
+      const claim = JSON.parse(result.content) as Record<string, unknown>;
+      claim.dossier = {
+        ...(claim.dossier as Record<string, unknown>),
+        behaviorCombinations: [],
+        microSegmentOpportunities: [
+          {
+            memberCount: 18,
+            eligibleCount: 16,
+            supportPercent: 3.6,
+            lift: 2.4,
+            signals: [
+              { label: "Active within 7 days" },
+              { label: "Has product_view activity" },
+              { label: "klaviyo.Source quiz? is starter" },
+            ],
+          },
+        ],
+      };
+      return json(claim);
+    };
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "completed",
+      segmentCount: 1,
+    });
+    expect(
+      requests.find((request) => request.path.endsWith("/complete"))?.body,
+    ).toMatchObject({
+      outcome: "complete",
+      definitions: [
+        expect.objectContaining({
+          expression: threeSignalProposal.expression,
+        }),
+      ],
+    });
+  });
+
+  test("does not count repeated thresholds on one field as independent micro-segment signals", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const duplicateAxisProposal = proposal({
+      expression: {
+        type: "all",
+        expressions: [
+          {
+            type: "predicate",
+            namespace: "metric",
+            key: "days_since_last_event",
+            operator: "less_than_or_equal",
+            value: 7,
+          },
+          {
+            type: "predicate",
+            namespace: "metric",
+            key: "days_since_last_event",
+            operator: "less_than_or_equal",
+            value: 30,
+          },
+          {
+            type: "predicate",
+            namespace: "evidence",
+            key: "event_type",
+            operator: "contains",
+            value: "product_view",
+          },
+        ],
+      },
+    });
+    const dependencies = successfulDependencies(
+      providerReturning({ proposals: [duplicateAxisProposal] }),
+      requests,
+      [],
+    );
+    const originalRequest = dependencies.operatorRequest;
+    dependencies.operatorRequest = async (toolContext, method, path, body) => {
+      const result = await originalRequest(toolContext, method, path, body);
+      if (!path.endsWith("/claim") || result.isError) return result;
+      const claim = JSON.parse(result.content) as Record<string, unknown>;
+      claim.dossier = {
+        ...(claim.dossier as Record<string, unknown>),
+        behaviorCombinations: [],
+        microSegmentOpportunities: [
+          {
+            memberCount: 18,
+            eligibleCount: 16,
+            supportPercent: 3.6,
+            lift: 2.4,
+            signals: [
+              { label: "Active within 7 days" },
+              { label: "Has product_view activity" },
+              { label: "klaviyo.Source quiz? is starter" },
+            ],
+          },
+        ],
+      };
+      return json(claim);
+    };
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "segment_proposal_too_obvious",
+    });
+  });
+
   test("pauses with a typed error when the model nests campaign fields inside the expression", async () => {
     const requests: Array<{ method: string; path: string; body?: unknown }> =
       [];
@@ -954,6 +1235,54 @@ describe("retention campaign review pilot", () => {
     expect(completion?.body).toMatchObject({
       outcome: "pause",
       errorCode: "structured_segment_output_invalid",
+      definitions: [],
+    });
+  });
+
+  test("rejects generic drafts that do not reflect the micro-campaign angle", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> =
+      [];
+    const genericDraft = proposal({
+      campaignConcept: {
+        objective: "Convert replenishment-ready non-buyers.",
+        angle: "Introduce the replenishment calendar.",
+        timing: "This week",
+        callToAction: "Plan your refill",
+      },
+      representativeMessages: proposal().representativeMessages.map(
+        (message, index) => ({
+          ...message,
+          subject: index === 0 ? "A useful next step" : "A clearer way forward",
+          preheader: "A simple note to help you decide.",
+          body: "It can be hard to know what to do next when there are several options in front of you. Start by thinking about the outcome that matters most right now, then compare the choices with that goal in mind. You do not need to solve everything at once. Pick one practical path, read the short guidance, and keep the rest for later. When you feel ready, take the simple step that makes the decision easier and more comfortable.",
+          rationale:
+            "This draft is intentionally generic and ignores the supplied campaign direction.",
+        }),
+      ),
+    });
+    const dependencies = successfulDependencies(
+      providerReturning({ proposals: [genericDraft] }),
+      requests,
+      [],
+    );
+
+    const result = await executeRetentionCampaignReviewPilot(
+      { brand_id: BRAND_ID, max_segments: 1 },
+      context(),
+      dependencies,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({
+      status: "paused",
+      reason: "campaign_preview_quality_failed",
+      resumable: true,
+    });
+    expect(
+      requests.find((request) => request.path.endsWith("/complete"))?.body,
+    ).toMatchObject({
+      outcome: "pause",
+      errorCode: "campaign_preview_quality_failed",
       definitions: [],
     });
   });

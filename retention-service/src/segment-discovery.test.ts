@@ -41,7 +41,7 @@ function customer(index: number): SegmentCustomerState {
 
 describe("segment discovery profiler", () => {
   test("uses every profile to surface private cross-signal patterns", () => {
-    const profiles = Array.from({ length: 8 }, (_, index) => customer(index));
+    const profiles = Array.from({ length: 20 }, (_, index) => customer(index));
     const profiler = new SegmentDiscoveryProfiler();
     for (const profile of profiles) profiler.observeSignals(profile);
     profiler.prepareCombinations();
@@ -50,15 +50,22 @@ describe("segment discovery profiler", () => {
     const result = profiler.summary();
 
     expect(result.profileCoverage).toEqual({
-      profilesAnalyzed: 8,
-      eligibleProfiles: 7,
+      profilesAnalyzed: 20,
+      eligibleProfiles: 19,
       allActiveProfilesIncluded: true,
     });
     expect(result.behaviorCombinations.length).toBeGreaterThan(0);
+    expect(result.microSegmentOpportunities.length).toBeGreaterThan(0);
     const serialized = JSON.stringify(result.behaviorCombinations);
+    const opportunities = JSON.stringify(result.microSegmentOpportunities);
     expect(serialized).toContain('"key":"event_type"');
     expect(serialized).toContain("klaviyo.Source quiz?");
+    expect(opportunities).toContain('"key":"event_type"');
+    expect(opportunities).toContain('"key":"days_since_last_event"');
+    expect(opportunities).toContain("klaviyo.Source quiz?");
     expect(serialized).not.toContain("profile-0@example.com");
     expect(serialized).not.toContain("health_status");
+    expect(opportunities).not.toContain("profile-0@example.com");
+    expect(opportunities).not.toContain("health_status");
   });
 });

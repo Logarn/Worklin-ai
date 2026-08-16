@@ -42,11 +42,11 @@ export interface RetentionStatus {
  */
 export async function fetchRetentionStatus(
   assistantId: string,
-  brandId: string,
+  brandId?: string | null,
 ): Promise<RetentionStatus> {
   const { data, error, response } = await client.get<unknown, unknown>({
     url: "/v1/retention/status",
-    query: { brandId },
+    query: brandId === null || brandId === undefined ? {} : { brandId },
     headers: { "X-Worklin-Assistant-Id": assistantId },
     throwOnError: false,
   });

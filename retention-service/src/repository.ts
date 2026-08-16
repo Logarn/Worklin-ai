@@ -383,7 +383,7 @@ export class RetentionRepository {
 
   async status(
     context: TenantContext,
-    input: { brandId: string },
+    input: { brandId?: string },
   ): Promise<{
     organizationId: string;
     integrations: Array<{
@@ -401,6 +401,10 @@ export class RetentionRepository {
     sendEnabled: boolean;
   }> {
     return this.database.withTenant(context.organizationId, async (tx) => {
+      const brandFilter =
+        input.brandId === undefined
+          ? tx``
+          : tx`AND integration.brand_id = ${input.brandId}`;
       const queryRows = await tx<
         Array<{
           brand_id: string;
@@ -427,7 +431,7 @@ export class RetentionRepository {
           ON brand.org_id = integration.org_id
           AND brand.id = integration.brand_id
         WHERE integration.org_id = ${context.organizationId}
-          AND integration.brand_id = ${input.brandId}
+          ${brandFilter}
         ORDER BY integration.provider, brand.name
       `;
       const integrations = queryRows;

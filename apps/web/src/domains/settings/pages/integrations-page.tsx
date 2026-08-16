@@ -404,7 +404,7 @@ function IntegrationsPanelInner() {
                 {showKlaviyo ? (
                   <KlaviyoIntegrationRow
                     integration={klaviyo.integration}
-                    statusLoading={klaviyo.status.isPending}
+                    statusLoading={klaviyo.statusLoading}
                     statusUnavailable={klaviyo.status.isError}
                     onConfigure={() => setSelectedProviderKey("klaviyo")}
                   />

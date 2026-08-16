@@ -162,7 +162,7 @@ describe("retention operator HTTP boundary", () => {
     });
   });
 
-  test("status requires an explicit brandId", async () => {
+  test("status accepts an organization-level query without a brand filter", async () => {
     const calls: Array<{ brandId?: string }> = [];
     const deps = dependencies({
       status: async (_context, input) => {
@@ -194,13 +194,8 @@ describe("retention operator HTTP boundary", () => {
       }),
     );
 
-    expect(response.status).toBe(400);
-    expect(calls).toEqual([]);
-    expect(await response.json()).toMatchObject({
-      error: {
-        code: "invalid_request",
-      },
-    });
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{}]);
   });
 
   test("status accepts an explicit brandId filter", async () => {
