@@ -21,6 +21,7 @@ import {
   type TrustClass,
 } from "../runtime/actor-trust-resolver.js";
 import { unregisterConversationSender } from "../tools/browser/browser-screencast.js";
+import { clearBrowserWorkspace } from "../tools/browser/browser-workspace.js";
 import { type AbortReason, createAbortReason } from "../util/abort-reasons.js";
 import { getLogger } from "../util/logger.js";
 import { unregisterCallNotifiers } from "./conversation-notifiers.js";
@@ -228,6 +229,7 @@ export function disposeConversation(ctx: DisposeContext): void {
   );
   unregisterCallNotifiers(ctx.conversationId);
   unregisterConversationSender(ctx.conversationId);
+  clearBrowserWorkspace(ctx.conversationId);
   resetSkillToolProjection(ctx.skillProjectionState);
   ctx.eventBus.dispose();
 

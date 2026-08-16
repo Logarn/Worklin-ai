@@ -18,6 +18,8 @@ import type {
   UISurfaceShowEvent,
   UISurfaceUpdateEvent,
 } from "@vellumai/assistant-api";
+import { normalizeBrowserWorkspaceData } from "@/domains/chat/utils/browser-workspace-data";
+import { useViewerStore } from "@/stores/viewer-store";
 
 export function handleUISurfaceShow(
   event: UISurfaceShowEvent,
@@ -38,10 +40,14 @@ export function handleUISurfaceShow(
     display: event.display,
   };
   surfaceObj.display = classifySurfaceDisplay(surfaceObj);
+  if (surfaceObj.surfaceType === "browser_view") {
+    useViewerStore.getState().openBrowser({
+      surfaceId: surfaceObj.surfaceId,
+      data: normalizeBrowserWorkspaceData(surfaceObj.data),
+    });
+  }
   ctx.turnActions.showSurface(isSurfaceInteractive(surfaceObj));
-  ctx.setMessages((prev) =>
-    attachSurface(prev, surfaceObj, event.messageId),
-  );
+  ctx.setMessages((prev) => attachSurface(prev, surfaceObj, event.messageId));
 }
 
 export function handleUISurfaceUpdate(
@@ -49,6 +55,16 @@ export function handleUISurfaceUpdate(
   ctx: StreamHandlerContext,
 ): void {
   ctx.turnActions.updateSurface();
+  const activeBrowser = useViewerStore.getState().openedBrowserState;
+  if (activeBrowser?.surfaceId === event.surfaceId) {
+    useViewerStore.getState().updateBrowser(
+      event.surfaceId,
+      normalizeBrowserWorkspaceData({
+        ...activeBrowser.data,
+        ...event.data,
+      }),
+    );
+  }
   ctx.setMessages((prev) =>
     updateSurfaceData(prev, event.surfaceId, event.data),
   );
@@ -59,6 +75,11 @@ export function handleUISurfaceDismiss(
   ctx: StreamHandlerContext,
 ): void {
   ctx.turnActions.dismissSurface();
+  if (
+    useViewerStore.getState().openedBrowserState?.surfaceId === event.surfaceId
+  ) {
+    useViewerStore.getState().closeBrowser();
+  }
   ctx.addDismissedSurfaceId(event.surfaceId);
   const streamCtx = ctx.streamContext;
   if (streamCtx) {
@@ -76,6 +97,11 @@ export function handleUISurfaceComplete(
   ctx: StreamHandlerContext,
 ): void {
   ctx.turnActions.completeSurface();
+  if (
+    useViewerStore.getState().openedBrowserState?.surfaceId === event.surfaceId
+  ) {
+    useViewerStore.getState().closeBrowser();
+  }
   const completedSurface = ctx.messages
     .flatMap((m) => m.surfaces ?? [])
     .find((s) => s.surfaceId === event.surfaceId);

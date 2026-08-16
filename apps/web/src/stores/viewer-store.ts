@@ -8,10 +8,11 @@
  * - `mainView` — which top-level panel is displayed
  * - `activeAppId` / `openedAppState` — app viewer
  * - `openedDocumentState` — document viewer
+ * - `openedBrowserState` — browser workspace
  * - `isAppMinimized` — mobile-only: app viewer minimized
  * - `intelligenceTab` — sub-tab inside the intelligence panel
  * - `assetsRefreshKey` — counter bumped to force asset re-fetches
- * - `viewBeforeDocument` / `viewBeforeSubagentDetail` / `viewBeforeToolDetail` — previous view for restoration
+ * - `viewBeforeBrowser` / `viewBeforeDocument` / `viewBeforeSubagentDetail` / `viewBeforeToolDetail` — previous view for restoration
  * - `activeSubagentId` — subagent detail panel
  * - `activeToolDetail` — tool-call detail drawer payload
  *
@@ -28,7 +29,7 @@ import { primeAppHtmlCache } from "@/utils/app-html-cache";
 import { createSelectors } from "@/utils/create-selectors";
 
 /** Views that overlay the main content and track a "back" destination. */
-type OverlayView = "document" | "subagent-detail" | "tool-detail";
+type OverlayView = "browser" | "document" | "subagent-detail" | "tool-detail";
 
 /**
  * Resolve the "view before" value for overlay navigation.
@@ -84,10 +85,19 @@ export function isAppNotFoundError(err: unknown): boolean {
 
 function resolveViewBefore(
   state: ViewerState,
-  field: "viewBeforeDocument" | "viewBeforeSubagentDetail" | "viewBeforeToolDetail",
+  field:
+    | "viewBeforeBrowser"
+    | "viewBeforeDocument"
+    | "viewBeforeSubagentDetail"
+    | "viewBeforeToolDetail",
 ): Exclude<MainView, OverlayView> {
   const mv = state.mainView;
-  if (mv === "document" || mv === "subagent-detail" || mv === "tool-detail") {
+  if (
+    mv === "browser" ||
+    mv === "document" ||
+    mv === "subagent-detail" ||
+    mv === "tool-detail"
+  ) {
     return state[field];
   }
   return mv as Exclude<MainView, OverlayView>;
@@ -101,6 +111,7 @@ export type MainView =
   | "chat"
   | "app"
   | "app-editing"
+  | "browser"
   | "document"
   | "subagent-detail"
   | "tool-detail";
@@ -119,6 +130,30 @@ export interface OpenedDocumentState {
   conversationId: string;
   documentName: string;
   content: string;
+}
+
+export interface BrowserActivityItem {
+  id: string;
+  label: string;
+  detail?: string;
+  status: "completed" | "error";
+  timestamp: number;
+}
+
+export interface BrowserWorkspaceData {
+  url?: string;
+  title?: string;
+  screenshotDataUrl?: string;
+  status: "working" | "ready" | "error" | "closed";
+  connectionLabel?: string;
+  errorMessage?: string;
+  updatedAt: number;
+  activity: BrowserActivityItem[];
+}
+
+export interface OpenedBrowserState {
+  surfaceId: string;
+  data: BrowserWorkspaceData;
 }
 
 export interface ToolDetailPayload {
@@ -152,14 +187,16 @@ export interface ViewerState {
   openedAppState: OpenedAppState | null;
   activeDocumentSurfaceId: string | null;
   openedDocumentState: OpenedDocumentState | null;
+  openedBrowserState: OpenedBrowserState | null;
   isAppMinimized: boolean;
   intelligenceTab: IntelligenceTab;
   assetsRefreshKey: number;
-  viewBeforeDocument: Exclude<MainView, "document" | "subagent-detail" | "tool-detail">;
+  viewBeforeDocument: Exclude<MainView, OverlayView>;
+  viewBeforeBrowser: Exclude<MainView, OverlayView>;
   activeSubagentId: string | null;
-  viewBeforeSubagentDetail: Exclude<MainView, "document" | "subagent-detail" | "tool-detail">;
+  viewBeforeSubagentDetail: Exclude<MainView, OverlayView>;
   activeToolDetail: ToolDetailPayload | null;
-  viewBeforeToolDetail: Exclude<MainView, "document" | "subagent-detail" | "tool-detail">;
+  viewBeforeToolDetail: Exclude<MainView, OverlayView>;
   /**
    * Monotonic counter bumped when a viewer (e.g. the mobile tool-detail
    * overlay, which lives in a separate portal subtree) asks to open the trust
@@ -203,11 +240,26 @@ export interface ViewerActions {
 
   // --- Document viewer ---
   openDocument: () => void;
-  loadDocument: (assistantId: string, documentSurfaceId: string) => Promise<void>;
+  loadDocument: (
+    assistantId: string,
+    documentSurfaceId: string,
+  ) => Promise<void>;
   setLoadedDocument: (document: OpenedDocumentState) => void;
-  updateDocumentContent: (surfaceId: string, content: string, mode: string) => void;
+  updateDocumentContent: (
+    surfaceId: string,
+    content: string,
+    mode: string,
+  ) => void;
   handleDocumentLoadFailed: () => void;
   closeDocument: () => void;
+
+  // --- Browser workspace ---
+  openBrowser: (browser: OpenedBrowserState) => void;
+  updateBrowser: (
+    surfaceId: string,
+    data: Partial<BrowserWorkspaceData>,
+  ) => void;
+  closeBrowser: () => void;
 
   // --- Assets ---
   refreshAssets: () => void;
@@ -228,10 +280,12 @@ const INITIAL_STATE: ViewerState = {
   openedAppState: null,
   activeDocumentSurfaceId: null,
   openedDocumentState: null,
+  openedBrowserState: null,
   isAppMinimized: false,
   intelligenceTab: "identity",
   assetsRefreshKey: 0,
   viewBeforeDocument: "chat",
+  viewBeforeBrowser: "chat",
   activeSubagentId: null,
   viewBeforeSubagentDetail: "chat",
   activeToolDetail: null,
@@ -282,7 +336,12 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
         throwOnError: true,
       });
       if (get().activeAppId !== appId) return;
-      const app = { appId: result.appId, dirName: result.dirName, name: result.name, html: result.html };
+      const app = {
+        appId: result.appId,
+        dirName: result.dirName,
+        name: result.name,
+        html: result.html,
+      };
       set({ openedAppState: app });
       primeAppHtmlCache(assistantId, result.appId, result.html);
     } catch (err) {
@@ -350,7 +409,10 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
     set({
       mainView: "subagent-detail",
       activeSubagentId: subagentId,
-      viewBeforeSubagentDetail: resolveViewBefore(get(), "viewBeforeSubagentDetail"),
+      viewBeforeSubagentDetail: resolveViewBefore(
+        get(),
+        "viewBeforeSubagentDetail",
+      ),
     });
   },
 
@@ -426,7 +488,11 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
       });
       if (get().activeDocumentSurfaceId !== documentSurfaceId) return;
       if (!result) {
-        set({ mainView: viewBeforeDocument, activeDocumentSurfaceId: null, openedDocumentState: null });
+        set({
+          mainView: viewBeforeDocument,
+          activeDocumentSurfaceId: null,
+          openedDocumentState: null,
+        });
         return;
       }
       set({
@@ -439,7 +505,11 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
       });
     } catch {
       if (get().activeDocumentSurfaceId !== documentSurfaceId) return;
-      set({ mainView: viewBeforeDocument, activeDocumentSurfaceId: null, openedDocumentState: null });
+      set({
+        mainView: viewBeforeDocument,
+        activeDocumentSurfaceId: null,
+        openedDocumentState: null,
+      });
     }
   },
 
@@ -449,7 +519,11 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
 
   updateDocumentContent: (surfaceId, content, mode) => {
     const state = get();
-    if (!state.openedDocumentState || state.openedDocumentState.surfaceId !== surfaceId) return;
+    if (
+      !state.openedDocumentState ||
+      state.openedDocumentState.surfaceId !== surfaceId
+    )
+      return;
     const prev = state.openedDocumentState;
     const newContent = mode === "append" ? prev.content + content : content;
     set({ openedDocumentState: { ...prev, content: newContent } });
@@ -468,6 +542,34 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
       mainView: get().viewBeforeDocument,
       activeDocumentSurfaceId: null,
       openedDocumentState: null,
+    });
+  },
+
+  // --- Browser workspace ---
+
+  openBrowser: (browser) => {
+    set({
+      mainView: "browser",
+      openedBrowserState: browser,
+      viewBeforeBrowser: resolveViewBefore(get(), "viewBeforeBrowser"),
+    });
+  },
+
+  updateBrowser: (surfaceId, data) => {
+    const current = get().openedBrowserState;
+    if (!current || current.surfaceId !== surfaceId) return;
+    set({
+      openedBrowserState: {
+        ...current,
+        data: { ...current.data, ...data },
+      },
+    });
+  },
+
+  closeBrowser: () => {
+    set({
+      mainView: get().viewBeforeBrowser,
+      openedBrowserState: null,
     });
   },
 
