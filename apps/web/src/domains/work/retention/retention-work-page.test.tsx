@@ -10,7 +10,9 @@ import {
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { useConversationStore } from "@/stores/conversation-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import { useViewerStore } from "@/stores/viewer-store";
 
 import type { RetentionStatus } from "./retention-api";
 
@@ -71,6 +73,10 @@ mock.module("../use-work-data", () => ({
   useWorkData: () => workDataState,
 }));
 
+mock.module("@/utils/conversation-selection", () => ({
+  createDraftConversationId: () => "draft-retention-brand-onboarding",
+}));
+
 const { RetentionWorkPage, formatIngestionLag } =
   await import("./retention-work-page");
 
@@ -98,6 +104,8 @@ describe("RetentionWorkPage", () => {
     });
     queriedAssistantId = null;
     queriedBrandId = null;
+    useConversationStore.setState({ activeConversationId: null });
+    useViewerStore.setState({ mainView: "chat" });
   });
 
   afterEach(() => {
@@ -260,14 +268,48 @@ describe("RetentionWorkPage", () => {
           ?.getAttribute("href"),
       ).toBe("/assistant/settings/integrations?provider=klaviyo");
       expect(
-        screen
-          .getAllByRole("link", { name: "Add brand context" })[0]
-          ?.getAttribute("href"),
-      ).toBe("/assistant/work");
+        screen.getAllByRole("button", { name: "Start brand onboarding" })[0],
+      ).toBeTruthy();
       expect(
         screen.getByText(/before Worklin prepares micro-segments/iu),
       ).toBeTruthy();
       expect(screen.getByText("Connect the customer data first")).toBeTruthy();
+    } finally {
+      workDataState.brands = originalBrands;
+    }
+  });
+
+  test("starts guided brand onboarding from the reset state", async () => {
+    const originalBrands = workDataState.brands;
+    workDataState.brands = [];
+    try {
+      queryState = {
+        data: {
+          integrations: [],
+          jobs: {},
+          externalWritesEnabled: false,
+          sendEnabled: false,
+        },
+        isError: false,
+        isFetching: false,
+        isPending: false,
+        refetch,
+      };
+
+      renderPage();
+
+      await waitFor(() =>
+        expect(screen.getByText("Connect the customer data first")).toBeTruthy(),
+      );
+      fireEvent.click(
+        screen.getAllByRole("button", {
+          name: "Start brand onboarding",
+        })[0]!,
+      );
+
+      expect(useConversationStore.getState().activeConversationId).toBe(
+        "draft-retention-brand-onboarding",
+      );
     } finally {
       workDataState.brands = originalBrands;
     }

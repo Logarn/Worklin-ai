@@ -4,6 +4,7 @@ import {
   Clock3,
   Loader2,
   Mail,
+  MessageSquarePlus,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -11,12 +12,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
+import { useConversationStore } from "@/stores/conversation-store";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
+import { useViewerStore } from "@/stores/viewer-store";
 import { ApiError } from "@/utils/api-errors";
+import { createDraftConversationId } from "@/utils/conversation-selection";
 import { routes } from "@/utils/routes";
 
 import { WorkSectionNav } from "../work-section-nav";
@@ -353,7 +357,11 @@ function RetentionErrorState({
   );
 }
 
-function RetentionSetupActions() {
+function RetentionSetupActions({
+  onStartBrandOnboarding,
+}: {
+  onStartBrandOnboarding: () => void;
+}) {
   return (
     <div className="mt-4 flex flex-wrap gap-2">
       <Link
@@ -363,18 +371,23 @@ function RetentionSetupActions() {
         <Mail className="size-4" aria-hidden="true" />
         Connect Klaviyo
       </Link>
-      <Link
-        to={routes.work.root}
+      <button
+        type="button"
+        onClick={onStartBrandOnboarding}
         className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--border-base)] bg-[var(--surface-base)] px-3 text-body-small-default text-[var(--content-default)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
-        <ShoppingBag className="size-4" aria-hidden="true" />
-        Add brand context
-      </Link>
+        <MessageSquarePlus className="size-4" aria-hidden="true" />
+        Start brand onboarding
+      </button>
     </div>
   );
 }
 
-function RetentionStartPanel() {
+function RetentionStartPanel({
+  onStartBrandOnboarding,
+}: {
+  onStartBrandOnboarding: () => void;
+}) {
   return (
     <section
       className="mx-auto w-full max-w-3xl border-y border-[var(--border-base)] py-8"
@@ -393,7 +406,7 @@ function RetentionStartPanel() {
         Worklin needs brand context and Klaviyo history before it can find
         micro-segments, write campaign ideas, and save review-only copy.
       </p>
-      <RetentionSetupActions />
+      <RetentionSetupActions onStartBrandOnboarding={onStartBrandOnboarding} />
     </section>
   );
 }
@@ -423,6 +436,7 @@ export function RetentionWorkPage() {
 }
 
 function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
+  const navigate = useNavigate();
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
   const { brands, isLoading: isBrandsLoading } = useWorkData(assistantId);
   const storageKey = `worklin:last-retention-brand:${assistantId}`;
@@ -528,6 +542,18 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
   const hasSources = PROVIDERS.some((provider) =>
     sourceByProvider.has(provider.id),
   );
+  const startBrandOnboarding = () => {
+    const draftConversationId = createDraftConversationId();
+    useConversationStore
+      .getState()
+      .setActiveConversationId(draftConversationId);
+    useViewerStore.getState().setMainView("chat");
+    const prompt =
+      "I want to onboard a new retention brand from scratch. Please help me collect the brand context, products, voice, competitors, offers, and Klaviyo setup we need before creating this week's micro-campaigns.";
+    void navigate(
+      `${routes.conversation(draftConversationId)}?prompt=${encodeURIComponent(prompt)}`,
+    );
+  };
 
   useEffect(() => {
     if (isBrandsLoading || query.isPending || query.isFetching) return;
@@ -601,7 +627,9 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
                 Connect Klaviyo and add brand context before Worklin prepares
                 micro-segments and review-only campaigns.
               </p>
-              <RetentionSetupActions />
+              <RetentionSetupActions
+                onStartBrandOnboarding={startBrandOnboarding}
+              />
             </div>
           )}
         </div>
@@ -671,7 +699,9 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
           />
         ) : activeView === "setup" ? (
           selectableBrands.length === 0 ? (
-            <RetentionStartPanel />
+            <RetentionStartPanel
+              onStartBrandOnboarding={startBrandOnboarding}
+            />
           ) : (
             <RetentionSetup
               assistantId={assistantId}
