@@ -97,24 +97,28 @@ export function retentionCampaignReviewPrompt(
   return "Create this week's email campaigns for this brand.";
 }
 
-function storedRunKey(assistantId: string): string {
-  return `worklin:retention:segment-run:${assistantId}`;
+function storedRunKey(assistantId: string, brandId: string | null): string {
+  return `worklin:retention:segment-run:${assistantId}:${brandId ?? "none"}`;
 }
 
-function readStoredRunId(assistantId: string): string | null {
+function readStoredRunId(assistantId: string, brandId: string | null): string | null {
   try {
-    return sessionStorage.getItem(storedRunKey(assistantId));
+    return sessionStorage.getItem(storedRunKey(assistantId, brandId));
   } catch {
     return null;
   }
 }
 
-function storeRunId(assistantId: string, runId: string | null): void {
+function storeRunId(
+  assistantId: string,
+  brandId: string | null,
+  runId: string | null,
+): void {
   try {
     if (runId) {
-      sessionStorage.setItem(storedRunKey(assistantId), runId);
+      sessionStorage.setItem(storedRunKey(assistantId, brandId), runId);
     } else {
-      sessionStorage.removeItem(storedRunKey(assistantId));
+      sessionStorage.removeItem(storedRunKey(assistantId, brandId));
     }
   } catch {
     // Session storage is only a reload convenience. The server remains truth.
@@ -403,20 +407,26 @@ function AudienceRow({ segment }: { segment: RetentionSegment }) {
   );
 }
 
-export function RetentionAudiences({ assistantId }: { assistantId: string }) {
+export function RetentionAudiences({
+  assistantId,
+  selectedBrandId,
+}: {
+  assistantId: string;
+  selectedBrandId: string | null;
+}) {
   const navigate = useNavigate();
-  const audiences = useRetentionAudiences(assistantId);
+  const audiences = useRetentionAudiences(assistantId, selectedBrandId);
   const [runId, setRunId] = useState<string | null>(() =>
-    readStoredRunId(assistantId),
+    readStoredRunId(assistantId, selectedBrandId),
   );
   const [segmentLimit, setSegmentLimit] = useState(DEFAULT_SEGMENT_LIMIT);
   const run = useRetentionSegmentRun(assistantId, runId);
   const startRun = useStartRetentionSegmentRun(assistantId);
 
   useEffect(() => {
-    const stored = readStoredRunId(assistantId);
+    const stored = readStoredRunId(assistantId, selectedBrandId);
     setRunId(stored);
-  }, [assistantId]);
+  }, [assistantId, selectedBrandId]);
 
   const refetchSegments = audiences.segments.refetch;
 
@@ -431,10 +441,10 @@ export function RetentionAudiences({ assistantId }: { assistantId: string }) {
       run.error instanceof RetentionApiError &&
       (run.error.status === 403 || run.error.status === 404)
     ) {
-      storeRunId(assistantId, null);
+      storeRunId(assistantId, selectedBrandId, null);
       setRunId(null);
     }
-  }, [assistantId, run.error]);
+  }, [assistantId, run.error, selectedBrandId]);
 
   const brandId = audiences.brandId;
   const segments = audiences.segments.data ?? [];
@@ -454,7 +464,7 @@ export function RetentionAudiences({ assistantId }: { assistantId: string }) {
       },
       {
         onSuccess: (nextRun) => {
-          storeRunId(assistantId, nextRun.id);
+          storeRunId(assistantId, selectedBrandId, nextRun.id);
           setRunId(nextRun.id);
           const draftConversationId = createDraftConversationId();
           useConversationStore
@@ -521,10 +531,11 @@ export function RetentionAudiences({ assistantId }: { assistantId: string }) {
       ) : !brandId ? (
         <div className="border-y border-[var(--border-base)] py-10 text-center">
           <h2 className="text-title-small text-[var(--content-emphasised)]">
-            Connect Klaviyo first
+            Select a brand first
           </h2>
           <p className="mx-auto mt-2 max-w-lg text-body-small-default text-[var(--content-tertiary)]">
-            Open Setup, connect the brand, and approve its history import.
+            Choose a brand in Customer decisions, then open Setup and approve
+            that brand's history import.
             Worklin will then be able to find useful audiences.
           </p>
         </div>

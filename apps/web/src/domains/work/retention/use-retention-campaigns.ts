@@ -36,13 +36,16 @@ function reportUnexpectedMutationError(
   captureError(error, { context });
 }
 
-export function useRetentionCampaigns(assistantId: string) {
+export function useRetentionCampaigns(
+  assistantId: string,
+  brandId: string | null = null,
+) {
   const isOrgReady = useIsOrgReady();
 
   return useQuery({
-    queryKey: ["retention", "campaigns", assistantId],
-    queryFn: () => fetchRetentionCampaigns(assistantId),
-    enabled: isOrgReady,
+    queryKey: ["retention", "campaigns", assistantId, brandId],
+    queryFn: () => fetchRetentionCampaigns(assistantId, brandId!),
+    enabled: isOrgReady && Boolean(brandId),
     staleTime: 15_000,
     retry: shouldRetry,
   });
@@ -51,16 +54,18 @@ export function useRetentionCampaigns(assistantId: string) {
 export function useRetentionCampaignReview(
   assistantId: string,
   campaignId: string | null,
+  brandId: string | null = null,
 ) {
   const isOrgReady = useIsOrgReady();
   const selectedCampaignId = campaignId ?? "";
-  const enabled = isOrgReady && selectedCampaignId.length > 0;
+  const enabled = isOrgReady && Boolean(brandId) && selectedCampaignId.length > 0;
 
   const preview = useQuery({
     queryKey: [
       "retention",
       "campaigns",
       assistantId,
+      brandId,
       selectedCampaignId,
       "preview",
     ],
@@ -75,6 +80,7 @@ export function useRetentionCampaignReview(
       "retention",
       "campaigns",
       assistantId,
+      brandId,
       selectedCampaignId,
       "approval-preview",
     ],
@@ -82,6 +88,7 @@ export function useRetentionCampaignReview(
       fetchRetentionCampaignApprovalPreview(
         assistantId,
         selectedCampaignId,
+        brandId!,
       ),
     enabled,
     staleTime: 10_000,
@@ -91,7 +98,10 @@ export function useRetentionCampaignReview(
   return { preview, approvalPreview };
 }
 
-export function useApproveRetentionCampaign(assistantId: string) {
+export function useApproveRetentionCampaign(
+  assistantId: string,
+  brandId: string | null,
+) {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -105,18 +115,20 @@ export function useApproveRetentionCampaign(assistantId: string) {
       approveRetentionCampaign(
         assistantId,
         campaignId,
+        brandId!,
         expectedSnapshotSha256,
       ),
     onSuccess: async (_result, variables) => {
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["retention", "campaigns", assistantId],
+          queryKey: ["retention", "campaigns", assistantId, brandId],
         }),
         queryClient.invalidateQueries({
           queryKey: [
             "retention",
             "campaigns",
             assistantId,
+            brandId,
             variables.campaignId,
           ],
         }),
@@ -127,7 +139,10 @@ export function useApproveRetentionCampaign(assistantId: string) {
   });
 }
 
-export function useReleaseRetentionCampaign(assistantId: string) {
+export function useReleaseRetentionCampaign(
+  assistantId: string,
+  brandId: string | null,
+) {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -143,24 +158,26 @@ export function useReleaseRetentionCampaign(assistantId: string) {
       releaseRetentionCampaign(
         assistantId,
         campaignId,
+        brandId!,
         snapshotSha256,
         idempotencyKey,
       ),
     onSuccess: async (_result, variables) => {
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["retention", "campaigns", assistantId],
+          queryKey: ["retention", "campaigns", assistantId, brandId],
         }),
         queryClient.invalidateQueries({
           queryKey: [
             "retention",
             "campaigns",
             assistantId,
+            brandId,
             variables.campaignId,
           ],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["retention", "status", assistantId],
+          queryKey: ["retention", "status", assistantId, brandId],
         }),
       ]);
     },

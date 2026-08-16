@@ -1,4 +1,13 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+
+mock.restore();
 import {
   act,
   cleanup,
@@ -77,7 +86,12 @@ function renderAudiences() {
       <Routes>
         <Route
           path="/assistant/work/retention"
-          element={<RetentionAudiences assistantId="assistant-1" />}
+          element={
+            <RetentionAudiences
+              assistantId="assistant-1"
+              selectedBrandId={BRAND_ID}
+            />
+          }
         />
         <Route path="/assistant/conversations/:conversationId" element={null} />
       </Routes>
@@ -93,6 +107,10 @@ afterEach(() => {
   startMutate.mockClear();
   setActiveConversationId.mockClear();
   setMainView.mockClear();
+});
+
+afterAll(() => {
+  mock.restore();
 });
 
 describe("RetentionAudiences", () => {
@@ -155,7 +173,7 @@ describe("RetentionAudiences", () => {
     renderAudiences();
 
     expect(screen.getByText("Review only")).toBeTruthy();
-    expect(screen.getByText("Connect Klaviyo first")).toBeTruthy();
+    expect(screen.getByText("Select a brand first")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /send/iu })).toBeNull();
     expect(screen.queryByRole("button", { name: /approve/iu })).toBeNull();
   });

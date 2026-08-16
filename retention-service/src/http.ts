@@ -82,7 +82,7 @@ const programInputSchema = z.object({
 });
 
 const programListQuerySchema = z.object({
-  brandId: z.string().uuid().optional(),
+  brandId: z.string().uuid(),
 });
 
 const programActivationInputSchema = z.object({
@@ -285,7 +285,7 @@ const releaseInputSchema = z.object({
 });
 
 const importReviewQuerySchema = z.object({
-  brandId: z.string().uuid().optional(),
+  brandId: z.string().uuid(),
   integrationId: z.string().uuid().optional(),
   status: z
     .enum([
@@ -299,6 +299,14 @@ const importReviewQuerySchema = z.object({
     ])
     .optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+const statusQuerySchema = z.object({
+  brandId: z.string().uuid(),
+});
+
+const brandActionQuerySchema = z.object({
+  brandId: z.string().uuid(),
 });
 
 const customerExplanationQuerySchema = z.object({
@@ -335,7 +343,7 @@ const integrationRevocationInputSchema = z.object({
 });
 
 const campaignListQuerySchema = z.object({
-  brandId: z.string().uuid().optional(),
+  brandId: z.string().uuid(),
   status: z
     .enum([
       "draft",
@@ -719,7 +727,8 @@ export function createRetentionHttpHandler(
       }
       if (request.method === "GET" && url.pathname === "/v1/retention/status") {
         requirePermission(claims, "retention:read");
-        return json(200, await dependencies.repository.status(context));
+        const input = statusQuerySchema.parse(queryParameters(url));
+        return json(200, await dependencies.repository.status(context, input));
       }
       if (
         request.method === "GET" &&
@@ -924,11 +933,13 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "GET" && programApprovalPreviewMatch) {
         requirePermission(claims, "retention:read");
+        const input = brandActionQuerySchema.parse(queryParameters(url));
         return json(
           200,
           await dependencies.repository.programPolicyApprovalPreview(
             context,
             programApprovalPreviewMatch[1]!,
+            input.brandId,
           ),
         );
       }
@@ -938,7 +949,8 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "POST" && programActivationMatch) {
         requirePermission(claims, "retention:approve");
-        const input = programActivationInputSchema.parse(
+        const queryInput = brandActionQuerySchema.parse(queryParameters(url));
+        const bodyInput = programActivationInputSchema.parse(
           parseJson(
             await boundedBody(request, dependencies.config.maxBodyBytes),
           ),
@@ -947,7 +959,8 @@ export function createRetentionHttpHandler(
           200,
           await dependencies.repository.activateProgram(context, {
             programId: programActivationMatch[1]!,
-            ...input,
+            brandId: queryInput.brandId,
+            ...bodyInput,
           }),
         );
       }
@@ -957,7 +970,8 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "POST" && programPauseMatch) {
         requirePermission(claims, "retention:approve");
-        const input = programPauseInputSchema.parse(
+        const queryInput = brandActionQuerySchema.parse(queryParameters(url));
+        const bodyInput = programPauseInputSchema.parse(
           parseJson(
             await boundedBody(request, dependencies.config.maxBodyBytes),
           ),
@@ -966,7 +980,8 @@ export function createRetentionHttpHandler(
           200,
           await dependencies.repository.pauseProgram(context, {
             programId: programPauseMatch[1]!,
-            ...input,
+            brandId: queryInput.brandId,
+            ...bodyInput,
           }),
         );
       }
@@ -1220,11 +1235,13 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "GET" && previewMatch) {
         requirePermission(claims, "retention:read");
+        const input = brandActionQuerySchema.parse(queryParameters(url));
         return json(
           200,
           await dependencies.repository.campaignApprovalPreview(
             context,
             previewMatch[1]!,
+            input.brandId,
           ),
         );
       }
@@ -1234,6 +1251,7 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "POST" && approvalMatch) {
         requirePermission(claims, "retention:approve");
+        const queryInput = brandActionQuerySchema.parse(queryParameters(url));
         const input = approvalInputSchema.parse(
           parseJson(
             await boundedBody(request, dependencies.config.maxBodyBytes),
@@ -1243,6 +1261,7 @@ export function createRetentionHttpHandler(
           200,
           await dependencies.repository.approveCampaign(context, {
             campaignId: approvalMatch[1]!,
+            brandId: queryInput.brandId,
             ...input,
           }),
         );
@@ -1253,6 +1272,7 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "POST" && releaseMatch) {
         requirePermission(claims, "retention:send");
+        const queryInput = brandActionQuerySchema.parse(queryParameters(url));
         const input = releaseInputSchema.parse(
           parseJson(
             await boundedBody(request, dependencies.config.maxBodyBytes),
@@ -1262,6 +1282,7 @@ export function createRetentionHttpHandler(
           202,
           await dependencies.repository.releaseCampaign(context, {
             campaignId: releaseMatch[1]!,
+            brandId: queryInput.brandId,
             ...input,
           }),
         );
@@ -1302,12 +1323,13 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "GET" && outcomesMatch) {
         requirePermission(claims, "retention:read");
+        const input = brandActionQuerySchema.parse(queryParameters(url));
         return json(
           200,
-          await dependencies.repository.analyzeCampaignOutcomes(
-            context,
-            outcomesMatch[1]!,
-          ),
+          await dependencies.repository.analyzeCampaignOutcomes(context, {
+            campaignId: outcomesMatch[1]!,
+            brandId: input.brandId,
+          }),
         );
       }
       const cancellationMatch = routeMatch(
@@ -1316,6 +1338,7 @@ export function createRetentionHttpHandler(
       );
       if (request.method === "POST" && cancellationMatch) {
         requirePermission(claims, "retention:write");
+        const queryInput = brandActionQuerySchema.parse(queryParameters(url));
         const input = cancellationInputSchema.parse(
           parseJson(
             await boundedBody(request, dependencies.config.maxBodyBytes),
@@ -1325,6 +1348,7 @@ export function createRetentionHttpHandler(
           200,
           await dependencies.repository.cancelCampaign(context, {
             campaignId: cancellationMatch[1]!,
+            brandId: queryInput.brandId,
             ...input,
           }),
         );

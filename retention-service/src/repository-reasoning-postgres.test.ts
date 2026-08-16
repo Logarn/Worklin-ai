@@ -63,15 +63,18 @@ describe("recipient reasoning leases with PostgreSQL", () => {
         const policyPreview = await repository.programPolicyApprovalPreview(
           context,
           program.id,
+          brand.id,
         );
         await expect(
           repository.activateProgram(context, {
             programId: program.id,
+            brandId: brand.id,
             expectedPolicySha256: "0".repeat(64),
           }),
         ).rejects.toThrow("changed before activation");
         const activated = await repository.activateProgram(context, {
           programId: program.id,
+          brandId: brand.id,
           expectedPolicySha256: policyPreview.snapshotSha256,
           note: "Policy reviewed for the PostgreSQL acceptance test.",
         });
@@ -83,6 +86,7 @@ describe("recipient reasoning leases with PostgreSQL", () => {
         expect(
           await repository.activateProgram(context, {
             programId: program.id,
+            brandId: brand.id,
             expectedPolicySha256: policyPreview.snapshotSha256,
           }),
         ).toMatchObject({ status: "active", duplicate: true });
