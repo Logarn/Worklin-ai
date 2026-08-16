@@ -24,6 +24,7 @@ let mockOperationCalls: Array<{
   conversationId: string;
   trustClass?: string;
   transportInterface?: string;
+  hasProxyToolResolver: boolean;
 }> = [];
 
 /** When set, findConversation returns a fake conversation object. */
@@ -42,6 +43,7 @@ mock.module("../../browser/operations.js", () => ({
       conversationId: string;
       trustClass?: string;
       transportInterface?: string;
+      proxyToolResolver?: unknown;
     },
   ) => {
     mockOperationCalls.push({
@@ -50,6 +52,7 @@ mock.module("../../browser/operations.js", () => ({
       conversationId: context.conversationId,
       trustClass: context.trustClass,
       transportInterface: context.transportInterface,
+      hasProxyToolResolver: typeof context.proxyToolResolver === "function",
     });
     return mockOperationResult;
   },
@@ -60,6 +63,10 @@ mock.module("../../daemon/conversation-registry.js", () => ({
     mockFindConversationCalls.push(conversationId);
     return mockConversation ?? undefined;
   },
+}));
+
+mock.module("../../daemon/conversation-surfaces.js", () => ({
+  surfaceProxyResolver: async () => ({ content: "ok", isError: false }),
 }));
 
 // Import after mocking — now from the shared routes location
@@ -201,7 +208,18 @@ describe("browser_execute route", () => {
       conversationId: "conv-live-456",
       trustClass: "trusted",
       transportInterface: "chrome-extension",
+      hasProxyToolResolver: true,
     });
+  });
+
+  test("does not attach a surface resolver without a live conversation", async () => {
+    await callHandler({
+      operation: "status",
+      input: {},
+      sessionId: "standalone",
+    });
+
+    expect(mockOperationCalls[0].hasProxyToolResolver).toBe(false);
   });
 
   test("does not call findConversation when no conversationId provided", async () => {

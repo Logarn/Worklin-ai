@@ -1,10 +1,20 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  findLatestRestorableBrowserSurface,
   isSafeBrowserScreenshot,
   isSafeBrowserUrl,
   normalizeBrowserWorkspaceData,
 } from "./browser-workspace-data";
+import type { DisplayMessage, Surface } from "@/domains/chat/types/types";
+
+function messageWithSurface(surface: Surface): DisplayMessage {
+  return {
+    id: `message-${surface.surfaceId}`,
+    role: "assistant",
+    surfaces: [surface],
+  };
+}
 
 describe("browser workspace data", () => {
   it("accepts web URLs and raster image previews", () => {
@@ -65,5 +75,39 @@ describe("browser workspace data", () => {
     expect(normalized.activity).toHaveLength(20);
     expect(normalized.activity[0]?.id).toBe("item-4");
     expect(normalized.activity.at(-1)?.status).toBe("error");
+  });
+
+  it("restores the newest active browser workspace from history", () => {
+    const older = messageWithSurface({
+      surfaceId: "browser-old",
+      surfaceType: "browser_view",
+      data: { url: "https://example.com/old", status: "ready" },
+    });
+    const newer = messageWithSurface({
+      surfaceId: "browser-new",
+      surfaceType: "browser_view",
+      data: { url: "https://example.com/new", status: "ready" },
+    });
+
+    expect(findLatestRestorableBrowserSurface([older, newer])).toMatchObject({
+      surface: { surfaceId: "browser-new" },
+      data: { url: "https://example.com/new", status: "ready" },
+    });
+  });
+
+  it("ignores completed and closed browser workspaces", () => {
+    const completed = messageWithSurface({
+      surfaceId: "browser-complete",
+      surfaceType: "browser_view",
+      data: { status: "ready" },
+      completed: true,
+    });
+    const closed = messageWithSurface({
+      surfaceId: "browser-closed",
+      surfaceType: "browser_view",
+      data: { status: "closed" },
+    });
+
+    expect(findLatestRestorableBrowserSurface([completed, closed])).toBeNull();
   });
 });
