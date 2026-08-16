@@ -289,3 +289,44 @@ export function getOrCreateAssistant(
   });
   return upsertDefault.immediate();
 }
+
+export function createAssistant(
+  db: Database,
+  userId: string,
+  organizationId: string,
+  name: string,
+  nowIso: () => string,
+): AssistantRow {
+  ensureAssistantStoreSchema(db);
+  const create = db.transaction(() => {
+    const timestamp = nowIso();
+    const id = `worklin-${randomUUID()}`;
+    db.query(
+      `
+      INSERT INTO assistants (
+        id,
+        user_id,
+        org_id,
+        name,
+        runtime_stack_id,
+        isolation_version,
+        is_default,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, NULL, 2, 0, ?, ?)
+    `,
+    ).run(id, userId, organizationId, name, timestamp, timestamp);
+
+    const assistant = db
+      .query<AssistantRow, [string, string, string]>(
+        `SELECT * FROM assistants
+         WHERE id = ? AND user_id = ? AND org_id = ?`,
+      )
+      .get(id, userId, organizationId);
+    if (!assistant) {
+      throw new Error("Assistant creation did not produce a row.");
+    }
+    return assistant;
+  });
+  return create.immediate();
+}

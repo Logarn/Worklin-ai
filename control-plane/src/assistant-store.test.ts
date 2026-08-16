@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  createAssistant,
   ensureAssistantStoreSchema,
   getActiveAssistant,
   getAssistantAdminAccessConsent,
@@ -41,6 +42,30 @@ function setupDb(filename = ":memory:"): Database {
 const NOW = () => "2026-07-13T12:00:00.000Z";
 
 describe("default assistant store", () => {
+  test("creates an additional non-default assistant in the same workspace", () => {
+    const db = setupDb();
+    const first = getOrCreateAssistant(db, "user-1", NOW);
+
+    const additional = createAssistant(
+      db,
+      "user-1",
+      first.org_id,
+      "Browser Release",
+      NOW,
+    );
+
+    expect(additional).toMatchObject({
+      user_id: "user-1",
+      org_id: first.org_id,
+      name: "Browser Release",
+      runtime_stack_id: null,
+      isolation_version: 2,
+      is_default: 0,
+    });
+    expect(additional.id).not.toBe(first.id);
+    expect(getActiveAssistant(db, "user-1")?.id).toBe(first.id);
+  });
+
   test("creates one Worklin assistant and organization for a new user", () => {
     const db = setupDb();
 
