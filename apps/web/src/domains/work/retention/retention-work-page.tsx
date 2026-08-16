@@ -11,11 +11,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router";
 
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { ApiError } from "@/utils/api-errors";
+import { routes } from "@/utils/routes";
 
 import { WorkSectionNav } from "../work-section-nav";
 import type {
@@ -351,6 +353,51 @@ function RetentionErrorState({
   );
 }
 
+function RetentionSetupActions() {
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      <Link
+        to={`${routes.settings.integrations}?provider=klaviyo`}
+        className="inline-flex min-h-9 items-center gap-2 rounded-md bg-[var(--content-emphasised)] px-3 text-body-small-default text-[var(--surface-base)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      >
+        <Mail className="size-4" aria-hidden="true" />
+        Connect Klaviyo
+      </Link>
+      <Link
+        to={routes.work.root}
+        className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--border-base)] bg-[var(--surface-base)] px-3 text-body-small-default text-[var(--content-default)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      >
+        <ShoppingBag className="size-4" aria-hidden="true" />
+        Add brand context
+      </Link>
+    </div>
+  );
+}
+
+function RetentionStartPanel() {
+  return (
+    <section
+      className="mx-auto w-full max-w-3xl border-y border-[var(--border-base)] py-8"
+      aria-labelledby="retention-start-heading"
+    >
+      <p className="text-label-small text-[var(--content-tertiary)]">
+        START HERE
+      </p>
+      <h2
+        id="retention-start-heading"
+        className="mt-2 text-title-small text-[var(--content-emphasised)]"
+      >
+        Connect the customer data first
+      </h2>
+      <p className="mt-2 max-w-2xl text-body-small-default text-[var(--content-tertiary)]">
+        Worklin needs brand context and Klaviyo history before it can find
+        micro-segments, write campaign ideas, and save review-only copy.
+      </p>
+      <RetentionSetupActions />
+    </section>
+  );
+}
+
 export function RetentionWorkPage() {
   const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const selectedAssistantId =
@@ -482,6 +529,21 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
     sourceByProvider.has(provider.id),
   );
 
+  useEffect(() => {
+    if (isBrandsLoading || query.isPending || query.isFetching) return;
+    const needsSourceSetup = selectableBrands.length === 0 || !hasSources;
+    if (needsSourceSetup && activeView === "campaigns") {
+      setActiveView("setup");
+    }
+  }, [
+    activeView,
+    hasSources,
+    isBrandsLoading,
+    query.isFetching,
+    query.isPending,
+    selectableBrands.length,
+  ]);
+
   return (
     <PageShell className="overflow-hidden px-0 py-0">
       <header className="border-b border-[var(--border-base)] px-6 py-5">
@@ -534,10 +596,13 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
               )}
             </>
           ) : (
-            <p className="text-body-small-default text-[var(--content-tertiary)]">
-              Connect at least one brand in Work, then return here to run
-              retention workflows.
-            </p>
+            <div>
+              <p className="max-w-2xl text-body-small-default text-[var(--content-tertiary)]">
+                Connect Klaviyo and add brand context before Worklin prepares
+                micro-segments and review-only campaigns.
+              </p>
+              <RetentionSetupActions />
+            </div>
           )}
         </div>
         <div
@@ -605,10 +670,14 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
             selectedBrandName={selectedBrand?.name ?? null}
           />
         ) : activeView === "setup" ? (
-          <RetentionSetup
-            assistantId={assistantId}
-            selectedBrandId={selectedBrandId}
-          />
+          selectableBrands.length === 0 ? (
+            <RetentionStartPanel />
+          ) : (
+            <RetentionSetup
+              assistantId={assistantId}
+              selectedBrandId={selectedBrandId}
+            />
+          )
         ) : (
           <>
             {query.isPending ? <RetentionLoadingState /> : null}
