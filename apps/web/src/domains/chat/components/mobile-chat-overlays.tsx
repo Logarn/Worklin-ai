@@ -18,6 +18,7 @@ import { useViewerStore } from "@/stores/viewer-store";
 import { routes } from "@/utils/routes";
 
 import { MobileAppOverlay } from "@/domains/chat/components/mobile-app-overlay";
+import { MobileBrowserOverlay } from "@/domains/chat/components/mobile-browser-overlay";
 import { MobileDocumentOverlay } from "@/domains/chat/components/mobile-document-overlay";
 import { MobileSubagentDetailOverlay } from "@/domains/chat/components/mobile-subagent-detail-overlay";
 import { MobileToolDetailOverlay } from "@/domains/chat/components/mobile-tool-detail-overlay";
@@ -31,6 +32,7 @@ export function MobileChatOverlays() {
   const mainView = useViewerStore.use.mainView();
   const openedAppState = useViewerStore.use.openedAppState();
   const openedDocumentState = useViewerStore.use.openedDocumentState();
+  const openedBrowserState = useViewerStore.use.openedBrowserState();
   const isAppMinimized = useViewerStore.use.isAppMinimized();
   const activeSubagentId = useViewerStore.use.activeSubagentId();
   const activeToolDetail = useViewerStore.use.activeToolDetail();
@@ -45,17 +47,25 @@ export function MobileChatOverlays() {
   const handleShareApp = useCallback(() => {
     const app = useViewerStore.getState().openedAppState;
     const aid = useResolvedAssistantsStore.getState().activeAssistantId;
-    if (app && aid) void useDeployStore.getState().shareApp(aid, app.appId, app.name);
+    if (app && aid)
+      void useDeployStore.getState().shareApp(aid, app.appId, app.name);
   }, []);
 
   const handleDeployApp = useCallback(() => {
     const app = useViewerStore.getState().openedAppState;
     const aid = useResolvedAssistantsStore.getState().activeAssistantId;
-    if (app && aid) void useDeployStore.getState().deployApp(aid, app.appId, app.name, app.html);
+    if (app && aid)
+      void useDeployStore
+        .getState()
+        .deployApp(aid, app.appId, app.name, app.html);
   }, []);
 
   const handleCloseDocument = useCallback(() => {
     useViewerStore.getState().closeDocument();
+  }, []);
+
+  const handleCloseBrowser = useCallback(() => {
+    useViewerStore.getState().closeBrowser();
   }, []);
 
   const handleDocumentSubmitFeedback = useCallback(() => {
@@ -72,7 +82,8 @@ export function MobileChatOverlays() {
   }, []);
 
   const handleStopSubagent = useCallback(
-    (subagentId: string) => void useSubagentStore.getState().abortSubagent(subagentId),
+    (subagentId: string) =>
+      void useSubagentStore.getState().abortSubagent(subagentId),
     [],
   );
 
@@ -107,8 +118,14 @@ export function MobileChatOverlays() {
         onDeploy={handleDeployApp}
         isDeploying={isDeploying}
       />
+      <MobileBrowserOverlay
+        browser={mainView === "browser" ? openedBrowserState : null}
+        onClose={handleCloseBrowser}
+      />
       <MobileDocumentOverlay
-        openedDocumentState={mainView === "document" ? openedDocumentState : null}
+        openedDocumentState={
+          mainView === "document" ? openedDocumentState : null
+        }
         assistantId={assistantId}
         onClose={handleCloseDocument}
         onSubmitFeedback={handleDocumentSubmitFeedback}
@@ -116,7 +133,7 @@ export function MobileChatOverlays() {
       <MobileSubagentDetailOverlay
         entry={
           mainView === "subagent-detail" && activeSubagentId
-            ? subagentById[activeSubagentId] ?? null
+            ? (subagentById[activeSubagentId] ?? null)
             : null
         }
         onClose={handleCloseSubagentDetail}

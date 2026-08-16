@@ -11,6 +11,7 @@ export type SurfaceType =
   | "list"
   | "table"
   | "confirmation"
+  | "browser_view"
   | "dynamic_page"
   | "file_upload"
   | "document_preview"
@@ -154,6 +155,25 @@ export interface DynamicPageSurfaceData {
   preview?: DynamicPagePreview;
 }
 
+export interface BrowserViewActivityItem {
+  id: string;
+  label: string;
+  detail?: string;
+  status: "completed" | "error";
+  timestamp: number;
+}
+
+export interface BrowserViewSurfaceData {
+  url?: string;
+  title?: string;
+  screenshotDataUrl?: string;
+  status: "working" | "ready" | "error" | "closed";
+  connectionLabel?: string;
+  errorMessage?: string;
+  updatedAt: number;
+  activity: BrowserViewActivityItem[];
+}
+
 export interface FileUploadSurfaceData {
   prompt: string;
   acceptedTypes?: string[];
@@ -262,6 +282,7 @@ export type SurfaceData =
   | ListSurfaceData
   | TableSurfaceData
   | ConfirmationSurfaceData
+  | BrowserViewSurfaceData
   | DynamicPageSurfaceData
   | FileUploadSurfaceData
   | DocumentPreviewSurfaceData
@@ -341,6 +362,11 @@ export interface UiSurfaceShowDynamicPage extends UiSurfaceShowBase {
   data: DynamicPageSurfaceData;
 }
 
+export interface UiSurfaceShowBrowserView extends UiSurfaceShowBase {
+  surfaceType: "browser_view";
+  data: BrowserViewSurfaceData;
+}
+
 export interface UiSurfaceShowTable extends UiSurfaceShowBase {
   surfaceType: "table";
   data: TableSurfaceData;
@@ -370,6 +396,7 @@ export type UiSurfaceShow =
   | UiSurfaceShowList
   | UiSurfaceShowTable
   | UiSurfaceShowConfirmation
+  | UiSurfaceShowBrowserView
   | UiSurfaceShowDynamicPage
   | UiSurfaceShowFileUpload
   | UiSurfaceShowDocumentPreview
