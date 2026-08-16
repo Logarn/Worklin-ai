@@ -11,6 +11,9 @@ const assistantApi = await import("./api");
 const selectionModule = await import("./selection");
 const localModeModule = await import("../lib/local-mode");
 const organizationStoreModule = await import("../stores/organization-store");
+const resolvedAssistantsStoreModule = await import(
+  "../stores/resolved-assistants-store"
+);
 let hatchResult:
   | { ok: true; status: number; data: { id: string } }
   | { ok: false; status: number; error: Record<string, unknown> } = {
@@ -31,6 +34,7 @@ const setSelectedAssistantMock = mock(async (_id: string) => {});
 const syncPlatformAssistantsToLockfileMock = mock(
   async (_a: unknown, _orgId?: string) => {},
 );
+const setFromApiMock = mock((_assistants: unknown) => {});
 let createPlatformAssistant: typeof import("./create-platform-assistant").createPlatformAssistant;
 let moduleNonce = 0;
 
@@ -41,6 +45,7 @@ beforeEach(async () => {
   listPlatformAssistantsMock.mockClear();
   setSelectedAssistantMock.mockClear();
   syncPlatformAssistantsToLockfileMock.mockClear();
+  setFromApiMock.mockClear();
   spyOn(assistantApi, "hatchAssistant").mockImplementation(
     hatchAssistantMock as typeof assistantApi.hatchAssistant,
   );
@@ -62,6 +67,17 @@ beforeEach(async () => {
         currentOrganizationId: "org-test",
       }) as ReturnType<typeof organizationStoreModule.useOrganizationStore.getState>,
   );
+  spyOn(
+    resolvedAssistantsStoreModule.useResolvedAssistantsStore,
+    "getState",
+  ).mockImplementation(
+    () =>
+      ({
+        setFromApi: setFromApiMock,
+      }) as unknown as ReturnType<
+        typeof resolvedAssistantsStoreModule.useResolvedAssistantsStore.getState
+      >,
+  );
 
   ({ createPlatformAssistant } = await import(
     new URL(`./create-platform-assistant.ts?test=${++moduleNonce}`, import.meta.url).href,
@@ -80,6 +96,9 @@ describe("createPlatformAssistant", () => {
       [{ id: "ast-new", is_local: false, created: "" }],
       "org-test",
     );
+    expect(setFromApiMock).toHaveBeenCalledWith([
+      { id: "ast-new", is_local: false, created: "" },
+    ]);
     expect(setSelectedAssistantMock).toHaveBeenCalledWith("ast-new");
     expect(result).toEqual({ ok: true, id: "ast-new" });
   });

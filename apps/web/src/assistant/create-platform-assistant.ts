@@ -2,6 +2,7 @@ import { hatchAssistant, listPlatformAssistants } from "@/assistant/api";
 import { setSelectedAssistant } from "@/assistant/selection";
 import { syncPlatformAssistantsToLockfile } from "@/lib/local-mode";
 import { useOrganizationStore } from "@/stores/organization-store";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { extractErrorMessage } from "@/utils/api-errors";
 
 export type CreatePlatformAssistantResult =
@@ -40,6 +41,10 @@ export async function createPlatformAssistant(
   try {
     const remaining = await listPlatformAssistants();
     if (remaining.ok) {
+      // Platform mode does not use the lockfile as its source of truth. Seed
+      // the resolved store before selecting so its hydrated-id reconciliation
+      // does not discard the newly created assistant as an unknown id.
+      useResolvedAssistantsStore.getState().setFromApi(remaining.data);
       await syncPlatformAssistantsToLockfile(
         remaining.data,
         useOrganizationStore.getState().currentOrganizationId ?? undefined,

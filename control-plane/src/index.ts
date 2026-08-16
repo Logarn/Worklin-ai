@@ -43,6 +43,7 @@ import {
 } from "./runtime-stacks.js";
 import { managedVoiceRoutingHintFromToken } from "./live-voice-provider-callback.js";
 import {
+  createAssistant as createStoredAssistant,
   ensureAssistantStoreSchema,
   getAssistantAdminAccessConsent,
   getOrCreateAssistant as getOrCreateStoredAssistant,
@@ -3315,6 +3316,18 @@ async function handleAssistants(
       return true;
     }
     const workspace = workspaceContext(req, user);
+    const mode = url.searchParams.get("mode") ?? "ensure";
+    if (mode !== "ensure" && mode !== "create") {
+      sendJson(req, res, { detail: "Unsupported hatch mode." }, 422);
+      return true;
+    }
+    const body = (parseJsonBody(req) ?? {}) as { name?: unknown };
+    const requestedName =
+      typeof body.name === "string" ? body.name.trim() : "";
+    if (requestedName.length > 80) {
+      sendJson(req, res, { detail: "Assistant name is too long." }, 422);
+      return true;
+    }
     const existing =
       workspace.org.user_id === user.id
         ? db
@@ -3325,8 +3338,18 @@ async function handleAssistants(
             .get(workspace.org.id)
         : accessibleAssistantsForUser(req, user)[0];
     const assistant =
-      existing ??
-      (workspace.org.user_id === user.id ? getOrCreateAssistant(user) : null);
+      mode === "create"
+        ? workspace.org.user_id === user.id
+          ? createStoredAssistant(
+              db,
+              user.id,
+              workspace.org.id,
+              requestedName || "Worklin",
+              nowIso,
+            )
+          : null
+        : existing ??
+          (workspace.org.user_id === user.id ? getOrCreateAssistant(user) : null);
     if (!assistant) {
       sendJson(
         req,
@@ -3362,7 +3385,7 @@ async function handleAssistants(
       req,
       res,
       assistantPayload(assistant, user, runtimeStack),
-      existing ? 200 : 201,
+      mode === "create" || !existing ? 201 : 200,
     );
     return true;
   }

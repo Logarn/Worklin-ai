@@ -47,7 +47,16 @@ function authenticatedTenant(
   return { claim, authorizationVersion: 1 };
 }
 
-function createHarness() {
+function createHarness(
+  options: {
+    getManagedProviderConfig?: () => {
+      provider: string;
+      model: string;
+      displayName: string;
+      credentialEnvVar: string;
+    } | null;
+  } = {},
+) {
   const store = new InMemoryConcurrentRuntimeStore();
   const service = new ConcurrentRuntimeService({
     store,
@@ -65,6 +74,7 @@ function createHarness() {
     store,
     service,
     authenticate,
+    ...options,
   });
   return { handler, service, store, tenant };
 }
@@ -169,6 +179,50 @@ describe("concurrent runtime HTTP handler", () => {
 
     const config = await handler(new Request("http://runtime.test/v1/config"));
     expect(config.status).toBe(200);
+  });
+
+  test("publishes the active managed profile required by the web send guard", async () => {
+    const { handler, service } = createHarness({
+      getManagedProviderConfig: () => ({
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        displayName: "Anthropic",
+        credentialEnvVar: "ANTHROPIC_API_KEY",
+      }),
+    });
+    await service.initialize();
+
+    const response = await handler(
+      new Request("http://runtime.test/v1/config"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      llm: {
+        default: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-5",
+        },
+        profiles: {
+          "worklin-managed": {
+            provider: "anthropic",
+            model: "claude-sonnet-4-5",
+            source: "managed",
+            label: "Worklin managed model",
+            description:
+              "Managed by Worklin for fast, always-ready conversations.",
+            status: "active",
+          },
+        },
+        profileOrder: ["worklin-managed"],
+        activeProfile: "worklin-managed",
+      },
+      services: {
+        inference: {
+          mode: "managed",
+        },
+      },
+    });
   });
 
   test("conversation listings remain isolated between logical tenants", async () => {
