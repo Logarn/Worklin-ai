@@ -2,6 +2,7 @@ import type {
   BrowserActivityItem,
   BrowserWorkspaceData,
 } from "@/stores/viewer-store";
+import type { DisplayMessage, Surface } from "@/domains/chat/types/types";
 
 const VALID_STATUSES = new Set(["working", "ready", "error", "closed"]);
 
@@ -88,4 +89,35 @@ export function normalizeBrowserWorkspaceData(
     updatedAt: numberValue(record.updatedAt) ?? Date.now(),
     activity: normalizeActivity(record.activity),
   };
+}
+
+export function findLatestRestorableBrowserSurface(
+  messages: readonly DisplayMessage[],
+): { surface: Surface; data: BrowserWorkspaceData } | null {
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0;
+    messageIndex--
+  ) {
+    const surfaces = messages[messageIndex]?.surfaces;
+    if (!surfaces) continue;
+    for (
+      let surfaceIndex = surfaces.length - 1;
+      surfaceIndex >= 0;
+      surfaceIndex--
+    ) {
+      const surface = surfaces[surfaceIndex];
+      if (
+        !surface ||
+        surface.surfaceType !== "browser_view" ||
+        surface.completed
+      ) {
+        continue;
+      }
+      const data = normalizeBrowserWorkspaceData(surface.data);
+      if (data.status === "closed") continue;
+      return { surface, data };
+    }
+  }
+  return null;
 }

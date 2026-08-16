@@ -32,6 +32,10 @@ import {
 } from "../tools/browser/browser-execution.js";
 import { browserManager } from "../tools/browser/browser-manager.js";
 import { normalizeBrowserMode } from "../tools/browser/browser-mode.js";
+import {
+  markBrowserWorkspaceWorking,
+  syncBrowserWorkspaceAfterTool,
+} from "../tools/browser/browser-workspace.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
 import type { BrowserOperation, BrowserOperationMeta } from "./types.js";
 
@@ -146,7 +150,11 @@ export async function executeBrowserOperation(
       isError: true,
     };
   }
-  return handler(input, context);
+  const toolName = `browser_${operation}`;
+  await markBrowserWorkspaceWorking(toolName, context);
+  const result = await handler(input, context);
+  await syncBrowserWorkspaceAfterTool(toolName, input, result, context);
+  return result;
 }
 
 // ── Command-oriented metadata ────────────────────────────────────────
