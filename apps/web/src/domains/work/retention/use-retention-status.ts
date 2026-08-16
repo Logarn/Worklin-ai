@@ -13,9 +13,8 @@ export function useRetentionStatus(
 
   return useQuery({
     queryKey: ["retention", "status", assistantId, selectedBrandId],
-    queryFn: () =>
-      fetchRetentionStatus(assistantId as string, brandId as string),
-    enabled: isOrgReady && assistantId !== null && brandId !== null,
+    queryFn: () => fetchRetentionStatus(assistantId as string, brandId),
+    enabled: isOrgReady && assistantId !== null,
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
