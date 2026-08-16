@@ -163,7 +163,7 @@ COPY --from=builder /app /app
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}" && \
     cd /app/assistant && \
-    bunx playwright install chromium && \
+    bunx playwright install --with-deps chromium && \
     chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}" && \
     runuser -u assistant -g assistant -G vellum -- \
       env PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH}" \
