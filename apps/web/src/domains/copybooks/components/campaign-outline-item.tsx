@@ -44,6 +44,11 @@ export function CampaignOutlineItem({ campaign }: { campaign: CopybookCampaign }
                   Subjects: {microCampaign.subjects.join(" / ")}
                 </p>
               ) : null}
+              {microCampaign.bodyPreview ? (
+                <p className="line-clamp-3">
+                  Copy: {microCampaign.bodyPreview}
+                </p>
+              ) : null}
             </div>
           ) : null}
           <div className="mt-1.5">
@@ -57,7 +62,12 @@ export function CampaignOutlineItem({ campaign }: { campaign: CopybookCampaign }
 
 function microCampaignSummary(campaign: CopybookCampaign) {
   const metadata = recordValue(campaign.metadata);
-  if (metadata.source !== "retention_segment_run") return null;
+  if (
+    metadata.source !== "retention_segment_run" &&
+    metadata.source !== "retention_audience_review"
+  ) {
+    return null;
+  }
 
   return {
     segment: stringValue(metadata.microSegmentName),
@@ -70,7 +80,16 @@ function microCampaignSummary(campaign: CopybookCampaign) {
       .map(stringValue)
       .filter(Boolean)
       .slice(0, 2),
+    bodyPreview: firstBodyPreview(metadata.representativeMessages),
   };
+}
+
+function firstBodyPreview(value: unknown): string {
+  const message = arrayValue(value)
+    .map(recordValue)
+    .find((item) => stringValue(item.body));
+  const body = stringValue(message?.body).replace(/\s+/g, " ");
+  return body.length > 180 ? `${body.slice(0, 177).trim()}...` : body;
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

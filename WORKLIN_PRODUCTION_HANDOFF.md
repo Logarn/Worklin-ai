@@ -27,6 +27,8 @@ The owner confirmed a visible Worklin reset for the active production account.
 Before mutation, a control-plane SQLite backup was created inside the Railway
 control-plane volume at
 `/data/control-plane-reset-backups/control-plane-before-visible-reset-20260816T064217Z.sqlite`.
+An additional backup from the later visible-reset pass exists at
+`/data/control-plane-reset-backups/pre-visible-reset-20260816T075740Z.sqlite`.
 The previous account assistant
 `worklin-7f96cf07-5398-462a-a2f2-472ea6ec0adc` was removed from the assistant
 list, its runtime stack `rt-e370b4ad-0109-4a28-a42f-5504b48eab5f` was marked
@@ -40,8 +42,18 @@ fresh assistant `worklin-0cf09eb4-49b5-4cd8-b65d-556c0859df1e`, runtime stack
 `rt-918787a9-bc5c-412e-87cb-6ce502c5ae67`, and an active concurrent-service
 runtime at `http://worklin-concurrent-runtime.railway.internal:8080`. The
 control-plane query showed zero retention integration bindings carried over for
-the reset account. This was a visible product reset, not a deep purge of raw
-retention-service import data.
+the reset account.
+
+The later reset pass also tenant-scoped and removed the old retention-service
+brand, integration, import, jobs, segment runs, campaign previews, customers,
+traits, consent events, source events, and segment memberships for the reset
+organization. The final authenticated browser check returned zero Retention
+integrations, zero Retention jobs, zero Retention segments, and zero current
+conversations. The concurrent-runtime store was also cleared for fresh
+assistant `worklin-0cf09eb4-49b5-4cd8-b65d-556c0859df1e`: one leftover
+conversation plus its run, messages, and events were removed. Retention audit
+rows remain as immutable historical audit entries and should not be treated as
+visible customer, brand, or campaign state.
 
 Local micro-segment to micro-campaign work is verified but not yet merged at
 the time of this handoff refresh. It adds privacy-safe cross-signal
@@ -51,16 +63,22 @@ micro-campaign angle or call to action, persists micro-campaign strategy and
 representative drafts into Copybook metadata, and changes the audience UI/export
 language from broad audiences to review-only micro-segment/micro-campaign
 packages. It also lets Settings show Klaviyo connection status without requiring
-a selected brand.
+a selected brand. The current local branch adds a direct **Save to Copybook**
+action on the Audiences page and opens the exact concurrent-runtime proxy routes
+needed to create brand shells, copybooks, months, and review-only campaign
+records without depending on the chat composer. PR #202 now also normalizes the
+saved campaign metadata to the Copybook retention-segment shape and renders
+visible subject/body snippets in the Copybook month outline, so saved
+micro-campaigns are inspectable as real copy rather than hidden metadata.
 
-Verification completed locally for this work:
+Current focused verification for this local branch state:
 
-- `retention-service`: `bun test src/segment-discovery.test.ts src/http.test.ts src/repository-segment-runs-postgres.test.ts`
-- `assistant`: `bun test src/tools/retention/campaign-review-pilot.test.ts src/tools/retention/campaign-review-copybook.test.ts`
-- `apps/web`: `bun test src/domains/work/retention/retention-audiences.test.tsx src/domains/work/retention/retention-api.test.ts src/domains/settings/components/klaviyo-integration.test.tsx src/domains/copybooks/components/copybook-month-nav.test.tsx`
+- `assistant`: `bun test src/memory/artifact-store.test.ts src/runtime/routes/artifact-routes.test.ts src/tools/retention/campaign-review-copybook.test.ts src/tools/retention/campaign-review-pilot.test.ts`
+- `apps/web`: `bun test src/domains/work/retention/retention-audiences.test.tsx src/domains/work/retention/retention-api.test.ts src/domains/copybooks/components/copybook-month-nav.test.tsx`
+- `control-plane`: `bun test src/runtime-worker-proxy-route-policy.test.ts`
 - `assistant`: touched-file ESLint and `bunx tsc --noEmit --pretty false`
 - `apps/web`: touched-file ESLint and `bun run typecheck`
-- `retention-service`: `bunx tsc --noEmit --pretty false`
+- `control-plane`: `bunx tsc --noEmit --pretty false`
 
 ## 2026-08-05 Brand Intelligence Archive Live
 
@@ -1140,6 +1158,15 @@ Do not declare Release B complete until the in-app and overlay surfaces both pas
 
 ## Important Product State
 
+- 2026-08-16 retention micro-campaign production state:
+  - PR #198 (`d42732aa`) bridged connected retention-service brands into Customer decisions, so a connected Klaviyo brand can appear even when Work has no artifact-backed brand yet.
+  - PR #199 (`7c2d7dc`) fixed Customer decisions to fetch organization-level retention status before a brand is selected.
+  - PR #200 (`04ff47a`) fixed the web segment parser to accept production evidence entries stored as JSON strings.
+  - Production Vercel is green for `04ff47a`. Railway backend reported no deploy needed for the web-only changes, and `/readyz` remained healthy.
+  - Live in-app browser verification before the reset showed the Customer decisions brand selector and real micro-segments plus representative email drafts for the connected pilot brand.
+  - The visible copy is review-only and states that nothing creates a Klaviyo campaign or sends a message.
+  - The previous blocker was the "Create campaigns" handoff relying on chat/model setup. PR #202 adds a direct Audiences-page **Save to Copybook** action plus concurrent-runtime proxy allowlist support, but this is not deployed yet.
+  - PR #202 also fixes saved retention micro-campaigns so Copybook can show their micro-segment, angle, eligible count, subjects, and first body snippet instead of only storing opaque metadata.
 - Every authenticated Worklin account should receive exactly one default assistant identity; repeated bootstrap must stay idempotent.
 - Live Voice replaces one-shot dictation in the eligible composer; do not reintroduce a second microphone button.
 - The shared black/royal-blue panel is used by the in-app composer and the macOS overlay.

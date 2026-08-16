@@ -59,6 +59,26 @@ export interface BrandArtifactSummary {
   updatedAt: number;
 }
 
+function validateBrandId(value: string): string {
+  const brandId = value.trim();
+  if (
+    brandId.length < 3 ||
+    brandId.length > 128 ||
+    !/^[a-z0-9][a-z0-9._:-]*$/i.test(brandId)
+  ) {
+    throw new ArtifactStoreError("invalid_brand", "Invalid brand id");
+  }
+  return brandId;
+}
+
+function validateBrandName(value: string): string {
+  const name = value.trim().replace(/\s+/gu, " ");
+  if (name.length < 1 || name.length > 200) {
+    throw new ArtifactStoreError("invalid_brand", "Invalid brand name");
+  }
+  return name;
+}
+
 const artifactSelect = /*sql*/ `
   SELECT
     artifact.id,
@@ -164,6 +184,43 @@ export function listBrandArtifactSummaries(): {
   return {
     brands,
     unassignedArtifactCount: unassigned?.artifactCount ?? 0,
+  };
+}
+
+export function createArtifactBrand(input: {
+  id: string;
+  name: string;
+  source?: string;
+  metadata?: Record<string, unknown> | null;
+}): BrandArtifactSummary {
+  const id = validateBrandId(input.id);
+  const name = validateBrandName(input.name);
+  const now = Date.now();
+  getDb()
+    .insert(retentionBrands)
+    .values({
+      id,
+      name,
+      source: input.source?.trim() || "worklin",
+      metadataJson: input.metadata ? JSON.stringify(input.metadata) : null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: retentionBrands.id,
+      set: {
+        name,
+        source: input.source?.trim() || "worklin",
+        metadataJson: input.metadata ? JSON.stringify(input.metadata) : null,
+        updatedAt: now,
+      },
+    })
+    .run();
+  return {
+    id,
+    name,
+    artifactCount: 0,
+    updatedAt: now,
   };
 }
 

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { saveDocument } from "../documents/document-store.js";
 import {
+  createArtifactBrand,
   getArtifact,
   listArtifacts,
   listBrandArtifactSummaries,
@@ -53,6 +54,21 @@ beforeEach(() => {
 });
 
 describe("artifact store", () => {
+  test("creates a brand shell for Work artifacts", () => {
+    const brand = createArtifactBrand({
+      id: "brand-retention-1",
+      name: "  Retention Brand  ",
+      source: "retention-service",
+      metadata: { external: true },
+    });
+
+    expect(brand.id).toBe("brand-retention-1");
+    expect(brand.name).toBe("Retention Brand");
+    expect(
+      listBrandArtifactSummaries().brands.map((item) => item.id),
+    ).toContain("brand-retention-1");
+  });
+
   test("registers canonical copybooks and documents", () => {
     const copybook = createCopybook({ brandId: "brand-1", year: 2026 });
     expect(

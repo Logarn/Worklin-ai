@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  BookOpenCheck,
   Check,
   Clock3,
   Download,
@@ -19,6 +20,7 @@ import { Button, ProgressBar } from "@vellumai/design-library";
 
 import {
   RetentionApiError,
+  saveRetentionSegmentsToCopybook,
   type RetentionSegment,
   type RetentionSegmentRun,
 } from "./retention-api";
@@ -437,9 +439,13 @@ function AudienceRow({ segment }: { segment: RetentionSegment }) {
 export function RetentionAudiences({
   assistantId,
   selectedBrandId,
+  selectedBrandName,
+  saveSegmentsToCopybook = saveRetentionSegmentsToCopybook,
 }: {
   assistantId: string;
   selectedBrandId: string | null;
+  selectedBrandName?: string | null;
+  saveSegmentsToCopybook?: typeof saveRetentionSegmentsToCopybook;
 }) {
   const navigate = useNavigate();
   const audiences = useRetentionAudiences(assistantId, selectedBrandId);
@@ -447,6 +453,16 @@ export function RetentionAudiences({
     readStoredRunId(assistantId, selectedBrandId),
   );
   const [segmentLimit, setSegmentLimit] = useState(DEFAULT_SEGMENT_LIMIT);
+  const [copybookSaveState, setCopybookSaveState] = useState<
+    | { status: "idle" }
+    | { status: "saving" }
+    | {
+        status: "saved";
+        createdCampaigns: number;
+        skippedCampaigns: number;
+      }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
   const run = useRetentionSegmentRun(assistantId, runId);
   const startRun = useStartRetentionSegmentRun(assistantId);
 
@@ -480,6 +496,11 @@ export function RetentionAudiences({
     activeRun?.status === "queued" || activeRun?.status === "claimed";
   const resumable =
     activeRun?.status === "paused" || activeRun?.status === "failed";
+  const reviewableSegments = segments.filter(
+    (segment) =>
+      segment.campaignConcept !== null &&
+      segment.sampleMessages.some((sample) => sample.qualityStatus !== "blocked"),
+  );
 
   function beginReview() {
     if (!brandId) return;
@@ -508,6 +529,32 @@ export function RetentionAudiences({
         },
       },
     );
+  }
+
+  async function saveToCopybook() {
+    if (!brandId || reviewableSegments.length === 0) return;
+    setCopybookSaveState({ status: "saving" });
+    try {
+      const result = await saveSegmentsToCopybook({
+        assistantId,
+        brandId,
+        brandName: selectedBrandName?.trim() || "Retention brand",
+        segments: reviewableSegments,
+      });
+      setCopybookSaveState({
+        status: "saved",
+        createdCampaigns: result.createdCampaigns,
+        skippedCampaigns: result.skippedCampaigns,
+      });
+    } catch (error) {
+      setCopybookSaveState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Worklin could not save these campaigns to Copybook.",
+      });
+    }
   }
 
   return (
@@ -622,16 +669,76 @@ export function RetentionAudiences({
                       : "Find audiences"}
               </Button>
               {segments.length > 0 ? (
-                <Button
-                  variant="outlined"
-                  leftIcon={<Download />}
-                  onClick={() => downloadRetentionAudienceSummary(segments)}
-                >
-                  Download summary
-                </Button>
+                <>
+                  <Button
+                    variant="outlined"
+                    leftIcon={
+                      copybookSaveState.status === "saving" ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <BookOpenCheck />
+                      )
+                    }
+                    disabled={
+                      copybookSaveState.status === "saving" ||
+                      reviewableSegments.length === 0
+                    }
+                    onClick={() => void saveToCopybook()}
+                  >
+                    {copybookSaveState.status === "saving"
+                      ? "Saving campaigns"
+                      : "Save to Copybook"}
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    leftIcon={<Download />}
+                    onClick={() => downloadRetentionAudienceSummary(segments)}
+                  >
+                    Download summary
+                  </Button>
+                </>
               ) : null}
             </div>
           </section>
+
+          {copybookSaveState.status === "saved" ? (
+            <div
+              className="flex items-start gap-3 border-y border-[var(--border-base)] py-4"
+              role="status"
+            >
+              <Check className="mt-0.5 size-5 shrink-0 text-[var(--content-success)]" />
+              <div>
+                <p className="text-body-medium-default text-[var(--content-emphasised)]">
+                  Saved to Copybook
+                </p>
+                <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+                  {copybookSaveState.createdCampaigns.toLocaleString()}{" "}
+                  micro-campaign{" "}
+                  {copybookSaveState.createdCampaigns === 1 ? "package" : "packages"}{" "}
+                  added
+                  {copybookSaveState.skippedCampaigns > 0
+                    ? `, ${copybookSaveState.skippedCampaigns.toLocaleString()} already existed`
+                    : ""}
+                  .
+                </p>
+              </div>
+            </div>
+          ) : copybookSaveState.status === "error" ? (
+            <div
+              className="flex items-start gap-3 border-y border-[var(--border-base)] py-4"
+              role="alert"
+            >
+              <AlertCircle className="mt-0.5 size-5 shrink-0 text-[var(--system-warning-strong)]" />
+              <div>
+                <p className="text-body-medium-default text-[var(--content-emphasised)]">
+                  Copybook save failed
+                </p>
+                <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+                  {copybookSaveState.message}
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           {activeRun ? <RunProgress run={activeRun} /> : null}
 

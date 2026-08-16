@@ -5,7 +5,7 @@ const MAX_ROUTE_SEGMENT_LENGTH = 2_048;
 const SUPPORTED_METHODS = new Set(["DELETE", "GET", "PATCH", "POST", "PUT"]);
 
 export const ASSISTANT_RUNTIME_ROUTE_INVENTORY_SHA256 =
-  "32219aa6b9cb27f11446a6ba53c0c9e9d10c4bdc4a4bbc353396aa4b8e8c1be5";
+  "432136cc0d67dcbe971fc29db5530785e5ad8c5aee216ec8b520e0dd0b90ba91";
 
 /**
  * First-segment inventory for the assistant's declarative runtime routes.
@@ -219,6 +219,8 @@ export const POOLED_RUNTIME_REQUEST_BOUND_ROUTE_SIGNATURES = Object.freeze([
   "GET artifacts/:id",
   "GET bookmarks",
   "GET brands",
+  "GET copybooks",
+  "GET copybooks/:id",
   "GET documents",
   "GET documents/:id",
   "GET documents/:id/comments",
@@ -226,10 +228,15 @@ export const POOLED_RUNTIME_REQUEST_BOUND_ROUTE_SIGNATURES = Object.freeze([
   "GET memory-items",
   "GET memory-items/:id",
   "PATCH artifacts/:id",
+  "PATCH copybook-months/:id",
   "PATCH documents/:id/comments/:commentId",
   "PATCH groups/:groupId",
   "PATCH memory-items/:id",
   "POST bookmarks",
+  "POST brands",
+  "POST copybook-months/:id/campaigns",
+  "POST copybooks",
+  "POST copybooks/:id/months",
   "POST documents",
   "POST documents/:id/comments",
   "POST documents/:id/conversations",
