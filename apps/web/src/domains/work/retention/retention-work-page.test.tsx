@@ -204,27 +204,73 @@ describe("RetentionWorkPage", () => {
   test("ignores Unassigned in brand selection", () => {
     const originalBrands = workDataState.brands;
     workDataState.brands = [unassignedBrand];
+    try {
+      queryState = {
+        data: {
+          integrations: [],
+          jobs: {},
+          externalWritesEnabled: false,
+          sendEnabled: false,
+        },
+        isError: false,
+        isFetching: false,
+        isPending: false,
+        refetch,
+      };
 
-    queryState = {
-      data: {
-        integrations: [],
-        jobs: {},
-        externalWritesEnabled: false,
-        sendEnabled: false,
-      },
-      isError: false,
-      isFetching: false,
-      isPending: false,
-      refetch,
-    };
+      renderPage();
 
-    renderPage();
+      expect(screen.queryByLabelText("Retention brand selector")).toBeNull();
+      expect(screen.getByText("Connect the customer data first")).toBeTruthy();
+      expect(screen.queryByText("Unassigned")).toBeNull();
+    } finally {
+      workDataState.brands = originalBrands;
+    }
+  });
 
-    expect(screen.queryByLabelText("Retention brand selector")).toBeNull();
-    expect(screen.getByText("Select a brand")).toBeTruthy();
-    expect(screen.queryByText("Unassigned")).toBeNull();
+  test("starts in setup with clear actions when no brand is connected", async () => {
+    const originalBrands = workDataState.brands;
+    workDataState.brands = [];
+    try {
+      queryState = {
+        data: {
+          integrations: [],
+          jobs: {},
+          externalWritesEnabled: false,
+          sendEnabled: false,
+        },
+        isError: false,
+        isFetching: false,
+        isPending: false,
+        refetch,
+      };
 
-    workDataState.brands = originalBrands;
+      renderPage();
+
+      await waitFor(() =>
+        expect(
+          screen
+            .getByRole("tab", { name: "Setup" })
+            .getAttribute("aria-selected"),
+        ).toBe("true"),
+      );
+      expect(
+        screen
+          .getAllByRole("link", { name: "Connect Klaviyo" })[0]
+          ?.getAttribute("href"),
+      ).toBe("/assistant/settings/integrations?provider=klaviyo");
+      expect(
+        screen
+          .getAllByRole("link", { name: "Add brand context" })[0]
+          ?.getAttribute("href"),
+      ).toBe("/assistant/work");
+      expect(
+        screen.getByText(/before Worklin prepares micro-segments/iu),
+      ).toBeTruthy();
+      expect(screen.getByText("Connect the customer data first")).toBeTruthy();
+    } finally {
+      workDataState.brands = originalBrands;
+    }
   });
 
   test("uses connected retention brands when Work has no artifacts yet", async () => {
