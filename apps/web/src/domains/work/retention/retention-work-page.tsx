@@ -10,7 +10,7 @@ import {
   ShoppingBag,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
@@ -352,8 +352,7 @@ function RetentionErrorState({
 }
 
 export function RetentionWorkPage() {
-  const activeAssistantId =
-    useResolvedAssistantsStore.use.activeAssistantId();
+  const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   const selectedAssistantId =
     useResolvedAssistantsStore.use.selectedAssistantId();
   const assistantId = activeAssistantId ?? selectedAssistantId;
@@ -379,13 +378,39 @@ export function RetentionWorkPage() {
 function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
   const { brands, isLoading: isBrandsLoading } = useWorkData(assistantId);
-  const selectableBrands = brands.filter(
-    (brand) => brand.id !== UNASSIGNED_BRAND_ID,
-  );
   const storageKey = `worklin:last-retention-brand:${assistantId}`;
+  const [selectedBrandId, setSelectedBrandId] = useState<string | null>(null);
+  const query = useRetentionStatus(assistantId, selectedBrandId);
+  const selectableBrands = useMemo(() => {
+    const byId = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+      }
+    >();
+    for (const brand of brands) {
+      if (brand.id !== UNASSIGNED_BRAND_ID) {
+        byId.set(brand.id, { id: brand.id, name: brand.name });
+      }
+    }
+    for (const integration of query.data?.integrations ?? []) {
+      if (!byId.has(integration.brandId)) {
+        byId.set(integration.brandId, {
+          id: integration.brandId,
+          name: integration.brandName,
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [brands, query.data?.integrations]);
   const initialBrandId = (() => {
     const savedBrandId =
-      typeof window === "undefined" ? null : window.localStorage.getItem(storageKey);
+      typeof window === "undefined"
+        ? null
+        : window.localStorage.getItem(storageKey);
 
     if (
       savedBrandId &&
@@ -397,19 +422,22 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
 
     return selectableBrands[0]?.id ?? null;
   })();
-  const [selectedBrandId, setSelectedBrandId] = useState<string | null>(
-    initialBrandId,
-  );
-  const query = useRetentionStatus(assistantId, selectedBrandId);
+  useEffect(() => {
+    if (selectedBrandId === null && initialBrandId !== null) {
+      setSelectedBrandId(initialBrandId);
+    }
+  }, [initialBrandId, selectedBrandId]);
   const [activeView, setActiveView] = useState<
     "campaigns" | "audiences" | "setup" | "health"
   >("campaigns");
-  const selectedBrand = brands.find((brand) => brand.id === selectedBrandId);
+  const selectedBrand = selectableBrands.find(
+    (brand) => brand.id === selectedBrandId,
+  );
   const selectedBrandIntegrations = selectedBrandId
     ? (query.data?.integrations ?? []).filter(
         (integration) => integration.brandId === selectedBrandId,
       )
-    : query.data?.integrations ?? [];
+    : (query.data?.integrations ?? []);
 
   useEffect(() => {
     if (isBrandsLoading) {
@@ -419,13 +447,12 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
     const preferredBrandId =
       typeof window === "undefined"
         ? null
-        : brands.find(
+        : selectableBrands.find(
             (brand) =>
               brand.id === window.localStorage.getItem(storageKey) &&
               brand.id !== UNASSIGNED_BRAND_ID,
           )?.id;
-    const nextBrandId =
-      preferredBrandId ?? selectableBrands[0]?.id ?? null;
+    const nextBrandId = preferredBrandId ?? selectableBrands[0]?.id ?? null;
 
     if (nextBrandId !== selectedBrandId) {
       setSelectedBrandId(nextBrandId);
@@ -482,10 +509,7 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
                     const nextBrandId = event.currentTarget.value;
                     setSelectedBrandId(nextBrandId);
                     if (typeof window !== "undefined") {
-                      window.localStorage.setItem(
-                        storageKey,
-                        nextBrandId,
-                      );
+                      window.localStorage.setItem(storageKey, nextBrandId);
                     }
                   }}
                   disabled={isBrandsLoading || selectableBrands.length === 0}

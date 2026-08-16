@@ -1,13 +1,12 @@
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  mock,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -228,6 +227,48 @@ describe("RetentionWorkPage", () => {
     workDataState.brands = originalBrands;
   });
 
+  test("uses connected retention brands when Work has no artifacts yet", async () => {
+    const originalBrands = workDataState.brands;
+    workDataState.brands = [];
+
+    queryState = {
+      data: {
+        integrations: [
+          {
+            brandId: "00000000-0000-4000-8000-000000000123",
+            brandName: "Connected Klaviyo Brand",
+            provider: "klaviyo",
+            status: "active",
+            lastWebhookAt: null,
+            lastPolledAt: null,
+            lastReconciledAt: null,
+            lastErrorCode: null,
+          },
+        ],
+        jobs: {},
+        externalWritesEnabled: false,
+        sendEnabled: false,
+      },
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      refetch,
+    };
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Retention brand selector")).toBeTruthy(),
+    );
+    expect(screen.getByText("Connected Klaviyo Brand")).toBeTruthy();
+    expect(screen.queryByText("Connect at least one brand in Work")).toBeNull();
+    await waitFor(() =>
+      expect(queriedBrandId).toBe("00000000-0000-4000-8000-000000000123"),
+    );
+
+    workDataState.brands = originalBrands;
+  });
+
   test("formats ingestion freshness for operators", () => {
     const now = Date.parse("2026-07-28T12:00:00.000Z");
 
@@ -309,5 +350,4 @@ describe("RetentionWorkPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(refetch).toHaveBeenCalledTimes(1);
   });
-
 });
