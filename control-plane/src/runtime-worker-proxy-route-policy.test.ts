@@ -173,7 +173,7 @@ describe("runtime worker proxy route inventory", () => {
 
   test("pins the exact method and endpoint inventory used for the safety review", () => {
     const inventory = routeSignaturesDeclaredByAssistant();
-    expect(inventory).toHaveLength(552);
+    expect(inventory).toHaveLength(553);
     expect(
       createHash("sha256").update(inventory.join("\n")).digest("hex"),
     ).toBe(ASSISTANT_RUNTIME_ROUTE_INVENTORY_SHA256);
@@ -236,6 +236,10 @@ describe("runtime worker proxy route inventory", () => {
       ["GET", "workspace/tree"],
       ["POST", "memory-items"],
       ["GET", "documents"],
+      ["POST", "brands"],
+      ["POST", "copybooks"],
+      ["POST", "copybooks/copybook-1/months"],
+      ["POST", "copybook-months/month-1/campaigns"],
       ["GET", "home/state"],
       ["GET", "skills"],
       ["POST", "tasks/queue/add"],

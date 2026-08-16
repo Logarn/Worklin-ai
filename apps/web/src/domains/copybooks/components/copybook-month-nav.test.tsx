@@ -42,6 +42,12 @@ const MONTHS: CopybookMonth[] = [
           eligibleCount: 108,
           sampleCount: 2,
           draftSubjects: ["A simpler way to choose", "Start with what fits"],
+          representativeMessages: [
+            {
+              subject: "A simpler way to choose",
+              body: "If you were comparing options, start with the product that fits your current routine.",
+            },
+          ],
         },
         createdAt: 1,
         updatedAt: 1,
@@ -106,6 +112,9 @@ describe("CopybookMonthNav", () => {
     expect(campaignRows[0]).toContain("2 drafts");
     expect(campaignRows[0]).toContain(
       "Subjects: A simpler way to choose / Start with what fits",
+    );
+    expect(campaignRows[0]).toContain(
+      "Copy: If you were comparing options, start with the product that fits your current routine.",
     );
   });
 

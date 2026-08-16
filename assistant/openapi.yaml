@@ -3446,6 +3446,63 @@ paths:
                   - brands
                   - unassignedArtifactCount
                 additionalProperties: false
+    post:
+      operationId: brands_post
+      summary: Create or update an artifact brand
+      description: Create a Work brand shell so copybooks and other artifacts can be organized before a full brand brain exists.
+      tags:
+        - artifacts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 3
+                  maxLength: 128
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                source:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                metadata:
+                  anyOf:
+                    - type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties: {}
+                    - type: "null"
+              required:
+                - id
+                - name
+      responses:
+        "201":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  artifactCount:
+                    type: number
+                  updatedAt:
+                    type: number
+                required:
+                  - id
+                  - name
+                  - artifactCount
+                  - updatedAt
+                additionalProperties: false
   /v1/browser/execute:
     post:
       operationId: browser_execute_post

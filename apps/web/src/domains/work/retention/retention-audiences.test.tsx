@@ -22,6 +22,14 @@ const importRefetch = mock(async () => {});
 const segmentRefetch = mock(async () => {});
 const setActiveConversationId = mock((_id: string) => {});
 const setMainView = mock((_view: string) => {});
+const saveRetentionSegmentsToCopybook = mock(async (_input: unknown) => ({
+  copybookId: "copybook-1",
+  monthId: "month-1",
+  year: 2026,
+  month: 8,
+  createdCampaigns: 1,
+  skippedCampaigns: 0,
+}));
 const startMutate = mock(
   (
     _input: unknown,
@@ -90,6 +98,8 @@ function renderAudiences() {
             <RetentionAudiences
               assistantId="assistant-1"
               selectedBrandId={BRAND_ID}
+              selectedBrandName="Example Brand"
+              saveSegmentsToCopybook={saveRetentionSegmentsToCopybook}
             />
           }
         />
@@ -107,6 +117,7 @@ afterEach(() => {
   startMutate.mockClear();
   setActiveConversationId.mockClear();
   setMainView.mockClear();
+  saveRetentionSegmentsToCopybook.mockClear();
 });
 
 afterAll(() => {
@@ -390,5 +401,108 @@ describe("RetentionAudiences", () => {
       "Message samples for Recent product browsers",
     );
     expect(samples.querySelector('[class*="lg:grid-cols-2"]')).toBeTruthy();
+  });
+
+  test("saves reviewable micro-campaign packages to Copybook", async () => {
+    audiencesState = {
+      brandId: BRAND_ID,
+      imports: {
+        data: [],
+        error: null,
+        isError: false,
+        isPending: false,
+        refetch: importRefetch,
+      },
+      segments: {
+        ...emptyQueryState(),
+        data: [
+          {
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            name: "Recent product browsers",
+            description: "People showing recent interest but no purchase yet.",
+            totalCount: 18,
+            eligibleCount: 16,
+            evidence: [
+              {
+                signal: "Recent product view",
+                explanation: "Viewed a product in the last seven days",
+                strength: "strong",
+                source: "event",
+              },
+            ],
+            confidence: 0.82,
+            changeSincePriorRun: 3,
+            campaignConcept: {
+              objective: "Turn active interest into a first order.",
+              angle: "Lead with the product category they explored.",
+              timing: "Within two days",
+              callToAction: "Find your best fit",
+            },
+            sampleMessages: [
+              {
+                subject: "Still deciding?",
+                preheader: "A simple way to choose",
+                body: "Here is a clearer way to find the right option.",
+                explanation: "Supports an active product decision.",
+                qualityStatus: "passed",
+              },
+            ],
+            updatedAt: "2026-08-04T10:01:00.000Z",
+          },
+          {
+            id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            name: "Weak generic group",
+            description: "Not ready for a campaign.",
+            totalCount: 8,
+            eligibleCount: 8,
+            evidence: [],
+            confidence: 0.4,
+            changeSincePriorRun: null,
+            campaignConcept: null,
+            sampleMessages: [
+              {
+                subject: "Blocked draft",
+                preheader: null,
+                body: "This should not be saved.",
+                explanation: "Withheld by quality review.",
+                qualityStatus: "blocked",
+              },
+            ],
+            updatedAt: "2026-08-04T10:01:00.000Z",
+          },
+        ],
+      },
+    };
+    runState = { data: undefined, error: null, isError: false };
+    startState = {
+      data: undefined,
+      error: null,
+      isError: false,
+      isPending: false,
+      mutate: startMutate,
+    };
+
+    renderAudiences();
+    fireEvent.click(screen.getByRole("button", { name: "Save to Copybook" }));
+
+    await waitFor(() => {
+      expect(saveRetentionSegmentsToCopybook).toHaveBeenCalledTimes(1);
+    });
+    expect(saveRetentionSegmentsToCopybook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assistantId: "assistant-1",
+        brandId: BRAND_ID,
+        brandName: "Example Brand",
+      }),
+    );
+    expect(
+      (
+        saveRetentionSegmentsToCopybook.mock.calls[0]?.[0] as {
+          segments: Array<{ id: string }>;
+        }
+      ).segments.map((segment) => segment.id),
+    ).toEqual(["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]);
+    expect(await screen.findByText("Saved to Copybook")).toBeTruthy();
+    expect(screen.getByText(/1 micro-campaign package added/iu)).toBeTruthy();
   });
 });

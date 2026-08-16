@@ -7,6 +7,7 @@ describe("artifact routes", () => {
   test("exposes brand, list, detail, and update routes with policies", () => {
     expect(ROUTES.map((route) => `${route.method} ${route.endpoint}`)).toEqual([
       "GET brands",
+      "POST brands",
       "GET artifacts",
       "GET artifacts/:id",
       "PATCH artifacts/:id",

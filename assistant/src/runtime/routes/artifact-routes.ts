@@ -3,6 +3,7 @@ import { z } from "zod";
 import { SYNC_TAGS } from "../../daemon/message-types/sync.js";
 import {
   ArtifactStoreError,
+  createArtifactBrand,
   getArtifact,
   listArtifacts,
   listBrandArtifactSummaries,
@@ -24,6 +25,12 @@ const writePolicy: RoutePolicy = {
 };
 
 const metadataSchema = z.record(z.string(), z.unknown());
+const brandSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  artifactCount: z.number(),
+  updatedAt: z.number(),
+});
 
 const artifactSchema = z.object({
   id: z.string(),
@@ -88,17 +95,46 @@ export const ROUTES: RouteDefinition[] = [
     description: "Return brand summaries with active artifact counts.",
     tags: ["artifacts"],
     responseBody: z.object({
-      brands: z.array(
-        z.object({
-          id: z.string(),
-          name: z.string(),
-          artifactCount: z.number(),
-          updatedAt: z.number(),
-        }),
-      ),
+      brands: z.array(brandSchema),
       unassignedArtifactCount: z.number(),
     }),
     handler: () => listBrandArtifactSummaries(),
+  },
+  {
+    operationId: "createArtifactBrand",
+    endpoint: "brands",
+    method: "POST",
+    policy: writePolicy,
+    summary: "Create or update an artifact brand",
+    description:
+      "Create a Work brand shell so copybooks and other artifacts can be organized before a full brand brain exists.",
+    tags: ["artifacts"],
+    requestBody: z.object({
+      id: z.string().min(3).max(128),
+      name: z.string().min(1).max(200),
+      source: z.string().min(1).max(64).optional(),
+      metadata: metadataSchema.nullable().optional(),
+    }),
+    responseBody: brandSchema,
+    responseStatus: "201",
+    handler: async ({ body }) => {
+      const input = parseOrBadRequest(
+        z.object({
+          id: z.string().min(3).max(128),
+          name: z.string().min(1).max(200),
+          source: z.string().min(1).max(64).optional(),
+          metadata: metadataSchema.nullable().optional(),
+        }),
+        body ?? {},
+      );
+      try {
+        const brand = createArtifactBrand(input);
+        await publishSyncInvalidation([SYNC_TAGS.artifactsList]);
+        return brand;
+      } catch (error) {
+        translateStoreError(error);
+      }
+    },
   },
   {
     operationId: "listArtifacts",

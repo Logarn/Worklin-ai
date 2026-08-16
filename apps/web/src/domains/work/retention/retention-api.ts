@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { client } from "@/generated/api/client.gen";
+import { client as daemonClient } from "@/generated/daemon/client.gen";
 import { assertHasResponse } from "@/utils/api-errors";
 import { throwRetentionResponseError } from "@/lib/retention/api-error";
 
@@ -352,6 +353,41 @@ const segmentListSchema = z.object({
   segments: z.array(segmentSchema),
 });
 
+const copybookRecordSchema = z.object({
+  id: z.string(),
+  brandId: z.string(),
+  year: z.number().int(),
+  title: z.string(),
+});
+
+const copybookListSchema = z.object({
+  copybooks: z.array(copybookRecordSchema),
+});
+
+const copybookMonthSchema = z.object({
+  id: z.string(),
+  copybookId: z.string(),
+  month: z.number().int().min(1).max(12),
+});
+
+const copybookDetailSchema = z.object({
+  copybook: copybookRecordSchema,
+  months: z.array(
+    copybookMonthSchema.extend({
+      campaigns: z.array(
+        z.object({
+          id: z.string(),
+          packageId: z.string().nullable(),
+        }),
+      ),
+    }),
+  ),
+});
+
+const conversationCreateSchema = z.object({ id: z.string() });
+
+const copybookCampaignSchema = z.object({ id: z.string() });
+
 export type RetentionProgramSummary = z.infer<
   typeof programListSchema
 >["programs"][number];
@@ -403,6 +439,15 @@ export interface RetentionSegment {
     qualityStatus: "passed" | "needs_review" | "blocked";
   }>;
   updatedAt: string;
+}
+
+export interface RetentionCopybookSaveResult {
+  copybookId: string;
+  monthId: string;
+  year: number;
+  month: number;
+  createdCampaigns: number;
+  skippedCampaigns: number;
 }
 
 export async function fetchRetentionCampaigns(
@@ -875,4 +920,288 @@ export async function fetchRetentionSegments(
       updatedAt: segment.createdAt,
     };
   });
+}
+
+async function ensureWorkBrand(input: {
+  assistantId: string;
+  brandId: string;
+  brandName: string;
+}): Promise<void> {
+  const { error, response } = await daemonClient.post<unknown, unknown>({
+    url: "/v1/assistants/{assistant_id}/brands",
+    path: { assistant_id: input.assistantId },
+    body: {
+      id: input.brandId,
+      name: input.brandName,
+      source: "retention-service",
+      metadata: { source: "retention_audience_review" },
+    },
+    throwOnError: false,
+  });
+  assertHasResponse(response, error, "Failed to create the Work brand.");
+  if (!response.ok) {
+    throw new Error("Failed to create the Work brand.");
+  }
+}
+
+async function ensureCopybook(input: {
+  assistantId: string;
+  brandId: string;
+  brandName: string;
+  year: number;
+}): Promise<z.infer<typeof copybookRecordSchema>> {
+  const title = `${input.brandName} // ${input.year} Campaign Copybook`;
+  const created = await daemonClient.post<unknown, unknown>({
+    url: "/v1/assistants/{assistant_id}/copybooks",
+    path: { assistant_id: input.assistantId },
+    body: { brandId: input.brandId, year: input.year, title },
+    throwOnError: false,
+  });
+  assertHasResponse(
+    created.response,
+    created.error,
+    "Failed to create the campaign copybook.",
+  );
+  if (created.response.ok) {
+    const parsed = copybookRecordSchema.safeParse(created.data);
+    if (!parsed.success) {
+      throw new Error("Campaign copybook response was invalid.");
+    }
+    return parsed.data;
+  }
+  if (created.response.status !== 409) {
+    throw new Error("Failed to create the campaign copybook.");
+  }
+
+  const listed = await daemonClient.get<unknown, unknown>({
+    url: "/v1/assistants/{assistant_id}/copybooks",
+    path: { assistant_id: input.assistantId },
+    query: { brandId: input.brandId, year: input.year },
+    throwOnError: false,
+  });
+  assertHasResponse(
+    listed.response,
+    listed.error,
+    "Failed to load the campaign copybook.",
+  );
+  if (!listed.response.ok) {
+    throw new Error("Failed to load the campaign copybook.");
+  }
+  const parsed = copybookListSchema.safeParse(listed.data);
+  if (!parsed.success || parsed.data.copybooks.length === 0) {
+    throw new Error("Campaign copybook response was invalid.");
+  }
+  return parsed.data.copybooks[0]!;
+}
+
+async function loadCopybookDetail(
+  assistantId: string,
+  copybookId: string,
+): Promise<z.infer<typeof copybookDetailSchema>> {
+  const result = await daemonClient.get<unknown, unknown>({
+    url: "/v1/assistants/{assistant_id}/copybooks/{id}",
+    path: { assistant_id: assistantId, id: copybookId },
+    throwOnError: false,
+  });
+  assertHasResponse(result.response, result.error, "Failed to load copybook.");
+  if (!result.response.ok) {
+    throw new Error("Failed to load copybook.");
+  }
+  const parsed = copybookDetailSchema.safeParse(result.data);
+  if (!parsed.success) {
+    throw new Error("Copybook response was invalid.");
+  }
+  return parsed.data;
+}
+
+async function ensureCopybookMonth(input: {
+  assistantId: string;
+  copybookId: string;
+  brandId: string;
+  brandName: string;
+  year: number;
+  month: number;
+}): Promise<z.infer<typeof copybookMonthSchema>> {
+  const existing = await loadCopybookDetail(input.assistantId, input.copybookId);
+  const existingMonth = existing.months.find(
+    (month) => month.month === input.month,
+  );
+  if (existingMonth) return existingMonth;
+
+  const conversation = await daemonClient.post<unknown, unknown>({
+    url: "/v1/assistants/{assistant_id}/conversations",
+    path: { assistant_id: input.assistantId },
+    body: {
+      conversationKey: `retention-copybook:${input.brandId}:${input.year}:${input.month}`,
+      conversationType: "standard",
+    },
+    throwOnError: false,
+  });
+  assertHasResponse(
+    conversation.response,
+    conversation.error,
+    "Failed to prepare the campaign workspace.",
+  );
+  if (!conversation.response.ok) {
+    throw new Error("Failed to prepare the campaign workspace.");
+  }
+  const parsedConversation = conversationCreateSchema.safeParse(
+    conversation.data,
+  );
+  if (!parsedConversation.success) {
+    throw new Error("Campaign workspace response was invalid.");
+  }
+
+  const created = await daemonClient.post<unknown, unknown>({
+    url: "/v1/assistants/{assistant_id}/copybooks/{id}/months",
+    path: { assistant_id: input.assistantId, id: input.copybookId },
+    body: {
+      month: input.month,
+      conversationId: parsedConversation.data.id,
+      title: `${input.brandName}: ${input.year} Micro-campaign Review`,
+    },
+    throwOnError: false,
+  });
+  assertHasResponse(
+    created.response,
+    created.error,
+    "Failed to create the campaign month.",
+  );
+  if (created.response.ok) {
+    const parsed = copybookMonthSchema.safeParse(created.data);
+    if (!parsed.success) {
+      throw new Error("Campaign month response was invalid.");
+    }
+    return parsed.data;
+  }
+  if (created.response.status !== 409) {
+    throw new Error("Failed to create the campaign month.");
+  }
+  const refreshed = await loadCopybookDetail(input.assistantId, input.copybookId);
+  const refreshedMonth = refreshed.months.find(
+    (month) => month.month === input.month,
+  );
+  if (!refreshedMonth) {
+    throw new Error("Campaign month response was invalid.");
+  }
+  return refreshedMonth;
+}
+
+function campaignMetadata(segment: RetentionSegment) {
+  const representativeMessages = segment.sampleMessages.filter(
+    (sample) => sample.qualityStatus !== "blocked",
+  );
+  return {
+    source: "retention_segment_run",
+    microSegmentId: segment.id,
+    microSegmentName: segment.name,
+    description: segment.description,
+    confidence: segment.confidence,
+    totalCount: segment.totalCount,
+    eligibleCount: segment.eligibleCount,
+    evidence: segment.evidence,
+    campaignConcept: segment.campaignConcept,
+    ...(segment.campaignConcept?.objective
+      ? { campaignObjective: segment.campaignConcept.objective }
+      : {}),
+    ...(segment.campaignConcept?.angle
+      ? { campaignAngle: segment.campaignConcept.angle }
+      : {}),
+    ...(segment.campaignConcept?.timing
+      ? { campaignTiming: segment.campaignConcept.timing }
+      : {}),
+    ...(segment.campaignConcept?.callToAction
+      ? { campaignCallToAction: segment.campaignConcept.callToAction }
+      : {}),
+    representativeMessages,
+    sampleCount: representativeMessages.length,
+    draftSubjects: representativeMessages
+      .map((sample) => sample.subject.trim())
+      .filter(Boolean)
+      .slice(0, 5),
+    reviewOnly: true,
+  };
+}
+
+export async function saveRetentionSegmentsToCopybook(input: {
+  assistantId: string;
+  brandId: string;
+  brandName: string;
+  segments: RetentionSegment[];
+  now?: Date;
+}): Promise<RetentionCopybookSaveResult> {
+  const reviewableSegments = input.segments.filter(
+    (segment) =>
+      segment.campaignConcept !== null &&
+      segment.sampleMessages.some((sample) => sample.qualityStatus !== "blocked"),
+  );
+  if (reviewableSegments.length === 0) {
+    throw new Error("There are no reviewable micro-campaigns to save.");
+  }
+
+  const now = input.now ?? new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  await ensureWorkBrand(input);
+  const copybook = await ensureCopybook({ ...input, year });
+  const copybookMonth = await ensureCopybookMonth({
+    ...input,
+    copybookId: copybook.id,
+    year,
+    month,
+  });
+  const detail = await loadCopybookDetail(input.assistantId, copybook.id);
+  const activeMonth = detail.months.find((item) => item.id === copybookMonth.id);
+  const existingPackageIds = new Set(
+    activeMonth?.campaigns
+      .map((campaign) => campaign.packageId)
+      .filter((value): value is string => value !== null) ?? [],
+  );
+
+  let createdCampaigns = 0;
+  let skippedCampaigns = 0;
+  let ordinal = (activeMonth?.campaigns.length ?? 0) + 1;
+  for (const segment of reviewableSegments) {
+    const packageId = `retention-segment:${segment.id}`;
+    if (existingPackageIds.has(packageId)) {
+      skippedCampaigns += 1;
+      continue;
+    }
+    const created = await daemonClient.post<unknown, unknown>({
+      url: "/v1/assistants/{assistant_id}/copybook-months/{id}/campaigns",
+      path: { assistant_id: input.assistantId, id: copybookMonth.id },
+      body: {
+        channel: "email",
+        ordinal,
+        title: `${segment.name} // ${segment.campaignConcept?.objective ?? "Micro-campaign"}`,
+        packageId,
+        metadata: campaignMetadata(segment),
+      },
+      throwOnError: false,
+    });
+    assertHasResponse(
+      created.response,
+      created.error,
+      "Failed to save a micro-campaign.",
+    );
+    if (!created.response.ok) {
+      throw new Error("Failed to save a micro-campaign.");
+    }
+    const parsed = copybookCampaignSchema.safeParse(created.data);
+    if (!parsed.success) {
+      throw new Error("Micro-campaign response was invalid.");
+    }
+    existingPackageIds.add(packageId);
+    createdCampaigns += 1;
+    ordinal += 1;
+  }
+
+  return {
+    copybookId: copybook.id,
+    monthId: copybookMonth.id,
+    year,
+    month,
+    createdCampaigns,
+    skippedCampaigns,
+  };
 }

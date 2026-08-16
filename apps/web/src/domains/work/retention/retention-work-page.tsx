@@ -602,6 +602,7 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
           <RetentionAudiences
             assistantId={assistantId}
             selectedBrandId={selectedBrandId}
+            selectedBrandName={selectedBrand?.name ?? null}
           />
         ) : activeView === "setup" ? (
           <RetentionSetup
