@@ -7,6 +7,7 @@ import {
   rename,
   rm,
   stat,
+  statfs,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -20,6 +21,22 @@ const log = getLogger("db-protection");
 const BACKUP_FILE_PREFIX = "assistant.db.backup-";
 const BACKUP_FILE_PATTERN = /^assistant\.db\.backup-\d+-[0-9a-f-]+\.sqlite$/;
 const DEFAULT_BACKUP_RETENTION = 3;
+const MINIMUM_BACKUP_HEADROOM_BYTES = 64 * 1024 * 1024;
+const BACKUP_HEADROOM_RATIO = 0.1;
+
+export class InsufficientDatabaseBackupSpaceError extends Error {
+  constructor(
+    readonly availableBytes: number,
+    readonly requiredBytes: number,
+    readonly sourceSizeBytes: number,
+    readonly headroomBytes: number,
+  ) {
+    super(
+      `Database backup needs ${requiredBytes} bytes but only ${availableBytes} bytes are available`,
+    );
+    this.name = "InsufficientDatabaseBackupSpaceError";
+  }
+}
 
 export interface DatabaseHealth {
   ok: boolean;
@@ -37,6 +54,35 @@ export interface DatabaseBackup {
 export interface DatabaseProtectionResult {
   health: DatabaseHealth;
   backup: DatabaseBackup | null;
+}
+
+export interface DatabaseBackupCapacity {
+  availableBytes: number;
+  requiredBytes: number;
+  sourceSizeBytes: number;
+  headroomBytes: number;
+  sufficient: boolean;
+}
+
+export function calculateDatabaseBackupCapacity(
+  sourceSizeBytes: number,
+  availableBytes: number,
+): DatabaseBackupCapacity {
+  const normalizedSourceSize = Math.max(0, sourceSizeBytes);
+  const normalizedAvailable = Math.max(0, availableBytes);
+  const headroomBytes = Math.max(
+    MINIMUM_BACKUP_HEADROOM_BYTES,
+    Math.ceil(normalizedSourceSize * BACKUP_HEADROOM_RATIO),
+  );
+  const requiredBytes = normalizedSourceSize + headroomBytes;
+
+  return {
+    availableBytes: normalizedAvailable,
+    requiredBytes,
+    sourceSizeBytes: normalizedSourceSize,
+    headroomBytes,
+    sufficient: normalizedAvailable >= requiredBytes,
+  };
 }
 
 /**
@@ -104,6 +150,21 @@ export async function createLocalDatabaseBackup(
   );
 
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
+  const sourceSizeBytes = (await stat(dbPath)).size;
+  const fileSystem = await statfs(backupDir);
+  const capacity = calculateDatabaseBackupCapacity(
+    sourceSizeBytes,
+    fileSystem.bavail * fileSystem.bsize,
+  );
+  if (!capacity.sufficient) {
+    throw new InsufficientDatabaseBackupSpaceError(
+      capacity.availableBytes,
+      capacity.requiredBytes,
+      capacity.sourceSizeBytes,
+      capacity.headroomBytes,
+    );
+  }
+
   const destination = join(
     backupDir,
     `${BACKUP_FILE_PREFIX}${options.nowMs ?? Date.now()}-${randomUUID()}.sqlite`,
@@ -165,6 +226,19 @@ export async function protectDatabaseOnStartup(): Promise<DatabaseProtectionResu
     );
     return { health, backup };
   } catch (err) {
+    if (err instanceof InsufficientDatabaseBackupSpaceError) {
+      log.warn(
+        {
+          dbPath,
+          availableBytes: err.availableBytes,
+          requiredBytes: err.requiredBytes,
+          sourceSizeBytes: err.sourceSizeBytes,
+          headroomBytes: err.headroomBytes,
+        },
+        "Database is healthy but startup backup was skipped because the volume lacks space",
+      );
+      return { health, backup: null };
+    }
     log.error({ err, dbPath }, "Database backup failed after health check");
     return { health, backup: null };
   }
@@ -194,6 +268,18 @@ export async function protectDatabaseDuringMaintenance(): Promise<DatabaseBackup
     );
     return backup;
   } catch (err) {
+    if (err instanceof InsufficientDatabaseBackupSpaceError) {
+      log.warn(
+        {
+          availableBytes: err.availableBytes,
+          requiredBytes: err.requiredBytes,
+          sourceSizeBytes: err.sourceSizeBytes,
+          headroomBytes: err.headroomBytes,
+        },
+        "Database maintenance backup skipped because the volume lacks space",
+      );
+      return null;
+    }
     log.warn({ err }, "Database maintenance backup failed (non-fatal)");
     return null;
   }
