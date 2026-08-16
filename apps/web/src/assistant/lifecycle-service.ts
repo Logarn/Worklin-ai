@@ -302,6 +302,20 @@ class AssistantLifecycleService {
         });
         if (generation !== this.generation) return;
       }
+      // A remembered multi-assistant selection can point at a failed runtime
+      // while the account's default assistant is still healthy. Do not trap the
+      // user on the failed row after login; clear the stale choice and resolve
+      // the default assistant instead. If the default is also failed, the normal
+      // error path below still reports it.
+      if (selectedId && result.ok && result.data.runtime_status === "failed") {
+        useResolvedAssistantsStore.getState().setSelectedAssistant(null);
+        result = await this.inputs.queryClient.fetchQuery({
+          queryKey: ASSISTANT_QUERY_KEY,
+          queryFn: () => getAssistant(),
+          staleTime: 0,
+        });
+        if (generation !== this.generation) return;
+      }
       await this.applyServerStateUpdate(result);
     } catch (err) {
       console.error("Error checking assistant status:", err);
