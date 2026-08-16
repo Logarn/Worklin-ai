@@ -157,6 +157,18 @@ ENV PATH="${PYTHONUSERBASE}/bin:${PATH}"
 
 COPY --from=builder /app /app
 
+# Browser tasks must be ready on the first request. Keep the Playwright browser
+# in a shared image path so the non-root assistant process can use the binary
+# installed during the build instead of downloading Chromium at runtime.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}" && \
+    cd /app/assistant && \
+    bunx playwright install chromium && \
+    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}" && \
+    runuser -u assistant -g assistant -G vellum -- \
+      env PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH}" \
+      bun -e 'import { existsSync } from "node:fs"; import { chromium } from "playwright"; if (!existsSync(chromium.executablePath())) process.exit(1)'
+
 RUN chmod 0555 /app/assistant/src/index.ts && \
     ln -sf /app/assistant/src/index.ts /usr/local/bin/assistant
 
