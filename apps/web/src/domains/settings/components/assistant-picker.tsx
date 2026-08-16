@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { Check, Monitor } from "lucide-react";
-import { useMemo } from "react";
+import { Check, Monitor, Plus } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import { isHostedAssistant } from "@/assistant/hosting";
 import { setSelectedAssistant } from "@/assistant/selection";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { DetailCard } from "@/components/detail-card";
+import { CreateAssistantDialog } from "@/components/create-assistant-dialog";
 import { assistantsListOptions } from "@/generated/api/@tanstack/react-query.gen";
 import type { Assistant } from "@/generated/api/types.gen";
 import { isLocalMode } from "@/lib/local-mode";
@@ -18,6 +19,7 @@ const PLATFORM_LIST_OPTIONS = assistantsListOptions({
 });
 
 export function AssistantPicker() {
+  const [createOpen, setCreateOpen] = useState(false);
   const activeAssistantId = useActiveAssistantId();
   const listQuery = useQuery(PLATFORM_LIST_OPTIONS);
   const platformAssistants = useMemo(
@@ -33,61 +35,78 @@ export function AssistantPicker() {
   }
 
   return (
-    <DetailCard
-      title="Switch Assistant"
-      subtitle="Choose which assistant is active for this account."
-    >
-      <div className="space-y-2">
-        {platformAssistants.map((a) => {
-          const isActive = a.id === activeAssistantId;
+    <>
+      <DetailCard
+        title="Switch Assistant"
+        subtitle="Choose which assistant is active for this account."
+      >
+        <div className="space-y-2">
+          {platformAssistants.map((a) => {
+            const isActive = a.id === activeAssistantId;
 
-          return (
-            <div
-              key={a.id}
-              className={`flex items-center justify-between gap-4 rounded-lg border px-4 py-3 ${
-                isActive
-                  ? "border-[var(--border-focus)] bg-[var(--surface-lift)]"
-                  : "border-[var(--border-base)] bg-[var(--surface-default)]"
-              }`}
-            >
-              <div className="flex min-w-0 items-center gap-3">
-                <Monitor className="h-4 w-4 shrink-0 text-[var(--content-tertiary)]" />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-body-medium-default text-[var(--content-default)]">
-                      {a.name || "Unnamed"}
-                    </span>
-                    {a.status !== "active" && (
-                      <Tag tone="warning">{a.status}</Tag>
-                    )}
+            return (
+              <div
+                key={a.id}
+                className={`flex items-center justify-between gap-4 rounded-lg border px-4 py-3 ${
+                  isActive
+                    ? "border-[var(--border-focus)] bg-[var(--surface-lift)]"
+                    : "border-[var(--border-base)] bg-[var(--surface-default)]"
+                }`}
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <Monitor className="h-4 w-4 shrink-0 text-[var(--content-tertiary)]" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-body-medium-default text-[var(--content-default)]">
+                        {a.name || "Unnamed"}
+                      </span>
+                      {a.status !== "active" && (
+                        <Tag tone="warning">{a.status}</Tag>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="shrink-0">
-                {isActive ? (
-                  <span className="flex items-center gap-1.5 text-body-small-default text-[var(--system-positive-default)]">
-                    <Check className="h-4 w-4" />
-                    Active
-                  </span>
-                ) : (
-                  <Button
-                    variant="outlined"
-                    size="compact"
-                    disabled={a.status !== "active"}
-                    onClick={() => {
-                      void setSelectedAssistant(a.id);
-                      toast.success("Switched active assistant.");
-                    }}
-                  >
-                    Switch
-                  </Button>
-                )}
+                <div className="shrink-0">
+                  {isActive ? (
+                    <span className="flex items-center gap-1.5 text-body-small-default text-[var(--system-positive-default)]">
+                      <Check className="h-4 w-4" />
+                      Active
+                    </span>
+                  ) : (
+                    <Button
+                      variant="outlined"
+                      size="compact"
+                      disabled={a.status !== "active"}
+                      onClick={() => {
+                        void setSelectedAssistant(a.id);
+                        toast.success("Switched active assistant.");
+                      }}
+                    >
+                      Switch
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
-    </DetailCard>
+            );
+          })}
+          <Button
+            variant="outlined"
+            size="compact"
+            leftIcon={<Plus className="h-4 w-4" />}
+            onClick={() => setCreateOpen(true)}
+          >
+            New Assistant
+          </Button>
+        </div>
+      </DetailCard>
+      <CreateAssistantDialog
+        open={createOpen}
+        onClose={() => {
+          setCreateOpen(false);
+          void listQuery.refetch();
+        }}
+      />
+    </>
   );
 }
