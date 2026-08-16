@@ -1,4 +1,13 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+
+mock.restore();
 import {
   cleanup,
   fireEvent,
@@ -116,7 +125,7 @@ function CurrentLocation() {
 function renderSetup() {
   return render(
     <MemoryRouter>
-      <RetentionSetup assistantId="assistant-1" />
+      <RetentionSetup assistantId="assistant-1" selectedBrandId="brand-rachaa" />
       <CurrentLocation />
     </MemoryRouter>,
   );
@@ -128,6 +137,10 @@ afterEach(() => {
   pauseMutate.mockClear();
   importMutate.mockClear();
   klaviyoConnected = false;
+});
+
+afterAll(() => {
+  mock.restore();
 });
 
 describe("RetentionSetup", () => {

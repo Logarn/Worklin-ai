@@ -398,9 +398,11 @@ export interface RetentionSegment {
 
 export async function fetchRetentionCampaigns(
   assistantId: string,
+  brandId: string,
 ): Promise<RetentionCampaignSummary[]> {
   const { data, error, response } = await client.get<unknown, unknown>({
     url: "/v1/retention/campaigns",
+    query: { brandId },
     headers: { "X-Worklin-Assistant-Id": assistantId },
     throwOnError: false,
   });
@@ -469,10 +471,12 @@ export async function fetchRetentionCampaignPreview(
 export async function fetchRetentionCampaignApprovalPreview(
   assistantId: string,
   campaignId: string,
+  brandId: string,
 ): Promise<RetentionCampaignApprovalPreview> {
   const { data, error, response } = await client.get<unknown, unknown>({
     url: "/v1/retention/campaigns/{campaign_id}/approval-preview",
     path: { campaign_id: campaignId },
+    query: { brandId },
     headers: { "X-Worklin-Assistant-Id": assistantId },
     throwOnError: false,
   });
@@ -509,11 +513,13 @@ export async function fetchRetentionCampaignApprovalPreview(
 export async function approveRetentionCampaign(
   assistantId: string,
   campaignId: string,
+  brandId: string,
   expectedSnapshotSha256: string,
 ): Promise<RetentionCampaignApproval> {
   const { data, error, response } = await client.post<unknown, unknown>({
     url: "/v1/retention/campaigns/{campaign_id}/approve",
     path: { campaign_id: campaignId },
+    query: { brandId },
     body: { expectedSnapshotSha256 },
     headers: {
       "Content-Type": "application/json",
@@ -540,12 +546,14 @@ export async function approveRetentionCampaign(
 export async function releaseRetentionCampaign(
   assistantId: string,
   campaignId: string,
+  brandId: string,
   snapshotSha256: string,
   idempotencyKey: string,
 ): Promise<RetentionCampaignRelease> {
   const { data, error, response } = await client.post<unknown, unknown>({
     url: "/v1/retention/campaigns/{campaign_id}/release",
     path: { campaign_id: campaignId },
+    query: { brandId },
     body: { idempotencyKey, snapshotSha256 },
     headers: {
       "Content-Type": "application/json",
@@ -574,9 +582,11 @@ export async function releaseRetentionCampaign(
 
 export async function fetchRetentionPrograms(
   assistantId: string,
+  brandId: string,
 ): Promise<RetentionProgramSummary[]> {
   const { data, error, response } = await client.get<unknown, unknown>({
     url: "/v1/retention/programs",
+    query: { brandId },
     headers: { "X-Worklin-Assistant-Id": assistantId },
     throwOnError: false,
   });
@@ -598,10 +608,12 @@ export async function fetchRetentionPrograms(
 export async function fetchRetentionProgramApprovalPreview(
   assistantId: string,
   programId: string,
+  brandId: string,
 ): Promise<RetentionProgramApprovalPreview> {
   const { data, error, response } = await client.get<unknown, unknown>({
     url: "/v1/retention/programs/{program_id}/approval-preview",
     path: { program_id: programId },
+    query: { brandId },
     headers: { "X-Worklin-Assistant-Id": assistantId },
     throwOnError: false,
   });
@@ -623,11 +635,13 @@ export async function fetchRetentionProgramApprovalPreview(
 export async function activateRetentionProgram(
   assistantId: string,
   programId: string,
+  brandId: string,
   expectedPolicySha256: string,
 ): Promise<z.infer<typeof programActivationSchema>> {
   const { data, error, response } = await client.post<unknown, unknown>({
     url: "/v1/retention/programs/{program_id}/activate",
     path: { program_id: programId },
+    query: { brandId },
     body: { expectedPolicySha256 },
     headers: {
       "Content-Type": "application/json",
@@ -653,11 +667,13 @@ export async function activateRetentionProgram(
 export async function pauseRetentionProgram(
   assistantId: string,
   programId: string,
+  brandId: string,
   reason: string,
 ): Promise<z.infer<typeof programPauseSchema>> {
   const { data, error, response } = await client.post<unknown, unknown>({
     url: "/v1/retention/programs/{program_id}/pause",
     path: { program_id: programId },
+    query: { brandId },
     body: { reason },
     headers: {
       "Content-Type": "application/json",
@@ -682,10 +698,11 @@ export async function pauseRetentionProgram(
 
 export async function fetchRetentionImports(
   assistantId: string,
+  brandId: string,
 ): Promise<RetentionImportSummary[]> {
   const { data, error, response } = await client.get<unknown, unknown>({
     url: "/v1/retention/imports",
-    query: { limit: 50 },
+    query: { limit: 50, brandId },
     headers: { "X-Worklin-Assistant-Id": assistantId },
     throwOnError: false,
   });

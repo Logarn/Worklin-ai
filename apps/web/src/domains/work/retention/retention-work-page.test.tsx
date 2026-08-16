@@ -1,6 +1,15 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 
@@ -18,6 +27,31 @@ type QueryState = {
 const refetch = mock(async () => {});
 let queryState: QueryState;
 let queriedAssistantId: string | null = null;
+let queriedBrandId: string | null = null;
+const workDataState = {
+  brands: [
+    {
+      id: "brand-rachaa",
+      name: "Dr Rachael",
+      copybookCount: 0,
+      artifactCount: 0,
+    },
+    {
+      id: "brand-sea",
+      name: "Sea Moss",
+      copybookCount: 0,
+      artifactCount: 0,
+    },
+  ],
+  isLoading: false,
+  hasPartialError: false,
+};
+const unassignedBrand = {
+  id: "unassigned",
+  name: "Unassigned",
+  copybookCount: 0,
+  artifactCount: 2,
+};
 
 mock.module("@/components/layout/chat-layout-slots-store", () => ({
   useChatLayoutSlotsStore: {
@@ -26,34 +60,45 @@ mock.module("@/components/layout/chat-layout-slots-store", () => ({
 }));
 
 mock.module("./use-retention-status", () => ({
-  useRetentionStatus: (assistantId: string) => {
+  useRetentionStatus: (assistantId: string, selectedBrandId: string | null) => {
     queriedAssistantId = assistantId;
+    queriedBrandId = selectedBrandId;
     return queryState;
   },
 }));
 
-mock.module("./retention-campaign-review", () => ({
-  RetentionCampaignReview: () => <div>Campaign review test surface</div>,
+mock.module("../use-work-data", () => ({
+  UNASSIGNED_BRAND_ID: "unassigned",
+  useWorkData: () => workDataState,
 }));
 
 const { RetentionWorkPage, formatIngestionLag } =
   await import("./retention-work-page");
 
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+});
+
 function renderPage() {
+  queryClient.clear();
   return render(
     <MemoryRouter initialEntries={["/assistant/work/retention"]}>
-      <RetentionWorkPage />
+      <QueryClientProvider client={queryClient}>
+        <RetentionWorkPage />
+      </QueryClientProvider>
     </MemoryRouter>,
   );
 }
 
 describe("RetentionWorkPage", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     useResolvedAssistantsStore.setState({
       activeAssistantId: "assistant-1",
       selectedAssistantId: "assistant-1",
     });
     queriedAssistantId = null;
+    queriedBrandId = null;
   });
 
   afterEach(() => {
@@ -82,7 +127,8 @@ describe("RetentionWorkPage", () => {
     renderPage();
 
     expect(queriedAssistantId).toBe("assistant-selected");
-    expect(screen.getByText("Campaign review test surface")).toBeTruthy();
+    expect(queriedBrandId).toBe("brand-rachaa");
+    expect(screen.getByText("Campaigns")).toBeTruthy();
   });
 
   test("shows a safe waiting state when no assistant is selected", () => {
@@ -97,6 +143,7 @@ describe("RetentionWorkPage", () => {
       screen.getByText("Customer decisions is getting ready"),
     ).toBeTruthy();
     expect(queriedAssistantId).toBeNull();
+    expect(queriedBrandId).toBeNull();
   });
 
   test("shows clear loading and empty states", () => {
@@ -108,7 +155,7 @@ describe("RetentionWorkPage", () => {
     };
     const view = renderPage();
 
-    expect(screen.getByText("Campaign review test surface")).toBeTruthy();
+    expect(screen.getByText("Campaigns")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Data health" }));
     expect(screen.getByLabelText("Loading retention health")).toBeTruthy();
 
@@ -155,6 +202,32 @@ describe("RetentionWorkPage", () => {
     ).toBe("false");
   });
 
+  test("ignores Unassigned in brand selection", () => {
+    const originalBrands = workDataState.brands;
+    workDataState.brands = [unassignedBrand];
+
+    queryState = {
+      data: {
+        integrations: [],
+        jobs: {},
+        externalWritesEnabled: false,
+        sendEnabled: false,
+      },
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      refetch,
+    };
+
+    renderPage();
+
+    expect(screen.queryByLabelText("Retention brand selector")).toBeNull();
+    expect(screen.getByText("Select a brand")).toBeTruthy();
+    expect(screen.queryByText("Unassigned")).toBeNull();
+
+    workDataState.brands = originalBrands;
+  });
+
   test("formats ingestion freshness for operators", () => {
     const now = Date.parse("2026-07-28T12:00:00.000Z");
 
@@ -172,6 +245,8 @@ describe("RetentionWorkPage", () => {
       data: {
         integrations: [
           {
+            brandId: "brand-rachaa",
+            brandName: "Dr Rachael",
             provider: "shopify",
             status: "active",
             lastWebhookAt: new Date().toISOString(),
@@ -180,6 +255,8 @@ describe("RetentionWorkPage", () => {
             lastErrorCode: null,
           },
           {
+            brandId: "brand-rachaa",
+            brandName: "Dr Rachael",
             provider: "klaviyo",
             status: "degraded",
             lastWebhookAt: null,
@@ -232,4 +309,5 @@ describe("RetentionWorkPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(refetch).toHaveBeenCalledTimes(1);
   });
+
 });

@@ -26,6 +26,7 @@ import { RetentionAudiences } from "./retention-audiences";
 import { RetentionCampaignReview } from "./retention-campaign-review";
 import { RetentionSetup } from "./retention-setup";
 import { useRetentionStatus } from "./use-retention-status";
+import { UNASSIGNED_BRAND_ID, useWorkData } from "../use-work-data";
 
 const PROVIDERS = [
   { id: "shopify", label: "Shopify", icon: ShoppingBag },
@@ -377,10 +378,62 @@ export function RetentionWorkPage() {
 
 function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
-  const query = useRetentionStatus(assistantId);
+  const { brands, isLoading: isBrandsLoading } = useWorkData(assistantId);
+  const selectableBrands = brands.filter(
+    (brand) => brand.id !== UNASSIGNED_BRAND_ID,
+  );
+  const storageKey = `worklin:last-retention-brand:${assistantId}`;
+  const initialBrandId = (() => {
+    const savedBrandId =
+      typeof window === "undefined" ? null : window.localStorage.getItem(storageKey);
+
+    if (
+      savedBrandId &&
+      savedBrandId !== UNASSIGNED_BRAND_ID &&
+      selectableBrands.some((brand) => brand.id === savedBrandId)
+    ) {
+      return savedBrandId;
+    }
+
+    return selectableBrands[0]?.id ?? null;
+  })();
+  const [selectedBrandId, setSelectedBrandId] = useState<string | null>(
+    initialBrandId,
+  );
+  const query = useRetentionStatus(assistantId, selectedBrandId);
   const [activeView, setActiveView] = useState<
     "campaigns" | "audiences" | "setup" | "health"
   >("campaigns");
+  const selectedBrand = brands.find((brand) => brand.id === selectedBrandId);
+  const selectedBrandIntegrations = selectedBrandId
+    ? (query.data?.integrations ?? []).filter(
+        (integration) => integration.brandId === selectedBrandId,
+      )
+    : query.data?.integrations ?? [];
+
+  useEffect(() => {
+    if (isBrandsLoading) {
+      return;
+    }
+
+    const preferredBrandId =
+      typeof window === "undefined"
+        ? null
+        : brands.find(
+            (brand) =>
+              brand.id === window.localStorage.getItem(storageKey) &&
+              brand.id !== UNASSIGNED_BRAND_ID,
+          )?.id;
+    const nextBrandId =
+      preferredBrandId ?? selectableBrands[0]?.id ?? null;
+
+    if (nextBrandId !== selectedBrandId) {
+      setSelectedBrandId(nextBrandId);
+      if (nextBrandId && typeof window !== "undefined") {
+        window.localStorage.setItem(storageKey, nextBrandId);
+      }
+    }
+  }, [brands, isBrandsLoading, selectedBrandId, storageKey, selectableBrands]);
 
   useEffect(() => {
     setTopBarCenter(
@@ -391,7 +444,7 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
     return () => setTopBarCenter(null);
   }, [setTopBarCenter]);
 
-  const integrations = query.data?.integrations ?? [];
+  const integrations = selectedBrandIntegrations;
   const sourceByProvider = new Map(
     integrations.map((integration) => [
       integration.provider.toLowerCase() as ProviderId,
@@ -417,6 +470,51 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
             Find useful customer groups and review campaign ideas before
             anything is sent.
           </p>
+        </div>
+        <div className="mt-5">
+          {selectableBrands.length > 0 ? (
+            <>
+              <label className="flex items-end gap-2 text-body-small-default text-[var(--content-secondary)]">
+                Brand
+                <select
+                  value={selectedBrandId ?? ""}
+                  onChange={(event) => {
+                    const nextBrandId = event.currentTarget.value;
+                    setSelectedBrandId(nextBrandId);
+                    if (typeof window !== "undefined") {
+                      window.localStorage.setItem(
+                        storageKey,
+                        nextBrandId,
+                      );
+                    }
+                  }}
+                  disabled={isBrandsLoading || selectableBrands.length === 0}
+                  className="max-w-xs rounded-md border border-[var(--border-base)] bg-[var(--surface-base)] px-3 py-2 text-body-small-default text-[var(--content-default)]"
+                  aria-label="Retention brand selector"
+                >
+                  {selectableBrands.map((brand) => (
+                    <option key={brand.id} value={brand.id}>
+                      {brand.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedBrand ? (
+                <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+                  Retention context: {selectedBrand.name}
+                </p>
+              ) : (
+                <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
+                  Choose a brand before running retention actions.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-body-small-default text-[var(--content-tertiary)]">
+              Connect at least one brand in Work, then return here to run
+              retention workflows.
+            </p>
+          )}
         </div>
         <div
           className="mt-5 flex gap-5"
@@ -472,13 +570,20 @@ function RetentionWorkPageContent({ assistantId }: { assistantId: string }) {
             ) : null}
             <RetentionCampaignReview
               assistantId={assistantId}
+              selectedBrandId={selectedBrandId}
               retentionStatus={query.data ?? null}
             />
           </div>
         ) : activeView === "audiences" ? (
-          <RetentionAudiences assistantId={assistantId} />
+          <RetentionAudiences
+            assistantId={assistantId}
+            selectedBrandId={selectedBrandId}
+          />
         ) : activeView === "setup" ? (
-          <RetentionSetup assistantId={assistantId} />
+          <RetentionSetup
+            assistantId={assistantId}
+            selectedBrandId={selectedBrandId}
+          />
         ) : (
           <>
             {query.isPending ? <RetentionLoadingState /> : null}

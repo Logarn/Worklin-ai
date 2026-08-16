@@ -45,12 +45,16 @@ afterEach(() => {
 });
 
 describe("fetchRetentionStatus", () => {
-  test("uses the authenticated platform client with the selected assistant", async () => {
+  test("uses the authenticated platform client with selected assistant and brand", async () => {
+    const brandId = "22222222-2222-4222-8222-222222222222";
+
     const request = mock(async () => ({
       data: {
         organizationId: "org-1",
         integrations: [
           {
+            brandId,
+            brandName: "Dr Rachael",
             provider: "shopify",
             status: "active",
             lastWebhookAt: "2026-07-28T10:00:00.000Z",
@@ -68,16 +72,19 @@ describe("fetchRetentionStatus", () => {
     }));
     client.get = request as typeof client.get;
 
-    const result = await fetchRetentionStatus("assistant-1");
+    const result = await fetchRetentionStatus("assistant-1", brandId);
 
     expect(request).toHaveBeenCalledWith({
       url: "/v1/retention/status",
+      query: { brandId },
       headers: { "X-Worklin-Assistant-Id": "assistant-1" },
       throwOnError: false,
     });
     expect(result).toEqual({
       integrations: [
         {
+          brandId,
+          brandName: "Dr Rachael",
           provider: "shopify",
           status: "active",
           lastWebhookAt: "2026-07-28T10:00:00.000Z",
@@ -93,7 +100,34 @@ describe("fetchRetentionStatus", () => {
     expect(result).not.toHaveProperty("organizationId");
   });
 
+  test("can request retention status for a specific brand", async () => {
+    const brandId = "22222222-2222-4222-8222-222222222222";
+
+    const request = mock(async () => ({
+      data: {
+        organizationId: "org-1",
+        integrations: [],
+        jobs: {},
+        externalWritesEnabled: false,
+        sendEnabled: false,
+      },
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    }));
+    client.get = request as typeof client.get;
+
+    await fetchRetentionStatus("assistant-1", brandId);
+
+    expect(request).toHaveBeenCalledWith({
+      url: "/v1/retention/status",
+      query: { brandId },
+      headers: { "X-Worklin-Assistant-Id": "assistant-1" },
+      throwOnError: false,
+    });
+  });
+
   test("rejects malformed status responses", async () => {
+    const brandId = "22222222-2222-4222-8222-222222222222";
     client.get = mock(async () => ({
       data: {
         organizationId: "org-1",
@@ -106,7 +140,7 @@ describe("fetchRetentionStatus", () => {
       response: new Response(null, { status: 200 }),
     })) as typeof client.get;
 
-    expect(fetchRetentionStatus("assistant-1")).rejects.toThrow(
+    expect(fetchRetentionStatus("assistant-1", brandId)).rejects.toThrow(
       "Retention status response was invalid.",
     );
   });
@@ -143,10 +177,14 @@ describe("retention campaign API", () => {
     }));
     client.get = request as typeof client.get;
 
-    const campaigns = await fetchRetentionCampaigns("assistant-1");
+    const campaigns = await fetchRetentionCampaigns(
+      "assistant-1",
+      BRAND_ID,
+    );
 
     expect(request).toHaveBeenCalledWith({
       url: "/v1/retention/campaigns",
+      query: { brandId: BRAND_ID },
       headers: { "X-Worklin-Assistant-Id": "assistant-1" },
       throwOnError: false,
     });
@@ -154,6 +192,24 @@ describe("retention campaign API", () => {
     expect(campaigns[0]).not.toHaveProperty("brandId");
     expect(campaigns[0]).not.toHaveProperty("programId");
     expect(campaigns[0]?.audienceMemberCount).toBe(12);
+  });
+
+  test("loads campaign summaries scoped to a brand when provided", async () => {
+    const request = mock(async () => ({
+      data: { campaigns: [] },
+      error: undefined,
+      response: new Response(null, { status: 200 }),
+    }));
+    client.get = request as typeof client.get;
+
+    await fetchRetentionCampaigns("assistant-1", BRAND_ID);
+
+    expect(request).toHaveBeenCalledWith({
+      url: "/v1/retention/campaigns",
+      query: { brandId: BRAND_ID },
+      headers: { "X-Worklin-Assistant-Id": "assistant-1" },
+      throwOnError: false,
+    });
   });
 
   test("redacts customer and message identifiers from representative samples", async () => {
@@ -238,6 +294,7 @@ describe("retention campaign API", () => {
     const preview = await fetchRetentionCampaignApprovalPreview(
       "assistant-1",
       CAMPAIGN_ID,
+      BRAND_ID,
     );
 
     expect(preview.recipientDecisionCount).toBe(1);
@@ -259,11 +316,17 @@ describe("retention campaign API", () => {
     }));
     client.post = request as typeof client.post;
 
-    await approveRetentionCampaign("assistant-1", CAMPAIGN_ID, SNAPSHOT_SHA256);
+    await approveRetentionCampaign(
+      "assistant-1",
+      CAMPAIGN_ID,
+      BRAND_ID,
+      SNAPSHOT_SHA256,
+    );
 
     expect(request).toHaveBeenCalledWith({
       url: "/v1/retention/campaigns/{campaign_id}/approve",
       path: { campaign_id: CAMPAIGN_ID },
+      query: { brandId: BRAND_ID },
       body: { expectedSnapshotSha256: SNAPSHOT_SHA256 },
       headers: {
         "Content-Type": "application/json",
@@ -288,6 +351,7 @@ describe("retention campaign API", () => {
     const result = await releaseRetentionCampaign(
       "assistant-1",
       CAMPAIGN_ID,
+      BRAND_ID,
       SNAPSHOT_SHA256,
       "retention-send:unique-request",
     );
@@ -295,6 +359,7 @@ describe("retention campaign API", () => {
     expect(request).toHaveBeenCalledWith({
       url: "/v1/retention/campaigns/{campaign_id}/release",
       path: { campaign_id: CAMPAIGN_ID },
+      query: { brandId: BRAND_ID },
       body: {
         idempotencyKey: "retention-send:unique-request",
         snapshotSha256: SNAPSHOT_SHA256,
@@ -324,6 +389,7 @@ describe("retention campaign API", () => {
       await approveRetentionCampaign(
         "assistant-1",
         CAMPAIGN_ID,
+        BRAND_ID,
         SNAPSHOT_SHA256,
       );
       throw new Error("Expected approval to fail.");
@@ -370,10 +436,12 @@ describe("retention setup API", () => {
     const preview = await fetchRetentionProgramApprovalPreview(
       "assistant-1",
       PROGRAM_ID,
+      BRAND_ID,
     );
     await activateRetentionProgram(
       "assistant-1",
       PROGRAM_ID,
+      BRAND_ID,
       preview.snapshotSha256,
     );
 
@@ -383,6 +451,7 @@ describe("retention setup API", () => {
     expect(postRequest).toHaveBeenCalledWith({
       url: "/v1/retention/programs/{program_id}/activate",
       path: { program_id: PROGRAM_ID },
+      query: { brandId: BRAND_ID },
       body: { expectedPolicySha256: SNAPSHOT_SHA256 },
       headers: {
         "Content-Type": "application/json",
@@ -447,13 +516,106 @@ describe("retention setup API", () => {
     client.get = getRequest as typeof client.get;
     client.post = postRequest as typeof client.post;
 
-    expect(await fetchRetentionPrograms("assistant-1")).toHaveLength(1);
-    expect(await fetchRetentionImports("assistant-1")).toHaveLength(1);
+    expect(await fetchRetentionPrograms("assistant-1", BRAND_ID)).toHaveLength(1);
+    expect(await fetchRetentionImports("assistant-1", BRAND_ID)).toHaveLength(1);
     await approveRetentionImport("assistant-1", IMPORT_ID);
 
     expect(postRequest).toHaveBeenCalledWith({
       url: "/v1/retention/imports/{migration_run_id}/approve",
       path: { migration_run_id: IMPORT_ID },
+      headers: { "X-Worklin-Assistant-Id": "assistant-1" },
+      throwOnError: false,
+    });
+  });
+
+  test("loads programs scoped by brand when requested", async () => {
+    const getRequest = mock(async (input: { url?: string }) => {
+      if (input.url === "/v1/retention/programs") {
+        return {
+          data: {
+            programs: [
+              {
+                id: PROGRAM_ID,
+                brandId: BRAND_ID,
+                type: "re_engagement",
+                name: "Re-engagement",
+                status: "draft",
+                policyVersion: "v1",
+                policyApprovalSha256: null,
+                approvedBy: null,
+                approvedAt: null,
+                updatedAt: "2026-07-28T10:00:00.000Z",
+              },
+            ],
+          },
+          error: undefined,
+          response: new Response(null, { status: 200 }),
+        };
+      }
+
+      return {
+        data: { imports: [] },
+        error: undefined,
+        response: new Response(null, { status: 200 }),
+      };
+    });
+    client.get = getRequest as typeof client.get;
+
+    const programs = await fetchRetentionPrograms("assistant-1", BRAND_ID);
+
+    expect(programs).toHaveLength(1);
+    expect(getRequest).toHaveBeenCalledWith({
+      url: "/v1/retention/programs",
+      query: { brandId: BRAND_ID },
+      headers: { "X-Worklin-Assistant-Id": "assistant-1" },
+      throwOnError: false,
+    });
+  });
+
+  test("loads imports scoped by brand when requested", async () => {
+    const getRequest = mock(async (input: { url?: string }) => {
+      if (input.url === "/v1/retention/imports") {
+        return {
+          data: {
+            imports: [
+              {
+                id: IMPORT_ID,
+                brandId: BRAND_ID,
+                integrationId: DISPATCH_ID,
+                provider: "shopify",
+                status: "preview",
+                importedCount: 0,
+                rejectedCount: 0,
+                approvedAt: null,
+                startedAt: null,
+                completedAt: null,
+                lastErrorCode: null,
+                updatedAt: "2026-07-28T10:00:00.000Z",
+                hasCheckpoint: false,
+              },
+            ],
+          },
+          error: undefined,
+          response: new Response(null, { status: 200 }),
+        };
+      }
+
+      return {
+        data: {
+          programs: [],
+        },
+        error: undefined,
+        response: new Response(null, { status: 200 }),
+      };
+    });
+    client.get = getRequest as typeof client.get;
+
+    const imports = await fetchRetentionImports("assistant-1", BRAND_ID);
+
+    expect(imports).toHaveLength(1);
+    expect(getRequest).toHaveBeenCalledWith({
+      url: "/v1/retention/imports",
+      query: { limit: 50, brandId: BRAND_ID },
       headers: { "X-Worklin-Assistant-Id": "assistant-1" },
       throwOnError: false,
     });

@@ -397,6 +397,7 @@ describe("retention operator repository with PostgreSQL", () => {
         });
 
         const imports = await repository.reviewImports(context, {
+          brandId,
           limit: 10,
         });
         expect(imports.imports).toHaveLength(1);
@@ -417,6 +418,7 @@ describe("retention operator repository with PostgreSQL", () => {
         );
 
         const campaigns = await repository.listCampaigns(context, {
+          brandId,
           limit: 10,
         });
         expect(campaigns.campaigns[0]?.audienceMemberCount).toBe(1);
@@ -440,10 +442,10 @@ describe("retention operator repository with PostgreSQL", () => {
           "alice@example.com",
         );
 
-        const outcomes = await repository.analyzeCampaignOutcomes(
-          context,
+        const outcomes = await repository.analyzeCampaignOutcomes(context, {
           campaignId,
-        );
+          brandId,
+        });
         expect(outcomes.deliveryEvents).toEqual({ clicked: 1 });
         expect(outcomes.usage.estimatedCostUsd).toBe(0.25);
 
@@ -455,6 +457,7 @@ describe("retention operator repository with PostgreSQL", () => {
         expect(
           (
             await repository.listCampaigns(otherTenantContext, {
+              brandId,
               limit: 10,
             })
           ).campaigns,
@@ -473,6 +476,7 @@ describe("retention operator repository with PostgreSQL", () => {
         try {
           await repository.cancelCampaign(otherTenantContext, {
             campaignId,
+            brandId,
             reason: "Cross-tenant cancellation attempt.",
           });
           throw new Error("Expected cross-tenant cancellation to fail.");
@@ -485,6 +489,7 @@ describe("retention operator repository with PostgreSQL", () => {
 
         const cancelled = await repository.cancelCampaign(context, {
           campaignId,
+          brandId,
           reason: "The campaign objective changed.",
         });
         expect(cancelled.cancelledDispatchCount).toBe(1);

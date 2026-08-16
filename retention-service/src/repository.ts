@@ -381,7 +381,10 @@ export class RetentionRepository {
     });
   }
 
-  async status(context: TenantContext): Promise<{
+  async status(
+    context: TenantContext,
+    input: { brandId: string },
+  ): Promise<{
     organizationId: string;
     integrations: Array<{
       brandId: string;
@@ -398,7 +401,7 @@ export class RetentionRepository {
     sendEnabled: boolean;
   }> {
     return this.database.withTenant(context.organizationId, async (tx) => {
-      const integrations = await tx<
+      const queryRows = await tx<
         Array<{
           brand_id: string;
           brand_name: string;
@@ -424,8 +427,10 @@ export class RetentionRepository {
           ON brand.org_id = integration.org_id
           AND brand.id = integration.brand_id
         WHERE integration.org_id = ${context.organizationId}
+          AND integration.brand_id = ${input.brandId}
         ORDER BY integration.provider, brand.name
       `;
+      const integrations = queryRows;
       const jobRows = await tx<Array<{ status: string; count: string }>>`
         SELECT status, count(*)::TEXT AS count
         FROM retention_jobs
@@ -3595,7 +3600,7 @@ export class RetentionRepository {
 
   async listPrograms(
     context: TenantContext,
-    input: { brandId?: string } = {},
+    input: { brandId: string },
   ): Promise<{
     programs: Array<{
       id: string;
@@ -3610,7 +3615,7 @@ export class RetentionRepository {
       updatedAt: string;
     }>;
   }> {
-    if (input.brandId) assertUuid(input.brandId, "brandId");
+    assertUuid(input.brandId, "brandId");
     return this.database.withTenant(context.organizationId, async (tx) => {
       const rows = await tx<
         Array<{
@@ -3639,10 +3644,7 @@ export class RetentionRepository {
           updated_at
         FROM retention_programs
         WHERE org_id = ${context.organizationId}
-          AND (
-            ${input.brandId ?? null}::UUID IS NULL
-            OR brand_id = ${input.brandId ?? null}
-          )
+          AND brand_id = ${input.brandId}
         ORDER BY updated_at DESC, id
         LIMIT 100
       `;
@@ -3666,6 +3668,7 @@ export class RetentionRepository {
   async programPolicyApprovalPreview(
     context: TenantContext,
     programId: string,
+    brandId: string,
   ): Promise<{
     programId: string;
     status: "draft" | "active" | "paused" | "archived";
@@ -3687,6 +3690,7 @@ export class RetentionRepository {
         FROM retention_programs
         WHERE org_id = ${context.organizationId}
           AND id = ${programId}
+          AND brand_id = ${brandId}
       `;
       const row = rows[0];
       if (!row) {
@@ -3726,6 +3730,7 @@ export class RetentionRepository {
     context: TenantContext,
     input: {
       programId: string;
+      brandId: string;
       expectedPolicySha256: string;
       note?: string;
     },
@@ -3768,6 +3773,7 @@ export class RetentionRepository {
         FROM retention_programs
         WHERE org_id = ${context.organizationId}
           AND id = ${input.programId}
+          AND brand_id = ${input.brandId}
         FOR UPDATE
       `;
       const row = rows[0];
@@ -3836,6 +3842,7 @@ export class RetentionRepository {
           updated_at = now()
         WHERE org_id = ${context.organizationId}
           AND id = ${input.programId}
+          AND brand_id = ${input.brandId}
       `;
       await this.audit(tx, context, {
         action: "program.activated",
@@ -3854,7 +3861,7 @@ export class RetentionRepository {
 
   async pauseProgram(
     context: TenantContext,
-    input: { programId: string; reason: string },
+    input: { programId: string; brandId: string; reason: string },
   ): Promise<{
     programId: string;
     status: "paused";
@@ -3877,6 +3884,7 @@ export class RetentionRepository {
         FROM retention_programs
         WHERE org_id = ${context.organizationId}
           AND id = ${input.programId}
+          AND brand_id = ${input.brandId}
         FOR UPDATE
       `;
       if (!rows[0]) {
@@ -3905,6 +3913,7 @@ export class RetentionRepository {
         SET status = 'paused', updated_at = now()
         WHERE org_id = ${context.organizationId}
           AND id = ${input.programId}
+          AND brand_id = ${input.brandId}
       `;
       await this.audit(tx, context, {
         action: "program.paused",
@@ -7154,6 +7163,7 @@ export class RetentionRepository {
     context: TenantContext,
     input: {
       campaignId: string;
+      brandId: string;
       expectedSnapshotSha256?: string;
       note?: string;
     },
@@ -7181,6 +7191,7 @@ export class RetentionRepository {
         FROM retention_campaigns
         WHERE org_id = ${context.organizationId}
           AND id = ${input.campaignId}
+          AND brand_id = ${input.brandId}
         FOR UPDATE
       `;
       const campaign = campaigns[0];
@@ -7216,6 +7227,7 @@ export class RetentionRepository {
         tx,
         context.organizationId,
         input.campaignId,
+        input.brandId,
       );
       const checksum = getCampaignApprovalChecksum(material);
       if (!checksum.ok) {
@@ -7315,6 +7327,7 @@ export class RetentionRepository {
     context: TenantContext,
     input: {
       campaignId: string;
+      brandId: string;
       idempotencyKey: string;
       snapshotSha256: string;
     },
@@ -7418,6 +7431,7 @@ export class RetentionRepository {
           AND audience.campaign_id = campaign.id
         WHERE campaign.org_id = ${context.organizationId}
           AND campaign.id = ${input.campaignId}
+          AND campaign.brand_id = ${input.brandId}
         FOR UPDATE OF campaign
       `;
       const campaign = campaigns[0];
@@ -7442,6 +7456,7 @@ export class RetentionRepository {
         tx,
         context.organizationId,
         input.campaignId,
+        input.brandId,
       );
       const currentChecksum = getCampaignApprovalChecksum(material);
       if (
@@ -7543,7 +7558,7 @@ export class RetentionRepository {
   async reviewImports(
     context: TenantContext,
     input: {
-      brandId?: string;
+      brandId: string;
       integrationId?: string;
       status?: string;
       limit: number;
@@ -7565,7 +7580,7 @@ export class RetentionRepository {
       hasCheckpoint: boolean;
     }>;
   }> {
-    if (input.brandId) assertUuid(input.brandId, "brandId");
+    assertUuid(input.brandId, "brandId");
     if (input.integrationId) {
       assertUuid(input.integrationId, "integrationId");
     }
@@ -7606,10 +7621,7 @@ export class RetentionRepository {
           ON integration.org_id = migration.org_id
           AND integration.id = migration.integration_id
         WHERE migration.org_id = ${context.organizationId}
-          AND (
-            ${input.brandId ?? null}::UUID IS NULL
-            OR integration.brand_id = ${input.brandId ?? null}
-          )
+          AND integration.brand_id = ${input.brandId}
           AND (
             ${input.integrationId ?? null}::UUID IS NULL
             OR migration.integration_id = ${input.integrationId ?? null}
@@ -7962,7 +7974,7 @@ export class RetentionRepository {
   async listCampaigns(
     context: TenantContext,
     input: {
-      brandId?: string;
+      brandId: string;
       status?: string;
       limit: number;
     },
@@ -7987,7 +7999,7 @@ export class RetentionRepository {
       updatedAt: string;
     }>;
   }> {
-    if (input.brandId) assertUuid(input.brandId, "brandId");
+    assertUuid(input.brandId, "brandId");
     return this.database.withTenant(context.organizationId, async (tx) => {
       const rows = await tx<
         Array<{
@@ -8059,10 +8071,7 @@ export class RetentionRepository {
             AND campaign_id = campaign.id
         ) AS usage ON true
         WHERE campaign.org_id = ${context.organizationId}
-          AND (
-            ${input.brandId ?? null}::UUID IS NULL
-            OR campaign.brand_id = ${input.brandId ?? null}
-          )
+          AND campaign.brand_id = ${input.brandId}
           AND (
             ${input.status ?? null}::TEXT IS NULL
             OR campaign.status = ${input.status ?? null}
@@ -8074,7 +8083,7 @@ export class RetentionRepository {
         action: "campaigns.listed",
         resourceType: "campaign",
         metadata: {
-          brandId: input.brandId ?? null,
+          brandId: input.brandId,
           status: input.status ?? null,
           resultCount: rows.length,
         },
@@ -8384,7 +8393,7 @@ export class RetentionRepository {
 
   async analyzeCampaignOutcomes(
     context: TenantContext,
-    campaignId: string,
+    input: { campaignId: string; brandId: string },
   ): Promise<{
     campaignId: string;
     campaignStatus: string;
@@ -8408,13 +8417,15 @@ export class RetentionRepository {
       estimatedCostUsd: number;
     };
   }> {
-    assertUuid(campaignId, "campaignId");
+    assertUuid(input.campaignId, "campaignId");
+    assertUuid(input.brandId, "brandId");
     return this.database.withTenant(context.organizationId, async (tx) => {
       const campaigns = await tx<Array<{ status: string }>>`
         SELECT status
         FROM retention_campaigns
         WHERE org_id = ${context.organizationId}
-          AND id = ${campaignId}
+          AND id = ${input.campaignId}
+          AND brand_id = ${input.brandId}
       `;
       if (!campaigns[0]) {
         throw new RetentionServiceError(
@@ -8446,14 +8457,14 @@ export class RetentionRepository {
           last_error_code
         FROM retention_dispatches
         WHERE org_id = ${context.organizationId}
-          AND campaign_id = ${campaignId}
+          AND campaign_id = ${input.campaignId}
         ORDER BY released_at, id
       `;
       const recipientRows = await tx<Array<{ status: string; count: string }>>`
         SELECT status, count(*)::TEXT AS count
         FROM retention_dispatch_recipients
         WHERE org_id = ${context.organizationId}
-          AND campaign_id = ${campaignId}
+          AND campaign_id = ${input.campaignId}
         GROUP BY status
         ORDER BY status
       `;
@@ -8463,7 +8474,7 @@ export class RetentionRepository {
         SELECT event_type, count(*)::TEXT AS count
         FROM retention_delivery_events
         WHERE org_id = ${context.organizationId}
-          AND campaign_id = ${campaignId}
+          AND campaign_id = ${input.campaignId}
         GROUP BY event_type
         ORDER BY event_type
       `;
@@ -8486,16 +8497,16 @@ export class RetentionRepository {
             AS estimated_cost_usd
         FROM retention_usage_events
         WHERE org_id = ${context.organizationId}
-          AND campaign_id = ${campaignId}
+          AND campaign_id = ${input.campaignId}
       `;
       await this.audit(tx, context, {
         action: "campaign.outcomes_viewed",
         resourceType: "campaign",
-        resourceId: campaignId,
+        resourceId: input.campaignId,
       });
       const usage = usageRows[0];
       return {
-        campaignId,
+        campaignId: input.campaignId,
         campaignStatus: campaigns[0].status,
         dispatches: dispatches.map((dispatch) => ({
           id: dispatch.id,
@@ -8526,7 +8537,7 @@ export class RetentionRepository {
 
   async cancelCampaign(
     context: TenantContext,
-    input: { campaignId: string; reason: string },
+    input: { campaignId: string; brandId: string; reason: string },
   ): Promise<{
     campaignId: string;
     status: "cancelled";
@@ -8535,6 +8546,7 @@ export class RetentionRepository {
     duplicate: boolean;
   }> {
     assertUuid(input.campaignId, "campaignId");
+    assertUuid(input.brandId, "brandId");
     if (
       !context.permissions.includes("retention:write") &&
       !context.permissions.includes("retention:*")
@@ -8551,6 +8563,7 @@ export class RetentionRepository {
         FROM retention_campaigns
         WHERE org_id = ${context.organizationId}
           AND id = ${input.campaignId}
+          AND brand_id = ${input.brandId}
         FOR UPDATE
       `;
       const campaign = campaigns[0];
@@ -8845,13 +8858,16 @@ export class RetentionRepository {
   async campaignApprovalPreview(
     context: TenantContext,
     campaignId: string,
+    brandId: string,
   ): Promise<{ snapshotSha256: string; material: CampaignApprovalMaterial }> {
     assertUuid(campaignId, "campaignId");
+    assertUuid(brandId, "brandId");
     return this.database.withTenant(context.organizationId, async (tx) => {
       const material = await this.currentApprovalMaterial(
         tx,
         context.organizationId,
         campaignId,
+        brandId,
       );
       const checksum = getCampaignApprovalChecksum(material);
       if (!checksum.ok) {
@@ -9036,6 +9052,7 @@ export class RetentionRepository {
     tx: RetentionTransactionSql,
     organizationId: string,
     campaignId: string,
+    brandId: string,
   ): Promise<CampaignApprovalMaterial> {
     const campaigns = await tx<
       Array<{
@@ -9052,7 +9069,7 @@ export class RetentionRepository {
         model_id: string | null;
         prompt_version: string | null;
       }>
-    >`
+      >`
       SELECT
         campaign.id,
         campaign.revision,
@@ -9075,6 +9092,7 @@ export class RetentionRepository {
         AND audience.campaign_id = campaign.id
       WHERE campaign.org_id = ${organizationId}
         AND campaign.id = ${campaignId}
+        AND campaign.brand_id = ${brandId}
     `;
     const campaign = campaigns[0];
     if (!campaign) {

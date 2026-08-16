@@ -129,6 +129,7 @@ describe("provider synchronization with PostgreSQL", () => {
           webhookSecret: "shopify-webhook-secret",
         });
         const preview = await repository.reviewImports(context, {
+          brandId: brand.id,
           integrationId: integration.id,
           limit: 10,
         });
