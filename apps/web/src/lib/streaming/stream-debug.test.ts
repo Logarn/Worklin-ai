@@ -306,6 +306,9 @@ describe("render commit trace", () => {
         10,
         20,
       ]);
+      expect(
+        JSON.parse(document.documentElement.dataset.streamTrace ?? "{}"),
+      ).toMatchObject({ enabled: true, renderCommitCount: 0 });
 
       clearSseTrace();
       expect(getSseEvents()).toEqual([]);

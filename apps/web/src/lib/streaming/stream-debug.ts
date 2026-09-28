@@ -98,6 +98,11 @@ export interface SseDebugRenderEntry {
 // ---------------------------------------------------------------------------
 
 const MAX_EVENTS = 1000;
+const STREAM_TRACE_QUERY_PARAM = "streamTrace";
+const streamTraceRequestedAtModuleLoad =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get(STREAM_TRACE_QUERY_PARAM) ===
+    "1";
 
 /**
  * Upper bound on the number of *ended* clients retained for inspection.
@@ -222,6 +227,7 @@ export function pushSseEvent(
   if (events.length > MAX_EVENTS) {
     events.shift();
   }
+  publishSseTraceSnapshot();
 }
 
 /**
@@ -251,6 +257,7 @@ export function recordSseRenderCommit(input: {
   if (renderCommits.length > MAX_EVENTS) {
     renderCommits.shift();
   }
+  publishSseTraceSnapshot();
 }
 
 export function getSseRenderCommits(limit = MAX_EVENTS): SseDebugRenderEntry[] {
@@ -262,6 +269,7 @@ export function clearSseTrace(): void {
   events.length = 0;
   renderCommits.length = 0;
   lastRenderSignature = null;
+  publishSseTraceSnapshot();
 }
 
 /**
@@ -351,5 +359,89 @@ export function resetSseDebugStateForTests(): void {
 
 function streamTraceEnabled(): boolean {
   if (typeof window === "undefined") return false;
-  return new URLSearchParams(window.location.search).get("streamTrace") === "1";
+  return (
+    streamTraceRequestedAtModuleLoad ||
+    new URLSearchParams(window.location.search).get(STREAM_TRACE_QUERY_PARAM) ===
+      "1"
+  );
+}
+
+function publishSseTraceSnapshot(): void {
+  if (!streamTraceEnabled() || typeof document === "undefined") return;
+  const textEvents = events.filter(
+    (
+      entry,
+    ): entry is SseDebugEventEntry & {
+      event: Extract<AssistantEvent, { type: "assistant_text_delta" }>;
+    } => entry.event.type === "assistant_text_delta",
+  );
+  const latestMessageId = textEvents[textEvents.length - 1]?.event.messageId;
+  const currentTextEvents = latestMessageId
+    ? textEvents.filter(
+        (entry) =>
+          entry.event.type === "assistant_text_delta" &&
+          entry.event.messageId === latestMessageId,
+      )
+    : [];
+  const currentRenderCommits = latestMessageId
+    ? renderCommits.filter((entry) => entry.messageId === latestMessageId)
+    : [];
+  const firstTextEvent = currentTextEvents[0];
+  const lastTextEvent = currentTextEvents[currentTextEvents.length - 1];
+  const firstRender = currentRenderCommits[0];
+  const lastRender = currentRenderCommits[currentRenderCommits.length - 1];
+  const serverFirstMs = firstTextEvent
+    ? Date.parse(firstTextEvent.emittedAt)
+    : null;
+  const serverLastMs = lastTextEvent ? Date.parse(lastTextEvent.emittedAt) : null;
+  const browserFirstMs = firstTextEvent?.receivedAtMs ?? null;
+  const browserLastMs = lastTextEvent?.receivedAtMs ?? null;
+  const snapshot = {
+    enabled: true,
+    messageId: latestMessageId ?? null,
+    textEventCount: currentTextEvents.length,
+    textCharacters: currentTextEvents.reduce(
+      (total, entry) => total + entry.event.text.length,
+      0,
+    ),
+    distinctBrowserReceiveTimes: new Set(
+      currentTextEvents.map((entry) => entry.receivedAtMs),
+    ).size,
+    serverFirstMs,
+    serverLastMs,
+    serverSpanMs:
+      serverFirstMs !== null && serverLastMs !== null
+        ? serverLastMs - serverFirstMs
+        : null,
+    browserFirstMs,
+    browserLastMs,
+    browserReceiveSpanMs:
+      browserFirstMs !== null && browserLastMs !== null
+        ? browserLastMs - browserFirstMs
+        : null,
+    firstDeliveryLagMs:
+      serverFirstMs !== null && browserFirstMs !== null
+        ? browserFirstMs - serverFirstMs
+        : null,
+    lastDeliveryLagMs:
+      serverLastMs !== null && browserLastMs !== null
+        ? browserLastMs - serverLastMs
+        : null,
+    renderCommitCount: currentRenderCommits.length,
+    renderFirstMs: firstRender?.committedAtMs ?? null,
+    renderLastMs: lastRender?.committedAtMs ?? null,
+    renderSpanMs:
+      firstRender && lastRender
+        ? lastRender.committedAtMs - firstRender.committedAtMs
+        : null,
+    firstRenderAfterFirstReceiveMs:
+      firstRender && browserFirstMs !== null
+        ? firstRender.committedAtMs - browserFirstMs
+        : null,
+    lastRenderAfterLastReceiveMs:
+      lastRender && browserLastMs !== null
+        ? lastRender.committedAtMs - browserLastMs
+        : null,
+  };
+  document.documentElement.dataset.streamTrace = JSON.stringify(snapshot);
 }
