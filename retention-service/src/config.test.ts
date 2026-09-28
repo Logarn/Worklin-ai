@@ -23,7 +23,15 @@ describe("retention service configuration", () => {
     expect(config.sendEnabled).toBe(false);
     expect(config.runMigrations).toBe(false);
     expect(config.migrationDatabaseUrl).toBeNull();
-    expect(config.bucket.virtualHostedStyle).toBe(true);
+    expect(config.payloadStore).toEqual({
+      kind: "s3",
+      endpoint: "https://storage.example.test",
+      name: "worklin-retention-test",
+      region: "auto",
+      accessKeyId: "test-access-key",
+      secretAccessKey: "test-secret-key",
+      virtualHostedStyle: true,
+    });
   });
 
   test("requires a separate admin connection for startup migrations", () => {
@@ -42,5 +50,42 @@ describe("retention service configuration", () => {
         WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY: undefined,
       }),
     ).toThrow("bucket");
+  });
+
+  test("selects a local payload directory without S3 credentials", () => {
+    const config = retentionServiceConfigFromEnv({
+      ...baseEnvironment,
+      WORKLIN_RETENTION_PAYLOAD_STORE: "filesystem",
+      WORKLIN_RETENTION_PAYLOAD_DIRECTORY: "/data/retention-objects",
+      WORKLIN_RETENTION_BUCKET_ENDPOINT: undefined,
+      WORKLIN_RETENTION_BUCKET_NAME: undefined,
+      WORKLIN_RETENTION_BUCKET_REGION: undefined,
+      WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID: undefined,
+      WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY: undefined,
+    });
+    expect(config.payloadStore).toEqual({
+      kind: "filesystem",
+      directory: "/data/retention-objects",
+    });
+  });
+
+  test("requires a directory for filesystem payload storage", () => {
+    expect(() =>
+      retentionServiceConfigFromEnv({
+        ...baseEnvironment,
+        WORKLIN_RETENTION_PAYLOAD_STORE: "filesystem",
+        WORKLIN_RETENTION_PAYLOAD_DIRECTORY: undefined,
+      }),
+    ).toThrow("payload directory");
+  });
+
+  test("requires an absolute filesystem payload directory", () => {
+    expect(() =>
+      retentionServiceConfigFromEnv({
+        ...baseEnvironment,
+        WORKLIN_RETENTION_PAYLOAD_STORE: "filesystem",
+        WORKLIN_RETENTION_PAYLOAD_DIRECTORY: "relative/payloads",
+      }),
+    ).toThrow("absolute");
   });
 });

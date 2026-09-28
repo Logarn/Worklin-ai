@@ -7,7 +7,7 @@ const migrationUrl = new URL(
 
 describe("retention schema security contract", () => {
   test("forces tenant RLS and covers every org-scoped table", async () => {
-    const sql = await Bun.file(migrationUrl).text();
+    const sql = (await Bun.file(migrationUrl).text()).replace(/\r\n/g, "\n");
     const tableMatches = [
       ...sql.matchAll(
         /CREATE TABLE IF NOT EXISTS (retention_[a-z0-9_]+) \(\n[\s\S]*?\n\);/gu,

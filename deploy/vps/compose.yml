@@ -1,0 +1,182 @@
+name: worklin-vps
+
+x-runtime: &runtime
+  image: worklin-vps-runtime:${WORKLIN_RELEASE:?Set an immutable release identifier}
+  build:
+    context: ../..
+    dockerfile: runtime/Dockerfile
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-retention: &retention
+  image: worklin-vps-retention:${WORKLIN_RELEASE:?Set an immutable release identifier}
+  build:
+    context: ../..
+    dockerfile: retention-service/Dockerfile
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  proxy:
+    image: ${CADDY_IMAGE:?Set a version-and-digest-pinned official Caddy image}
+    restart: unless-stopped
+    environment:
+      API_HOST: ${API_HOST:?Set the backend DNS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - proxy-data:/data
+      - proxy-config:/config
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    mem_limit: 128m
+
+  control-plane:
+    <<: *runtime
+    env_file: ${WORKLIN_SECRETS_DIR:?Set an absolute directory outside the checkout}/control-plane.env
+    environment:
+      WORKLIN_RUNTIME_MODE: control-plane
+      PORT: "8080"
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true"
+      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false"
+      WORKLIN_CONCURRENT_RUNTIME_MODE: new_assistants
+      WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL: http://concurrent-runtime:8080
+      WORKLIN_RETENTION_SERVICE_ENABLED: "true"
+      WORKLIN_RETENTION_SERVICE_URL: http://retention:8080
+      WORKLIN_BRAND_INTELLIGENCE_ARCHIVE_ENABLED: "false"
+    volumes:
+      - control-plane-data:/data
+    depends_on:
+      retention:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8080/readyz]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 512m
+
+  concurrent-runtime:
+    <<: *runtime
+    env_file: ${WORKLIN_SECRETS_DIR}/concurrent-runtime.env
+    environment:
+      WORKLIN_RUNTIME_MODE: concurrent_service
+      RUNTIME_ASSISTANT_SCOPE_MODE: tenant_context
+      PORT: "8080"
+      VELLUM_DISABLE_EMBEDDINGS: "true"
+      CONCURRENT_RUNTIME_DATABASE_MAX_CONNECTIONS: "5"
+      CONCURRENT_RUNTIME_MAX_CONCURRENT_TURNS: "1"
+      CONCURRENT_RUNTIME_MAX_CONCURRENT_TURNS_PER_TENANT: "1"
+      CONCURRENT_RUNTIME_EVENT_POLL_INTERVAL_MS: "1000"
+      CONCURRENT_BROWSER_BROKER_ENABLED: "true"
+      CONCURRENT_BROWSER_ALLOWED_ORIGINS: ${BROWSER_ALLOWED_ORIGINS:-https://example.com}
+    volumes:
+      - runtime-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8080/readyz]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    mem_limit: 2g
+
+  retention:
+    <<: *retention
+    env_file: ${WORKLIN_SECRETS_DIR}/retention.env
+    environment:
+      WORKLIN_RETENTION_PORT: "8080"
+      WORKLIN_RETENTION_RUN_MIGRATIONS: "false"
+      WORKLIN_RETENTION_EXTERNAL_WRITES_ENABLED: "false"
+      WORKLIN_RETENTION_SEND_ENABLED: "false"
+      WORKLIN_RETENTION_PAYLOAD_STORE: filesystem
+      WORKLIN_RETENTION_PAYLOAD_DIRECTORY: /data/retention-objects
+    volumes:
+      - retention-objects:/data/retention-objects
+    depends_on:
+      retention-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, bun, -e, "const r = await fetch('http://127.0.0.1:8080/readyz'); process.exit(r.ok ? 0 : 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 512m
+
+  retention-migrate:
+    <<: *retention
+    restart: "no"
+    env_file: ${WORKLIN_SECRETS_DIR}/retention-migrator.env
+    command: [bun, run, vps-migrate.ts]
+    volumes:
+      - ./retention-migrate.ts:/app/retention-service/vps-migrate.ts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 512m
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set a version-and-digest-pinned official PostgreSQL 17 image}
+    restart: unless-stopped
+    env_file: ${WORKLIN_SECRETS_DIR}/postgres.env
+    environment:
+      POSTGRES_DB: worklin
+      POSTGRES_USER: postgres
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-database.sh:/docker-entrypoint-initdb.d/10-worklin.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d worklin"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 1g
+
+  migrate:
+    <<: *runtime
+    restart: "no"
+    env_file: ${WORKLIN_SECRETS_DIR}/migrator.env
+    working_dir: /app/assistant
+    command: [bun, run, vps-migrate.ts]
+    volumes:
+      - ./migrate.ts:/app/assistant/vps-migrate.ts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 512m
+
+  backup-reader:
+    image: debian:trixie-slim@sha256:4ffb3a1511099754cddc70eb1b12e50ffdb67619aa0ab6c13fcd800a78ef7c7a
+    profiles: [operations]
+    entrypoint: [/bin/tar]
+    network_mode: none
+    read_only: true
+    volumes:
+      - control-plane-data:/volumes/control-plane:ro
+      - runtime-data:/volumes/runtime:ro
+      - retention-objects:/volumes/retention-objects:ro
+    mem_limit: 128m
+
+volumes:
+  proxy-data:
+  proxy-config:
+  control-plane-data:
+  runtime-data:
+  postgres-data:
+  retention-objects:

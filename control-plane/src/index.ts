@@ -339,9 +339,9 @@ const env = {
     process.env.AUTH0_ISSUER_BASE_URL ?? process.env.ISSUER_BASE_URL ?? "",
   ),
   // Hosted production uses the Vercel domain as the single public origin and
-  // proxies `/callback`, `/_allauth/*`, and `/v1/*` back to Railway. Keep the
-  // Auth0 callback on that hosted web origin so the session cookie lands on
-  // the public app domain rather than becoming a third-party backend cookie.
+  // proxies `/callback`, `/_allauth/*`, and `/v1/*` to the configured backend.
+  // Keep the Auth0 callback on that hosted web origin so the session cookie
+  // lands on the public app domain rather than becoming a third-party cookie.
   auth0BaseUrl: hostedWebBaseUrl,
   auth0ClientId: process.env.AUTH0_CLIENT_ID ?? process.env.CLIENT_ID ?? "",
   auth0ClientSecret: auth0ClientCredential,
@@ -974,7 +974,7 @@ function checkProviderRedirectCsrf(
 ): boolean {
   if (checkCsrf(req, form)) return true;
 
-  // Hosted production login starts on Vercel and posts to Railway. Some
+  // Hosted production login starts on Vercel and posts to the backend. Some
   // browsers decline to persist the backend-domain CSRF cookie during the
   // bootstrap fetch, and Safari may omit `Origin` on the top-level form POST,
   // which would otherwise dead-end login on a 403 despite the request
@@ -3820,8 +3820,8 @@ function copyProxyHeaders(req: Request): Headers {
 
 function runtimeProxyHeaders(req: Request): Headers {
   const headers = copyProxyHeaders(req);
-  // Railway replaces a private service instance during deploys while its DNS
-  // name remains stable. Do not leave a pooled socket pointing at the removed
+  // A private service instance can restart while its DNS name remains stable.
+  // Do not leave a pooled socket pointing at the removed
   // instance, or subsequent authenticated requests can hang behind a healthy
   // /readyz response until the control plane itself restarts.
   headers.set("Connection", "close");

@@ -5,7 +5,10 @@ import {
 import { RetentionDatabase } from "./database.js";
 import { createRetentionHttpHandler } from "./http.js";
 import { RetentionRepository } from "./repository.js";
-import { S3RawPayloadStore } from "./raw-payload-store.js";
+import {
+  FilesystemRawPayloadStore,
+  S3RawPayloadStore,
+} from "./raw-payload-store.js";
 import { RetentionServiceWorker } from "./worker.js";
 
 const config = retentionServiceConfigFromEnv(process.env);
@@ -28,14 +31,21 @@ const database = new RetentionDatabase(config.databaseUrl, {
   timeoutMs: config.databaseTimeoutMs,
 });
 const crypto = new RetentionCrypto(config.encryptionKey);
-const rawPayloadStore = new S3RawPayloadStore({
-  endpoint: config.bucket.endpoint,
-  bucket: config.bucket.name,
-  accessKeyId: config.bucket.accessKeyId,
-  secretAccessKey: config.bucket.secretAccessKey,
-  ...(config.bucket.region ? { region: config.bucket.region } : {}),
-  virtualHostedStyle: config.bucket.virtualHostedStyle,
-});
+const rawPayloadStore =
+  config.payloadStore.kind === "filesystem"
+    ? new FilesystemRawPayloadStore({
+        rootDirectory: config.payloadStore.directory,
+      })
+    : new S3RawPayloadStore({
+        endpoint: config.payloadStore.endpoint,
+        bucket: config.payloadStore.name,
+        accessKeyId: config.payloadStore.accessKeyId,
+        secretAccessKey: config.payloadStore.secretAccessKey,
+        ...(config.payloadStore.region
+          ? { region: config.payloadStore.region }
+          : {}),
+        virtualHostedStyle: config.payloadStore.virtualHostedStyle,
+      });
 const [
   databaseReady,
   migrationsReady,

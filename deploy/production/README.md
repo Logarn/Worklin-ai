@@ -1,5 +1,9 @@
 # Worklin Production Deploy
 
+For the fresh, low-cost single-VPS deployment with a Vercel frontend, use
+[`../vps/README.md`](../vps/README.md). The configurations below remain available
+for existing deployments; the VPS profile does not import their state.
+
 This folder contains the deploy shape for the Vercel-hosted Worklin UI plus a
 real container backend.
 

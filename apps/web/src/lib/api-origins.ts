@@ -99,9 +99,9 @@ const hostedProxyOrigin = resolveHostedProxyOrigin([
 ]);
 
 // Hosted Worklin serves the SPA on Vercel and proxies the control-plane paths
-// (`/callback`, `/_allauth/*`, `/v1/*`) back to Railway. Keeping the public
-// origin single-domain avoids Safari / privacy-mode third-party-cookie drops
-// during login, hatching, and assistant bootstrap.
+// (`/callback`, `/_allauth/*`, `/v1/*`) to the configured backend. Keeping the
+// public origin single-domain avoids Safari / privacy-mode third-party-cookie
+// drops during login, hatching, and assistant bootstrap.
 export const platformApiBaseUrl =
   hostedProxyOrigin ?? configuredPlatformApiBaseUrl;
 

@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+
 import { z } from "zod";
 
 const booleanFromEnv = z
@@ -33,6 +35,14 @@ const configSchema = z
     WORKLIN_RETENTION_DATABASE_TIMEOUT_MS: positiveIntegerFromEnv(10_000),
     WORKLIN_RETENTION_JOB_LEASE_SECONDS: positiveIntegerFromEnv(120),
     WORKLIN_RETENTION_MAX_JOB_ATTEMPTS: positiveIntegerFromEnv(8),
+    WORKLIN_RETENTION_PAYLOAD_STORE: z
+      .enum(["s3", "filesystem"])
+      .default("s3"),
+    WORKLIN_RETENTION_PAYLOAD_DIRECTORY: z
+      .string()
+      .min(1)
+      .refine(isAbsolute, "Retention payload directory must be absolute.")
+      .optional(),
     WORKLIN_RETENTION_BUCKET_ENDPOINT: z.string().url().optional(),
     WORKLIN_RETENTION_BUCKET_NAME: z.string().min(1).optional(),
     WORKLIN_RETENTION_BUCKET_REGION: z.string().min(1).optional(),
@@ -61,23 +71,51 @@ const configSchema = z
       value.WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID,
       value.WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY,
     ];
-    if (bucketFields.some(Boolean) && !bucketFields.every(Boolean)) {
-      context.addIssue({
-        code: "custom",
-        path: ["WORKLIN_RETENTION_BUCKET_ENDPOINT"],
-        message:
-          "The retention bucket endpoint, name, access key, and secret key must be configured together.",
-      });
+    if (value.WORKLIN_RETENTION_PAYLOAD_STORE === "s3") {
+      if (bucketFields.some(Boolean) && !bucketFields.every(Boolean)) {
+        context.addIssue({
+          code: "custom",
+          path: ["WORKLIN_RETENTION_BUCKET_ENDPOINT"],
+          message:
+            "The retention bucket endpoint, name, access key, and secret key must be configured together.",
+        });
+      }
+      if (!bucketFields.every(Boolean)) {
+        context.addIssue({
+          code: "custom",
+          path: ["WORKLIN_RETENTION_BUCKET_ENDPOINT"],
+          message:
+            "A private encrypted-payload bucket is required when the S3 payload store is selected.",
+        });
+      }
     }
-    if (!bucketFields.every(Boolean)) {
+    if (
+      value.WORKLIN_RETENTION_PAYLOAD_STORE === "filesystem" &&
+      !value.WORKLIN_RETENTION_PAYLOAD_DIRECTORY
+    ) {
       context.addIssue({
         code: "custom",
-        path: ["WORKLIN_RETENTION_BUCKET_ENDPOINT"],
+        path: ["WORKLIN_RETENTION_PAYLOAD_DIRECTORY"],
         message:
-          "A private encrypted-payload bucket is required for the retention service.",
+          "An absolute payload directory is required when the filesystem payload store is selected.",
       });
     }
   });
+
+export type RetentionPayloadStoreConfig =
+  | {
+      kind: "s3";
+      endpoint: string;
+      name: string;
+      region?: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      virtualHostedStyle: boolean;
+    }
+  | {
+      kind: "filesystem";
+      directory: string;
+    };
 
 export type RetentionServiceConfig = {
   databaseUrl: string;
@@ -96,32 +134,32 @@ export type RetentionServiceConfig = {
   databaseTimeoutMs: number;
   jobLeaseSeconds: number;
   maxJobAttempts: number;
-  bucket: {
-    endpoint: string;
-    name: string;
-    region?: string;
-    accessKeyId: string;
-    secretAccessKey: string;
-    virtualHostedStyle: boolean;
-  };
+  payloadStore: RetentionPayloadStoreConfig;
 };
 
 export function retentionServiceConfigFromEnv(
   env: NodeJS.ProcessEnv,
 ): RetentionServiceConfig {
   const parsed = configSchema.parse(env);
-  const bucket = {
-    endpoint: parsed.WORKLIN_RETENTION_BUCKET_ENDPOINT!,
-    name: parsed.WORKLIN_RETENTION_BUCKET_NAME!,
-    accessKeyId: parsed.WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID!,
-    secretAccessKey:
-      parsed.WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY!,
-    virtualHostedStyle:
-      parsed.WORKLIN_RETENTION_BUCKET_VIRTUAL_HOSTED_STYLE,
-    ...(parsed.WORKLIN_RETENTION_BUCKET_REGION
-      ? { region: parsed.WORKLIN_RETENTION_BUCKET_REGION }
-      : {}),
-  };
+  const payloadStore: RetentionPayloadStoreConfig =
+    parsed.WORKLIN_RETENTION_PAYLOAD_STORE === "filesystem"
+      ? {
+          kind: "filesystem",
+          directory: parsed.WORKLIN_RETENTION_PAYLOAD_DIRECTORY!,
+        }
+      : {
+          kind: "s3",
+          endpoint: parsed.WORKLIN_RETENTION_BUCKET_ENDPOINT!,
+          name: parsed.WORKLIN_RETENTION_BUCKET_NAME!,
+          accessKeyId: parsed.WORKLIN_RETENTION_BUCKET_ACCESS_KEY_ID!,
+          secretAccessKey:
+            parsed.WORKLIN_RETENTION_BUCKET_SECRET_ACCESS_KEY!,
+          virtualHostedStyle:
+            parsed.WORKLIN_RETENTION_BUCKET_VIRTUAL_HOSTED_STYLE,
+          ...(parsed.WORKLIN_RETENTION_BUCKET_REGION
+            ? { region: parsed.WORKLIN_RETENTION_BUCKET_REGION }
+            : {}),
+        };
 
   return {
     databaseUrl: parsed.DATABASE_URL,
@@ -151,6 +189,6 @@ export function retentionServiceConfigFromEnv(
     databaseTimeoutMs: parsed.WORKLIN_RETENTION_DATABASE_TIMEOUT_MS,
     jobLeaseSeconds: parsed.WORKLIN_RETENTION_JOB_LEASE_SECONDS,
     maxJobAttempts: parsed.WORKLIN_RETENTION_MAX_JOB_ATTEMPTS,
-    bucket,
+    payloadStore,
   };
 }

@@ -154,3 +154,12 @@ apps/web/public/skills/
 # Generated at release time by the publish-meta jobs (release.yml)
 meta/package-lock.json
 meta/npm-shrinkwrap.json
+
+# Blank VPS configuration templates; populated copies belong outside Git.
+!deploy/vps/deployment.env.example
+!deploy/vps/examples/control-plane.env
+!deploy/vps/examples/concurrent-runtime.env
+!deploy/vps/examples/postgres.env
+!deploy/vps/examples/migrator.env
+!deploy/vps/examples/retention.env
+!deploy/vps/examples/retention-migrator.env

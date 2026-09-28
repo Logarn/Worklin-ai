@@ -44,7 +44,8 @@ const config: RetentionServiceConfig = {
   databaseTimeoutMs: 10_000,
   jobLeaseSeconds: 120,
   maxJobAttempts: 8,
-  bucket: {
+  payloadStore: {
+    kind: "s3",
     endpoint: "https://storage.example.test",
     name: "test",
     accessKeyId: "access",
@@ -149,7 +150,7 @@ function dependencies(
 }
 
 describe("retention operator HTTP boundary", () => {
-  test("readiness fails closed when the raw payload bucket is unavailable", async () => {
+  test("readiness fails closed when raw payload storage is unavailable", async () => {
     const deps = dependencies();
     deps.rawPayloadStore.ready = async () => false;
     const response = await createRetentionHttpHandler(deps)(

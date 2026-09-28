@@ -1,0 +1,11 @@
+{$API_HOST} {
+    header -Server
+
+    reverse_proxy control-plane:8080 {
+        # Disable response buffering for SSE. Caddy upgrades WebSockets
+        # automatically and keeps them attached to the same upstream.
+        flush_interval -1
+        stream_timeout 24h
+        stream_close_delay 5m
+    }
+}

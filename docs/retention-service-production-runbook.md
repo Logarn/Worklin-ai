@@ -8,8 +8,8 @@ state, approvals, usage, dispatch intent, and immutable audit records.
 
 This runbook covers the production deployment that exists in this repository.
 It is intentionally fail closed. A green deployment proves that the process,
-database isolation, migration, and raw-payload bucket are ready. It does not
-prove that Shopify/Klaviyo backfills, polling, AI generation, or outbound
+database isolation, migration, and selected raw-payload store are ready. It does
+not prove that Shopify/Klaviyo backfills, polling, AI generation, or outbound
 delivery are complete.
 
 Production posture at this revision:
@@ -42,15 +42,15 @@ flowchart LR
   ControlPlane -->|Startup and 5-minute tenant wake sweep| Retention
   Retention --> RuntimeDB["Private PostgreSQL runtime role"]
   Migrator["One-time migration release"] --> MigratorDB["PostgreSQL migrator role"]
-  Retention --> Bucket["Private raw-payload bucket"]
+  Retention --> PayloadStore["Private encrypted raw-payload store"]
   MigratorDB --> RuntimeDB
 ```
 
-The browser and providers must never call `retention-service` directly.
-`retention-service` must not have a Railway public domain. Put the gateway,
-control plane, retention service, PostgreSQL, and bucket in the same Railway
-project and environment. Railway private DNS is scoped to one project and
-environment, and internal service calls use
+The browser and providers must never call `retention-service` directly. In the
+Railway profile, `retention-service` must not have a public domain. Put the
+gateway, control plane, retention service, PostgreSQL, and bucket in the same
+Railway project and environment. Railway private DNS is scoped to one project
+and environment, and internal service calls use
 `http://<service>.railway.internal:<port>`.
 
 The service binds to `::` by default. Keep that setting because it supports both
@@ -68,13 +68,15 @@ Railway references:
 
 Record evidence for every item before ingesting customer data:
 
-- A dedicated production Railway environment exists.
-- `retention-service` has private networking only and no public domain.
+- A dedicated production Railway environment or single-VPS production stack
+  exists.
+- `retention-service` has private networking only and no public port or domain.
 - PostgreSQL is dedicated to retention data or has an equivalently isolated
   database and schema.
 - Automated database backups are enabled.
-- PostgreSQL point-in-time recovery is enabled and its first base backup has
-  completed.
+- Railway uses point-in-time recovery with a completed first base backup. The
+  single-VPS profile uses provider snapshots plus coordinated encrypted logical
+  dumps and volume archives.
 - A restore drill to a separate service has succeeded.
 - The migrator and runtime database roles are separate.
 - The runtime role is not a superuser, cannot bypass RLS, and owns no
@@ -88,18 +90,24 @@ Record evidence for every item before ingesting customer data:
 - Tenant initialization inserts its registry row inside an organization-scoped
   transaction.
 - The control-plane wake sweep reaches one active binding per organization.
-- The raw-payload bucket is private, isolated to production, and reachable.
-- All shared secrets are distinct and stored only in Railway variables.
+- The selected raw-payload store is private, isolated to production, reachable,
+  and included in a verified backup.
+- All shared secrets are distinct and stored only in Railway variables or the
+  root-owned VPS secrets directory.
 - Global external writes and sending are both `false`.
 - Organization-level external writes and sending are both `false`.
 - Gateway webhook ingress is initially disabled.
-- Continuous monitoring exists outside Railway's deployment healthcheck.
+- Continuous monitoring exists outside the deployment healthcheck.
 - On-call ownership, incident contacts, and the organization kill-switch owner
   are recorded.
 
 Railway's healthcheck is a deployment activation check, not continuous uptime
 monitoring. A separate monitor must query the private service through a trusted
 internal monitor or through a control-plane health aggregator.
+
+The single-VPS profile uses the same private-service boundary on its Compose
+network and exposes only Caddy. Its host monitor queries the control-plane
+health aggregator rather than publishing the retention port.
 
 ## Railway Provisioning
 
@@ -139,7 +147,7 @@ The service requires two database identities:
 
 Do not use Railway's database owner URL as `DATABASE_URL`.
 
-### 3. Provision The Raw-Payload Bucket
+### 3. Provision The S3 Raw-Payload Store
 
 Create a production-only Railway bucket in the same environment. Railway
 buckets are private S3-compatible storage. Use its S3 API bucket name (`BUCKET`),
@@ -149,6 +157,7 @@ Map Railway bucket references to service variables:
 
 | Service variable                                | Railway bucket value                                                                       |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `WORKLIN_RETENTION_PAYLOAD_STORE`               | `s3`                                                                                       |
 | `WORKLIN_RETENTION_BUCKET_ENDPOINT`             | `ENDPOINT`                                                                                 |
 | `WORKLIN_RETENTION_BUCKET_NAME`                 | `BUCKET`                                                                                   |
 | `WORKLIN_RETENTION_BUCKET_REGION`               | `REGION`                                                                                   |
@@ -162,6 +171,23 @@ replace application encryption. Do not expose presigned URLs for these objects.
 Bucket versioning, independent replication, lifecycle expiration, and a
 tested raw-payload restore/replay procedure are not implemented. Treat these as
 rollout blockers for any retention promise that depends on indefinite replay.
+
+### 4. Configure The Single-VPS Filesystem Store
+
+The single-VPS profile selects the filesystem implementation and mounts a
+dedicated named volume at `/data/retention-objects`:
+
+```text
+WORKLIN_RETENTION_PAYLOAD_STORE=filesystem
+WORKLIN_RETENTION_PAYLOAD_DIRECTORY=/data/retention-objects
+```
+
+The service writes only encrypted envelopes to this directory. The adapter
+validates object references, rejects traversal, writes with mode `0600`, uses a
+synced temporary file and atomic rename, and verifies write/delete access during
+readiness. Back up the volume together with the encryption key using
+[`deploy/vps/backup.sh`](../deploy/vps/backup.sh). The VPS profile does not
+require bucket credentials.
 
 ## PostgreSQL Roles And Grants
 
@@ -352,7 +378,8 @@ file contains no usable secrets.
   with the control plane; minimum 32 bytes.
 - `WORKLIN_RETENTION_ENCRYPTION_KEY`: exactly 32 random bytes encoded as 64 hex
   characters.
-- All five required bucket connection values.
+- `WORKLIN_RETENTION_PAYLOAD_STORE` plus either all required S3 connection values
+  or an absolute `WORKLIN_RETENTION_PAYLOAD_DIRECTORY`.
 
 ### Control Plane Variables
 
@@ -415,7 +442,7 @@ gateway. They are not read by the `retention-service` process itself.
 | Encryption key                       | Retention service                      | No online rotation/key versioning       |
 | Runtime database password            | Retention service, PostgreSQL          | Rotatable with a new runtime credential |
 | Migrator database password           | One-time migration release, PostgreSQL | Rotate after each migration window      |
-| Bucket access key                    | Retention service, bucket              | Reset invalidates the old credential    |
+| S3 bucket access key                 | Retention service, bucket              | Reset invalidates the old credential    |
 | Provider credentials/webhook secrets | Encrypted retention records            | No update/rotation operator API yet     |
 
 Rules:
@@ -455,7 +482,7 @@ encryption-key rotation requires a keyring, ciphertext key versions, a
 re-encryption job, progress checkpoints, and rollback support. This is an
 explicit blocker before routine customer operation.
 
-### Bucket Credential Rotation
+### S3 Bucket Credential Rotation
 
 Bucket credential reset invalidates the previous credentials:
 
@@ -480,10 +507,11 @@ Returns `200` only when all of these are true:
 - PostgreSQL accepts queries.
 - Migration `001_initial` is recorded.
 - The runtime role is not privileged, bypass-RLS, or a tenant-table owner.
+- The selected raw-payload store passes its readiness probe.
 - Every organization-scoped table has enabled and forced RLS plus the expected
   `retention_org_isolation` policy.
 - The fresh runtime connection has no organization context.
-- The private raw-payload bucket is reachable.
+- The selected raw-payload store is reachable.
 
 The response also reports global external-write and send switch values.
 
@@ -556,10 +584,10 @@ Provider webhook flow:
 8. The service commits the encrypted, deduplicated source event and a durable
    raw-payload persistence job in one tenant transaction, wakes only the
    organization in the authenticated token, and returns `202`.
-9. The worker writes the encrypted raw object to the private bucket using the
-   event's stable reference. Only after that write succeeds does it enqueue
-   normalization. A database retry overwrites the same object key rather than
-   creating an orphan.
+9. The worker writes the encrypted raw object to the selected private store
+   using the event's stable reference. Only after that write succeeds does it
+   enqueue normalization. A database retry overwrites the same object key rather
+   than creating an orphan.
 
 The worker keeps an in-memory, deduplicated set of explicitly awakened
 organization IDs. It claims jobs only inside the selected organization's RLS
@@ -705,7 +733,7 @@ Before customer scale, run:
 - Concurrent two-organization and many-organization RLS tests.
 - Burst webhook tests at expected peak plus 3x headroom.
 - Queue recovery tests after process termination and lease expiry.
-- Database failover, bucket outage, and control-plane timeout tests.
+- Database failover, raw-payload store outage, and control-plane timeout tests.
 - Cost-reservation concurrency and idempotent campaign-release tests.
 
 Do not claim the one-million-profile target until results, query plans, database
@@ -717,7 +745,8 @@ recorded.
 ### Implemented Signals
 
 - `/healthz`: process liveness.
-- `/readyz`: database, migration, role/RLS, bucket, and global switch state.
+- `/readyz`: database, migration, role/RLS, raw-payload store, and global switch
+  state.
 - `GET /v1/retention/status`: tenant-scoped integration timestamps and errors,
   job counts by status, and effective write/send state.
 - Control-plane logs for incomplete or failed five-minute tenant wake sweeps.
@@ -739,7 +768,7 @@ Add or derive:
 - Integration lag for last webhook, poll, and reconciliation.
 - Database connection use, transaction latency, lock waits, storage, WAL, and
   replication/archive health.
-- Bucket operation latency, errors, and stored bytes.
+- Raw-payload operation latency, errors, and stored bytes.
 - Decision and generation counts, quality blocks, human-review rate, token
   usage, estimated cost, and budget reservation utilization.
 - Approval invalidations and attempted duplicate releases.
@@ -753,7 +782,7 @@ fleet-safe metrics exporter and dashboards remain required.
 
 - `/readyz` is non-200 for two consecutive checks.
 - `tenantIsolation` is anything other than `ready`.
-- Raw-payload bucket is unavailable.
+- The selected raw-payload store is unavailable.
 - Oldest queued normalization job exceeds five minutes.
 - Any control-plane tenant wake sweep fails or is incomplete.
 - Ingestion P95 exceeds 60 seconds for 15 minutes.
@@ -820,7 +849,7 @@ Restore in this order:
 
 1. PostgreSQL and PITR health
 2. Runtime grants and forced RLS
-3. Raw-payload bucket
+3. Raw-payload store
 4. Retention service readiness
 5. Control-plane read access
 6. Synthetic webhook ingress
@@ -834,7 +863,7 @@ Restore in this order:
 | Capability                                 | State                                   | Evidence in this revision                                                                                                                                                                              | Production consequence                                                                  |
 | ------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | Private deployable service                 | Implemented                             | Dockerfile, Railway config, `::` binding                                                                                                                                                               | Deploy without a public domain                                                          |
-| Required configuration validation          | Implemented                             | Startup rejects missing DB, secrets, encryption key, or bucket                                                                                                                                         | Misconfiguration fails at startup                                                       |
+| Required configuration validation          | Implemented                             | Startup rejects missing DB, secrets, encryption key, or selected payload-store configuration                                                                                                           | Misconfiguration fails at startup                                                       |
 | Separate runtime and migrator URLs         | Implemented in service config           | Migration URL required when startup migrations are enabled                                                                                                                                             | Role creation and grants remain operator work                                           |
 | Dedicated migration executable             | Blocked                                 | Migrations run only during service startup                                                                                                                                                             | Use temporary private migration release                                                 |
 | Forced tenant RLS                          | Implemented                             | Every tenant table has enabled and forced RLS                                                                                                                                                          | Still verify grants and role ownership in production                                    |
@@ -847,7 +876,7 @@ Restore in this order:
 | Real PostgreSQL operator flow              | Implemented and tested                  | Tenant initialization and operator persistence pass against PostgreSQL                                                                                                                                 | Retain as a release regression                                                          |
 | Identity-pinned assistant bridge           | Implemented                             | Runtime org/assistant equality checks plus route allowlists                                                                                                                                            | Approval, release, send, access, and integration routes remain excluded                 |
 | Field encryption                           | Partially implemented                   | Identifiers, traits, credentials, payloads, decisions, and messages use application encryption                                                                                                         | Key versioning and online re-key are blocked                                            |
-| Private raw-payload bucket                 | Implemented                             | Encrypted writes and readiness check                                                                                                                                                                   | Versioning, replication, lifecycle, and replay are blocked                              |
+| Private raw-payload store                  | Implemented                             | S3 and filesystem adapters provide encrypted writes, deletion, and readiness checks                                                                                                                     | Cross-provider replication, lifecycle, and replay are blocked                           |
 | Durable source event append/dedup          | Implemented                             | Provider event ID and payload-hash dedup records                                                                                                                                                       | Requires load and replay validation                                                     |
 | Durable jobs, leases, retries              | Implemented for current workers         | Tenant-scoped leases, cancellation, retry/dead-letter state, normalization, provider sync, and recipient reasoning                                                                                     | Long-running lease renewal and dispatch consumption remain blocked                      |
 | Shopify webhook verification/normalization | Implemented for supported event shapes  | Gateway, control-plane binding, provider signature, append                                                                                                                                             | Provider subscription/OAuth lifecycle is blocked                                        |

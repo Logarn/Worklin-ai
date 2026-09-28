@@ -4,6 +4,20 @@ This file is the cross-system architecture index. Detailed designs live in domai
 
 ## Architecture Docs
 
+The selected commercial-pilot deployment under the hard $20 additional monthly
+hosting cap is documented in
+[`plans/runtime-architecture/twenty-dollar-single-vps-plan.md`](plans/runtime-architecture/twenty-dollar-single-vps-plan.md).
+It keeps the existing Vercel web app and uses one 8 GB VPS for the API, database,
+file storage, and durable workers. The earlier serverless Vercel backend proposal
+is retained as analysis but exceeds the incremental cap.
+
+The current single-VPS implementation starting point is documented in
+[`deploy/vps/README.md`](deploy/vps/README.md). It keeps the frontend on Vercel,
+uses the concurrent browser-capable runtime, and includes a private retention
+service with a separate database on the shared PostgreSQL server and local
+encrypted payload storage. It enforces the 8 GB host class through preflight
+checks and provides encrypted backup tooling. Brand archiving remains deferred.
+
 | Domain                                      | Architecture Doc                                                                                   |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | Assistant runtime                           | [`assistant/ARCHITECTURE.md`](assistant/ARCHITECTURE.md)                                           |

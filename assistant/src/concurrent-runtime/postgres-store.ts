@@ -439,7 +439,12 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
   }
 
   async initialize(): Promise<void> {
-    await this.migrationSql.unsafe(CONCURRENT_RUNTIME_MIGRATION_BOOTSTRAP);
+    const [registry] = await this.migrationSql<{ registry: string | null }[]>`
+      SELECT to_regclass('concurrent_runtime_schema_migrations')::text AS registry
+    `;
+    if (!registry?.registry) {
+      await this.migrationSql.unsafe(CONCURRENT_RUNTIME_MIGRATION_BOOTSTRAP);
+    }
     const applied = await this.migrationSql<
       { version: number; name: string }[]
     >`
