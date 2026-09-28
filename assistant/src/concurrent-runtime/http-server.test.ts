@@ -71,6 +71,75 @@ function createHarness() {
 }
 
 describe("concurrent runtime HTTP handler", () => {
+  test("streams event bursts before completion and keeps the subscriber connected", async () => {
+    const store = new InMemoryConcurrentRuntimeStore();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const firstDelta = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const service = new ConcurrentRuntimeService({
+      store,
+      maxConcurrentTurns: 1,
+      maxConcurrentTurnsPerTenant: 1,
+      leaseDurationMs: 30_000,
+      executor: {
+        async execute({ callbacks }) {
+          await callbacks.onTextDelta("first ");
+          started();
+          await gate;
+          await callbacks.onTextDelta("second");
+          return "first second";
+        },
+      },
+    });
+    await service.initialize();
+    const handler = createConcurrentRuntimeHttpHandler({
+      store,
+      service,
+      eventPollIntervalMs: 10,
+      authenticate: () => ({ ok: true, tenant: authenticatedTenant() }),
+    });
+    await handler(
+      new Request("http://runtime.test/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({
+          conversationId: "conversation-123",
+          content: "hello",
+        }),
+      }),
+    );
+    await firstDelta;
+    const response = await handler(
+      new Request(
+        "http://runtime.test/v1/events?conversationId=conversation-123",
+      ),
+    );
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      const first = decoder.decode((await reader.read()).value);
+      expect(first).toContain('"type":"assistant_text_delta"');
+      expect(first).toContain('"text":"first "');
+      expect(first).not.toContain('"type":"message_complete"');
+      release();
+      await service.onIdle();
+      const next = await reader.read();
+      expect(next.done).toBe(false);
+      const completed = decoder.decode(next.value);
+      expect(completed).toContain('"text":"second"');
+      expect(completed).toContain('"type":"message_complete"');
+      expect(completed).toContain('"phase":"idle"');
+    } finally {
+      release();
+      await reader.cancel();
+      await service.onIdle();
+    }
+  });
+
   test("accepts a bounded message and exposes its durable transcript", async () => {
     const { handler, service } = createHarness();
     await service.initialize();
@@ -184,7 +253,9 @@ describe("concurrent runtime HTTP handler", () => {
       process.env.CONCURRENT_RUNTIME_MANAGED_MODEL = "kimi-k2.6";
       process.env.MOONSHOT_API_KEY = "test-only-provider-key";
       const { handler } = createHarness();
-      const response = await handler(new Request("http://runtime.test/v1/config"));
+      const response = await handler(
+        new Request("http://runtime.test/v1/config"),
+      );
       const body = await response.json();
       expect(body.llm.activeProfile).toBe("managed");
       expect(body.llm.profiles[body.llm.activeProfile]).toEqual({
@@ -195,7 +266,9 @@ describe("concurrent runtime HTTP handler", () => {
       expect(JSON.stringify(body)).not.toContain("test-only-provider-key");
 
       delete process.env.MOONSHOT_API_KEY;
-      const unavailable = await handler(new Request("http://runtime.test/v1/config"));
+      const unavailable = await handler(
+        new Request("http://runtime.test/v1/config"),
+      );
       expect(await unavailable.json()).toEqual({});
     } finally {
       keys.forEach((key, index) => {

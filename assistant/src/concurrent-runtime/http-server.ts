@@ -581,11 +581,17 @@ export function createConcurrentRuntimeHttpHandler(
                 conversationId,
                 limit: 250,
               });
-              for (const event of events) {
-                if (!enqueue(formatSseFrame(eventEnvelope(event)), "event")) {
+              if (events.length > 0) {
+                const batch = events
+                  .map((event) => formatSseFrame(eventEnvelope(event)))
+                  .join("");
+                if (!enqueue(batch, "event")) {
                   return;
                 }
-                lastSeq = Math.max(lastSeq, event.seq);
+                lastSeq = Math.max(
+                  lastSeq,
+                  ...events.map((event) => event.seq),
+                );
               }
             } catch (error) {
               logger.error(
