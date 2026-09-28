@@ -172,6 +172,39 @@ describe("concurrent runtime HTTP handler", () => {
     expect(config.status).toBe(200);
   });
 
+  test("publishes a selectable managed profile without exposing credentials", async () => {
+    const keys = [
+      "CONCURRENT_RUNTIME_MANAGED_PROVIDER",
+      "CONCURRENT_RUNTIME_MANAGED_MODEL",
+      "MOONSHOT_API_KEY",
+    ] as const;
+    const previous = keys.map((key) => process.env[key]);
+    try {
+      process.env.CONCURRENT_RUNTIME_MANAGED_PROVIDER = "kimi";
+      process.env.CONCURRENT_RUNTIME_MANAGED_MODEL = "kimi-k2.6";
+      process.env.MOONSHOT_API_KEY = "test-only-provider-key";
+      const { handler } = createHarness();
+      const response = await handler(new Request("http://runtime.test/v1/config"));
+      const body = await response.json();
+      expect(body.llm.activeProfile).toBe("managed");
+      expect(body.llm.profiles[body.llm.activeProfile]).toEqual({
+        provider: "kimi",
+        model: "kimi-k2.6",
+        source: "managed",
+      });
+      expect(JSON.stringify(body)).not.toContain("test-only-provider-key");
+
+      delete process.env.MOONSHOT_API_KEY;
+      const unavailable = await handler(new Request("http://runtime.test/v1/config"));
+      expect(await unavailable.json()).toEqual({});
+    } finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    }
+  });
+
   test("conversation listings remain isolated between logical tenants", async () => {
     const store = new InMemoryConcurrentRuntimeStore();
     const service = new ConcurrentRuntimeService({

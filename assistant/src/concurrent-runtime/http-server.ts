@@ -301,6 +301,14 @@ export function createConcurrentRuntimeHttpHandler(
                 provider: provider.provider,
                 model: provider.model,
               },
+              activeProfile: "managed",
+              profiles: {
+                managed: {
+                  provider: provider.provider,
+                  model: provider.model,
+                  source: "managed",
+                },
+              },
             }
           : undefined,
       });

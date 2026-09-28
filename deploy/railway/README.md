@@ -38,6 +38,9 @@ health and authentication bootstrap checks pass, then promote the deployment.
 
 - `WORKLIN_CONCURRENT_RUNTIME_MODE=internal` restricts concurrent routing to
   explicitly allowlisted assistant or user IDs. It does not enable all users.
+  Set `WORKLIN_CONCURRENT_RUNTIME_ASSISTANT_IDS` to the canary assistant ID
+  before testing hatching. An unallocated failed stack recovers on its next
+  request after this configuration is deployed.
 - The workspace usage warning is $15 and the configured hard usage limit is
   $20. This cutoff can interrupt services. Usage caps are not a fixed-price
   quote and do not include separate model-provider charges or applicable taxes.
