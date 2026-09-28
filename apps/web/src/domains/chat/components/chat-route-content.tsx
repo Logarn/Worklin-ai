@@ -66,6 +66,7 @@ import { routes } from "@/utils/routes";
 import { lifecycleService } from "@/assistant/lifecycle-service";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
 import { messagePlainText } from "@/domains/chat/utils/message-plain-text";
+import { streamTraceEnabled } from "@/lib/streaming/stream-timing";
 import { recordSseRenderCommit } from "@/lib/streaming/stream-debug";
 
 import type { UseDiskPressureMonitorResult } from "@/assistant/use-disk-pressure-monitor";
@@ -399,6 +400,7 @@ export function ChatMainPanel({
 
   useLayoutEffect(() => {
     sanitizedMessagesRef.current = sanitizedMessages;
+    if (!streamTraceEnabled()) return;
     let latestAssistant: DisplayMessage | undefined;
     for (let index = sanitizedMessages.length - 1; index >= 0; index--) {
       const candidate = sanitizedMessages[index];

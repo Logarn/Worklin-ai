@@ -302,6 +302,27 @@ export function setupMyStore(): () => void {
 
 ## Testing
 
+### Streaming timing
+
+Reload a chat with `?streamTrace=1` to enable session-local timing.
+The opt-in survives route query cleanup; reload without the parameter to
+disable it. `document.documentElement.dataset.streamTrace` contains a
+summary, updated at most four times per second, without response text.
+
+The trace keeps whole-message counters independently of the 1,000-event
+debug ring. It compares server `emittedAt` intervals, browser byte-read
+observations, parsed event intervals, synchronous handler costs, and
+transcript layout-effect commits. Browser durations use `performance.now()`;
+server timestamps are compared only to other server timestamps to avoid
+clock-skew errors. A byte-read observation is when JavaScript reads the
+response stream, not when the network stack receives a packet. The decoder
+can read ahead, so the latest observed chunk is contextual timing, not an
+exact event-to-packet association. React commits do not prove browser paint.
+
+Use the same prompt, conversation, and browser for before/after comparisons.
+Check final text integrity and completion as well as latency. Reload without
+tracing after collecting the results.
+
 `lib/event-bus.test.ts` covers the pub/sub surface (subscribe,
 unsubscribe, publish, isolation between event names, throwing-handler
 robustness). `assistant/sse-service.test.ts` covers SSE behavior:

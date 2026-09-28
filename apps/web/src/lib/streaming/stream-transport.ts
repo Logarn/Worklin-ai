@@ -25,6 +25,7 @@ import {
   registerSseClient,
 } from "@/lib/streaming/stream-debug";
 import { createStreamWatchdog } from "@/lib/streaming/stream-watchdog";
+import { streamTraceEnabled, tracedStreamFetch, recordStreamHandler } from "./stream-timing";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -249,6 +250,9 @@ export function subscribeEvents(
           }),
           credentials: "include",
           signal: abortController.signal,
+          ...(streamTraceEnabled() ? {
+            fetch: tracedStreamFetch(sseDebugClientId, client.getConfig().fetch ?? globalThis.fetch),
+          } : {}),
           // All reconnect behavior is owned by this function's
           // reconnect() loop — SDK-level retries would bypass the
           // watchdog, debug registry, reconnect cursor, and the
@@ -331,10 +335,13 @@ export function subscribeEvents(
           const envelope = parseAssistantEvent(data);
 
           pushSseEvent(sseDebugClientId, envelope);
+          const handlerStarted = streamTraceEnabled() ? performance.now() : null;
           try {
             onEvent(envelope);
           } catch {
             // Callback errors should not trigger stream reconnect
+          } finally {
+            if (handlerStarted !== null) recordStreamHandler(envelope, performance.now() - handlerStarted);
           }
         }
       } finally {

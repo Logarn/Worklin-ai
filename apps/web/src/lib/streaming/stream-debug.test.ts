@@ -14,6 +14,7 @@ import {
   resetSseDebugStateForTests,
 } from "@/lib/streaming/stream-debug";
 import type { AssistantEventEnvelope } from "@vellumai/assistant-api";
+import { getStreamTimingSnapshot } from "./stream-timing";
 
 beforeEach(() => {
   resetSseDebugStateForTests();
@@ -307,7 +308,7 @@ describe("render commit trace", () => {
         20,
       ]);
       expect(
-        JSON.parse(document.documentElement.dataset.streamTrace ?? "{}"),
+        getStreamTimingSnapshot(),
       ).toMatchObject({ enabled: true, renderCommitCount: 0 });
 
       clearSseTrace();
