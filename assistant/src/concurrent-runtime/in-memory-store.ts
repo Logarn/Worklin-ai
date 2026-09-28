@@ -1091,6 +1091,11 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
     return cloneEvent(event);
   }
 
+  async getLatestEventSeq(context: TenantExecutionContext): Promise<number> {
+    assertContext(context);
+    return this.nextEventSequence.get(actorScopeKey(context)) ?? 0;
+  }
+
   async listEvents(
     context: TenantExecutionContext,
     input: {

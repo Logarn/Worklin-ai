@@ -90,6 +90,8 @@ export interface ConcurrentRuntimeStore extends ConcurrentBrowserBrokerStore {
     message: Record<string, unknown>,
   ): Promise<ConcurrentEvent>;
 
+  getLatestEventSeq(context: TenantExecutionContext): Promise<number>;
+
   listEvents(
     context: TenantExecutionContext,
     input: {

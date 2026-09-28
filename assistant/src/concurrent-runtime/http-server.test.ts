@@ -115,10 +115,14 @@ describe("concurrent runtime HTTP handler", () => {
     await firstDelta;
     const response = await handler(
       new Request(
-        "http://runtime.test/v1/events?conversationId=conversation-123",
+        "http://runtime.test/v1/events?conversationId=conversation-123&lastSeenSeq=0",
       ),
     );
     const reader = response.body!.getReader();
+    const coldResponse = await handler(
+      new Request("http://runtime.test/v1/events"),
+    );
+    const coldReader = coldResponse.body!.getReader();
     const decoder = new TextDecoder();
     try {
       const first = decoder.decode((await reader.read()).value);
@@ -133,9 +137,13 @@ describe("concurrent runtime HTTP handler", () => {
       expect(completed).toContain('"text":"second"');
       expect(completed).toContain('"type":"message_complete"');
       expect(completed).toContain('"phase":"idle"');
+      const cold = decoder.decode((await coldReader.read()).value);
+      expect(cold).toContain('"text":"second"');
+      expect(cold).not.toContain('"text":"first "');
     } finally {
       release();
       await reader.cancel();
+      await coldReader.cancel();
       await service.onIdle();
     }
   });

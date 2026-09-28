@@ -2360,6 +2360,19 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
     });
   }
 
+  async getLatestEventSeq(context: TenantExecutionContext): Promise<number> {
+    return this.transaction(async (tx) => {
+      await setTenantContext(tx, context);
+      const [row] = await tx<{ seq: number | string }[]>`
+        SELECT COALESCE(MAX(seq), 0) AS seq
+        FROM concurrent_events
+        WHERE organization_id = ${context.organizationId}
+          AND assistant_id = ${context.assistantId}
+      `;
+      return Number(row?.seq ?? 0);
+    });
+  }
+
   async listEvents(
     context: TenantExecutionContext,
     input: {

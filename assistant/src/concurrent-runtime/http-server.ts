@@ -514,8 +514,12 @@ export function createConcurrentRuntimeHttpHandler(
       if (!auth.ok) return auth.response;
       const conversationId =
         url.searchParams.get("conversationId")?.trim() || undefined;
-      const cursor =
-        integerQuery(url, "lastSeenSeq", 0) ?? integerQuery(url, "since", 0);
+      const context = executionContext(auth.tenant, { conversationId });
+      const cursor = url.searchParams.has("lastSeenSeq")
+        ? integerQuery(url, "lastSeenSeq", 0)
+        : url.searchParams.has("since")
+          ? integerQuery(url, "since", 0)
+          : await options.store.getLatestEventSeq(context);
       if (cursor === null) {
         return errorResponse(
           400,
@@ -523,7 +527,6 @@ export function createConcurrentRuntimeHttpHandler(
           "Event cursor must be a non-negative integer.",
         );
       }
-      const context = executionContext(auth.tenant, { conversationId });
       const encoder = new TextEncoder();
       let closed = false;
       let lastSeq = cursor;
