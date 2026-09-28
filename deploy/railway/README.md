@@ -10,8 +10,9 @@ flowchart LR
   Worker --> DB[(PostgreSQL)]
 ```
 
-Both application services build `runtime/Dockerfile` from the repository root
-and start `/app/runtime/entrypoint.sh`. Readiness uses `/readyz` with a 300-second
+The control plane builds `control-plane/Dockerfile` from the repository root
+and starts `bun run src/index.ts`. The worker builds `runtime/Dockerfile`
+and starts `/app/runtime/entrypoint.sh`. Readiness uses `/readyz` with a 300-second
 timeout. Each has a `/data` volume and a 1 vCPU / 1 GB cap. These are starting
 limits for low-volume testing, not a measured production capacity guarantee.
 
