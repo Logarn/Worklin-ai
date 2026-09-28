@@ -283,6 +283,36 @@ describe("control-plane billing capability", () => {
 });
 
 describe("control-plane runtime provisioning guards", () => {
+  test("control-plane-only readiness accepts a configured concurrent worker without provisioning", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, createTempDbPath(), {
+      WORKLIN_RUNTIME_MODE: "control-plane",
+      WORKLIN_CONCURRENT_RUNTIME_MODE: "internal",
+      WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL: "http://127.0.0.1:1",
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    });
+    await waitForHealth(origin);
+    const response = await fetch(`${origin}/readyz`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).provisionerReady).toBe(true);
+  });
+
+  test("control-plane-only readiness rejects a disabled concurrent worker without provisioning", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    spawnControlPlane(port, createTempDbPath(), {
+      WORKLIN_RUNTIME_MODE: "control-plane",
+      WORKLIN_CONCURRENT_RUNTIME_MODE: "disabled",
+      WORKLIN_CONCURRENT_RUNTIME_GATEWAY_URL: "http://127.0.0.1:1",
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    });
+    await waitForHealth(origin);
+    expect((await fetch(`${origin}/readyz`)).status).toBe(503);
+  });
+
   test("control-plane-only readiness does not depend on a shared gateway", async () => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;

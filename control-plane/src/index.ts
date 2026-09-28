@@ -1233,7 +1233,10 @@ function runtimeProvisioningConfigurationError(): string | null {
 }
 
 function controlPlaneOnlyConfigurationError(): string | null {
-  if (!pooledCoordinatorOwnershipIsLive()) {
+  const concurrentRuntimeConfigured =
+    runtimeStackConfig.concurrentRuntimeMode !== "disabled" &&
+    runtimeStackConfig.concurrentRuntimeGatewayUrl !== null;
+  if (!pooledCoordinatorOwnershipIsLive() && !concurrentRuntimeConfigured) {
     const provisioningError = runtimeProvisioningConfigurationError();
     if (provisioningError) return provisioningError;
   }

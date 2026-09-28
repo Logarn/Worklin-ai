@@ -4,6 +4,14 @@ This file is the cross-system architecture index. Detailed designs live in domai
 
 ## Architecture Docs
 
+The Railway Hobby hosting test uses Vercel for the web app and three Railway
+services: the control plane, a private concurrent worker, and PostgreSQL.
+The control plane and worker each have a persistent `/data` volume and a
+1 vCPU / 1 GB limit. The control plane can sleep when idle. The concurrent
+worker remains in internal rollout mode; retention and the production release
+gates remain separate rollout work. See
+[`deploy/railway/README.md`](deploy/railway/README.md).
+
 The selected commercial-pilot deployment under the hard $20 additional monthly
 hosting cap is documented in
 [`plans/runtime-architecture/twenty-dollar-single-vps-plan.md`](plans/runtime-architecture/twenty-dollar-single-vps-plan.md).
