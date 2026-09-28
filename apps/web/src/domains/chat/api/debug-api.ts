@@ -21,8 +21,11 @@
 import {
   type SseDebugClient,
   type SseDebugEventEntry,
+  type SseDebugRenderEntry,
+  clearSseTrace,
   getSseClients,
   getSseEvents,
+  getSseRenderCommits,
 } from "@/lib/streaming/stream-debug";
 import { requestSseReconnect } from "@/lib/streaming/sse-reconnect-control";
 import { getReconnectCursor } from "@/lib/streaming/reconnect-cursor";
@@ -33,6 +36,10 @@ export interface ChatDebugEventsApi {
   getClients: () => SseDebugClient[];
   /** Last 1 000 parsed SSE events (most-recent last). */
   getEvents: () => SseDebugEventEntry[];
+  /** React transcript commits captured while `?streamTrace=1` is active. */
+  getRenderCommits: () => SseDebugRenderEntry[];
+  /** Clear event and render timing buffers before a controlled test turn. */
+  clearTrace: () => void;
   /** Global seq cursor tracked by gap detection / reconnect resume. */
   getSeqCursor: () => number | null;
   /**
@@ -60,6 +67,8 @@ export interface ChatDebugEventsApi {
 export const eventsDebugApi: ChatDebugEventsApi = {
   getClients: getSseClients,
   getEvents: getSseEvents,
+  getRenderCommits: getSseRenderCommits,
+  clearTrace: clearSseTrace,
   getSeqCursor: getReconnectCursor,
   reconnectClient: (timeoutMs) => requestSseReconnect(timeoutMs),
   subscribe: () =>

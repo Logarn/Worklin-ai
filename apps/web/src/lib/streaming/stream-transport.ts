@@ -330,7 +330,7 @@ export function subscribeEvents(
 
           const envelope = parseAssistantEvent(data);
 
-          pushSseEvent(sseDebugClientId, envelope.message);
+          pushSseEvent(sseDebugClientId, envelope);
           try {
             onEvent(envelope);
           } catch {

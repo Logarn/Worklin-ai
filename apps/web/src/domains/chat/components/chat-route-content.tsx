@@ -65,6 +65,8 @@ import { haptic } from "@/utils/haptics";
 import { routes } from "@/utils/routes";
 import { lifecycleService } from "@/assistant/lifecycle-service";
 import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
+import { messagePlainText } from "@/domains/chat/utils/message-plain-text";
+import { recordSseRenderCommit } from "@/lib/streaming/stream-debug";
 
 import type { UseDiskPressureMonitorResult } from "@/assistant/use-disk-pressure-monitor";
 import { useAppNudges } from "@/domains/chat/hooks/use-app-nudges";
@@ -395,7 +397,22 @@ export function ChatMainPanel({
     };
   }, [uiContextRef, uiContext]);
 
-  useLayoutEffect(() => { sanitizedMessagesRef.current = sanitizedMessages; });
+  useLayoutEffect(() => {
+    sanitizedMessagesRef.current = sanitizedMessages;
+    let latestAssistant: DisplayMessage | undefined;
+    for (let index = sanitizedMessages.length - 1; index >= 0; index--) {
+      const candidate = sanitizedMessages[index];
+      if (candidate?.role === "assistant") {
+        latestAssistant = candidate;
+        break;
+      }
+    }
+    recordSseRenderCommit({
+      conversationId: activeConversationId,
+      messageId: latestAssistant?.id ?? null,
+      textLength: messagePlainText(latestAssistant).length,
+    });
+  });
   useLayoutEffect(() => { transcriptItemsRef.current = transcriptItems; });
 
   // -------------------------------------------------------------------------

@@ -2,22 +2,40 @@ import { describe, expect, test, beforeEach } from "bun:test";
 
 import {
   endSseClient,
+  clearSseTrace,
   getSseClients,
   getSseEvents,
+  getSseRenderCommits,
   markClientEstablished,
   pushSseEvent,
+  recordSseRenderCommit,
   recordSseTraffic,
   registerSseClient,
   resetSseDebugStateForTests,
 } from "@/lib/streaming/stream-debug";
-import type { AssistantEvent } from "@/types/event-types";
+import type { AssistantEventEnvelope } from "@vellumai/assistant-api";
 
 beforeEach(() => {
   resetSseDebugStateForTests();
 });
 
-function makeTextDeltaEvent(text: string): AssistantEvent {
+function makeTextDeltaEvent(
+  text: string,
+): AssistantEventEnvelope["message"] {
   return { type: "assistant_text_delta", text, messageId: "msg-1" };
+}
+
+function makeEnvelope(
+  event: AssistantEventEnvelope["message"],
+  seq = 1,
+): AssistantEventEnvelope {
+  return {
+    id: `evt-${seq}`,
+    emittedAt: new Date(1_000 + seq).toISOString(),
+    conversationId: "conv-1",
+    seq,
+    message: event,
+  };
 }
 
 describe("registerSseClient", () => {
@@ -215,13 +233,17 @@ describe("pushSseEvent", () => {
     const event = makeTextDeltaEvent("hello");
 
     const before = Date.now();
-    pushSseEvent(id, event);
+    pushSseEvent(id, makeEnvelope(event, 7));
     const after = Date.now();
 
     const events = getSseEvents();
     const last = events[events.length - 1];
     expect(last.clientId).toBe(id);
     expect(last.event).toEqual(event);
+    expect(last.eventId).toBe("evt-7");
+    expect(last.seq).toBe(7);
+    expect(last.conversationId).toBe("conv-1");
+    expect(last.emittedAt).toBe(new Date(1_007).toISOString());
     expect(last.receivedAt).toBe(new Date(last.receivedAt).toISOString());
     const receivedMs = new Date(last.receivedAt).getTime();
     expect(receivedMs).toBeGreaterThanOrEqual(before);
@@ -235,7 +257,7 @@ describe("pushSseEvent", () => {
 
     // Push 1005 events; only last 1000 should be retained
     for (let i = 0; i < 1005; i++) {
-      pushSseEvent(id, event);
+      pushSseEvent(id, makeEnvelope(event, i));
     }
 
     const events = getSseEvents();
@@ -250,11 +272,47 @@ describe("getSseEvents limit", () => {
     const event = makeTextDeltaEvent("x");
 
     for (let i = 0; i < 20; i++) {
-      pushSseEvent(id, event);
+      pushSseEvent(id, makeEnvelope(event, i));
     }
 
     expect(getSseEvents(5).length).toBe(5);
     expect(getSseEvents(50).length).toBe(20);
+  });
+});
+
+describe("render commit trace", () => {
+  test("records changing transcript commits when stream tracing is enabled", () => {
+    const originalUrl = window.location.href;
+    window.history.replaceState({}, "", "/chat?streamTrace=1");
+    try {
+      recordSseRenderCommit({
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        textLength: 10,
+      });
+      recordSseRenderCommit({
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        textLength: 10,
+      });
+      recordSseRenderCommit({
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        textLength: 20,
+      });
+
+      expect(getSseRenderCommits()).toHaveLength(2);
+      expect(getSseRenderCommits().map((entry) => entry.textLength)).toEqual([
+        10,
+        20,
+      ]);
+
+      clearSseTrace();
+      expect(getSseEvents()).toEqual([]);
+      expect(getSseRenderCommits()).toEqual([]);
+    } finally {
+      window.history.replaceState({}, "", originalUrl);
+    }
   });
 });
 

@@ -14,6 +14,7 @@
  * can be inspected from the console via `window._vellumDebug.chat.events`.
  */
 
+import type { AssistantEventEnvelope } from "@vellumai/assistant-api";
 import type { AssistantEvent } from "@/types/event-types";
 
 // ---------------------------------------------------------------------------
@@ -68,8 +69,28 @@ export interface SseDebugEventEntry {
   clientId: string;
   /** ISO 8601 timestamp of when the event was received. */
   receivedAt: string;
+  /** Epoch ms captured alongside {@link receivedAt} for direct arithmetic. */
+  receivedAtMs: number;
+  /** Server timestamp from the event envelope. */
+  emittedAt: string;
+  /** Stable event id from the event envelope. */
+  eventId: string;
+  /** Global event sequence used by reconnect and replay. */
+  seq?: number;
+  /** Conversation carried by the event envelope, when present. */
+  conversationId?: string;
   /** The parsed event payload. */
   event: AssistantEvent;
+}
+
+export interface SseDebugRenderEntry {
+  /** ISO 8601 timestamp captured after React committed the transcript DOM. */
+  committedAt: string;
+  /** Epoch ms captured alongside {@link committedAt} for direct arithmetic. */
+  committedAtMs: number;
+  conversationId: string | null;
+  messageId: string | null;
+  textLength: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +119,8 @@ let nextClientId = 0;
  */
 const clients = new Map<string, SseDebugClient>();
 const events: SseDebugEventEntry[] = [];
+const renderCommits: SseDebugRenderEntry[] = [];
+let lastRenderSignature: string | null = null;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -179,15 +202,66 @@ export function recordSseTraffic(clientId: string, isData: boolean): void {
  * Push a parsed event into the ring buffer. Called from the `onEvent`
  * callback inside {@link subscribeEvents}.
  */
-export function pushSseEvent(clientId: string, event: AssistantEvent): void {
+export function pushSseEvent(
+  clientId: string,
+  envelope: AssistantEventEnvelope,
+): void {
+  const receivedAtMs = Date.now();
   events.push({
     clientId,
-    receivedAt: new Date().toISOString(),
-    event,
+    receivedAt: new Date(receivedAtMs).toISOString(),
+    receivedAtMs,
+    emittedAt: envelope.emittedAt,
+    eventId: envelope.id,
+    ...(envelope.seq !== undefined ? { seq: envelope.seq } : {}),
+    ...(envelope.conversationId !== undefined
+      ? { conversationId: envelope.conversationId }
+      : {}),
+    event: envelope.message,
   });
   if (events.length > MAX_EVENTS) {
     events.shift();
   }
+}
+
+/**
+ * Record a transcript snapshot after React has committed its DOM changes.
+ * Enabled only with `?streamTrace=1` so normal production sessions do no
+ * extra work. Duplicate snapshots are suppressed.
+ */
+export function recordSseRenderCommit(input: {
+  conversationId: string | null;
+  messageId: string | null;
+  textLength: number;
+}): void {
+  if (!streamTraceEnabled()) return;
+  const signature = JSON.stringify([
+    input.conversationId,
+    input.messageId,
+    input.textLength,
+  ]);
+  if (signature === lastRenderSignature) return;
+  lastRenderSignature = signature;
+  const committedAtMs = Date.now();
+  renderCommits.push({
+    committedAt: new Date(committedAtMs).toISOString(),
+    committedAtMs,
+    ...input,
+  });
+  if (renderCommits.length > MAX_EVENTS) {
+    renderCommits.shift();
+  }
+}
+
+export function getSseRenderCommits(limit = MAX_EVENTS): SseDebugRenderEntry[] {
+  const start = Math.max(0, renderCommits.length - limit);
+  return renderCommits.slice(start);
+}
+
+export function clearSseTrace(): void {
+  events.length = 0;
+  renderCommits.length = 0;
+  lastRenderSignature = null;
 }
 
 /**
@@ -271,4 +345,11 @@ export function resetSseDebugStateForTests(): void {
   nextClientId = 0;
   clients.clear();
   events.length = 0;
+  renderCommits.length = 0;
+  lastRenderSignature = null;
+}
+
+function streamTraceEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("streamTrace") === "1";
 }
