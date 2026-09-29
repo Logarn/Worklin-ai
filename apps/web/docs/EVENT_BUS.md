@@ -45,8 +45,13 @@ Centralizing through a bus also gives us:
 | `apps/web/src/assistant/sse-service.ts` | Non-React owner of the assistant-scoped SSE connection. Opens the stream, republishes envelopes as `sse.event`, drives the bounce policy from `app.*` / `power.*` / `reachability.*` signals. |
 
 The bus is a plain pub/sub module. Handlers fire synchronously from
-`publish()` so a burst of events isn't collapsed into a single React
-commit cycle. The handler `Map` lives in module scope, not in any
+`publish()` and observe every event in order. The SSE transport delivers
+the first text/reasoning delta immediately, then groups subsequent deltas
+in 40 ms tasks so React can commit once per batch. Pending events flush
+before non-delta events, message/conversation changes, and reconnect.
+The queue is capped at 256 events or 64 Ki characters; cancellation discards
+undelivered events without advancing their resume cursor. No envelopes or
+sequence numbers are merged. The handler `Map` lives in module scope, not in any
 Zustand store — consumers never read it, only register handlers into
 it and dispatch through it.
 

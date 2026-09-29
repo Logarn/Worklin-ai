@@ -2,6 +2,12 @@
 
 This file is the cross-system architecture index. Detailed designs live in domain docs close to code ownership.
 
+The web SSE transport separates delta ingestion from UI delivery using bounded
+40 ms batches. Every envelope retains its order and sequence number; terminal
+events and reconnect flush pending delivery. Opt-in stream timing compares
+server emission, browser reads, event handling, and transcript commits. See
+[`apps/web/docs/EVENT_BUS.md`](apps/web/docs/EVENT_BUS.md#streaming-timing).
+
 ## Architecture Docs
 
 The Railway Hobby hosting test uses Vercel for the web app and three Railway

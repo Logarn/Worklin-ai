@@ -860,6 +860,32 @@ describe("subscribeEvents onStreamOpen / onStreamClose", () => {
     }
   });
 
+  test("drains pending deltas before close and before reconnect reads its cursor", async () => {
+    const received: number[] = [];
+    const order: string[] = [];
+    const encoder = new TextEncoder();
+    const frames = [1, 2, 3].map(seq => `data: ${JSON.stringify({
+      id: `event-${seq}`, seq, conversationId: "conv-test", emittedAt: new Date(0).toISOString(),
+      message: { type: "assistant_text_delta", messageId: "msg-test", text: `${seq}` },
+    })}\n\n`).join("");
+    globalThis.fetch = mock(async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(encoder.encode(frames)); controller.close(); },
+    }), { headers: { "Content-Type": "text/event-stream" } })) as unknown as typeof fetch;
+    const stream = subscribeEvents("asst-test", envelope => {
+      received.push(envelope.seq!);
+      mockReconnectCursor = envelope.seq!;
+      order.push(`event-${envelope.seq}`);
+    }, () => {}, {
+      reconnectBaseDelayMs: 10_000,
+      onStreamClose() { order.push(`close-${mockReconnectCursor}`); },
+    });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 80));
+      expect(received).toEqual([1, 2, 3]);
+      expect(order).toEqual(["event-1", "event-2", "event-3", "close-3"]);
+    } finally { stream.cancel(); mockReconnectCursor = null; }
+  });
+
   test("does not fire onStreamClose for a connect that opens but never receives a frame", async () => {
     // A 200 response whose body closes immediately with no frames: no
     // proof of liveness, so it must never read as connected — and the

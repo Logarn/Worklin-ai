@@ -25,6 +25,7 @@ import {
   registerSseClient,
 } from "@/lib/streaming/stream-debug";
 import { createStreamWatchdog } from "@/lib/streaming/stream-watchdog";
+import { createStreamDelivery } from "./stream-delivery";
 import { streamTraceEnabled, tracedStreamFetch, recordStreamHandler } from "./stream-timing";
 
 // ---------------------------------------------------------------------------
@@ -193,6 +194,7 @@ export function subscribeEvents(
   // The top-level cancel() targets whichever attempt is currently
   // active.
   let activeAbortController: AbortController | null = null;
+  let activeDelivery: ReturnType<typeof createStreamDelivery> | null = null;
 
   const watchdog = createStreamWatchdog({
     idleTimeoutMs,
@@ -202,6 +204,7 @@ export function subscribeEvents(
 
   const cancel = () => {
     cancelled = true;
+    activeDelivery?.cancel();
     watchdog.clear();
     activeAbortController?.abort();
   };
@@ -228,6 +231,18 @@ export function subscribeEvents(
     const abortController = new AbortController();
     activeAbortController = abortController;
     const sseDebugClientId = registerSseClient(abortController.signal);
+    const delivery = createStreamDelivery((envelope) => {
+      if (cancelled) return;
+      const handlerStarted = streamTraceEnabled() ? performance.now() : null;
+      try {
+        onEvent(envelope);
+      } catch {
+        // Consumer failures must not restart a healthy transport.
+      } finally {
+        if (handlerStarted !== null) recordStreamHandler(envelope, performance.now() - handlerStarted);
+      }
+    });
+    activeDelivery = delivery;
     // Reset per-attempt liveness counters so each watchdog fire
     // reports state for ITS attempt, not for the entire subscribe
     // lifetime.
@@ -335,16 +350,12 @@ export function subscribeEvents(
           const envelope = parseAssistantEvent(data);
 
           pushSseEvent(sseDebugClientId, envelope);
-          const handlerStarted = streamTraceEnabled() ? performance.now() : null;
-          try {
-            onEvent(envelope);
-          } catch {
-            // Callback errors should not trigger stream reconnect
-          } finally {
-            if (handlerStarted !== null) recordStreamHandler(envelope, performance.now() - handlerStarted);
-          }
+          delivery.push(envelope);
         }
       } finally {
+        // Resume cursors must include all delivered events before reconnect.
+        if (cancelled) delivery.cancel();
+        else delivery.flush();
         // The watchdog only protects the for-await read loop. Clear
         // here so any timer still armed when the loop exits — via
         // natural end, abort, SDK transport error, or cancel — cannot
