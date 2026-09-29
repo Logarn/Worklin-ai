@@ -328,6 +328,9 @@ Use the same prompt, conversation, and browser for before/after comparisons.
 Check final text integrity and completion as well as latency. Reload without
 tracing after collecting the results.
 
+The [2026-09-29 live comparison](STREAMING_MEASUREMENT.md) records the direct
+versus batched delivery measurements and their limitations.
+
 `lib/event-bus.test.ts` covers the pub/sub surface (subscribe,
 unsubscribe, publish, isolation between event names, throwing-handler
 robustness). `assistant/sse-service.test.ts` covers SSE behavior:
