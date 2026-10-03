@@ -28,6 +28,11 @@ five database connections. The internal signing key is shared with the control
 plane. Store all credentials in Railway variables, never in the checkout.
 
 The control plane uses the public Vercel application origin for Auth0 callbacks.
+Set `WORKLIN_WEB_ORIGIN` and `AUTH0_BASE_URL` to the same canonical HTTPS origin.
+The Vercel aliases redirect to `dashboard.worklin.io` before login starts so
+the host-only verification cookie reaches the callback. Rejected callback
+transactions return a non-cacheable 400/401 page with a fresh sign-in link;
+they must not be retried by reusing the callback URL.
 The three `VITE_*_API_BASE_URL` settings and the backend rewrites in
 `vercel.json` must identify the same backend. Environment changes require a new
 Vercel build. Build with `--archive=tgz` when using the CLI to avoid exceeding

@@ -73,6 +73,18 @@
   ],
   "redirects": [
     {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "worklin-ai.vercel.app" }],
+      "destination": "https://dashboard.worklin.io/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "ai-retention-marketer.vercel.app" }],
+      "destination": "https://dashboard.worklin.io/:path*",
+      "permanent": false
+    },
+    {
       "source": "/callback/",
       "destination": "/callback",
       "permanent": false

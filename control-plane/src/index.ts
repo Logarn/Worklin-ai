@@ -42,6 +42,7 @@ import {
   type RuntimeStackRow,
 } from "./runtime-stacks.js";
 import { managedVoiceRoutingHintFromToken } from "./live-voice-provider-callback.js";
+import { authCallbackErrorHandler } from "./auth-callback-error.js";
 import {
   ensureAssistantStoreSchema,
   getAssistantAdminAccessConsent,
@@ -5363,6 +5364,8 @@ if (auth0Configured()) {
 } else {
   console.warn("Auth0 is not configured; login routes will return 503.");
 }
+
+app.use(authCallbackErrorHandler(env.auth0BaseUrl));
 
 app.post(
   "/_allauth/browser/v1/auth/provider/redirect",

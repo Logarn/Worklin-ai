@@ -12,6 +12,8 @@ server emission, browser reads, event handling, and transcript commits. See
 
 The Railway Hobby hosting test uses Vercel for the web app and three Railway
 services: the control plane, a private concurrent worker, and PostgreSQL.
+Login starts and completes on the canonical dashboard origin; Vercel aliases
+redirect there before authentication, and rejected callbacks offer fresh sign-in.
 The control plane and worker each have a persistent `/data` volume and a
 1 vCPU / 1 GB limit. The control plane can sleep when idle. The concurrent
 worker remains in internal rollout mode; retention and the production release
