@@ -33,6 +33,10 @@ The Vercel aliases redirect to `dashboard.worklin.io` before login starts so
 the host-only verification cookie reaches the callback. Rejected callback
 transactions return a non-cacheable 400/401 page with a fresh sign-in link;
 they must not be retried by reusing the callback URL.
+The root `worklin.io` domain and `www.worklin.io` are project-level redirects to
+`dashboard.worklin.io`, preserving paths and queries. GoDaddy hosts DNS; use
+the project's recommended A records for the root and recommended CNAME for
+`www`. Email records and the dashboard CNAME are independent of this mapping.
 The three `VITE_*_API_BASE_URL` settings and the backend rewrites in
 `vercel.json` must identify the same backend. Environment changes require a new
 Vercel build. Build with `--archive=tgz` when using the CLI to avoid exceeding
