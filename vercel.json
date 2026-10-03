@@ -75,19 +75,19 @@
     {
       "source": "/:path*",
       "has": [{ "type": "host", "value": "worklin-ai.vercel.app" }],
-      "destination": "https://app.worklin.io/:path*",
+      "destination": "https://dashboard.worklin.io/:path*",
       "permanent": false
     },
     {
       "source": "/:path*",
       "has": [{ "type": "host", "value": "ai-retention-marketer.vercel.app" }],
-      "destination": "https://app.worklin.io/:path*",
+      "destination": "https://dashboard.worklin.io/:path*",
       "permanent": false
     },
     {
       "source": "/:path*",
-      "has": [{ "type": "host", "value": "dashboard.worklin.io" }],
-      "destination": "https://app.worklin.io/:path*",
+      "has": [{ "type": "host", "value": "app.worklin.io" }],
+      "destination": "https://dashboard.worklin.io/:path*",
       "permanent": false
     },
     {

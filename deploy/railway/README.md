@@ -29,18 +29,19 @@ plane. Store all credentials in Railway variables, never in the checkout.
 
 The control plane uses the public Vercel application origin for Auth0 callbacks.
 Set `WORKLIN_WEB_ORIGIN` and `AUTH0_BASE_URL` to the same canonical HTTPS origin.
-The Vercel aliases and `dashboard.worklin.io` redirect to `app.worklin.io` before login starts so
+The Vercel aliases and `app.worklin.io` redirect to `dashboard.worklin.io` before login starts so
 the host-only verification cookie reaches the callback. Rejected callback
 transactions return a non-cacheable 400/401 page with a fresh sign-in link;
 they must not be retried by reusing the callback URL.
 GoDaddy hosts DNS. The root `worklin.io` domain and `www.worklin.io` point to
-the Framer marketing website. The application uses `app.worklin.io` with the
-project's recommended Vercel CNAME. Email records are independent of this mapping.
-The application-domain rollout requires `https://app.worklin.io/callback` in
-Auth0's allowed callbacks, `https://app.worklin.io/account/login` in allowed
-logout URLs, and `https://app.worklin.io` in allowed web origins. Configure those
-before setting the backend origins to `https://app.worklin.io` and deploying
-the alias redirects. Keep the prior callback URLs during the transition.
+the Framer marketing website. The application uses `dashboard.worklin.io` with
+the project's recommended Vercel CNAME. The Framer Login button opens this
+canonical application domain. Email records are independent of this mapping.
+Set both backend origins to `https://dashboard.worklin.io`. Auth0 must allow
+`https://dashboard.worklin.io/callback` as a callback,
+`https://dashboard.worklin.io/account/login` as a logout URL, and
+`https://dashboard.worklin.io` as a web origin. The `app.worklin.io` alias
+redirects before authentication and does not require a separate Auth0 callback.
 The three `VITE_*_API_BASE_URL` settings and the backend rewrites in
 `vercel.json` must identify the same backend. Environment changes require a new
 Vercel build. Build with `--archive=tgz` when using the CLI to avoid exceeding
