@@ -111,7 +111,10 @@ function Wrapper({
           type: "oauth_subscription",
           credential: "credential/chatgpt/access_token",
         },
-        models: [{ id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" }],
+        models: [
+          { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
+          { id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra" },
+        ],
       } as unknown as ProviderConnection)
     : ({
         name: "kimi-personal",
@@ -177,7 +180,7 @@ describe("LanguageModelCard", () => {
     );
 
     expect(getByText("Use Worklin credits")).toBeTruthy();
-    expect(getByText("Use my API key")).toBeTruthy();
+    expect(getByText("Use my account or API key")).toBeTruthy();
     expect(getByText("Your assistant's main model")).toBeTruthy();
     expect(getAllByText("Kimi").length).toBeGreaterThan(0);
     expect(getByText("Kimi K2.6")).toBeTruthy();
@@ -203,7 +206,7 @@ describe("LanguageModelCard", () => {
   });
 
   test("shows the connected ChatGPT subscription as the OpenAI method", () => {
-    const { getByText } = render(
+    const { getByRole, getByText } = render(
       <Wrapper
         activeProfile="chatgpt-personal"
         useChatgptSubscription
@@ -215,6 +218,32 @@ describe("LanguageModelCard", () => {
 
     expect(getByText("ChatGPT connected")).toBeTruthy();
     expect(getByText("ChatGPT subscription")).toBeTruthy();
+    expect(getByRole("combobox", { name: "ChatGPT model" })).toBeTruthy();
+  });
+
+  test("switches the active ChatGPT profile to an account model", async () => {
+    const { getByRole, getByText } = render(
+      <Wrapper
+        activeProfile="chatgpt-personal"
+        useChatgptSubscription
+        managedInferenceConfigured={false}
+      >
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    fireEvent.click(getByRole("combobox", { name: "ChatGPT model" }));
+    fireEvent.click(getByText("GPT-5.6 Terra"));
+
+    await waitFor(() => expect(configPatchCalls).toHaveLength(1));
+    expect(configPatchCalls[0]).toEqual({
+      expectedActiveProfile: "chatgpt-personal",
+      llm: {
+        profiles: {
+          "chatgpt-personal": { model: "gpt-5.6-terra" },
+        },
+      },
+    });
   });
 
   test("uses the pooled vault-only settings surface for pooled assistants", () => {
@@ -281,7 +310,7 @@ describe("LanguageModelCard", () => {
     );
 
     expect(queryByText("Use Worklin credits")).toBeNull();
-    expect(getByText("Use my API key")).toBeTruthy();
+    expect(getByText("Use my account or API key")).toBeTruthy();
     expect(getByText("Key connected")).toBeTruthy();
   });
 
@@ -305,7 +334,7 @@ describe("LanguageModelCard", () => {
       </Wrapper>,
     );
 
-    fireEvent.click(getByText("Use my API key").closest("button")!);
+    fireEvent.click(getByText("Use my account or API key").closest("button")!);
     fireEvent.click(getByText("Save choice"));
 
     await waitFor(() => expect(configPatchCalls).toHaveLength(1));

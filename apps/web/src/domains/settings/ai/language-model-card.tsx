@@ -34,7 +34,10 @@ import {
   XAI_PROVIDER_PRESET,
   type ProviderConnectionPreset,
 } from "@/assistant/provider-connection-presets";
-import { isProviderConnectionReady } from "@/assistant/provider-connection-readiness";
+import {
+  chatgptSubscriptionModels,
+  isProviderConnectionReady,
+} from "@/assistant/provider-connection-readiness";
 import {
   isConcurrentRuntimeProvider,
   isPooledRuntimeProvider,
@@ -197,6 +200,14 @@ function getProfileSubtitle(profile: ProfileWithName | null): string {
     return "Worklin chooses the best saved setup for each reply.";
   }
   return getModelLabel(profile.provider, profile.model);
+}
+
+function getConnectionModelOptions(connection: ProviderConnection | null) {
+  if (connection?.auth.type !== "oauth_subscription") return [];
+  return chatgptSubscriptionModels(connection).map((model) => ({
+    value: model.id,
+    label: model.displayName ?? model.id,
+  }));
 }
 
 function resolvePowerSource(
@@ -460,6 +471,15 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
       ? selectedConnection.auth
       : undefined,
   );
+  const chatgptModelOptions = useMemo(
+    () => getConnectionModelOptions(selectedConnection),
+    [selectedConnection],
+  );
+  const canSwitchChatgptModel =
+    selectedProfile != null &&
+    selectedProfile.source !== "managed" &&
+    selectedConnection?.auth.type === "oauth_subscription" &&
+    chatgptModelOptions.length > 0;
 
   const handleProfileSave = useCallback(async () => {
     if (!effectiveActiveProfile) return;
@@ -525,6 +545,55 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
     ],
   );
 
+  const handleChatgptModelChange = useCallback(
+    async (model: string) => {
+      if (
+        !selectedProfile ||
+        selectedProfile.source === "managed" ||
+        selectedConnection?.auth.type !== "oauth_subscription" ||
+        selectedProfile.model === model ||
+        !chatgptModelOptions.some((option) => option.value === model)
+      ) {
+        return;
+      }
+
+      const label =
+        chatgptModelOptions.find((option) => option.value === model)?.label ??
+        model;
+      try {
+        await configMutation.mutateAsync({
+          path: { assistant_id: assistantId },
+          body: {
+            expectedActiveProfile: activeProfile,
+            llm: {
+              profiles: {
+                [selectedProfile.name]: { model },
+              },
+            },
+          },
+        });
+        toast.success(`Using ${label}.`);
+      } catch (error) {
+        toast.error(
+          isConfigSelectionConflict(error)
+            ? "The model changed before this selection was saved. Try again."
+            : "Failed to change the ChatGPT model. Please try again.",
+        );
+        captureError(error, {
+          context: "settings-ai-chatgpt-model-change",
+        });
+      }
+    },
+    [
+      activeProfile,
+      assistantId,
+      chatgptModelOptions,
+      configMutation,
+      selectedConnection?.auth.type,
+      selectedProfile,
+    ],
+  );
+
   const handleProviderMethodChange = useCallback(
     (serviceId: string, method: AuthType) => {
       setProviderMethods((current) => ({
@@ -581,8 +650,8 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
             <PowerSourceTile
               selected={selectedPowerSource === "api-key"}
               icon={<KeyRound className="h-5 w-5" />}
-              title="Use my API key"
-              description="Connect a provider account and change keys anytime."
+              title="Use my account or API key"
+              description="Connect ChatGPT or add a provider API key."
               onClick={() => handlePowerSourceSelect("api-key")}
             />
           </div>
@@ -627,14 +696,29 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
                   </p>
                 </div>
               </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <Button
-                  variant="outlined"
-                  size="compact"
-                  onClick={() => setManageProfilesOpen(true)}
-                >
-                  Change model
-                </Button>
+              <div className="flex w-full shrink-0 flex-wrap items-end gap-2 md:w-auto">
+                {canSwitchChatgptModel ? (
+                  <div className="min-w-0 flex-1 space-y-1 md:w-56 md:flex-none">
+                    <label className="block text-body-small-default text-[var(--content-tertiary)]">
+                      ChatGPT model
+                    </label>
+                    <Dropdown
+                      aria-label="ChatGPT model"
+                      value={selectedProfile.model ?? ""}
+                      onChange={(model) => void handleChatgptModelChange(model)}
+                      options={chatgptModelOptions}
+                      disabled={configMutation.isPending}
+                    />
+                  </div>
+                ) : (
+                  <Button
+                    variant="outlined"
+                    size="compact"
+                    onClick={() => setManageProfilesOpen(true)}
+                  >
+                    Change model
+                  </Button>
+                )}
                 <Button
                   variant="outlined"
                   size="compact"
