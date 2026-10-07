@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "farm_records_list",
+      "description": "Read persisted farm records for an unambiguous farm before reporting current production, purchasing, sales, finance, worker, health, logistics, compliance, inventory, or planning state.",
+      "category": "operations",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "farm_id": { "type": "string" },
+          "farm_name": { "type": "string" }
+        },
+        "required": []
+      },
+      "executor": "tools/farm-records-list.ts",
+      "execution_target": "host"
+    },
+    {
+      "name": "farm_record_upsert",
+      "description": "Create or update one durable farm record after reliable information changes farm state. Saving a record does not execute an external message, purchase, payment, booking, or physical task.",
+      "category": "operations",
+      "risk": "low",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "farm_id": { "type": "string" },
+          "farm_name": { "type": "string" },
+          "record_id": { "type": "string" },
+          "title": { "type": "string" },
+          "reference": { "type": "string" },
+          "category": {
+            "type": "string",
+            "enum": [
+              "Production",
+              "Purchases",
+              "Sales",
+              "Finance",
+              "Inventory",
+              "Workers",
+              "Health",
+              "Logistics",
+              "Compliance",
+              "Planning"
+            ]
+          },
+          "record_type": { "type": "string" },
+          "status": { "type": "string" },
+          "summary": { "type": "string" },
+          "attention_level": {
+            "type": "string",
+            "enum": ["normal", "watch", "action", "urgent"]
+          },
+          "occurred_at": { "type": "string" },
+          "amount": { "type": "string" },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": { "type": "string" },
+                "value": { "type": "string" }
+              },
+              "required": ["label", "value"]
+            }
+          },
+          "activity_note": { "type": "string" },
+          "activity_state": {
+            "type": "string",
+            "enum": ["done", "current", "pending"]
+          }
+        },
+        "required": [
+          "title",
+          "category",
+          "record_type",
+          "status",
+          "summary",
+          "attention_level",
+          "activity_note",
+          "activity_state"
+        ]
+      },
+      "executor": "tools/farm-record-upsert.ts",
+      "execution_target": "host"
+    }
+  ]
+}

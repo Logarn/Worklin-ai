@@ -66,6 +66,12 @@ The assistant exposes brand summaries and artifact list/detail/update routes und
 
 Written campaign artifacts remain Worklin documents. The Campaign Copybook workflow creates one month document, reuses its returned `documentSurfaceId`, opens it, and streams all content through `document_update`. It must not create a second document or fall back to workspace files or a full copy dump in chat. The web client reuses the existing document viewer/editor, anchored comments, approval snapshots, and resizable document/chat layout for human and Worklin collaboration.
 
+### Farm operations records
+
+The preactivated `worklin-farm-operator` skill stores structured farm work through the existing artifact registry. Each `farm_record_v1` artifact belongs to a farm brand and records one operational item, including its category, precise status, owner-attention level, reference, details, and activity history. The store uses the existing `artifacts` and `retention_brands` tables; it does not introduce a separate farm database or duplicate the source into a client-only cache.
+
+The data flow is `farm_record_upsert` -> farm record store -> artifact registry -> `artifacts:list` sync invalidation -> existing brand/artifact queries -> Work farm view. The web client only renders records that satisfy the versioned contract and ignores malformed or unrelated artifacts. A saved record proves that Worklin recorded the supplied state; it does not prove that a supplier, buyer, worker, payment provider, or other external party completed an action.
+
 ## Environment and Data Layout
 
 Environments are **namespaces**, not containers. `VELLUM_ENVIRONMENT` selects a path prefix (`vellum` for `production`, `vellum-<env>` for the non-production seeds `dev`, `staging`, `test`, `local`). It does not own data. Data directories are always per-assistant, and the lockfile's `resources.instanceDir` field is the source of truth for any given assistant's on-disk location.

@@ -75,17 +75,15 @@ describe("Work routes", () => {
     expect(route?.lazy).toBeUndefined();
   });
 
-  test("keeps Customer decisions independent from chat runtime readiness", () => {
+  test("keeps the retired retention URL available as a redirect", () => {
     const matches =
       matchRoutes(routeTree as never, "/assistant/work/retention") ?? [];
 
     expect(
       matches.some(
-        (match) =>
-          (match.route as { Component?: { name?: string } }).Component?.name ===
-          "ActiveAssistantGate",
+        (match) => (match.route as { path?: string }).path === "work/retention",
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

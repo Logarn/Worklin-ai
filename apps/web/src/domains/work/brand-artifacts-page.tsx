@@ -4,6 +4,7 @@ import {
   BookOpenText,
   Boxes,
   ChevronLeft,
+  ClipboardList,
   Ellipsis,
   FileText,
   FolderInput,
@@ -20,13 +21,12 @@ import {
   Video,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
-import { BrandResearchStatus } from "@/components/brand-research-status";
 import {
   appsGetQueryKey,
   artifactsGetQueryKey,
@@ -64,6 +64,8 @@ import {
   type ArtifactDisplayFilter,
   type RegistryArtifact,
 } from "./artifact-display";
+import { getFarmRecords } from "./farm-record-model";
+import { FarmOperationsPage } from "./farm-operations-page";
 import { UNASSIGNED_BRAND_ID, useWorkData } from "./use-work-data";
 
 const FILTERS = [
@@ -103,6 +105,7 @@ export function BrandArtifactsPage() {
   const assistantId = useActiveAssistantId();
   const queryClient = useQueryClient();
   const { brandId = UNASSIGNED_BRAND_ID } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const setTopBarCenter = useChatLayoutSlotsStore.use.setTopBarCenter();
   const pinnedAppIds = usePinnedAppsStore.use.pinnedAppIds();
@@ -125,6 +128,12 @@ export function BrandArtifactsPage() {
   const brandName =
     brand?.name ??
     (brandId === UNASSIGNED_BRAND_ID ? "Unassigned" : "Artifacts");
+  const farmRecords = useMemo(
+    () => getFarmRecords(artifacts, brandId),
+    [artifacts, brandId],
+  );
+  const showFarmOperations =
+    farmRecords.length > 0 && searchParams.get("view") !== "files";
 
   useEffect(() => {
     window.localStorage.setItem("worklin:last-artifact-brand", brandId);
@@ -330,6 +339,7 @@ export function BrandArtifactsPage() {
         const artifactBrandId = artifact.brandId ?? UNASSIGNED_BRAND_ID;
         if (artifactBrandId !== brandId || artifact.parentArtifactId)
           return false;
+        if (artifact.resourceType === "farm_record") return false;
         if (
           artifact.resourceType === "copybook" &&
           copybookResourceIds.has(artifact.resourceId)
@@ -365,23 +375,38 @@ export function BrandArtifactsPage() {
     visibleApps.length +
     visibleRegistryArtifacts.length;
 
-  const startWithWorklin = () => {
+  const startConversation = (prompt: string) => {
     const draftConversationId = createDraftConversationId();
     useConversationStore
       .getState()
       .setActiveConversationId(draftConversationId);
     useViewerStore.getState().setMainView("chat");
-    const prompt = `Create a new artifact for ${brandName}. Ask what I want to make, then keep it organized under this brand.`;
     void navigate(
       `${routes.conversation(draftConversationId)}?prompt=${encodeURIComponent(prompt)}`,
     );
   };
+  const startWithWorklin = () =>
+    startConversation(
+      `Create a new artifact for ${brandName}. Ask what I want to make, then keep it organized under this brand.`,
+    );
 
   if (isLoading) {
     return (
       <PageShell className="items-center justify-center">
         <Loader2 className="size-5 animate-spin text-[var(--content-tertiary)]" />
       </PageShell>
+    );
+  }
+
+  if (showFarmOperations) {
+    return (
+      <FarmOperationsPage
+        brandName={brandName}
+        records={farmRecords}
+        hasPartialError={hasPartialError}
+        filesHref={`${routes.work.brandArtifacts(brandId)}?view=files`}
+        onAskWorklin={startConversation}
+      />
     );
   }
 
@@ -396,29 +421,34 @@ export function BrandArtifactsPage() {
                 className="inline-flex items-center gap-1 text-body-small-default text-[var(--content-tertiary)] hover:text-[var(--content-secondary)]"
               >
                 <ChevronLeft className="size-4" />
-                All brands
+                All farms
               </Link>
               <h1 className="mt-2 text-title-large text-[var(--content-emphasised)]">
                 {brandName}
               </h1>
               <p className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
-                Artifacts
+                {farmRecords.length ? "Files and documents" : "Artifacts"}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={startWithWorklin}
-              className="inline-flex items-center gap-2 rounded-md bg-[var(--primary-base)] px-3 py-2 text-body-small-default text-[var(--content-inset)] hover:bg-[var(--primary-hover)]"
-            >
-              <MessageSquarePlus className="size-4" />
-              Create with Worklin
-            </button>
-          </div>
-          <div className="mx-auto w-full max-w-6xl">
-            <BrandResearchStatus
-              assistantId={assistantId}
-              brandName={brandName}
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              {farmRecords.length ? (
+                <Link
+                  to={routes.work.brandArtifacts(brandId)}
+                  className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--border-base)] px-3 text-body-small-default text-[var(--content-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--content-default)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  <ClipboardList className="size-4" />
+                  Farm operations
+                </Link>
+              ) : null}
+              <button
+                type="button"
+                onClick={startWithWorklin}
+                className="inline-flex min-h-10 items-center gap-2 rounded-md bg-[var(--primary-base)] px-3 text-body-small-default text-[var(--content-inset)] hover:bg-[var(--primary-hover)]"
+              >
+                <MessageSquarePlus className="size-4" />
+                Create with Worklin
+              </button>
+            </div>
           </div>
           <div className="mx-auto mt-5 flex w-full max-w-6xl flex-col gap-3">
             <Input

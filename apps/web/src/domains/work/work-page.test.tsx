@@ -6,12 +6,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import {
-  MemoryRouter,
-  Route,
-  Routes,
-  useLocation,
-} from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
 const setActiveConversationIdMock = mock((_id: string) => {});
 const setMainViewMock = mock((_view: string) => {});
@@ -76,17 +71,19 @@ describe("WorkPage", () => {
         <LocationProbe />
         <Routes>
           <Route path="/assistant/work" element={<WorkPage />} />
-          <Route path="/assistant/conversations/:conversationId" element={null} />
+          <Route
+            path="/assistant/conversations/:conversationId"
+            element={null}
+          />
         </Routes>
       </MemoryRouter>,
     );
 
-    expect(
-      screen.getByRole("link", { name: "Retention" }).getAttribute("href"),
-    ).toBe("/assistant/work/retention");
+    expect(screen.getByRole("heading", { name: "Choose a farm" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Retention" })).toBeNull();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Create with Worklin" }),
+      screen.getByRole("button", { name: "Set up with Worklin" }),
     );
 
     await waitFor(() => {
@@ -94,14 +91,12 @@ describe("WorkPage", () => {
         "/assistant/conversations/draft-work-test",
       );
     });
-    expect(setActiveConversationIdMock).toHaveBeenCalledWith(
-      "draft-work-test",
-    );
+    expect(setActiveConversationIdMock).toHaveBeenCalledWith("draft-work-test");
     expect(setMainViewMock).toHaveBeenCalledWith("chat");
 
     const search = new URLSearchParams(
       screen.getByTestId("location").dataset.search,
     );
-    expect(search.get("prompt")).toContain("right brand");
+    expect(search.get("prompt")).toContain("set up my poultry farm");
   });
 });

@@ -13,6 +13,10 @@ export function LegacyLibraryRedirectPage() {
   return <Navigate replace to={routes.work.root} />;
 }
 
+export function LegacyRetentionRedirectPage() {
+  return <Navigate replace to={routes.work.root} />;
+}
+
 export function LegacyLibraryAppRedirectPage() {
   const { appId = "" } = useParams();
   return <Navigate replace to={routes.work.app(UNASSIGNED_BRAND_ID, appId)} />;

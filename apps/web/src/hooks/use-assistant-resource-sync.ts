@@ -2,7 +2,7 @@
  * Bus consumer for assistant-level resource cache invalidation.
  *
  * Routes `sync_changed` tags (avatar, identity, identity intro, config,
- * sounds, schedules, apps) and discrete SSE events (`home_feed_updated`,
+ * sounds, schedules, apps, artifacts) and discrete SSE events (`home_feed_updated`,
  * `relationship_state_updated`, `identity_changed`, `avatar_updated`) into
  * TanStack Query cache invalidations.
  *
@@ -55,7 +55,7 @@ import { SYNC_TAGS } from "@/lib/sync/types";
  */
 export function useAssistantResourceSync(
   assistantId: string | null,
-  isAssistantActive: boolean
+  isAssistantActive: boolean,
 ): void {
   const queryClient = useQueryClient();
 
@@ -65,7 +65,8 @@ export function useAssistantResourceSync(
 
     switch (event.type) {
       case "sync_changed":
-        if (event.originClientId && event.originClientId === getClientId()) return;
+        if (event.originClientId && event.originClientId === getClientId())
+          return;
         for (const tag of event.tags) {
           switch (tag) {
             case SYNC_TAGS.assistantAvatar:
@@ -113,6 +114,13 @@ export function useAssistantResourceSync(
             case SYNC_TAGS.appsList:
               void queryClient.invalidateQueries({
                 predicate: (query) => isAppsGetQueryKey(query.queryKey),
+              });
+              break;
+            case SYNC_TAGS.artifactsList:
+              void queryClient.invalidateQueries({
+                predicate: (query) =>
+                  isArtifactsGetQueryKey(query.queryKey) ||
+                  isBrandsGetQueryKey(query.queryKey),
               });
               break;
           }
@@ -184,6 +192,11 @@ export function useAssistantResourceSync(
       predicate: (query) => isAppsGetQueryKey(query.queryKey),
     });
     void queryClient.invalidateQueries({
+      predicate: (query) =>
+        isArtifactsGetQueryKey(query.queryKey) ||
+        isBrandsGetQueryKey(query.queryKey),
+    });
+    void queryClient.invalidateQueries({
       predicate: (query) => isHomeFeedGetQueryKey(query.queryKey),
     });
     void queryClient.invalidateQueries({
@@ -206,6 +219,14 @@ function isGeneratedQueryKey(
 
 function isAppsGetQueryKey(queryKey: readonly unknown[]): boolean {
   return isGeneratedQueryKey(queryKey, "appsGet");
+}
+
+function isArtifactsGetQueryKey(queryKey: readonly unknown[]): boolean {
+  return isGeneratedQueryKey(queryKey, "artifactsGet");
+}
+
+function isBrandsGetQueryKey(queryKey: readonly unknown[]): boolean {
+  return isGeneratedQueryKey(queryKey, "brandsGet");
 }
 
 function isHomeFeedGetQueryKey(queryKey: readonly unknown[]): boolean {

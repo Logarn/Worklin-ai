@@ -12,14 +12,12 @@ import { Link, useNavigate } from "react-router";
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
 import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 import { PageShell } from "@/components/page-shell";
-import { BrandResearchStatus } from "@/components/brand-research-status";
 import { useConversationStore } from "@/stores/conversation-store";
 import { useViewerStore } from "@/stores/viewer-store";
 import { createDraftConversationId } from "@/utils/conversation-selection";
 import { routes } from "@/utils/routes";
 
 import { useWorkData } from "./use-work-data";
-import { WorkSectionNav } from "./work-section-nav";
 
 const LAST_BRAND_KEY = "worklin:last-artifact-brand";
 
@@ -36,7 +34,7 @@ export function WorkPage() {
       .setActiveConversationId(draftConversationId);
     useViewerStore.getState().setMainView("chat");
     const prompt =
-      "Create a new artifact. Ask what I want to make, then help me organize it under the right brand.";
+      "Help me set up my poultry farm in Work. Ask for the farm name and the minimum current details needed to begin. Save only information I confirm, keep estimates clearly labelled, and create the first farm records as we go.";
     void navigate(
       `${routes.conversation(draftConversationId)}?prompt=${encodeURIComponent(prompt)}`,
     );
@@ -62,19 +60,17 @@ export function WorkPage() {
   return (
     <PageShell className="overflow-auto">
       <div className="mx-auto flex w-full max-w-5xl flex-col py-2">
-        <WorkSectionNav active="content" />
         <div className="border-b border-[var(--border-base)] pb-6">
           <p className="mt-6 text-label-small text-[var(--content-tertiary)]">
             WORK
           </p>
           <h1 className="mt-2 text-title-large text-[var(--content-emphasised)]">
-            Choose a brand
+            Choose a farm
           </h1>
           <p className="mt-2 max-w-2xl text-body-small-default text-[var(--content-tertiary)]">
-            Every copybook, document, app, design, image, and campaign asset
-            lives with its brand.
+            Each farm keeps its records, documents, decisions, and operating
+            context together.
           </p>
-          <BrandResearchStatus assistantId={assistantId} />
         </div>
 
         {hasPartialError ? (
@@ -88,11 +84,11 @@ export function WorkPage() {
           <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
             <Boxes className="size-10 text-[var(--content-tertiary)]" />
             <h2 className="mt-4 text-title-small text-[var(--content-emphasised)]">
-              Your work will appear here
+              Set up your first farm
             </h2>
             <p className="mt-2 max-w-md text-body-small-default text-[var(--content-tertiary)]">
-              Ask Worklin to create a campaign copybook or another artifact for
-              a brand.
+              Tell Worklin what you run. It will keep confirmed farm records and
+              decisions organized here.
             </p>
             <button
               type="button"
@@ -100,7 +96,7 @@ export function WorkPage() {
               className="mt-5 inline-flex items-center gap-2 rounded-md bg-[var(--primary-base)] px-3 py-2 text-body-small-default text-[var(--content-inset)] hover:bg-[var(--primary-hover)]"
             >
               <MessageSquarePlus className="size-4" />
-              Create with Worklin
+              Set up with Worklin
             </button>
           </div>
         ) : (
@@ -109,7 +105,7 @@ export function WorkPage() {
               <li key={brand.id}>
                 <Link
                   to={routes.work.brandArtifacts(brand.id)}
-                  className="group flex min-h-44 flex-col rounded-xl border border-[var(--border-base)] bg-[var(--surface-base)] p-5 transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  className="group flex min-h-44 flex-col rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] p-5 transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                   onClick={() =>
                     window.localStorage.setItem(LAST_BRAND_KEY, brand.id)
                   }
@@ -129,7 +125,7 @@ export function WorkPage() {
                   </span>
                   <span className="mt-1 text-body-small-default text-[var(--content-tertiary)]">
                     {brand.artifactCount}{" "}
-                    {brand.artifactCount === 1 ? "artifact" : "artifacts"}
+                    {brand.artifactCount === 1 ? "work item" : "work items"}
                   </span>
                 </Link>
               </li>

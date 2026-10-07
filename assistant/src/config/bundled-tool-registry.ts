@@ -141,6 +141,9 @@ import * as copybookCreate from "./bundled-skills/worklin-copybook/tools/copyboo
 import * as copybookList from "./bundled-skills/worklin-copybook/tools/copybook-list.js";
 import * as copybookMonthCreate from "./bundled-skills/worklin-copybook/tools/copybook-month-create.js";
 import * as copybookMonthUpdate from "./bundled-skills/worklin-copybook/tools/copybook-month-update.js";
+// ── worklin-farm-operator ──────────────────────────────────────────────────────
+import * as farmRecordUpsert from "./bundled-skills/worklin-farm-operator/tools/farm-record-upsert.js";
+import * as farmRecordsList from "./bundled-skills/worklin-farm-operator/tools/farm-records-list.js";
 // ── worklin-retention ──────────────────────────────────────────────────────────
 import * as retentionAudit from "./bundled-skills/worklin-retention/tools/retention-audit.js";
 import * as retentionAuditStatus from "./bundled-skills/worklin-retention/tools/retention-audit-status.js";
@@ -346,6 +349,10 @@ export const bundledToolRegistry = new Map<string, SkillToolScript>([
     "worklin-copybook:tools/copybook-campaign-update.ts",
     copybookCampaignUpdate,
   ],
+
+  // worklin-farm-operator
+  ["worklin-farm-operator:tools/farm-records-list.ts", farmRecordsList],
+  ["worklin-farm-operator:tools/farm-record-upsert.ts", farmRecordUpsert],
 
   // worklin-retention
   [

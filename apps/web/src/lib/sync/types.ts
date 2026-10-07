@@ -6,6 +6,7 @@ export const SYNC_TAGS = {
   assistantSounds: "assistant:self:sounds",
   assistantSchedules: "assistant:self:schedules",
   appsList: "apps:list",
+  artifactsList: "artifacts:list",
   conversationsList: "conversations:list",
   featureFlagsClient: "feature-flags:client",
   featureFlagsAssistant: "feature-flags:assistant",
@@ -49,8 +50,7 @@ export interface ParsedConversationSyncTag {
   resource: ConversationSyncResource;
 }
 
-const CONVERSATION_SYNC_TAG_RE =
-  /^conversation:([^:]+):(metadata|messages)$/;
+const CONVERSATION_SYNC_TAG_RE = /^conversation:([^:]+):(metadata|messages)$/;
 
 export function conversationMetadataSyncTag(
   conversationId: string,

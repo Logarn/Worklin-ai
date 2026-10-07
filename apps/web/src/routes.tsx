@@ -267,9 +267,9 @@ export const routeTree = [
           HydrateFallback: RootHydrateFallback,
           lazy: {
             Component: () =>
-              import(
-                "@/domains/work/brand-research-preview-page"
-              ).then((m) => m.BrandResearchPreviewPage),
+              import("@/domains/work/brand-research-preview-page").then(
+                (m) => m.BrandResearchPreviewPage,
+              ),
           },
         },
       ]
@@ -792,15 +792,14 @@ export const routeTree = [
                         ),
                     },
                   },
-                  // Customer decisions uses the tenant-isolated retention
-                  // service. It does not require a running chat daemon.
+                  // The retention URL aliases Work so existing bookmarks stay valid.
                   {
                     path: "work/retention",
                     lazy: {
                       Component: () =>
-                        import(
-                          "@/domains/work/retention/retention-work-page"
-                        ).then((m) => m.RetentionWorkPage),
+                        import("@/domains/work/legacy-work-redirects").then(
+                          (m) => m.LegacyRetentionRedirectPage,
+                        ),
                     },
                   },
                   // Everything below requires a resolved assistantId AND an
@@ -905,9 +904,9 @@ export const routeTree = [
                         path: "work/brands/:brandId/artifacts/intelligence/:artifactId",
                         lazy: {
                           Component: () =>
-                            import(
-                              "@/domains/work/competitor-intelligence-page"
-                            ).then((m) => m.CompetitorIntelligencePage),
+                            import("@/domains/work/competitor-intelligence-page").then(
+                              (m) => m.CompetitorIntelligencePage,
+                            ),
                         },
                       },
                       {

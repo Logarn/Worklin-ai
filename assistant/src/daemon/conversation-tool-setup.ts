@@ -404,7 +404,7 @@ const DEFAULT_PREACTIVATED_SKILL_IDS = [
   "tasks",
   "notifications",
   "subagent",
-  "worklin-retention",
+  "worklin-farm-operator",
 ];
 
 /**

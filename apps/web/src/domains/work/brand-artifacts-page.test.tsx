@@ -44,10 +44,50 @@ const APP_ARTIFACT = {
   artifactType: "app",
   title: APP.name,
 };
+const FARM_RECORD_ARTIFACT = {
+  ...DOCUMENT_ARTIFACT,
+  id: "farm_record:farm-demo:flock-h1",
+  brandId: "farm-demo",
+  resourceType: "farm_record",
+  resourceId: "farm-demo:flock-h1",
+  artifactType: "farm_production",
+  title: "House 1 flock",
+  metadata: {
+    contractVersion: "farm_record_v1",
+    recordId: "flock-h1",
+    title: "House 1 flock",
+    reference: "FLOCK-H1",
+    category: "Production",
+    recordType: "Flock record",
+    status: "Day 29",
+    summary: "The latest submitted flock count is 984 birds.",
+    attentionLevel: "watch",
+    details: [],
+    activity: [],
+  },
+};
+const FARM_DOCUMENT_ARTIFACT = {
+  ...DOCUMENT_ARTIFACT,
+  id: "artifact-farm-document-1",
+  brandId: "farm-demo",
+  title: "Feed delivery receipt",
+};
+
+type ServerArtifact =
+  | typeof DOCUMENT_ARTIFACT
+  | typeof APP_ARTIFACT
+  | typeof FARM_RECORD_ARTIFACT
+  | typeof FARM_DOCUMENT_ARTIFACT;
 
 let activeAssistantId = ASSISTANT_ID;
 let serverApps = [APP];
-let serverArtifacts = [DOCUMENT_ARTIFACT];
+let serverArtifacts: ServerArtifact[] = [DOCUMENT_ARTIFACT];
+let serverBrands: Array<{
+  id: string;
+  name: string;
+  artifactCount: number;
+  updatedAt: number;
+}> = [];
 let deleteAppResult: (options: DeleteAppOptions) => Promise<DeleteAppResult>;
 
 interface DeleteAppOptions {
@@ -114,8 +154,10 @@ mock.module("@/generated/daemon/@tanstack/react-query.gen", () => ({
   brandsGetOptions: ({ path }: { path: { assistant_id: string } }) => ({
     queryKey: ["brands", path.assistant_id],
     queryFn: async () => ({
-      brands: [],
-      unassignedArtifactCount: serverArtifacts.length,
+      brands: serverBrands,
+      unassignedArtifactCount: serverArtifacts.filter(
+        (artifact) => artifact.brandId === null,
+      ).length,
     }),
   }),
   brandsGetQueryKey: ({ path }: { path: { assistant_id: string } }) => [
@@ -288,15 +330,15 @@ mock.module("@vellumai/design-library", () => ({
 
 const { BrandArtifactsPage } = await import("./brand-artifacts-page");
 
-function renderPage() {
+function renderPage(
+  initialEntry = "/assistant/work/brands/unassigned/artifacts",
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   const result = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter
-        initialEntries={["/assistant/work/brands/unassigned/artifacts"]}
-      >
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route
             path="/assistant/work/brands/:brandId/artifacts"
@@ -321,6 +363,7 @@ beforeEach(() => {
   activeAssistantId = ASSISTANT_ID;
   serverApps = [APP];
   serverArtifacts = [DOCUMENT_ARTIFACT];
+  serverBrands = [];
   deleteAppResult = async () => {
     serverApps = [];
     serverArtifacts = serverArtifacts.filter(
@@ -341,6 +384,36 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+describe("BrandArtifactsPage farm surfaces", () => {
+  test("keeps farm files reachable without duplicating raw farm records", async () => {
+    serverApps = [];
+    serverBrands = [
+      {
+        id: "farm-demo",
+        name: "Example Farm",
+        artifactCount: 2,
+        updatedAt: 1_750_000_100_000,
+      },
+    ];
+    serverArtifacts = [FARM_RECORD_ARTIFACT, FARM_DOCUMENT_ARTIFACT];
+
+    const operations = renderPage("/assistant/work/brands/farm-demo/artifacts");
+    expect(await screen.findByText("Farm records")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "Files & documents" })
+        .getAttribute("href"),
+    ).toBe("/assistant/work/brands/farm-demo/artifacts?view=files");
+    expect(screen.queryByText("Feed delivery receipt")).toBeNull();
+    operations.unmount();
+
+    renderPage("/assistant/work/brands/farm-demo/artifacts?view=files");
+    expect(await screen.findByText("Feed delivery receipt")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Farm operations" })).toBeTruthy();
+    expect(screen.queryByText("House 1 flock")).toBeNull();
+  });
+});
 
 describe("BrandArtifactsPage app deletion", () => {
   test("offers deletion only for App cards and requires confirmation", async () => {
@@ -409,10 +482,9 @@ describe("BrandArtifactsPage app deletion", () => {
     });
     expect(
       queryClient
-        .getQueryData<{ artifacts: typeof serverArtifacts }>([
-          "artifacts",
-          ASSISTANT_ID,
-        ])
+        .getQueryData<{
+          artifacts: typeof serverArtifacts;
+        }>(["artifacts", ASSISTANT_ID])
         ?.artifacts.some((artifact) => artifact.resourceId === APP.id),
     ).toBe(false);
   });
