@@ -19,7 +19,7 @@ describe("isConnectionCompatibleWithModel", () => {
     expect(
       isConnectionCompatibleWithModel(
         { auth: { type: "oauth_subscription" } as never },
-        "gpt-5.4",
+        "gpt-6.1-sol",
       ),
     ).toBe(true);
   });
@@ -44,7 +44,9 @@ describe("isConnectionCompatibleWithModel", () => {
 });
 
 describe("describeSubscriptionModelIncompatibility", () => {
-  const subscriptionConn = { auth: { type: "oauth_subscription" as const } as never };
+  const subscriptionConn = {
+    auth: { type: "oauth_subscription" as const } as never,
+  };
   const apiKeyConn = { auth: { type: "api_key" as const } as never };
 
   test("returns message when all candidates are oauth_subscription and model is incompatible", () => {
@@ -77,7 +79,10 @@ describe("describeSubscriptionModelIncompatibility", () => {
 
   test("returns null when model is Codex-compatible", () => {
     expect(
-      describeSubscriptionModelIncompatibility([subscriptionConn], "gpt-5.4"),
+      describeSubscriptionModelIncompatibility(
+        [subscriptionConn],
+        "gpt-6.1-sol",
+      ),
     ).toBeNull();
   });
 });

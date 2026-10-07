@@ -19,6 +19,7 @@ import {
   getConnection,
   upsertConnection,
 } from "../../providers/inference/connections.js";
+import { fetchCodexSubscriptionModels } from "../../providers/openai/codex-models.js";
 import { renderOAuthCompletionPage } from "../../security/oauth-completion-page.js";
 import type { OAuth2Config } from "../../security/oauth2.js";
 import {
@@ -231,6 +232,16 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
     type: "oauth_subscription" as const,
     credential: "credential/chatgpt/access_token",
   };
+  const existing = getConnection(db, CONNECTION_NAME);
+  let models = existing?.models ?? null;
+  try {
+    models = await fetchCodexSubscriptionModels(tokens.accessToken);
+  } catch (error) {
+    log.warn(
+      { err: safeErrorMessage(error) },
+      "ChatGPT sign-in completed without refreshing the model catalog",
+    );
+  }
 
   const upsertResult = upsertConnection(db, {
     name: CONNECTION_NAME,
@@ -238,7 +249,7 @@ async function persistChatgptTokens(tokens: OAuth2TokenResult): Promise<void> {
     auth: authInput,
     label: "ChatGPT Subscription",
     baseUrl: null,
-    models: null,
+    models,
   });
   if (!upsertResult.ok) {
     log.error(

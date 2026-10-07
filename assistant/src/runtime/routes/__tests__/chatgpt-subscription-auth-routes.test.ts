@@ -10,6 +10,7 @@ let deviceExpiresIn = 900;
 let secureWrites: Record<string, string> = {};
 let failingSecureAccounts = new Set<string>();
 let bulkOnlyFailingSecureAccounts = new Set<string>();
+let modelCatalogFetchError: Error | null = null;
 const realDateNow = Date.now;
 
 mock.module("../../../security/oauth2.js", () => ({
@@ -144,6 +145,13 @@ mock.module("../../../util/logger.js", () => ({
     new Proxy({} as Record<string, unknown>, { get: () => () => {} }),
 }));
 
+mock.module("../../../providers/openai/codex-models.js", () => ({
+  fetchCodexSubscriptionModels: async () => {
+    if (modelCatalogFetchError) throw modelCatalogFetchError;
+    return [{ id: "gpt-account-current", displayName: "GPT Account Current" }];
+  },
+}));
+
 import { getDb } from "../../../memory/db-connection.js";
 import { initializeDb } from "../../../memory/db-init.js";
 import { providerConnections } from "../../../memory/schema/inference.js";
@@ -172,6 +180,7 @@ beforeEach(() => {
   secureWrites = {};
   failingSecureAccounts = new Set<string>();
   bulkOnlyFailingSecureAccounts = new Set<string>();
+  modelCatalogFetchError = null;
   Date.now = realDateNow;
 });
 
@@ -226,6 +235,9 @@ describe("ChatGPT subscription auth routes", () => {
       type: "oauth_subscription",
       credential: "credential/chatgpt/access_token",
     });
+    expect(connection?.models).toEqual([
+      { id: "gpt-account-current", displayName: "GPT Account Current" },
+    ]);
   });
 
   test("device-code status stays completed after a duplicate redemption response", async () => {

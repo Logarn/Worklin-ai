@@ -11,6 +11,16 @@ function isProviderMissingMessage(message?: string | null): boolean {
   );
 }
 
+function isSubscriptionModelUnavailableMessage(
+  message?: string | null,
+): boolean {
+  return (
+    message
+      ?.toLowerCase()
+      .includes("isn't available through your chatgpt subscription") ?? false
+  );
+}
+
 export function shouldAttemptProviderProfileRepair(error: {
   code?: string | null;
   errorCategory?: string | null;
@@ -21,10 +31,14 @@ export function shouldAttemptProviderProfileRepair(error: {
   const isProviderMissing =
     isProviderMissingMessage(error.message) ||
     isProviderMissingMessage(error.detail);
+  const isSubscriptionModelUnavailable =
+    isSubscriptionModelUnavailableMessage(error.message) ||
+    isSubscriptionModelUnavailableMessage(error.detail);
 
   return (
     error.code === PROVIDER_NOT_CONFIGURED_CODE ||
     (error.code === REDACTION_BLOCKED_CODE && isProviderMissing) ||
-    isProviderMissing
+    isProviderMissing ||
+    isSubscriptionModelUnavailable
   );
 }

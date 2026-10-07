@@ -29,12 +29,13 @@ import { isCodexSubscriptionModel } from "./openai/codex-models.js";
  * regardless of model.
  */
 export function isConnectionCompatibleWithModel(
-  connection: Pick<ProviderConnection, "auth">,
+  connection: Pick<ProviderConnection, "auth"> &
+    Partial<Pick<ProviderConnection, "models">>,
   model: string | undefined,
 ): boolean {
   if (connection.auth.type !== "oauth_subscription") return true;
   if (!model) return true;
-  return isCodexSubscriptionModel(model);
+  return isCodexSubscriptionModel(model, connection.models);
 }
 
 /**
@@ -46,7 +47,10 @@ export function isConnectionCompatibleWithModel(
  * should fall through to their existing generic error).
  */
 export function describeSubscriptionModelIncompatibility(
-  candidates: Pick<ProviderConnection, "auth">[],
+  candidates: Array<
+    Pick<ProviderConnection, "auth"> &
+      Partial<Pick<ProviderConnection, "models">>
+  >,
   model: string | undefined,
 ): string | null {
   if (!model || candidates.length === 0) return null;

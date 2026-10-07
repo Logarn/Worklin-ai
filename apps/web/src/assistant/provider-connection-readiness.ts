@@ -5,12 +5,26 @@ import type {
 
 type SecretMetadata = SecretsGetResponse["secrets"][number];
 
-const CHATGPT_SUBSCRIPTION_MODEL_IDS: ReadonlySet<string> = new Set([
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.3-codex",
-]);
+export const CHATGPT_SUBSCRIPTION_FALLBACK_MODELS = [
+  { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
+  { id: "gpt-6-sol", displayName: "GPT-6 Sol" },
+  { id: "gpt-6-luna", displayName: "GPT-6 Luna" },
+] as const;
+
+export function chatgptSubscriptionModels(
+  connection: Pick<ProviderConnection, "models">,
+): readonly { id: string; displayName?: string }[] {
+  return connection.models ?? CHATGPT_SUBSCRIPTION_FALLBACK_MODELS;
+}
+
+export function chatgptSubscriptionDefaultModel(
+  connection?: Pick<ProviderConnection, "models">,
+): string {
+  return (
+    (connection ? chatgptSubscriptionModels(connection) : undefined)?.[0]?.id ??
+    CHATGPT_SUBSCRIPTION_FALLBACK_MODELS[0].id
+  );
+}
 
 export function isPersonalProviderConnection(
   connection: ProviderConnection,
@@ -27,11 +41,16 @@ export function canSafelyUseAnyProviderConnection(
 }
 
 export function isProviderConnectionCompatibleWithModel(
-  connection: Pick<ProviderConnection, "auth">,
+  connection: Pick<ProviderConnection, "auth"> &
+    Partial<Pick<ProviderConnection, "models">>,
   model: string | undefined,
 ): boolean {
   if (connection.auth.type !== "oauth_subscription" || !model) return true;
-  return CHATGPT_SUBSCRIPTION_MODEL_IDS.has(model);
+  const models =
+    connection.models === undefined
+      ? CHATGPT_SUBSCRIPTION_FALLBACK_MODELS
+      : chatgptSubscriptionModels({ models: connection.models });
+  return models.some((candidate) => candidate.id === model);
 }
 
 function credentialMetadataMatches(
@@ -50,8 +69,7 @@ function credentialMetadataMatches(
   if (field === "api_key") {
     return (
       (secret.type === "api_key" && secret.name === service) ||
-      (secret.type === "credential" &&
-        secret.name === `${service}:api_key`)
+      (secret.type === "credential" && secret.name === `${service}:api_key`)
     );
   }
 

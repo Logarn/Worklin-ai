@@ -54,10 +54,14 @@ const applyPendingProviderKeyMock = mock(
 let applyChatgptSubscriptionProviderImpl: (
   assistantId: string,
   scope?: { userId: string | null },
+  defaultModel?: string,
 ) => Promise<void> = async () => {};
 const applyChatgptSubscriptionProviderMock = mock(
-  (assistantId: string, scope?: { userId: string | null }) =>
-    applyChatgptSubscriptionProviderImpl(assistantId, scope),
+  (
+    assistantId: string,
+    scope?: { userId: string | null },
+    defaultModel?: string,
+  ) => applyChatgptSubscriptionProviderImpl(assistantId, scope, defaultModel),
 );
 let chatgptOnConnected: ((connection: unknown) => void | Promise<void>) | null =
   null;
@@ -777,6 +781,7 @@ describe("onboarding lifecycle sync", () => {
     expect(applyChatgptSubscriptionProviderMock).toHaveBeenCalledWith(
       "asst-1",
       { userId: "user-1" },
+      undefined,
     );
     expect(screen.getByText("Connect ChatGPT")).toBeTruthy();
     expect(checkAssistantMock).not.toHaveBeenCalled();
@@ -996,8 +1001,7 @@ describe("onboarding lifecycle sync", () => {
     expect(await screen.findByTestId("tools-continue")).toBeTruthy();
 
     const saved = JSON.parse(
-      localStorage.getItem(preChatDraftTesting.storageKey("user-1")) ??
-        "null",
+      localStorage.getItem(preChatDraftTesting.storageKey("user-1")) ?? "null",
     ) as { currentStep?: string } | null;
     expect(saved?.currentStep).toBe("tools");
 

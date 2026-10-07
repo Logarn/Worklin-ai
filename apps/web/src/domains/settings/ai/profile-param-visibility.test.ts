@@ -10,12 +10,19 @@ import {
 describe("resolveProfileParamVisibility", () => {
   test("returns all-false for empty provider or model", () => {
     expect(resolveProfileParamVisibility("", "")).toEqual(VISIBILITY_NONE);
-    expect(resolveProfileParamVisibility("anthropic", "")).toEqual(VISIBILITY_NONE);
-    expect(resolveProfileParamVisibility("", "claude-sonnet-4-20250514")).toEqual(VISIBILITY_NONE);
+    expect(resolveProfileParamVisibility("anthropic", "")).toEqual(
+      VISIBILITY_NONE,
+    );
+    expect(
+      resolveProfileParamVisibility("", "claude-sonnet-4-20250514"),
+    ).toEqual(VISIBILITY_NONE);
   });
 
   test("anthropic non-haiku enables maxTokens, contextWindow, effort, temperature, thinking", () => {
-    const vis = resolveProfileParamVisibility("anthropic", "claude-sonnet-4-20250514");
+    const vis = resolveProfileParamVisibility(
+      "anthropic",
+      "claude-sonnet-4-20250514",
+    );
     expect(vis.maxTokens).toBe(true);
     expect(vis.contextWindow).toBe(true);
     expect(vis.effort).toBe(true);
@@ -26,7 +33,10 @@ describe("resolveProfileParamVisibility", () => {
   });
 
   test("anthropic haiku disables effort but supports thinking", () => {
-    const vis = resolveProfileParamVisibility("anthropic", "claude-3-5-haiku-20241022");
+    const vis = resolveProfileParamVisibility(
+      "anthropic",
+      "claude-3-5-haiku-20241022",
+    );
     expect(vis.effort).toBe(false);
     // Haiku supports thinking (per catalog) but not effort (haiku-specific gate)
     expect(vis.thinking).toBe(true);
@@ -43,13 +53,19 @@ describe("resolveProfileParamVisibility", () => {
   });
 
   test("openrouter anthropic fable hides the thinking toggle but keeps effort", () => {
-    const vis = resolveProfileParamVisibility("openrouter", "anthropic/claude-fable-5");
+    const vis = resolveProfileParamVisibility(
+      "openrouter",
+      "anthropic/claude-fable-5",
+    );
     expect(vis.effort).toBe(true);
     expect(vis.thinking).toBe(false);
   });
 
   test("anthropic opus enables speed", () => {
-    const vis = resolveProfileParamVisibility("anthropic", "claude-3-opus-20240229");
+    const vis = resolveProfileParamVisibility(
+      "anthropic",
+      "claude-3-opus-20240229",
+    );
     expect(vis.speed).toBe(true);
   });
 
@@ -59,6 +75,12 @@ describe("resolveProfileParamVisibility", () => {
     expect(vis.verbosity).toBe(true);
     expect(vis.thinking).toBe(false);
     expect(vis.thinkingLevel).toBe(false);
+  });
+
+  test("openai gpt-6 enables effort and verbosity", () => {
+    const vis = resolveProfileParamVisibility("openai", "gpt-6.1-sol");
+    expect(vis.effort).toBe(true);
+    expect(vis.verbosity).toBe(true);
   });
 
   test("gemini enables thinkingLevel for thinking-capable models", () => {

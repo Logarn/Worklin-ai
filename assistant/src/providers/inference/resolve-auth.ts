@@ -139,11 +139,16 @@ export async function resolveAuth(
           error: { code: "credential_not_found", credential: auth.credential },
         };
       }
+      const { getChatgptAccountId } = await import("../openai/codex-models.js");
+      const accountId = getChatgptAccountId(token);
       return {
         ok: true,
         resolved: {
           kind: "header",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(accountId ? { "ChatGPT-Account-ID": accountId } : {}),
+          },
         },
       };
     }

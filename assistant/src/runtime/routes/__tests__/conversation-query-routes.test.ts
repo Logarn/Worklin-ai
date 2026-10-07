@@ -30,7 +30,23 @@ mock.module("../../../config/loader.js", () => ({
     target: Record<string, unknown>,
     overrides: Record<string, unknown>,
   ) => {
-    Object.assign(target, overrides);
+    for (const [key, value] of Object.entries(overrides)) {
+      const current = target[key];
+      if (
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        current !== null &&
+        typeof current === "object" &&
+        !Array.isArray(current)
+      ) {
+        for (const [nestedKey, nestedValue] of Object.entries(value)) {
+          (current as Record<string, unknown>)[nestedKey] = nestedValue;
+        }
+      } else {
+        target[key] = value;
+      }
+    }
   },
   // `commitConfigWrite` (used by `handleReplaceInferenceProfile`) pulls
   // in `getConfig` for the provider reinit's config arg and
@@ -97,6 +113,8 @@ const conversationLlmContextRoute = ROUTES.find(
 const replaceProfileRoute = ROUTES.find(
   (r) => r.operationId === "config_llm_profiles_replace",
 )!;
+
+const patchConfigRoute = ROUTES.find((r) => r.operationId === "config_patch")!;
 
 function dispatchLlmContext(messageId: string) {
   return llmContextRoute.handler({ pathParams: { id: messageId } });
@@ -707,6 +725,54 @@ describe("GET /v1/messages/:id/llm-context — synthetic call_site projection", 
     expect(body.logs[0]!.callSite).toBe("mainAgent");
     // No leftover syntheticEvent projection field on regular rows either.
     expect(body.logs[0]!).not.toHaveProperty("syntheticEvent");
+  });
+});
+
+describe("PATCH /v1/config call-site overrides", () => {
+  beforeEach(() => {
+    savedRawConfig = null;
+    invalidateConfigCacheCalls = 0;
+    initializeProvidersCalls = 0;
+    clearEmbeddingBackendCacheCalls = 0;
+    rawConfigFixture = {
+      llm: {
+        activeProfile: "custom-balanced",
+        callSites: {
+          mainAgent: {
+            profile: "kimi",
+            provider: "openai-compatible",
+            model: "kimi-k2.6",
+            effort: "low",
+          },
+        },
+      },
+    };
+  });
+
+  test("null clears optional call-site fields without persisting invalid nulls", async () => {
+    await patchConfigRoute.handler({
+      body: {
+        llm: {
+          callSites: {
+            mainAgent: {
+              profile: "custom-balanced",
+              provider: null,
+              model: null,
+            },
+          },
+        },
+      },
+    });
+
+    const savedMainAgent = (
+      savedRawConfig?.llm as {
+        callSites: Record<string, Record<string, unknown>>;
+      }
+    ).callSites.mainAgent;
+    expect(savedMainAgent).toEqual({
+      profile: "custom-balanced",
+      effort: "low",
+    });
   });
 });
 

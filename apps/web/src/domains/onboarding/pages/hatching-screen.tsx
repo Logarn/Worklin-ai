@@ -279,9 +279,7 @@ export function HatchingScreen() {
             return;
           }
           if (isNativePlatform()) {
-            clearPreChatDraftForUser(
-              useAuthStore.getState().user?.id ?? null,
-            );
+            clearPreChatDraftForUser(useAuthStore.getState().user?.id ?? null);
             // Native flow skips the pre-chat screen, so there's no
             // typed message to drive the auto-greet gate. Mark the
             // lifecycle one-shot so the destination chat mount shows
@@ -749,13 +747,14 @@ export function HatchingScreen() {
             <div className="mt-8">
               <ChatgptOAuthSection
                 assistantId={providerSetup.assistantId}
-                onConnected={async () => {
+                onConnected={async (connection) => {
                   try {
                     await applyChatgptSubscriptionProvider(
                       providerSetup.assistantId,
                       {
                         userId: useAuthStore.getState().user?.id ?? null,
                       },
+                      connection.models?.[0]?.id,
                     );
                     await lifecycleService.checkAssistant(
                       providerSetup.assistantId,

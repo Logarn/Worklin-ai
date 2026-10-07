@@ -158,7 +158,7 @@ function chatgptConnection(): ProviderConnection {
     },
     label: "ChatGPT Subscription",
     baseUrl: null,
-    models: null,
+    models: [{ id: "gpt-account-current", displayName: "GPT Account Current" }],
     createdAt: 100,
     updatedAt: 200,
     isManaged: false,
@@ -270,7 +270,7 @@ describe("ChatgptOAuthSection", () => {
           "custom-balanced": {
             provider: "openai",
             provider_connection: "chatgpt-subscription",
-            model: "gpt-5.4-mini",
+            model: "gpt-account-current",
           },
         },
       },

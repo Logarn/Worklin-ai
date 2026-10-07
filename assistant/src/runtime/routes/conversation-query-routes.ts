@@ -815,6 +815,50 @@ async function commitConfigWrite(
   }
 }
 
+function applyCallSitePatch(
+  raw: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): void {
+  const patchLlm = asMutablePlainObject(patch.llm);
+  const callSitePatch = asMutablePlainObject(patchLlm?.callSites);
+  if (!patchLlm || !callSitePatch) return;
+
+  let rawLlm = asMutablePlainObject(raw.llm);
+  if (!rawLlm) {
+    rawLlm = {};
+    raw.llm = rawLlm;
+  }
+  let rawCallSites = asMutablePlainObject(rawLlm.callSites);
+  if (!rawCallSites) {
+    rawCallSites = {};
+    rawLlm.callSites = rawCallSites;
+  }
+
+  for (const [callSite, draft] of Object.entries(callSitePatch)) {
+    if (draft === null) {
+      delete rawCallSites[callSite];
+      continue;
+    }
+    const fragment = asMutablePlainObject(draft);
+    if (!fragment) continue;
+
+    let target = asMutablePlainObject(rawCallSites[callSite]);
+    if (!target) {
+      target = {};
+      rawCallSites[callSite] = target;
+    }
+    for (const [key, value] of Object.entries(fragment)) {
+      if (value === null) {
+        delete target[key];
+      } else {
+        deepMergeOverwrite(target, { [key]: value });
+      }
+    }
+  }
+
+  delete patchLlm.callSites;
+}
+
 async function handlePatchConfig({ body }: RouteHandlerArgs) {
   if (
     !body ||
@@ -991,6 +1035,7 @@ async function handlePatchConfig({ body }: RouteHandlerArgs) {
     }
   }
 
+  applyCallSitePatch(raw, patch);
   deepMergeOverwrite(raw, patch);
 
   await commitConfigWrite(raw, "patch");

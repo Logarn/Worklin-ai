@@ -51,11 +51,12 @@ describe("isConnectionCompatibleWithModel", () => {
   });
 
   test("oauth_subscription connection is compatible with a Codex model", () => {
-    const conn = { auth: oauthAuth };
-    expect(isConnectionCompatibleWithModel(conn, "gpt-5.5")).toBe(true);
-    expect(isConnectionCompatibleWithModel(conn, "gpt-5.4")).toBe(true);
-    expect(isConnectionCompatibleWithModel(conn, "gpt-5.4-mini")).toBe(true);
-    expect(isConnectionCompatibleWithModel(conn, "gpt-5.3-codex")).toBe(true);
+    const conn = {
+      auth: oauthAuth,
+      models: [{ id: "account-model" }],
+    };
+    expect(isConnectionCompatibleWithModel(conn, "account-model")).toBe(true);
+    expect(isConnectionCompatibleWithModel(conn, "gpt-6.1-sol")).toBe(false);
   });
 
   test("undefined model applies no gating (compatible)", () => {
@@ -92,6 +93,7 @@ type Connection = {
   name: string;
   provider: string;
   auth: { type: string; credential?: string };
+  models?: Array<{ id: string }> | null;
   isManaged?: boolean;
 };
 
@@ -154,6 +156,7 @@ const OPENAI_CODEX: Connection = {
     type: "oauth_subscription",
     credential: "credential/openai-codex/access_token",
   },
+  models: [{ id: "gpt-6.1-sol" }],
 };
 const OPENAI_MANAGED: Connection = {
   name: "openai-managed",
@@ -182,7 +185,7 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
 
   test("Codex model can select the oauth_subscription connection", async () => {
     registerConnections([OPENAI_CODEX, OPENAI_KEY]);
-    setOpenAiProfile("gpt-5.4");
+    setOpenAiProfile("gpt-6.1-sol");
 
     const result = await getConfiguredProvider("mainAgent", {
       overrideProfile: "openai-any",
@@ -261,7 +264,7 @@ describe("required provider connection", () => {
         name: "chatgpt-subscription",
         provider: "openai",
         authType: "oauth_subscription",
-        model: "gpt-5.4",
+        model: "gpt-6.1-sol",
       },
     });
 
@@ -282,7 +285,7 @@ describe("required provider connection", () => {
           name: "chatgpt-subscription",
           provider: "openai",
           authType: "oauth_subscription",
-          model: "gpt-5.4",
+          model: "gpt-6.1-sol",
         },
       }),
     ).rejects.toBeInstanceOf(RequiredProviderConnectionError);

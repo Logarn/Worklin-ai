@@ -32,6 +32,15 @@ describe("shouldAttemptProviderProfileRepair", () => {
     ).toBe(true);
   });
 
+  test("repairs a retired ChatGPT subscription model", () => {
+    expect(
+      shouldAttemptProviderProfileRepair({
+        message:
+          'Model "gpt-retired" isn\'t available through your ChatGPT subscription. Select a supported model or add an OpenAI API key connection.',
+      }),
+    ).toBe(true);
+  });
+
   test("does not repair normal secret-blocked messages", () => {
     expect(
       shouldAttemptProviderProfileRepair({

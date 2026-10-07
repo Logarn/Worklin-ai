@@ -29,6 +29,8 @@ export interface OpenAIResponsesProviderOptions {
   /** When true, target the Codex subscription endpoint and strip fields it
    *  rejects (`max_output_tokens`). */
   codexSubscription?: boolean;
+  /** ChatGPT workspace selected by the subscription OAuth token. */
+  chatgptAccountId?: string;
 }
 
 /** Map our internal effort values to the Responses API reasoning.effort parameter.
@@ -86,7 +88,7 @@ export function mapNeutralToolChoiceForResponses(
   }
 }
 
-/** `text.verbosity` is a GPT-5-series-only parameter. Older models on the
+/** `text.verbosity` is a current GPT-family parameter. Older models on the
  *  Responses API (o-series, etc.) reject unknown wire fields with HTTP 400, so
  *  gate forwarding by model name here. The retry layer can't make this call
  *  because verbosity defaults to "medium" in the LLM schema, so every
@@ -94,7 +96,7 @@ export function mapNeutralToolChoiceForResponses(
  *  Also matches OpenAI fine-tune IDs of the form `ft:gpt-5.x:org::id` so users
  *  on GPT-5 fine-tunes keep explicit verbosity control. */
 function modelSupportsVerbosity(model: string): boolean {
-  return /^(ft:)?gpt-5(\b|[-.])/i.test(model);
+  return /^(ft:)?gpt-(5|6)(\b|[-.])/i.test(model);
 }
 
 /** Loosely-typed Responses stream event to avoid `any` while the SDK types settle. */
@@ -167,6 +169,13 @@ export class OpenAIResponsesProvider implements Provider {
       baseURL: this.codexSubscription
         ? "https://chatgpt.com/backend-api/codex"
         : options.baseURL,
+      ...(this.codexSubscription && options.chatgptAccountId
+        ? {
+            defaultHeaders: {
+              "ChatGPT-Account-ID": options.chatgptAccountId,
+            },
+          }
+        : {}),
       timeout: sdkTimeoutMs,
       ...(this.codexSubscription
         ? {

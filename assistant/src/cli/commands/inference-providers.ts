@@ -17,6 +17,7 @@
 import type { Command } from "commander";
 
 import { cliIpcCall } from "../../ipc/cli-client.js";
+import { fetchCodexSubscriptionModels } from "../../providers/openai/codex-models.js";
 import type { OAuth2Config } from "../../security/oauth2.js";
 import { startOAuth2Flow } from "../../security/oauth2.js";
 import { setSecureKeyAsync } from "../../security/secure-keys.js";
@@ -86,7 +87,9 @@ function attachListSubcommand(connections: Command): void {
       const rows = ipcResult.result!.connections;
 
       if (opts.json) {
-        process.stdout.write(JSON.stringify({ ok: true, connections: rows }) + "\n");
+        process.stdout.write(
+          JSON.stringify({ ok: true, connections: rows }) + "\n",
+        );
         return;
       }
 
@@ -128,7 +131,9 @@ function attachGetSubcommand(connections: Command): void {
       const conn = ipcResult.result!;
 
       if (opts.json) {
-        process.stdout.write(JSON.stringify({ ok: true, connection: conn }) + "\n");
+        process.stdout.write(
+          JSON.stringify({ ok: true, connection: conn }) + "\n",
+        );
         return;
       }
 
@@ -169,7 +174,8 @@ function buildAuthInput(
     return { type: "none" };
   }
   if (authType === "oauth_subscription") {
-    if (!credential) return "--credential is required when --auth oauth_subscription";
+    if (!credential)
+      return "--credential is required when --auth oauth_subscription";
     return { type: "oauth_subscription", credential };
   }
   return `Unknown auth type "${authType}". Use: api_key, platform, none, oauth_subscription`;
@@ -192,14 +198,25 @@ function attachCreateSubcommand(connections: Command): void {
   connections
     .command("create <name>")
     .description("Create a new provider connection")
-    .requiredOption("--provider <p>", "Provider (anthropic|openai|gemini|ollama|...)")
+    .requiredOption(
+      "--provider <p>",
+      "Provider (anthropic|openai|gemini|ollama|...)",
+    )
     .requiredOption("--auth <type>", "Auth type: api_key|platform|none")
-    .option("--credential <vault-key>", "Vault credential name (required for --auth api_key)")
+    .option(
+      "--credential <vault-key>",
+      "Vault credential name (required for --auth api_key)",
+    )
     .option("--json", "Output as JSON")
     .action(
       async (
         name: string,
-        opts: { provider: string; auth: string; credential?: string; json?: boolean },
+        opts: {
+          provider: string;
+          auth: string;
+          credential?: string;
+          json?: boolean;
+        },
       ) => {
         const authInput = buildAuthInput(opts.auth, opts.credential);
         if (typeof authInput === "string") {
@@ -247,7 +264,10 @@ function attachUpdateSubcommand(connections: Command): void {
     .command("update <name>")
     .description("Update a connection's auth")
     .requiredOption("--auth <type>", "Auth type: api_key|platform|none")
-    .option("--credential <vault-key>", "Vault credential name (required for --auth api_key)")
+    .option(
+      "--credential <vault-key>",
+      "Vault credential name (required for --auth api_key)",
+    )
     .option("--json", "Output as JSON")
     .action(
       async (
@@ -394,13 +414,21 @@ function attachLoginChatgptSubcommand(providers: Command): void {
           type: "oauth_subscription",
           credential: "credential/chatgpt/access_token",
         };
+        let models: Array<{ id: string; displayName?: string }> | undefined;
+        try {
+          models = await fetchCodexSubscriptionModels(tokens.accessToken);
+        } catch (error) {
+          log.warn(
+            `ChatGPT connected, but its model catalog could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
 
         // Try to update first; if the connection doesn't exist, create it.
         const updateResult = await cliIpcCall<ProviderConnection>(
           "inference_provider_connections_update",
           {
             pathParams: { name: connectionName },
-            body: { auth: authInput },
+            body: { auth: authInput, ...(models ? { models } : {}) },
           },
         );
 
@@ -413,6 +441,7 @@ function attachLoginChatgptSubcommand(providers: Command): void {
                 name: connectionName,
                 provider: "openai",
                 auth: authInput,
+                ...(models ? { models } : {}),
               },
             },
           );

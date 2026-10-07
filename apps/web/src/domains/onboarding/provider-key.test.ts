@@ -21,7 +21,10 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
     }),
   configPatch: (opts: SdkCall) => {
     configPatchCalls.push(opts);
-    return Promise.resolve({ data: undefined, response: { ok: true, status: 200 } });
+    return Promise.resolve({
+      data: undefined,
+      response: { ok: true, status: 200 },
+    });
   },
   inferenceProviderconnectionsByNamePatch: (_opts: SdkCall) =>
     Promise.resolve({ data: undefined, response: { ok: true, status: 200 } }),
@@ -300,10 +303,7 @@ describe("pending provider key", () => {
       key: "test-provider-key",
     });
 
-    await applyPendingProviderKey(
-      "asst-concurrent",
-      "concurrent_service",
-    );
+    await applyPendingProviderKey("asst-concurrent", "concurrent_service");
 
     expect(peekPendingProviderKey()).toBeNull();
     expect(secretsPostCalls).toHaveLength(0);
@@ -573,7 +573,7 @@ describe("pending provider key", () => {
             "custom-balanced": {
               provider: "openai",
               provider_connection: "chatgpt-subscription",
-              model: "gpt-5.4-mini",
+              model: "gpt-6.1-sol",
             },
           },
         },

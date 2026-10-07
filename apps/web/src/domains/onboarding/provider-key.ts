@@ -6,6 +6,7 @@ import {
   secretsPost,
 } from "@/generated/daemon/sdk.gen";
 import { getDefaultModelForProvider } from "@/assistant/llm-model-catalog";
+import { chatgptSubscriptionDefaultModel } from "@/assistant/provider-connection-readiness";
 import type {
   OnboardingProviderAuthType,
   OnboardingProviderId,
@@ -25,7 +26,7 @@ import { PENDING_PROVIDER_KEY_STORAGE } from "@/lib/auth/pending-provider-secret
 
 export const ONBOARDING_PROFILE_NAME = "custom-balanced";
 export const CHATGPT_SUBSCRIPTION_CONNECTION_NAME = "chatgpt-subscription";
-export const CHATGPT_SUBSCRIPTION_MODEL = "gpt-5.4-mini";
+export const CHATGPT_SUBSCRIPTION_MODEL = chatgptSubscriptionDefaultModel();
 
 export interface PendingProviderKey {
   /** Authenticated user that entered this raw key. */
@@ -104,10 +105,7 @@ export function peekPendingProviderKey(
       sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
       return null;
     }
-    if (
-      scope &&
-      (!scope.userId || parsed.ownerUserId !== scope.userId)
-    ) {
+    if (scope && (!scope.userId || parsed.ownerUserId !== scope.userId)) {
       sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
       return null;
     }
@@ -421,6 +419,7 @@ export async function applyPendingProviderKey(
 export async function applyChatgptSubscriptionProvider(
   assistantId: string,
   scope?: PendingProviderKeyScope,
+  defaultModel?: string,
 ): Promise<void> {
   const pending = peekPendingProviderKey(scope);
   if (!pending || pendingProviderAuthType(pending) !== "oauth_subscription") {
@@ -430,6 +429,7 @@ export async function applyChatgptSubscriptionProvider(
     provider: "openai",
     authType: "oauth_subscription",
     connectionName: CHATGPT_SUBSCRIPTION_CONNECTION_NAME,
+    defaultModel,
   });
   setPendingProviderKey(null);
 }

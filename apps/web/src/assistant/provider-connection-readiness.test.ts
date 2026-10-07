@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import {
   canSafelyUseAnyProviderConnection,
+  chatgptSubscriptionDefaultModel,
+  chatgptSubscriptionModels,
   isPersonalProviderConnection,
   isProviderConnectionCompatibleWithModel,
   isProviderConnectionReady,
@@ -48,9 +50,9 @@ describe("provider connection readiness", () => {
     const secondPersonal = { ...personal, name: "second-personal" };
     const managed = connection({ type: "platform" }, true);
 
-    expect(
-      canSafelyUseAnyProviderConnection([personal, secondPersonal]),
-    ).toBe(true);
+    expect(canSafelyUseAnyProviderConnection([personal, secondPersonal])).toBe(
+      true,
+    );
     expect(canSafelyUseAnyProviderConnection([personal, managed])).toBe(false);
     expect(canSafelyUseAnyProviderConnection([personal])).toBe(false);
   });
@@ -92,16 +94,31 @@ describe("provider connection readiness", () => {
   });
 
   test("matches assistant auto-resolution model compatibility for ChatGPT subscriptions", () => {
-    const subscription = connection({
-      type: "oauth_subscription",
-      credential: "credential/chatgpt/access_token",
-    });
+    const subscription = {
+      ...connection({
+        type: "oauth_subscription",
+        credential: "credential/chatgpt/access_token",
+      }),
+      models: [{ id: "account-model", displayName: "Account Model" }],
+    };
 
     expect(
-      isProviderConnectionCompatibleWithModel(subscription, "gpt-5.4-mini"),
+      isProviderConnectionCompatibleWithModel(subscription, "account-model"),
     ).toBe(true);
     expect(
-      isProviderConnectionCompatibleWithModel(subscription, "gpt-5.4-nano"),
+      isProviderConnectionCompatibleWithModel(subscription, "gpt-6.1-sol"),
     ).toBe(false);
+  });
+
+  test("uses the account catalog and falls back only when it is unavailable", () => {
+    expect(
+      chatgptSubscriptionModels({
+        models: [{ id: "account-model", displayName: "Account Model" }],
+      }),
+    ).toEqual([{ id: "account-model", displayName: "Account Model" }]);
+    expect(chatgptSubscriptionModels({ models: [] })).toEqual([]);
+    expect(chatgptSubscriptionDefaultModel({ models: null })).toBe(
+      "gpt-6.1-sol",
+    );
   });
 });

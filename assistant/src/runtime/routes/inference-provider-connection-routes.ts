@@ -29,6 +29,7 @@ import {
   PROVIDERS_REQUIRING_BASE_URL_AND_MODELS,
   updateConnection,
 } from "../../providers/inference/connections.js";
+import { refreshCodexSubscriptionConnectionModels } from "../../providers/openai/codex-model-refresh.js";
 import {
   isPrivateOrLocalHost,
   resolveHostAddresses,
@@ -151,23 +152,28 @@ async function parseCustomProviderFields(
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleListConnections({ queryParams = {} }: RouteHandlerArgs) {
+async function handleListConnections({ queryParams = {} }: RouteHandlerArgs) {
   const provider = queryParams.provider;
-  const connections = listConnections(
-    getDb(),
-    provider ? { provider } : undefined,
-  );
-  return { connections };
+  const db = getDb();
+  const connections = listConnections(db, provider ? { provider } : undefined);
+  return {
+    connections: await Promise.all(
+      connections.map((connection) =>
+        refreshCodexSubscriptionConnectionModels(db, connection),
+      ),
+    ),
+  };
 }
 
-function handleGetConnection({ pathParams = {} }: RouteHandlerArgs) {
+async function handleGetConnection({ pathParams = {} }: RouteHandlerArgs) {
   const { name } = pathParams;
   if (!name) throw new BadRequestError("name is required");
 
-  const conn = getConnection(getDb(), name);
+  const db = getDb();
+  const conn = getConnection(db, name);
   if (!conn) throw new NotFoundError(`Connection "${name}" not found.`);
 
-  return conn;
+  return await refreshCodexSubscriptionConnectionModels(db, conn);
 }
 
 async function handleCreateConnection({ body = {} }: RouteHandlerArgs) {
@@ -201,7 +207,10 @@ async function handleCreateConnection({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const customFields = await parseCustomProviderFields(body, providerResult.data);
+  const customFields = await parseCustomProviderFields(
+    body,
+    providerResult.data,
+  );
 
   const result = createConnection(getDb(), {
     name,

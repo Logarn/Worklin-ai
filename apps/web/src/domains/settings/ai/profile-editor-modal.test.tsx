@@ -91,8 +91,11 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
 // Stub the credential hooks so the inline ProviderCreateForm renders without
 // issuing real daemon queries.
 mock.module("@/domains/settings/ai/use-stored-credential-presence", () => ({
-  credentialPresenceQueryKey: (assistantId: string, kind: string, name: string) =>
-    ["credentialPresence", assistantId, kind, name] as const,
+  credentialPresenceQueryKey: (
+    assistantId: string,
+    kind: string,
+    name: string,
+  ) => ["credentialPresence", assistantId, kind, name] as const,
   useStoredCredentialPresence: () => ({
     hasStoredCredential: false,
     isLoading: false,
@@ -106,9 +109,8 @@ mock.module("@/domains/settings/ai/use-provider-credentials-list", () => ({
   }),
 }));
 
-const { ProfileEditorModal } = await import(
-  "@/domains/settings/ai/profile-editor-modal"
-);
+const { ProfileEditorModal } =
+  await import("@/domains/settings/ai/profile-editor-modal");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,7 +118,10 @@ const { ProfileEditorModal } = await import(
 
 const ASSISTANT_ID = "asst-1";
 
-function makeConnection(name: string, provider = "anthropic"): ProviderConnection {
+function makeConnection(
+  name: string,
+  provider = "anthropic",
+): ProviderConnection {
   return {
     name,
     label: null,
@@ -335,6 +340,27 @@ describe("ProfileEditorModal create mode — provider-first", () => {
     );
   });
 
+  test("uses the account-specific model catalog for ChatGPT subscriptions", () => {
+    const subscription = {
+      ...makeConnection("chatgpt-subscription", "openai"),
+      auth: {
+        type: "oauth_subscription" as const,
+        credential: "credential/chatgpt/access_token",
+      },
+      models: [
+        { id: "gpt-account-current", displayName: "GPT Account Current" },
+      ],
+    };
+    renderCreate([subscription]);
+
+    selectProvider("OpenAI");
+    selectModel("GPT Account Current");
+
+    expect(getInputByPlaceholder("e.g. fast-cheap").value).toBe(
+      "gpt-account-current",
+    );
+  });
+
   test("editing Name stops model-driven pre-fill from overwriting", () => {
     renderCreate([makeConnection("anthropic-personal")]);
 
@@ -405,9 +431,7 @@ describe("ProfileEditorModal create mode — provider-first", () => {
 
     // After create, the sub-form collapses and the provider is selected.
     await waitFor(() => {
-      expect(
-        document.body.textContent,
-      ).toContain(
+      expect(document.body.textContent).toContain(
         "New service will show up in API keys & services.",
       );
     });
@@ -487,7 +511,9 @@ describe("ProfileEditorModal create mode — provider-first", () => {
 
     fillCreateForm();
 
-    expect(document.body.textContent).toContain("Choose a specific connection.");
+    expect(document.body.textContent).toContain(
+      "Choose a specific connection.",
+    );
     expect(getSaveBtn().disabled).toBe(true);
 
     selectConnection("anthropic-personal");

@@ -7,6 +7,7 @@ import {
   isManagedInferenceProfile,
 } from "@/assistant/managed-inference";
 import {
+  chatgptSubscriptionDefaultModel,
   isProviderConnectionCompatibleWithModel,
   isProviderConnectionReady,
 } from "@/assistant/provider-connection-readiness";
@@ -24,7 +25,6 @@ import type {
 } from "@/generated/daemon/types.gen";
 
 const AUTO_PROFILE_NAME = "custom-balanced";
-const CHATGPT_SUBSCRIPTION_MODEL = "gpt-5.4-mini";
 const FALLBACK_DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   ollama: "llama3.2",
 };
@@ -271,6 +271,23 @@ function findExistingProfileForConnection(
   return null;
 }
 
+function replaceableActiveProfileName(
+  activeProfileName: string | null,
+  activeProfile: WireProfile | undefined,
+  connection: ProviderConnection,
+): string | null {
+  if (
+    !activeProfileName ||
+    !activeProfile ||
+    activeProfile.source === "managed" ||
+    activeProfile.provider !== connection.provider ||
+    activeProfile.provider_connection !== connection.name
+  ) {
+    return null;
+  }
+  return activeProfileName;
+}
+
 function nextProfileName(
   profiles: NonNullable<ConfigGetResponse["llm"]>["profiles"] | undefined,
 ): string {
@@ -289,7 +306,7 @@ function defaultModelForConnection(connection: ProviderConnection): string {
     connection.provider === "openai" &&
     connection.auth.type === "oauth_subscription"
   ) {
-    return CHATGPT_SUBSCRIPTION_MODEL;
+    return chatgptSubscriptionDefaultModel(connection);
   }
   const catalogDefault = getDefaultModelForProvider(connection.provider);
   if (catalogDefault) return catalogDefault;
@@ -331,8 +348,13 @@ export function buildInteractivePersonalCallSitePatch(
 
   for (const callSite of STANDARD_INTERACTIVE_CALL_SITES) {
     const configured = callSites[callSite];
+    const configuredConnection = (
+      configured as (WireCallSite & Record<string, unknown>) | undefined
+    )?.provider_connection;
     const hasDirectModelSelection =
-      configured?.provider != null || configured?.model != null;
+      configured?.provider != null ||
+      configured?.model != null ||
+      typeof configuredConnection === "string";
 
     if (configured?.profile) {
       const configuredProfile = profiles[configured.profile];
@@ -368,13 +390,16 @@ export function buildInteractivePersonalCallSitePatch(
     if (configured?.profile !== profileName) {
       patch[callSite] = {
         profile: profileName,
-        ...(hasDirectModelSelection ? { provider: null, model: null } : {}),
+        ...(hasDirectModelSelection
+          ? { provider: null, model: null, provider_connection: null }
+          : {}),
       };
     } else if (hasDirectModelSelection) {
       patch[callSite] = {
         profile: profileName,
         provider: null,
         model: null,
+        provider_connection: null,
       };
     }
   }
@@ -532,25 +557,43 @@ export async function ensureRunnableProfileForConnection(
     connection,
     model,
   );
-  const profileName = existingProfileName ?? nextProfileName(profiles);
+  const staleActiveProfileName = options.activateConnection
+    ? replaceableActiveProfileName(
+        activeProfile,
+        currentActiveProfile,
+        connection,
+      )
+    : null;
+  const profileName =
+    existingProfileName ?? staleActiveProfileName ?? nextProfileName(profiles);
   const currentOrder = llm?.profileOrder ?? [];
   const profileOrder = currentOrder.includes(profileName)
     ? currentOrder
     : [...currentOrder, profileName];
   const profilePatch = existingProfileName
     ? {}
-    : {
-        profiles: {
-          [profileName]: {
-            source: "user" as const,
-            label: "Balanced",
-            description: "Default provider profile",
-            provider: connection.provider,
-            provider_connection: connection.name,
-            model,
+    : staleActiveProfileName
+      ? {
+          profiles: {
+            [profileName]: {
+              provider: connection.provider,
+              provider_connection: connection.name,
+              model,
+            },
           },
-        },
-      };
+        }
+      : {
+          profiles: {
+            [profileName]: {
+              source: "user" as const,
+              label: "Balanced",
+              description: "Default provider profile",
+              provider: connection.provider,
+              provider_connection: connection.name,
+              model,
+            },
+          },
+        };
   const callSites = options.routeInteractiveCallSites
     ? buildInteractivePersonalCallSitePatch(
         llm,
@@ -700,6 +743,28 @@ async function performUnavailableManagedProfileRepair(
       ...result,
       providerLabel: providerLabel(activePersonalConnection.provider),
     };
+  }
+
+  const stalePinnedPersonalConnection = activeProfile?.provider_connection
+    ? connections.find(
+        (connection) =>
+          !isManagedInferenceConnection(connection) &&
+          connection.name === activeProfile.provider_connection &&
+          connection.provider === activeProfile.provider &&
+          isProviderConnectionReady(connection, secrets),
+      )
+    : undefined;
+  if (activeProfileName && stalePinnedPersonalConnection) {
+    return ensureRunnableProfileForConnection(
+      assistantId,
+      stalePinnedPersonalConnection,
+      {
+        activateConnection: true,
+        connections,
+        expectedActiveProfile: activeProfileName,
+        routeInteractiveCallSites: true,
+      },
+    );
   }
 
   if (

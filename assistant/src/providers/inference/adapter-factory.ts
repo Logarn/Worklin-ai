@@ -45,6 +45,8 @@ export interface AdapterCreateOpts {
   useNativeWebSearch: boolean;
   /** When true, the OpenAI adapter targets the Codex subscription endpoint. */
   codexSubscription?: boolean;
+  /** ChatGPT workspace selected by the subscription OAuth token. */
+  chatgptAccountId?: string;
 }
 
 type AdapterFactory = (opts: AdapterCreateOpts) => Provider;
@@ -76,11 +78,13 @@ const ADAPTER_FACTORIES: Record<string, AdapterFactory> = {
     baseURL,
     useNativeWebSearch,
     codexSubscription,
+    chatgptAccountId,
   }) =>
     new OpenAIResponsesProvider(apiKey, model, {
       useNativeWebSearch,
       streamTimeoutMs,
       codexSubscription,
+      chatgptAccountId,
       ...(baseURL ? { baseURL } : {}),
     }),
   gemini: ({ apiKey, model, streamTimeoutMs, baseURL }) =>
@@ -197,6 +201,10 @@ export function createAdapterFromConnection(
 
   const codexSubscription =
     connection.auth.type === "oauth_subscription" && provider === "openai";
+  const chatgptAccountId =
+    codexSubscription && resolvedAuth.kind === "header"
+      ? resolvedAuth.headers["ChatGPT-Account-ID"]
+      : undefined;
 
   const adapter = buildProviderAdapter(provider, {
     apiKey,
@@ -205,6 +213,7 @@ export function createAdapterFromConnection(
     baseURL,
     useNativeWebSearch: opts.useNativeWebSearch ?? false,
     codexSubscription,
+    chatgptAccountId,
   });
   if (!adapter) return null;
 

@@ -75,6 +75,7 @@ function makeConnection({
   provider,
   auth,
   isManaged = false,
+  models = null,
   createdAt = 0,
   updatedAt = 0,
 }: {
@@ -82,6 +83,7 @@ function makeConnection({
   provider: ProviderConnection["provider"];
   auth: ProviderConnection["auth"];
   isManaged?: boolean;
+  models?: ProviderConnection["models"];
   createdAt?: number;
   updatedAt?: number;
 }): ProviderConnection {
@@ -91,7 +93,7 @@ function makeConnection({
     auth,
     label: null,
     baseUrl: null,
-    models: null,
+    models,
     createdAt,
     updatedAt,
     isManaged,
@@ -133,6 +135,7 @@ function oauthSubscriptionConnection(
       type: "oauth_subscription",
       credential: "credential/chatgpt/access_token",
     },
+    models: [{ id: "gpt-account-current", displayName: "GPT Account Current" }],
     ...timestamps,
   });
 }
@@ -247,7 +250,7 @@ describe("ensureRunnableProfileFromStoredConnection", () => {
             label: "Balanced",
             provider: "openai",
             provider_connection: "chatgpt-subscription",
-            model: "gpt-5.4-mini",
+            model: "gpt-account-current",
           },
         },
       },
@@ -550,6 +553,47 @@ describe("repairUnavailableManagedProfile", () => {
       reason: "selection-changed",
     });
     expect(configPatchCalls).toHaveLength(0);
+  });
+
+  test("repairs a retired model on its explicitly pinned ChatGPT subscription", async () => {
+    configGetData = {
+      llm: {
+        activeProfile: "custom-balanced",
+        profileOrder: ["custom-balanced"],
+        profiles: {
+          "custom-balanced": {
+            source: "user",
+            provider: "openai",
+            provider_connection: "chatgpt-subscription",
+            model: "gpt-retired",
+          },
+        },
+      },
+    };
+    secrets = [{ type: "credential", name: "chatgpt:access_token" }];
+    connections = [oauthSubscriptionConnection()];
+
+    const result = await repairUnavailableManagedProfile(ASSISTANT_ID);
+
+    expect(result).toMatchObject({
+      repaired: true,
+      providerLabel: "OpenAI",
+      verifiedProfileName: "custom-balanced",
+    });
+    expect(configPatchCalls).toHaveLength(1);
+    expect(configPatchCalls[0].body).toMatchObject({
+      expectedActiveProfile: "custom-balanced",
+      llm: {
+        activeProfile: "custom-balanced",
+        profiles: {
+          "custom-balanced": {
+            provider: "openai",
+            provider_connection: "chatgpt-subscription",
+            model: "gpt-account-current",
+          },
+        },
+      },
+    });
   });
 
   test("does not treat a personal profile with a missing credential as runnable", async () => {
@@ -900,6 +944,7 @@ describe("buildInteractivePersonalCallSitePatch", () => {
       profile: "personal",
       provider: null,
       model: null,
+      provider_connection: null,
     });
   });
 
@@ -934,6 +979,7 @@ describe("buildInteractivePersonalCallSitePatch", () => {
       profile: "personal",
       provider: null,
       model: null,
+      provider_connection: null,
     });
   });
 });
