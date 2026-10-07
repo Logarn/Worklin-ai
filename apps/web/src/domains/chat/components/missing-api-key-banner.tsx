@@ -1,4 +1,3 @@
-
 import { X } from "lucide-react";
 
 import { Button } from "@vellumai/design-library";
@@ -23,10 +22,10 @@ export function MissingApiKeyBanner({
           body: "Your AI provider rejected this key. Update it in Settings → Models & Services to keep chatting.",
         }
       : {
-          ariaLabel: "API key required",
-          dismissLabel: "Dismiss API key required alert",
-          title: "API key required",
-          body: "Add an API key in Settings → Models & Services to start chatting.",
+          ariaLabel: "Model connection needed",
+          dismissLabel: "Dismiss model connection alert",
+          title: "Model connection needed",
+          body: "Connect ChatGPT or add a provider key in Settings → Models & Services to start chatting.",
         };
 
   return (

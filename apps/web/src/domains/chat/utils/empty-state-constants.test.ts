@@ -10,9 +10,9 @@ describe("EMPTY_STATE_PLACEHOLDERS", () => {
     expect(EMPTY_STATE_PLACEHOLDERS).toHaveLength(5);
   });
 
-  test("contains the guided onboarding prompt", () => {
+  test("contains the farm status prompt", () => {
     expect(EMPTY_STATE_PLACEHOLDERS).toContain(
-      "Ask Worklin to onboard a brand...",
+      "Ask Worklin how the farm is doing...",
     );
   });
 });

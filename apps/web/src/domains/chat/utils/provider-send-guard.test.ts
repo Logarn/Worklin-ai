@@ -135,7 +135,7 @@ describe("checkProviderReadyForSend", () => {
         chatgpt: {
           source: "user",
           provider: "openai",
-          model: "gpt-5.4-mini",
+          model: "gpt-6.1-sol",
           provider_connection: "chatgpt-subscription",
         },
       }),

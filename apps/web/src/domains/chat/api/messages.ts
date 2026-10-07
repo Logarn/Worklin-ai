@@ -45,13 +45,13 @@ import {
 import { getEffectiveTimezone } from "@/utils/effective-timezone";
 
 const POLL_INTERVAL_MS = 1000;
-const POLL_TIMEOUT_MS = 120_000;
+const POLL_TIMEOUT_MS = 6 * 60_000 + 30_000;
 /**
- * Pooled message requests have a six-minute server deadline so a normal
- * five-minute approval window can complete. Keep the transcript/prompt
- * observer alive for one bounded thirty-second drain margin beyond it.
+ * Agent turns and pooled message requests can legitimately span several
+ * minutes. Keep the transcript observer alive through the six-minute server
+ * deadline plus one bounded thirty-second drain margin.
  */
-export const POOLED_REQUEST_POLL_TIMEOUT_MS = 6 * 60_000 + 30_000;
+export const POOLED_REQUEST_POLL_TIMEOUT_MS = POLL_TIMEOUT_MS;
 
 export interface PollForResponseOptions {
   /** Receives each authoritative snapshot, allowing request-polled runtimes to
@@ -60,8 +60,8 @@ export interface PollForResponseOptions {
   /** Test override; production callers use the one-second bounded cadence. */
   intervalMs?: number;
   /**
-   * Optional bounded budget. Ordinary polling keeps the two-minute default;
-   * pooled request-bound turns pass the explicit six-and-a-half-minute budget.
+   * Optional bounded budget. Production callers use the six-and-a-half-minute
+   * default; tests and specialized callers can pass a smaller limit.
    */
   timeoutMs?: number;
   /**

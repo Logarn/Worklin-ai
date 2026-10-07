@@ -699,8 +699,18 @@ function DedicatedLanguageModelCard({ assistantId }: { assistantId: string }) {
                   );
                   const hasConnection = providerConnections.length > 0;
                   const isActive = selectedService?.id === service.id;
+                  const connectedMethod = (
+                    isActive &&
+                    selectedConnection &&
+                    serviceMatchesConnection(service, selectedConnection)
+                      ? selectedConnection
+                      : providerConnections.length === 1
+                        ? providerConnections[0]
+                        : null
+                  )?.auth.type;
                   const method =
                     providerMethods[service.id] ??
+                    connectedMethod ??
                     (selectedPowerSource === "worklin-credits" &&
                     providerSupportsPlatformAuth(provider)
                       ? "platform"

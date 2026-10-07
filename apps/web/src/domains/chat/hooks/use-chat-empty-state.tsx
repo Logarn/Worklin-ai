@@ -2,9 +2,9 @@
  * Empty-state data for the chat — greeting text, conversation-starter
  * chips, and the avatar render function.
  *
- * Provides the Worklin retention empty state and handles the app-editing
+ * Provides the Worklin farm-operator empty state and handles the app-editing
  * override where the greeting and starters are derived from the opened app
- * instead of the retention defaults.
+ * instead of the farm defaults.
  */
 
 import { type ReactNode, useMemo } from "react";
@@ -12,7 +12,10 @@ import { type ReactNode, useMemo } from "react";
 import { ChatAvatar } from "@/components/avatar/chat-avatar";
 import type { ChatEmptyStateProps } from "@/domains/chat/components/chat-empty-state";
 import { ConversationStarterGrid } from "@/domains/chat/components/conversation-starter-grid";
-import { buildEditAppGreeting, buildEditAppStarters } from "@/domains/chat/utils/edit-app-empty-state";
+import {
+  buildEditAppGreeting,
+  buildEditAppStarters,
+} from "@/domains/chat/utils/edit-app-empty-state";
 import {
   DEFAULT_EMPTY_STATE_GREETING,
   pickRandomPlaceholder,
@@ -46,37 +49,37 @@ export interface ChatEmptyStateResult {
   emptyStatePlaceholder: string;
 }
 
-const WORKLIN_RETENTION_STARTERS: ConversationStarter[] = [
+const WORKLIN_FARM_STARTERS: ConversationStarter[] = [
   {
-    id: "worklin-start-guided-onboarding",
-    label: "Start guided onboarding",
+    id: "worklin-farm-status",
+    label: "How are we doing?",
     prompt:
-      "I want to onboard a new retention brand. Please help me collect the brand context, products, voice, competitors, offers, and Klaviyo setup we need before creating this week's micro-campaigns.",
-    category: "retention",
+      "Give me a brief status of the farm. Separate confirmed facts from estimates, tell me what needs attention, and do not contact anyone or take external action unless I approve it.",
+    category: "farm-operations",
     batch: 0,
   },
   {
-    id: "worklin-run-retention-audit",
-    label: "Run account audit",
+    id: "worklin-record-farm-update",
+    label: "Record a farm update",
     prompt:
-      "Can you run a read-only retention audit for my account and tell me the biggest areas to improve?",
-    category: "retention",
+      "I want to record a flock, feed, worker, sale, expense, or maintenance update. Ask only for the details needed to keep the farm record accurate.",
+    category: "farm-operations",
     batch: 0,
   },
   {
-    id: "worklin-connect-klaviyo",
-    label: "Connect Klaviyo",
+    id: "worklin-plan-feed-order",
+    label: "Plan the next feed order",
     prompt:
-      "I want to connect my Klaviyo account so Worklin can audit campaigns, flows, forms, audiences, and metrics.",
-    category: "retention",
+      "Help me work out when we will run out of feed and what to order. Use confirmed records where available, list missing information, and do not contact suppliers without my approval.",
+    category: "farm-operations",
     batch: 0,
   },
   {
-    id: "worklin-check-lifecycle-gaps",
-    label: "Check lifecycle gaps",
+    id: "worklin-farm-attention",
+    label: "What needs my attention?",
     prompt:
-      "Can you check my lifecycle coverage and tell me which flows, segments, or signup paths are missing?",
-    category: "retention",
+      "Review the farm's open work, risks, and missing confirmations. Show only the items that need a decision or follow-up, and be clear about what is not yet verified.",
+    category: "farm-operations",
     batch: 0,
   },
 ];
@@ -128,7 +131,7 @@ export function useChatEmptyState({
 
   const emptyStateStarters = editingApp
     ? buildEditAppStarters(editingApp)
-    : WORKLIN_RETENTION_STARTERS;
+    : WORKLIN_FARM_STARTERS;
 
   const startersSlot =
     isEmptyConversation && emptyStateStarters.length > 0 ? (
@@ -144,19 +147,18 @@ export function useChatEmptyState({
   // transcript render. Paired with `memo(ChatAvatar)`, the avatar
   // re-renders only when its inputs actually change.
   const renderAvatar = useMemo(
-    () =>
-      () => (
-        <ChatAvatar
-          components={avatarComponents}
-          traits={avatarTraits}
-          customImageUrl={avatarImageUrl}
-          characterProfile={characterProfile}
-          size={28}
-          interactive
-          isStreaming={isAssistantStreaming}
-          isProcessing={activeConversationIsProcessing}
-        />
-      ),
+    () => () => (
+      <ChatAvatar
+        components={avatarComponents}
+        traits={avatarTraits}
+        customImageUrl={avatarImageUrl}
+        characterProfile={characterProfile}
+        size={28}
+        interactive
+        isStreaming={isAssistantStreaming}
+        isProcessing={activeConversationIsProcessing}
+      />
+    ),
     [
       avatarComponents,
       avatarImageUrl,

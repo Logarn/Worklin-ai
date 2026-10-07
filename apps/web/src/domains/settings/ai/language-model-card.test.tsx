@@ -55,11 +55,13 @@ function Wrapper({
   hasKimiSecret = true,
   managedInferenceConfigured = true,
   activeProfile = "kimi-personal",
+  useChatgptSubscription = false,
 }: {
   children: ReactNode;
   hasKimiSecret?: boolean;
   managedInferenceConfigured?: boolean;
-  activeProfile?: "balanced" | "kimi-personal";
+  activeProfile?: "balanced" | "kimi-personal" | "chatgpt-personal";
+  useChatgptSubscription?: boolean;
 }) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -67,7 +69,10 @@ function Wrapper({
   const config: ConfigGetResponse = {
     llm: {
       activeProfile,
-      profileOrder: ["balanced", "kimi-personal"],
+      profileOrder: [
+        "balanced",
+        useChatgptSubscription ? "chatgpt-personal" : "kimi-personal",
+      ],
       profiles: {
         balanced: {
           source: "managed",
@@ -82,17 +87,44 @@ function Wrapper({
           model: "kimi-k2.6",
           provider_connection: "kimi-personal",
         },
+        ...(useChatgptSubscription
+          ? {
+              "chatgpt-personal": {
+                source: "user" as const,
+                label: "ChatGPT",
+                provider: "openai" as const,
+                model: "gpt-6.1-sol",
+                provider_connection: "chatgpt-subscription",
+              },
+            }
+          : {}),
       },
       callSites: {},
     },
   } as ConfigGetResponse;
-  const connection: ProviderConnection = {
-    name: "kimi-personal",
-    label: "Kimi",
-    provider: "kimi",
-    auth: { type: "api_key", credential: "credential/kimi/api_key" },
-    models: null,
-  } as unknown as ProviderConnection;
+  const connection: ProviderConnection = useChatgptSubscription
+    ? ({
+        name: "chatgpt-subscription",
+        label: "ChatGPT Subscription",
+        provider: "openai",
+        auth: {
+          type: "oauth_subscription",
+          credential: "credential/chatgpt/access_token",
+        },
+        models: [{ id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" }],
+      } as unknown as ProviderConnection)
+    : ({
+        name: "kimi-personal",
+        label: "Kimi",
+        provider: "kimi",
+        auth: { type: "api_key", credential: "credential/kimi/api_key" },
+        models: null,
+      } as unknown as ProviderConnection);
+  const secrets = useChatgptSubscription
+    ? [{ type: "credential" as const, name: "chatgpt:access_token" }]
+    : hasKimiSecret
+      ? [{ type: "api_key" as const, name: "kimi" }]
+      : [];
 
   client.setQueryData(
     authInfoGetQueryKey({ path: { assistant_id: "asst-1" } }),
@@ -119,8 +151,8 @@ function Wrapper({
   client.setQueryData(
     secretsGetQueryKey({ path: { assistant_id: "asst-1" } }),
     {
-      secrets: hasKimiSecret ? [{ type: "api_key", name: "kimi" }] : [],
-      accounts: hasKimiSecret ? [{ type: "api_key", name: "kimi" }] : [],
+      secrets,
+      accounts: secrets,
     },
   );
 
@@ -168,6 +200,21 @@ describe("LanguageModelCard", () => {
       "content-disabled",
     );
     expect(queryByText("Key connected")).toBeNull();
+  });
+
+  test("shows the connected ChatGPT subscription as the OpenAI method", () => {
+    const { getByText } = render(
+      <Wrapper
+        activeProfile="chatgpt-personal"
+        useChatgptSubscription
+        managedInferenceConfigured={false}
+      >
+        <LanguageModelCard />
+      </Wrapper>,
+    );
+
+    expect(getByText("ChatGPT connected")).toBeTruthy();
+    expect(getByText("ChatGPT subscription")).toBeTruthy();
   });
 
   test("uses the pooled vault-only settings surface for pooled assistants", () => {

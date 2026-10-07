@@ -1,11 +1,11 @@
 import { Button } from "@vellumai/design-library";
 import {
-    ChevronLeft,
-    ChevronRight,
-    House,
-    Menu as MenuIcon,
-    PanelLeft,
-    Search,
+  ChevronLeft,
+  ChevronRight,
+  House,
+  Menu as MenuIcon,
+  PanelLeft,
+  Search,
 } from "lucide-react";
 import { useCallback, useEffect, type ReactNode } from "react";
 
@@ -58,7 +58,9 @@ export function ChatLayoutHeader({
   hasUnreadHome,
 }: ChatLayoutHeaderProps) {
   const toggleCommandPalette = useCommandPaletteStore.use.toggle();
-  const handleSearchClick = useCallback(() => { toggleCommandPalette(); }, [toggleCommandPalette]);
+  const handleSearchClick = useCallback(() => {
+    toggleCommandPalette();
+  }, [toggleCommandPalette]);
 
   // In the Electron shell the header doubles as the macOS title bar: it sits
   // inline with the traffic lights and drives window dragging
@@ -81,7 +83,7 @@ export function ChatLayoutHeader({
   return (
     <header
       data-slot="chat-layout-header"
-      className={`flex w-full shrink-0 items-center gap-4 px-4 pt-4${isMobile && !electron ? " pb-4" : ""}${
+      className={`flex w-full shrink-0 items-center px-4 pt-4 ${isMobile ? "gap-2" : "gap-4"}${isMobile && !electron ? " pb-4" : ""}${
         electron
           ? " select-none [-webkit-app-region:drag] [&_a]:[-webkit-app-region:no-drag] [&_button]:[-webkit-app-region:no-drag]"
           : ""
@@ -97,19 +99,23 @@ export function ChatLayoutHeader({
       }}
     >
       <div
-        className="flex items-center gap-2 transition-[min-width] duration-150 ease-in-out max-md:min-w-0 max-md:flex-1"
+        className={`flex items-center gap-2 transition-[min-width] duration-150 ease-in-out ${isMobile ? "min-w-0 shrink-0" : ""}`}
         style={{
           // `minWidth` reserves the sidebar column on desktop only. The Electron
           // inset clears the inline traffic lights regardless of `isMobile` —
           // they stay put even in the narrow mobile layout.
-          ...(isMobile ? {} : { minWidth: collapsed ? 48 : (sidebarWidth ?? 230) }),
-          ...(electron ? { paddingLeft: ELECTRON_TRAFFIC_LIGHT_CLEARANCE } : {}),
+          ...(isMobile
+            ? {}
+            : { minWidth: collapsed ? 48 : (sidebarWidth ?? 230) }),
+          ...(electron
+            ? { paddingLeft: ELECTRON_TRAFFIC_LIGHT_CLEARANCE }
+            : {}),
         }}
       >
         <img
           src={publicAsset("/brand/worklin-logo-header.png")}
           alt="Worklin AI"
-          className="h-7 w-auto max-w-[148px] shrink-0 object-contain"
+          className={`h-7 w-auto shrink-0 object-contain ${isMobile ? "max-w-24" : "max-w-[148px]"}`}
         />
         {isMobile ? (
           <Button
@@ -137,7 +143,11 @@ export function ChatLayoutHeader({
             <Button
               variant="ghost"
               iconOnly={<House />}
-              aria-label={hasUnreadHome && !isHomeActive ? "Home (unread notifications)" : "Home"}
+              aria-label={
+                hasUnreadHome && !isHomeActive
+                  ? "Home (unread notifications)"
+                  : "Home"
+              }
               aria-current={isHomeActive ? "page" : undefined}
               tooltip="Home"
               onClick={onOpenHome}
@@ -181,11 +191,13 @@ export function ChatLayoutHeader({
         ) : null}
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center justify-center">
+      <div className="flex min-w-0 flex-1 items-center justify-center overflow-hidden">
         {topBarCenter}
       </div>
 
-      <div className="flex items-center gap-2 max-md:flex-1 max-md:justify-end">
+      <div
+        className={`flex items-center gap-2 ${isMobile ? "shrink-0 justify-end" : ""}`}
+      >
         {isMobile ? (
           <Button
             variant="ghost"
