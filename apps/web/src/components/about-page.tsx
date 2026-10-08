@@ -69,9 +69,9 @@ export function AboutPage() {
 }
 
 const FALLBACK: AppVersionInfo = {
-  appName: "Worklin AI",
+  appName: "Worklin for Farmers",
   version: "—",
   commitSha: "—",
-  copyright: `© ${new Date().getFullYear()} Worklin AI`,
+  copyright: `© ${new Date().getFullYear()} Worklin for Farmers`,
   website: "https://vellum.ai",
 };

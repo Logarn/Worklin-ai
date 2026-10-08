@@ -28,7 +28,7 @@ export function PersonalPageShell({ children }: { children: ReactNode }) {
         <div className="cast-login__logo">
           <img
             src={publicAsset("/brand/worklin-logo-header.png")}
-            alt="Worklin AI"
+            alt="Worklin for Farmers"
             width={140}
             height={32}
           />

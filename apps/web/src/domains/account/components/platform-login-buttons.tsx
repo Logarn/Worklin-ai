@@ -48,7 +48,7 @@ export function PlatformLoginButtons({
 
   return (
     <>
-      <LoginHeading>Sign in to Worklin AI</LoginHeading>
+      <LoginHeading>Sign in to Worklin for Farmers</LoginHeading>
       {errorMessage && <LoginErrorText>{errorMessage}</LoginErrorText>}
       <div className="flex flex-col items-center gap-3">
         <Button

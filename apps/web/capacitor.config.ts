@@ -30,7 +30,7 @@ const config: CapacitorConfig = {
   // built, signed, and shipped. This value only exists to satisfy Capacitor
   // CLI validation during `cap add` / `cap sync`.
   appId: "ai.vocify.vellumassistantios",
-  appName: "Worklin AI",
+  appName: "Worklin for Farmers",
   webDir: "capacitor-shell",
   server: {
     url: SERVER_URL,

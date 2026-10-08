@@ -86,7 +86,7 @@ export async function retrieveBiometricToken(): Promise<string | null> {
     try {
       const { token } = await NativeBiometric.retrieveToken({
         server: BIOMETRIC_SERVER,
-        reason: "Sign in to Worklin AI",
+        reason: "Sign in to Worklin for Farmers",
       });
       return token;
     } catch {

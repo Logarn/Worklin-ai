@@ -17,7 +17,7 @@ export function NativeSplash({ children }: { children?: ReactNode }) {
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[var(--surface-base)] text-[var(--content-default)]">
       <img
         src={publicAsset("/brand/worklin-logo-header.png")}
-        alt="Worklin AI"
+        alt="Worklin for Farmers"
         width={260}
         height={60}
         className="block"

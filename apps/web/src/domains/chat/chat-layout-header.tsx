@@ -112,11 +112,16 @@ export function ChatLayoutHeader({
             : {}),
         }}
       >
-        <img
-          src={publicAsset("/brand/worklin-logo-header.png")}
-          alt="Worklin AI"
-          className={`h-7 w-auto shrink-0 object-contain ${isMobile ? "max-w-24" : "max-w-[148px]"}`}
-        />
+        <div className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
+          <img
+            src={publicAsset("/brand/worklin-logo-header.png")}
+            alt="Worklin"
+            className={`h-7 w-auto shrink-0 object-contain ${isMobile ? "max-w-20" : "max-w-[124px]"}`}
+          />
+          <span className="text-[11px] font-medium text-[var(--content-tertiary)]">
+            for Farmers
+          </span>
+        </div>
         {isMobile ? (
           <Button
             variant="ghost"

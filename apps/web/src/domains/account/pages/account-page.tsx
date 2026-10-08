@@ -49,7 +49,7 @@ export function AccountPage() {
     return (
       <AccountShell>
         <AccountHeading
-          title="Welcome to Worklin AI"
+          title="Welcome to Worklin for Farmers"
           subtitle="Sign in to get started."
         />
         {errorMessage && (

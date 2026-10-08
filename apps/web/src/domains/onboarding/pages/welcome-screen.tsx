@@ -27,7 +27,7 @@ export function WelcomeScreen() {
             className="text-3xl font-semibold tracking-tight"
             style={{ animation: "fadeInUp 0.5s ease-out 0.1s both" }}
           >
-            Welcome to Worklin AI
+            Welcome to Worklin for Farmers
           </h1>
           <p
             className="mt-3 text-body-medium-lighter text-[var(--content-tertiary)]"

@@ -52,7 +52,7 @@ export function QuickInputPage() {
       >
         <img
           src={publicAsset("/brand/worklin-logo-header.png")}
-          alt="Worklin AI"
+          alt="Worklin for Farmers"
           width={92}
           height={22}
           className="shrink-0 object-contain"
@@ -64,7 +64,7 @@ export function QuickInputPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask Worklin AI anything..."
+          placeholder="Ask Worklin anything..."
           className="min-w-0 flex-1 bg-transparent text-sm text-[var(--content-default)] placeholder:text-[var(--content-tertiary)] outline-none"
         />
         <button

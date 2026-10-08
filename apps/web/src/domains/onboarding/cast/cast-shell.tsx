@@ -335,7 +335,7 @@ export function SetupShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="cast-setup-shell">
       <div className="cast-preamble__topbar">
-        <img src={publicAsset("/brand/worklin-logo-header.png")} alt="Worklin AI" width={150} height={35} />
+        <img src={publicAsset("/brand/worklin-logo-header.png")} alt="Worklin for Farmers" width={150} height={35} />
         <span className="cast-preamble__setup-label">Setting up your assistant</span>
       </div>
       <PreambleBoxes />

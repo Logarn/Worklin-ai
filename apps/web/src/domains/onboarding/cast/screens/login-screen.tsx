@@ -109,7 +109,7 @@ export function LoginScreen({ onAdvance, onContinue, onIdentity }: LoginScreenPr
         >
           <img
             src={publicAsset("/brand/worklin-logo-header.png")}
-            alt="Worklin AI"
+            alt="Worklin for Farmers"
             width={140}
             height={32}
           />

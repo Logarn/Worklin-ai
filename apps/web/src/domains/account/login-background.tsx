@@ -14,7 +14,7 @@ export function LoginBackground() {
       <div className="pointer-events-none absolute top-14 left-1/2 z-0 -translate-x-1/2 sm:top-[4.5rem]">
         <img
           src={publicAsset("/brand/worklin-logo-header.png")}
-          alt="Worklin AI"
+          alt="Worklin for Farmers"
           width={140}
           height={32}
         />
