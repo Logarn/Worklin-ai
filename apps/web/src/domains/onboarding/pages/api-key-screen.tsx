@@ -1,18 +1,18 @@
-import { Check, KeyRound, MessageCircle, Server } from "lucide-react";
+import { Check, Cloud, KeyRound } from "lucide-react";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import {
-    DEFAULT_ONBOARDING_PROVIDER,
-    ONBOARDING_PROVIDERS,
-    onboardingProvider,
-    type OnboardingProviderOptionId,
+  BYOK_ONBOARDING_PROVIDERS,
+  DEFAULT_BYOK_ONBOARDING_PROVIDER,
+  onboardingProvider,
+  type OnboardingProviderOptionId,
 } from "@/domains/onboarding/provider-catalog";
 import {
-    pendingProviderAuthType,
-    peekPendingProviderKey,
-    setPendingProviderKey,
+  pendingProviderAuthType,
+  peekPendingProviderKey,
+  setPendingProviderKey,
 } from "@/domains/onboarding/provider-key";
 import { isElectron } from "@/runtime/is-electron";
 import { useAuthStore } from "@/stores/auth-store";
@@ -35,15 +35,20 @@ export function ApiKeyScreen() {
 
   const [providerOption, setProviderOption] = useState<OnboardingProviderOptionId>(
     () => {
-      if (pending && pendingProviderAuthType(pending) === "oauth_subscription") {
-        return "chatgpt-subscription";
-      }
-      if (pending?.providerOptionId && onboardingProvider(pending.providerOptionId)) {
+      if (
+        pending &&
+        pendingProviderAuthType(pending) === "api_key" &&
+        pending.providerOptionId &&
+        BYOK_ONBOARDING_PROVIDERS.some(
+          (provider) => provider.id === pending.providerOptionId,
+        )
+      ) {
         return pending.providerOptionId;
       }
       return (
-        ONBOARDING_PROVIDERS.find((p) => p.provider === pending?.provider)?.id ??
-        DEFAULT_ONBOARDING_PROVIDER.id
+        BYOK_ONBOARDING_PROVIDERS.find(
+          (provider) => provider.provider === pending?.provider,
+        )?.id ?? DEFAULT_BYOK_ONBOARDING_PROVIDER.id
       );
     },
   );
@@ -51,7 +56,8 @@ export function ApiKeyScreen() {
     () => pending?.key ?? "",
   );
 
-  const entry = onboardingProvider(providerOption) ?? DEFAULT_ONBOARDING_PROVIDER;
+  const entry =
+    onboardingProvider(providerOption) ?? DEFAULT_BYOK_ONBOARDING_PROVIDER;
   const requiresKey = entry.requiresKey;
   const canContinue = !requiresKey || apiKey.trim().length > 0;
 
@@ -103,14 +109,14 @@ export function ApiKeyScreen() {
           className={electron ? "text-title-large" : "text-3xl font-semibold tracking-tight"}
           style={{ animation: "fadeInUp 0.5s ease-out 0.1s both" }}
         >
-          Connect Worklin to AI
+          Connect your AI provider
         </h1>
         <p
           className={`text-center text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-3"}`}
           style={{ animation: "fadeInUp 0.5s ease-out 0.3s both" }}
         >
-          Choose how your assistant should answer. You can change this later in
-          Settings.
+          Worklin is free for now. Your provider bills model usage directly to
+          your API account.
         </p>
 
         <div
@@ -118,14 +124,49 @@ export function ApiKeyScreen() {
           style={{ animation: "fadeInUp 0.5s ease-out 0.4s both" }}
         >
           <div className="grid w-full gap-2">
-            {ONBOARDING_PROVIDERS.map((option) => {
+            <div className="flex w-full items-start gap-3 rounded-lg border border-[var(--primary-base)] bg-[var(--surface-active)] px-3 py-3 text-left">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--surface-lift)]">
+                <KeyRound className="h-4 w-4 text-[var(--content-secondary)]" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="text-body-medium-default text-[var(--content-default)]">
+                  Bring your own API key
+                </span>
+                <span className="mt-1 block text-body-small-default text-[var(--content-tertiary)]">
+                  Use your existing model-provider account.
+                </span>
+              </span>
+              <Check className="mt-1 h-4 w-4 shrink-0 text-[var(--primary-base)]" />
+            </div>
+            <div
+              aria-disabled="true"
+              className="flex w-full items-start gap-3 rounded-lg border border-[var(--border-base)] bg-[var(--surface-base)] px-3 py-3 text-left opacity-60"
+            >
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--surface-lift)]">
+                <Cloud className="h-4 w-4 text-[var(--content-secondary)]" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="text-body-medium-default text-[var(--content-default)]">
+                    Worklin-hosted credits
+                  </span>
+                  <span className="rounded-full bg-[var(--surface-lift)] px-2 py-0.5 text-[11px] font-medium text-[var(--content-secondary)]">
+                    Unavailable
+                  </span>
+                </span>
+                <span className="mt-1 block text-body-small-default text-[var(--content-tertiary)]">
+                  Buying model credits through Worklin isn't available yet.
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="grid w-full gap-2">
+            <p className="text-body-small-default text-[var(--content-tertiary)]">
+              Choose a provider
+            </p>
+            {BYOK_ONBOARDING_PROVIDERS.map((option) => {
               const selected = providerOption === option.id;
-              const Icon =
-                option.authType === "oauth_subscription"
-                  ? MessageCircle
-                  : option.authType === "none"
-                    ? Server
-                    : KeyRound;
               return (
                 <button
                   key={option.id}
@@ -142,7 +183,7 @@ export function ApiKeyScreen() {
                   }`}
                 >
                   <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--surface-lift)]">
-                    <Icon className="h-4 w-4 text-[var(--content-secondary)]" />
+                    <KeyRound className="h-4 w-4 text-[var(--content-secondary)]" />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-2">
@@ -191,12 +232,6 @@ export function ApiKeyScreen() {
                 </p>
               )}
             </div>
-          )}
-          {entry.authType === "oauth_subscription" && (
-            <p className="text-body-small-default text-[var(--content-tertiary)]">
-              After your assistant is created, Worklin will ask you to sign in
-              with ChatGPT before your first conversation starts.
-            </p>
           )}
         </div>
 

@@ -7,6 +7,7 @@ import {
   claimPreprovisionedRuntimeStack,
   claimRuntimeServiceProvisioningLease,
   countAllocatedRuntimeServices,
+  countAvailablePreprovisionedRuntimeSlots,
   deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
   ensureRuntimeStackSchema,
@@ -966,6 +967,8 @@ describe("runtime stack provisioning defaults", () => {
       NOW,
     );
 
+    expect(countAvailablePreprovisionedRuntimeSlots(db, slotConfig)).toBe(1);
+
     const first = claimPreprovisionedRuntimeStack(
       db,
       firstAssistant,
@@ -995,6 +998,7 @@ describe("runtime stack provisioning defaults", () => {
       workspace_volume_ref: null,
       gateway_url: null,
     });
+    expect(countAvailablePreprovisionedRuntimeSlots(db, slotConfig)).toBe(0);
   });
 
   test("does not claim a preprovisioned slot for a stack with allocated state", () => {

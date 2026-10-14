@@ -1,6 +1,6 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-08-16
+Last refreshed: 2026-10-14
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
@@ -20,6 +20,117 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 - Browser requirement for the pilot: use an authenticated in-app browser or the authenticated Chrome profile selected by the user. The in-app Klaviyo connection dialog was verified against production on 2026-08-04.
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
+
+## 2026-10-13 Hatching Capacity Repair (Verified Locally, Not Deployed)
+
+The current repair is isolated in
+`/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`
+on branch `assistant/fix-hatching-capacity`, based on `origin/main` at
+`e81de81e`. It has not been committed, pushed, merged, or deployed.
+
+A real production signup reached assistant hatching, then failed because the
+live control plane reported `Managed assistant runtime provisioning is
+unavailable.` The last observed production Vercel backend target was
+`lovely-clarity-production.up.railway.app`. That service was reachable, but the
+Railway workspace exposed through the stale connector session did not
+contain the `lovely-clarity` project. It contained only the older failed Worklin
+project whose `worklin-ai-production.up.railway.app` hostname is unavailable.
+Do not repoint production to that older project: its database and runtime state
+have not been shown to contain the live users behind `lovely-clarity`.
+
+The local repair makes runtime capacity an explicit state instead of treating a
+missing provisioner as an assistant-specific terminal failure. The control
+plane now:
+
+- checks pooled, pre-provisioned, Railway, and static-template capacity before
+  hatching;
+- leaves an unallocated runtime in `provisioning` rather than mutating it to
+  `failed` when platform hosting is unconfigured;
+- returns `platform_hosted_disabled` with customer-ready copy when no hatching
+  capacity exists;
+- reports `hatchingReady`, `hatchingMode`, and available pre-provisioned slots
+  separately from process readiness at `/readyz`; and
+- permits a retry when a real pre-provisioned slot becomes available even if
+  automatic Railway provisioning remains disabled.
+
+The onboarding UI is BYOK-only for this first free phase. It requires a
+provider API key, keeps ChatGPT subscription sign-in out of the onboarding
+choice, and labels `Worklin-hosted credits` as `Unavailable`. When platform
+hosting is unavailable, hatching explains that setup is saved, removes the
+futile retry action, and returns the user to setup. Existing settings/catalog
+support remains unchanged.
+
+Focused verification on this branch:
+
+- `control-plane`: `bun test src/runtime-stacks.test.ts src/index-runtime-provisioning.test.ts`
+  passed `55/55`.
+- `control-plane`: `bunx tsc --noEmit` passed.
+- `apps/web`: `bun test src/assistant/lifecycle.test.ts src/domains/onboarding/provider-catalog.test.ts src/domains/onboarding/onboarding-lifecycle-sync.test.tsx`
+  passed `50/50`.
+- `apps/web`: `bunx tsc --noEmit` passed.
+- `apps/web`: touched-file ESLint passed.
+- `apps/web`: the production-mode Vite build passed with
+  `VITE_PLATFORM_MODE=true bun --bun vite build --configLoader runner` and
+  transformed 4,825 modules.
+- `git diff --check` passed.
+
+The unmodified default local-mode `bun run build` still exits while Vite loads
+the dynamic local-mode config with `Vite module runner has been closed`. The
+local-mode module imports successfully on its own, and the production-mode
+build passes; treat this as a separate local build-tooling issue until it is
+reproduced from an unchanged checkout.
+
+Production hatching is not restored by this branch alone. The next required
+operator action is the controlled canary and release sequence below, followed
+by deployment of this branch through the normal review path and a new
+email/password signup through the first real BYOK agent turn.
+
+### 2026-10-14 Railway ownership and capacity audit
+
+Railway browser access was restored under the project-owning account. The live
+backend is confirmed in project `respectful-peace`
+(`f8255542-2ac7-4e97-9442-2490956a00b9`), production environment
+`04bc3681-59d7-4fe4-85ca-545737f27565`. The OAuth Railway connector remains
+authenticated to a different account and cannot read this project, so use the
+authenticated browser or deliberately reconnect the integration before relying
+on connector output.
+
+Verified topology:
+
+- `control-plane` (`f263d997-9863-472a-8c4a-1686b02c7773`) owns
+  `lovely-clarity-production.up.railway.app`, listens on port `8080`, builds
+  `control-plane/Dockerfile`, starts with `bun run src/index.ts`, uses one
+  Amsterdam replica with a persistent volume, and currently has Railway
+  serverless sleeping enabled.
+- `worker` (`c2756594-e8e1-456b-8427-8d5a47cf487c`) is a private, active
+  concurrent runtime built from `runtime/Dockerfile`, starts with
+  `/app/runtime/entrypoint.sh`, has its own volume, and does not use serverless
+  sleeping.
+- PostgreSQL is online with its own volume. The worker uses tenant-context
+  scope, tenant-scoped PostgreSQL storage, one global concurrent turn, and one
+  concurrent turn per tenant. Its BYOK path is supported by the control-plane
+  encrypted model-key vault; the managed provider variables must not be used
+  as a fallback for customer turns.
+- The control plane runs in `control-plane` mode and reaches the worker over
+  the private Railway address. Concurrent placement is `internal` with one
+  allowlisted assistant. Automatic Railway provisioning is explicitly
+  disabled. No pre-provisioned isolated slot is registered.
+
+This is the exact production hatching failure: a new assistant is not in the
+internal allowlist, `new_assistants` is not enabled, automatic isolated-runtime
+provisioning is disabled, and there is no unclaimed prepared slot. The current
+live `/readyz` still returns `provisionerReady: true`; that is the old misleading
+readiness behavior corrected by this branch.
+
+Do not flip `WORKLIN_CONCURRENT_RUNTIME_MODE` directly to `new_assistants`.
+The repository production instructions require a two-tenant canary before
+broad pooled placement. Keep `internal`, allowlist two independently
+authenticated test assistants, and run sequential multi-turn BYOK acceptance
+through the same single-concurrency worker. Verify transcript persistence,
+provider-key isolation, assistant and organization identifier swaps, stale
+actor/service/model-key/conversation capabilities, restart quarantine, and
+exact operator recovery. Only after that evidence passes may
+`new_assistants` be proposed as the production default.
 
 ## 2026-08-16 Visible Workspace Reset And Micro-Campaign Work
 

@@ -62,16 +62,35 @@ const applyChatgptSubscriptionProviderMock = mock(
 let chatgptOnConnected: ((connection: unknown) => void | Promise<void>) | null =
   null;
 
-const hatchAssistantMock = mock(async () => ({
-  ok: true,
-  status: 201,
-  data: {
-    id: "asst-1",
-    status: "initializing",
-    is_local: false,
-    maintenance_mode: { enabled: false },
-  },
-}));
+type HatchAssistantMockResult =
+  | {
+      ok: true;
+      status: number;
+      data: {
+        id: string;
+        status: string;
+        is_local: boolean;
+        maintenance_mode: { enabled: boolean };
+      };
+    }
+  | {
+      ok: false;
+      status: number;
+      error: Record<string, unknown>;
+    };
+
+const hatchAssistantMock = mock(
+  async (): Promise<HatchAssistantMockResult> => ({
+    ok: true,
+    status: 201,
+    data: {
+      id: "asst-1",
+      status: "initializing",
+      is_local: false,
+      maintenance_mode: { enabled: false },
+    },
+  }),
+);
 const completeAccountOnboardingMock = mock(async () => {
   await setSelectedAssistantMock("asst-1");
   return {
@@ -90,7 +109,7 @@ const assistantResult = (
   status: string,
   overrides: Record<string, unknown> = {},
 ) => ({
-  ok: true,
+  ok: true as const,
   status: 200,
   data: {
     id: "asst-1",
@@ -836,6 +855,40 @@ describe("onboarding lifecycle sync", () => {
     expect(applyPendingProviderKeyMock).not.toHaveBeenCalled();
   });
 
+  test("unavailable Worklin hosting stops hatching without offering a retry", async () => {
+    pendingProviderKey = {
+      provider: "openai",
+      authType: "api_key",
+      key: "test-provider-key",
+    };
+    getAssistantImpl = async () => ({ ok: false, status: 404, error: {} });
+    hatchAssistantMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      error: { code: "platform_hosted_disabled" },
+    });
+
+    render(<HatchingScreen />);
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Worklin hosting is unavailable",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Worklin hosting is currently unavailable. Your setup is saved, but your assistant cannot start yet.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Try again" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Back to setup" }),
+    ).toBeTruthy();
+  });
+
   test("resumable platform hatch preserves its assistant and chat handoff through provider selection", async () => {
     searchParams = new URLSearchParams("next=chat&assistantId=asst-1");
     getAssistantImpl = async () => assistantResult("initializing");
@@ -857,6 +910,9 @@ describe("onboarding lifecycle sync", () => {
     );
 
     render(<ApiKeyScreen />);
+    fireEvent.change(screen.getByLabelText("OpenAI API API key"), {
+      target: { value: "test-provider-key" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(navigateMock).toHaveBeenCalledWith(
@@ -864,7 +920,8 @@ describe("onboarding lifecycle sync", () => {
     );
     expect(pendingProviderKey).toMatchObject({
       provider: "openai",
-      authType: "oauth_subscription",
+      authType: "api_key",
+      key: "test-provider-key",
     });
   });
 

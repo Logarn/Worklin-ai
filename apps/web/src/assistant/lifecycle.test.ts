@@ -33,6 +33,27 @@ describe("resolveAssistantLifecycleState — transport-shaped failures (LUM-2402
     });
   });
 
+  test("does not offer a futile restart when managed hosting is unavailable", () => {
+    expect(
+      resolveAssistantLifecycleState({
+        ok: true,
+        status: 200,
+        data: {
+          id: "assistant-1",
+          name: "Worklin",
+          status: "initializing",
+          runtime_status: "failed",
+          runtime_last_error:
+            "Managed assistant runtime provisioning is unavailable.",
+        },
+      } as Parameters<typeof resolveAssistantLifecycleState>[0]),
+    ).toEqual({
+      kind: "error",
+      code: "platform_hosted_disabled",
+      message: PLATFORM_HOSTED_DISABLED_MESSAGE,
+    });
+  });
+
   test("proxy-synthesized network 502 resolves to a transient error with friendly copy", () => {
     expect(
       resolveAssistantLifecycleState({

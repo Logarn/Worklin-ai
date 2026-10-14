@@ -846,16 +846,7 @@ export function claimPreprovisionedRuntimeStack(
       return current ?? stack;
     }
 
-    const allocated = new Set(
-      db
-        .query<{ service_ref: string }, []>(
-          `SELECT service_ref
-           FROM runtime_stacks
-           WHERE service_ref IS NOT NULL AND status != 'deleted'`,
-        )
-        .all()
-        .map((row) => row.service_ref),
-    );
+    const allocated = allocatedRuntimeServiceRefs(db);
     const slot = config.preprovisionedRuntimeSlots.find(
       (candidate) => !allocated.has(candidate.serviceRef),
     );
@@ -894,6 +885,30 @@ export function claimPreprovisionedRuntimeStack(
     );
     return getRuntimeStackById(db, current.id) ?? current;
   })();
+}
+
+function allocatedRuntimeServiceRefs(db: Database): Set<string> {
+  return new Set(
+    db
+      .query<{ service_ref: string }, []>(
+        `SELECT service_ref
+         FROM runtime_stacks
+         WHERE service_ref IS NOT NULL AND status != 'deleted'`,
+      )
+      .all()
+      .map((row) => row.service_ref),
+  );
+}
+
+export function countAvailablePreprovisionedRuntimeSlots(
+  db: Database,
+  config: RuntimeStackConfig,
+): number {
+  if (config.preprovisionedRuntimeSlots.length === 0) return 0;
+  const allocated = allocatedRuntimeServiceRefs(db);
+  return config.preprovisionedRuntimeSlots.filter(
+    (slot) => !allocated.has(slot.serviceRef),
+  ).length;
 }
 
 export function prepareRuntimeStackActorSigningScope(

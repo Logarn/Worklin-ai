@@ -661,6 +661,9 @@ export function HatchingScreen() {
           return;
         }
         if (next.kind === "error") {
+          if (next.code === "platform_hosted_disabled") {
+            setPlatformHostedDisabled(true);
+          }
           setError(next.message);
           return;
         }
@@ -805,7 +808,9 @@ export function HatchingScreen() {
                 : "text-3xl font-semibold tracking-tight"
             }
           >
-            Something went wrong
+            {platformHostedDisabled
+              ? "Worklin hosting is unavailable"
+              : "Something went wrong"}
           </h1>
           <p
             className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-4"}`}
@@ -841,28 +846,30 @@ export function HatchingScreen() {
           <div
             className={`flex w-full flex-col ${electron ? "gap-2.5 max-w-[280px]" : "gap-2 max-w-sm"}`}
           >
+            {!platformHostedDisabled && (
+              <Button
+                variant="primary"
+                size="regular"
+                fullWidth
+                className={electron ? undefined : "h-11 text-base"}
+                onClick={() => {
+                  segmentStartRef.current = 0;
+                  segmentStartTimeRef.current = Date.now();
+                  phaseRef.current = "initializing";
+                  displayProgressRef.current = 0;
+                  setPhase("initializing");
+                  setDisplayProgress(0);
+                  setAnimationEpoch((n) => n + 1);
+                  setError(null);
+                  setPlatformHostedDisabled(false);
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                Try again
+              </Button>
+            )}
             <Button
-              variant="primary"
-              size="regular"
-              fullWidth
-              className={electron ? undefined : "h-11 text-base"}
-              onClick={() => {
-                segmentStartRef.current = 0;
-                segmentStartTimeRef.current = Date.now();
-                phaseRef.current = "initializing";
-                displayProgressRef.current = 0;
-                setPhase("initializing");
-                setDisplayProgress(0);
-                setAnimationEpoch((n) => n + 1);
-                setError(null);
-                setPlatformHostedDisabled(false);
-                setAttempt((n) => n + 1);
-              }}
-            >
-              Try again
-            </Button>
-            <Button
-              variant="outlined"
+              variant={platformHostedDisabled ? "primary" : "outlined"}
               size="regular"
               fullWidth
               className={electron ? undefined : "h-11 text-base"}
@@ -875,7 +882,7 @@ export function HatchingScreen() {
                 )
               }
             >
-              Back
+              {platformHostedDisabled ? "Back to setup" : "Back"}
             </Button>
           </div>
         </div>
