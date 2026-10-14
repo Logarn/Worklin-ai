@@ -164,6 +164,14 @@ export const ONBOARDING_PROVIDERS: readonly OnboardingProvider[] = [
 
 export const DEFAULT_ONBOARDING_PROVIDER = ONBOARDING_PROVIDERS[0];
 
+export const BYOK_ONBOARDING_PROVIDERS = ONBOARDING_PROVIDERS.filter(
+  (provider) => provider.authType === "api_key",
+);
+
+export const DEFAULT_BYOK_ONBOARDING_PROVIDER =
+  BYOK_ONBOARDING_PROVIDERS.find((provider) => provider.id === "openai") ??
+  BYOK_ONBOARDING_PROVIDERS[0]!;
+
 export function onboardingProvider(id: string): OnboardingProvider | undefined {
   return ONBOARDING_PROVIDERS.find((p) => p.id === id);
 }

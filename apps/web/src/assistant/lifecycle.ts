@@ -12,6 +12,7 @@ export type ResolvedAssistantLifecycleState =
   | {
       kind: "error";
       message: string;
+      code?: "platform_hosted_disabled";
       transient?: boolean;
       retryAction?: "restart_runtime";
     };
@@ -54,6 +55,16 @@ export function resolveAssistantLifecycleState(
 ): ResolvedAssistantLifecycleState {
   if (result.ok) {
     if (result.data.runtime_status === "failed") {
+      if (
+        result.data.runtime_last_error ===
+        "Managed assistant runtime provisioning is unavailable."
+      ) {
+        return {
+          kind: "error",
+          code: PLATFORM_HOSTED_DISABLED_CODE,
+          message: PLATFORM_HOSTED_DISABLED_MESSAGE,
+        };
+      }
       return {
         kind: "error",
         message:
@@ -118,7 +129,7 @@ export function shouldRecoverFromHatchFailure(status?: number): boolean {
 export const PLATFORM_HOSTED_DISABLED_CODE = "platform_hosted_disabled";
 
 export const PLATFORM_HOSTED_DISABLED_MESSAGE =
-  "Worklin Managed Assistants are temporarily unavailable. Please try again shortly.";
+  "Worklin hosting is currently unavailable. Your setup is saved, but your assistant cannot start yet.";
 
 export function isPlatformHostedDisabled(
   status: number | undefined,

@@ -20,6 +20,7 @@ import {
   assistantApiStatusForRuntimeStack,
   claimPreprovisionedRuntimeStack,
   countAllocatedRuntimeServicesForOrganization,
+  countAvailablePreprovisionedRuntimeSlots,
   claimRuntimeServiceProvisioningLease,
   deriveRuntimeActorSigningKey,
   ensureRuntimeStackForAssistant,
@@ -1232,11 +1233,57 @@ function runtimeProvisioningConfigurationError(): string | null {
   return railwayProvisionerConfigurationError(railwayProvisionerConfig);
 }
 
-function controlPlaneOnlyConfigurationError(): string | null {
-  if (!pooledCoordinatorOwnershipIsLive()) {
-    const provisioningError = runtimeProvisioningConfigurationError();
-    if (provisioningError) return provisioningError;
+type ManagedAssistantHatchingMode =
+  | "pooled"
+  | "preprovisioned"
+  | "railway"
+  | "static_template"
+  | "unavailable";
+
+function managedAssistantHatchingCapacity(): {
+  ready: boolean;
+  mode: ManagedAssistantHatchingMode;
+  preprovisionedSlotsAvailable: number;
+  provisionerReady: boolean;
+} {
+  const preprovisionedSlotsAvailable =
+    countAvailablePreprovisionedRuntimeSlots(db, runtimeStackConfig);
+  const provisionerReady = runtimeProvisioningConfigurationError() === null;
+  if (pooledCoordinatorOwnershipIsLive()) {
+    return {
+      ready: true,
+      mode: "pooled",
+      preprovisionedSlotsAvailable,
+      provisionerReady,
+    };
   }
+  if (preprovisionedSlotsAvailable > 0) {
+    return {
+      ready: true,
+      mode: "preprovisioned",
+      preprovisionedSlotsAvailable,
+      provisionerReady,
+    };
+  }
+  if (provisionerReady) {
+    return {
+      ready: true,
+      mode: runtimeStackConfig.runtimeStackUrlTemplate
+        ? "static_template"
+        : "railway",
+      preprovisionedSlotsAvailable,
+      provisionerReady,
+    };
+  }
+  return {
+    ready: false,
+    mode: "unavailable",
+    preprovisionedSlotsAvailable,
+    provisionerReady,
+  };
+}
+
+function controlPlaneOnlyConfigurationError(): string | null {
   if (!runtimeStackConfig.requireIsolatedRuntime) {
     return "Control-plane-only mode requires isolated runtimes.";
   }
@@ -1461,16 +1508,7 @@ function ensureAssistantRuntime(assistant: AssistantRow): RuntimeStackRow {
     runtimeStackConfig,
     nowIso,
   );
-  const provisioningError = runtimeProvisioningConfigurationError();
-  if (provisioningError && runtimeStack.status === "provisioning") {
-    markRuntimeStackFailed(
-      db,
-      runtimeStack.id,
-      "Managed assistant runtime provisioning is unavailable.",
-      nowIso,
-    );
-    return getRuntimeStackById(db, runtimeStack.id) ?? runtimeStack;
-  }
+  if (runtimeProvisioningConfigurationError() !== null) return runtimeStack;
   scheduleRuntimeProvisioning(assistant, runtimeStack);
   return getRuntimeStackById(db, runtimeStack.id) ?? runtimeStack;
 }
@@ -1771,7 +1809,14 @@ function handleOnboardingCompletion(
 
   getOrCreateOrganization(user);
   const assistant = getOrCreateAssistant(user);
-  const runtimeStack = ensureAssistantRuntime(assistant);
+  let runtimeStack = runtimeStackForPayload(assistant);
+  if (
+    isRuntimeStackRoutable(runtimeStack) ||
+    pooledRuntimeEligible(runtimeStack) ||
+    managedAssistantHatchingCapacity().ready
+  ) {
+    runtimeStack = ensureAssistantRuntime(assistant);
+  }
   const runtimeReady =
     pooledRuntimeEligible(runtimeStack) ||
     operationalStateForRuntimeStack(runtimeStack) === "active";
@@ -3336,7 +3381,28 @@ async function handleAssistants(
       );
       return true;
     }
-    const runtimeStack = ensureAssistantRuntime(assistant);
+    let runtimeStack = runtimeStackForPayload(assistant);
+    const hatchingCapacity = managedAssistantHatchingCapacity();
+    if (
+      !isRuntimeStackRoutable(runtimeStack) &&
+      !pooledRuntimeEligible(runtimeStack) &&
+      !hatchingCapacity.ready
+    ) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "Worklin hosting is currently unavailable. Your setup is saved, but your assistant cannot start yet.",
+          code: "platform_hosted_disabled",
+          runtime_status: runtimeStack.status,
+          runtime_stack_id: runtimeStack.id,
+        },
+        503,
+      );
+      return true;
+    }
+    runtimeStack = ensureAssistantRuntime(assistant);
     const provisioningError = runtimeProvisioningConfigurationError();
     if (
       !pooledRuntimeEligible(runtimeStack) &&
@@ -3348,7 +3414,8 @@ async function handleAssistants(
         req,
         res,
         {
-          detail: "Managed assistant provisioning is not available.",
+          detail:
+            "Worklin hosting is currently unavailable. Your setup is saved, but your assistant cannot start yet.",
           code: "platform_hosted_disabled",
           runtime_status: runtimeStack.status,
           runtime_stack_id: runtimeStack.id,
@@ -3430,13 +3497,13 @@ async function handleAssistants(
       return true;
     }
 
-    const provisioningError = runtimeProvisioningConfigurationError();
-    if (provisioningError) {
+    if (!managedAssistantHatchingCapacity().ready) {
       sendJson(
         req,
         res,
         {
-          detail: "Managed assistant provisioning is not available.",
+          detail:
+            "Worklin hosting is currently unavailable. Your setup is saved, but your assistant cannot start yet.",
           code: "platform_hosted_disabled",
           runtime_status: currentRuntimeStack.status,
           runtime_stack_id: currentRuntimeStack.id,
@@ -5498,6 +5565,7 @@ app.get(
   asyncHandler(async (req, res) => {
     if (env.runtimeMode === "control-plane") {
       const configurationError = controlPlaneOnlyConfigurationError();
+      const hatchingCapacity = managedAssistantHatchingCapacity();
       sendJson(
         req,
         res,
@@ -5505,7 +5573,11 @@ app.get(
           ok: configurationError === null,
           gatewayStatus: null,
           runtimeMode: env.runtimeMode,
-          provisionerReady: configurationError === null,
+          provisionerReady: hatchingCapacity.provisionerReady,
+          hatchingReady: hatchingCapacity.ready,
+          hatchingMode: hatchingCapacity.mode,
+          preprovisionedSlotsAvailable:
+            hatchingCapacity.preprovisionedSlotsAvailable,
           ...(pooledCoordinatorOwnershipIsLive()
             ? { pooledRuntimeWorkers: runtimeWorkerStartup }
             : {}),

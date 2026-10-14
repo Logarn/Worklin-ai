@@ -307,6 +307,35 @@ describe("control-plane runtime provisioning guards", () => {
       gatewayStatus: null,
       runtimeMode: "control-plane",
       provisionerReady: true,
+      hatchingReady: true,
+      hatchingMode: "railway",
+      preprovisionedSlotsAvailable: 0,
+    });
+  });
+
+  test("reports unavailable hatching without failing control-plane readiness", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const dbPath = createTempDbPath();
+
+    spawnControlPlane(port, dbPath, {
+      WORKLIN_RUNTIME_MODE: "control-plane",
+      WORKLIN_RAILWAY_PROVISIONING_ENABLED: "false",
+      WORKLIN_REQUIRE_ISOLATED_RUNTIME: "true",
+      WORKLIN_ALLOW_LEGACY_SHARED_RUNTIME: "false",
+    });
+    await waitForHealth(origin);
+
+    const response = await fetch(`${origin}/readyz`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      gatewayStatus: null,
+      runtimeMode: "control-plane",
+      provisionerReady: false,
+      hatchingReady: false,
+      hatchingMode: "unavailable",
+      preprovisionedSlotsAvailable: 0,
     });
   });
 
@@ -333,7 +362,10 @@ describe("control-plane runtime provisioning guards", () => {
       ok: false,
       gatewayStatus: null,
       runtimeMode: "control-plane",
-      provisionerReady: false,
+      provisionerReady: true,
+      hatchingReady: true,
+      hatchingMode: "railway",
+      preprovisionedSlotsAvailable: 0,
     });
   });
 
@@ -503,7 +535,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(completed.status).toBe(200);
     expect(await completed.json()).toMatchObject({
       user: { onboarding_completed: false, consent: null },
-      assistant: { runtime_status: "failed" },
+      assistant: { runtime_status: "provisioning" },
     });
     expect(
       db
@@ -522,7 +554,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toMatchObject({
       code: "platform_hosted_disabled",
-      runtime_status: "failed",
+      runtime_status: "provisioning",
     });
 
     const proxyResponse = await fetch(
@@ -537,7 +569,7 @@ describe("control-plane runtime provisioning guards", () => {
     expect(proxyResponse.status).toBe(503);
     expect(await proxyResponse.json()).toMatchObject({
       code: "runtime_not_ready",
-      runtime_status: "failed",
+      runtime_status: "provisioning",
     });
     db.close();
   });
