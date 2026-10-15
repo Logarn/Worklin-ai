@@ -97,9 +97,9 @@ provider-key isolation, assistant and organization identifier swaps, stale
 actor/service/model-key/conversation capabilities, restart quarantine, state
 export and sanitization, and exact operator recovery.
 
-### 2026-10-15 Concurrent Runtime BYOK Message Repair (Local, Not Deployed)
+### 2026-10-15 Concurrent Runtime BYOK Message Repair (PR #211, Not Deployed)
 
-The current worktree is `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`, branch `assistant/fix-concurrent-onboarding-byok`, based on `8a5585e4`. Changes are uncommitted, not pushed, and not deployed.
+The current worktree is `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`, branch `assistant/fix-concurrent-onboarding-byok`, based on `8a5585e4`, with PR `#211` open. The BYOK repair and its package-size CI correction are pushed but not deployed.
 
 The live failure came from two gaps in the shared concurrent runtime: it rejected the onboarding payload sent with the first chat message, and onboarding discarded model keys for `concurrent_service`. The local repair stores bounded onboarding context on the conversation, includes it only for turn sequence `0`, and sends supported BYOK keys to the existing encrypted control-plane vault. The control plane injects a signed, one-use, 60-second capability on the private runtime request; the runtime resolves the tenant key through the control plane and retains it in memory only while that run is active. The capability headers are stripped from client requests, provider errors are not persisted verbatim, and no global provider API-key environment variable is used as a fallback. Migration `003` adds the conversation onboarding-context column.
 
@@ -111,10 +111,11 @@ Local validation completed:
 - Control-plane vault, proxy-policy, and startup-gate suites: `56/56` tests passed.
 - Web onboarding key and lifecycle suites: `67/67` tests passed (`419` assertions).
 - Control-plane TypeScript check, web typecheck, touched Assistant/Web ESLint, and `git diff --check` passed.
-- Full Assistant TypeScript check remains blocked by package-resolution errors in local sibling packages (`@vellumai/service-contracts/credential-rpc` and `zod` from `packages/gateway-client`). The focused Assistant tests and ESLint pass.
+- Full Assistant TypeScript check and touched-file ESLint pass after installing the local workspace packages.
+- The latest Assistant CI run failed only in `src/__tests__/app-compiler.test.ts`: its allowed-package tests install current `zod` (about 6.1 MiB), which exceeded the pre-existing 5 MiB package-cache limit. The allowlisted-package limit is raised to 8 MiB in the follow-up PR commit; CI must pass on that exact head before merge.
 - `src/index-runtime-worker-pool.test.ts` could not bind its temporary loopback HTTPS listener in the sandbox (`EADDRINUSE` while requesting port `0`); no live control-plane integration result is claimed.
 
-Live Railway settings were read but not changed. The control-plane service has no `WORKLIN_POOLED_MODEL_KEY_VAULT_ENABLED` or `WORKLIN_POOLED_MODEL_KEY_VAULT_MASTER_KEY`; its non-secret `PORT` is `8080`. The concurrent `worker` lacks `WORKLIN_CONTROL_PLANE_INTERNAL_URL` and currently has legacy `CONCURRENT_RUNTIME_MANAGED_PROVIDER`, `CONCURRENT_RUNTIME_MANAGED_MODEL`, and `MOONSHOT_API_KEY` variables. The new code deliberately ignores the legacy global model key so one tenant cannot consume another tenant's provider credentials. Do not copy those secret values into this handoff.
+Railway production variables are staged in the authenticated UI and have not been applied or deployed. The staged changes enable the control-plane key vault, set a newly generated vault master key stored only in Railway, and configure the worker's private control-plane URL as `http://lovely-clarity.railway.internal:8080`. Do not copy any secret values into this handoff. The worker's existing global model-key variable is deliberately ignored by the new code so one tenant cannot consume another tenant's provider credentials.
 
 Live E2E is not yet possible: these code changes need a reviewed release across Vercel, control-plane, and concurrent runtime; the control-plane vault needs a newly generated master key in Railway's secret manager; the worker needs the observed private origin `http://lovely-clarity.railway.internal:8080`; and the user must enter a valid provider API key in the live onboarding screen. Live UI inspection confirms OpenAI is selected and the key field is empty. Worklin remains free and BYOK-only. No provider key or Railway secret has been entered by this worktree.
 
