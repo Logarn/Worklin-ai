@@ -189,6 +189,9 @@ import {
 import type { RuntimeWorkerLeaseServiceBinding } from "./runtime-worker-service-tokens.js";
 import { activatePooledRuntimeWorkersAtStartup } from "./runtime-worker-startup-gate.js";
 import {
+  CONCURRENT_MODEL_KEY_CAPABILITY_HEADER,
+  CONCURRENT_MODEL_KEY_PROVIDER_HEADER,
+  CONCURRENT_MODEL_KEY_RESOLVE_PATH,
   POOLED_MODEL_KEY_CAPABILITY_HEADER,
   POOLED_MODEL_KEY_RESOLVE_PATH,
   PooledModelKeyVault,
@@ -1246,8 +1249,10 @@ function managedAssistantHatchingCapacity(): {
   preprovisionedSlotsAvailable: number;
   provisionerReady: boolean;
 } {
-  const preprovisionedSlotsAvailable =
-    countAvailablePreprovisionedRuntimeSlots(db, runtimeStackConfig);
+  const preprovisionedSlotsAvailable = countAvailablePreprovisionedRuntimeSlots(
+    db,
+    runtimeStackConfig,
+  );
   const provisionerReady = runtimeProvisioningConfigurationError() === null;
   if (pooledCoordinatorOwnershipIsLive()) {
     return {
@@ -3873,7 +3878,9 @@ function copyProxyHeaders(req: Request): Headers {
       normalized === "connection" ||
       normalized === "content-length" ||
       normalized === "authorization" ||
-      normalized === POOLED_MODEL_KEY_CAPABILITY_HEADER
+      normalized === POOLED_MODEL_KEY_CAPABILITY_HEADER ||
+      normalized === CONCURRENT_MODEL_KEY_CAPABILITY_HEADER ||
+      normalized === CONCURRENT_MODEL_KEY_PROVIDER_HEADER
     )
       continue;
     if (Array.isArray(value)) {
@@ -4269,6 +4276,7 @@ async function proxyToGateway(
   }
 
   let pooledRouteDecision: RuntimeWorkerProxyRouteDecision | null = null;
+  let modelKeyVaultRouteDecision: RuntimeWorkerProxyRouteDecision | null = null;
   if (routingPolicy.mode === "pooled") {
     pooledRouteDecision = classifyRuntimeWorkerProxyRoute({
       method: req.method,
@@ -4278,6 +4286,24 @@ async function proxyToGateway(
     if (pooledRouteDecision.status === "rejected") {
       sendPooledRuntimeRouteRejection(req, res, pooledRouteDecision.reason);
       return;
+    }
+    if (pooledRouteDecision.handling === "control_plane_model_key_vault") {
+      modelKeyVaultRouteDecision = pooledRouteDecision;
+    }
+  } else if (
+    routingPolicy.mode === "dedicated" &&
+    routingPolicy.stack.provider === "concurrent_service"
+  ) {
+    const decision = classifyRuntimeWorkerProxyRoute({
+      method: req.method,
+      pathname: url.pathname,
+      upgrade: req.headers.upgrade,
+    });
+    if (
+      decision.status === "allowed" &&
+      decision.handling === "control_plane_model_key_vault"
+    ) {
+      modelKeyVaultRouteDecision = decision;
     }
   }
 
@@ -4314,57 +4340,68 @@ async function proxyToGateway(
     assistantId: tenantContext.assistantId,
     actorId: tenantContext.actorId,
   };
-  if (
-    pooledRouteDecision?.status === "allowed" &&
-    pooledRouteDecision.handling === "control_plane_model_key_vault"
-  ) {
+  if (modelKeyVaultRouteDecision) {
+    if (!pooledModelKeyVault.enabled) {
+      sendJson(
+        req,
+        res,
+        {
+          detail: "Model provider settings are temporarily unavailable.",
+          code: "model_provider_vault_unavailable",
+        },
+        503,
+      );
+      return;
+    }
     if ((req.method === "POST" || req.method === "DELETE") && !checkCsrf(req)) {
       sendJson(req, res, { detail: "CSRF validation failed." }, 403);
       return;
     }
     const secretInput = {
       method: req.method,
-      routeSegments: pooledRouteDecision.routeSegments,
+      routeSegments: modelKeyVaultRouteDecision.routeSegments,
       tenant: pooledIdentity,
       body: parseJsonBody<unknown>(req),
     };
     const isRootSecretMutation =
       (req.method === "POST" || req.method === "DELETE") &&
-      pooledRouteDecision.routeSegments.length === 1 &&
-      pooledRouteDecision.routeSegments[0] === "secrets";
+      modelKeyVaultRouteDecision.routeSegments.length === 1 &&
+      modelKeyVaultRouteDecision.routeSegments[0] === "secrets";
     if (isRootSecretMutation) {
-      const mutation =
-        await runtimeWorkerCoordinator.runTenantConfigurationMutation({
-          identity: pooledIdentity,
-          mutation: () => pooledModelKeyVault.handleSecretRoute(secretInput),
-        });
-      if (mutation.status === "rejected") {
-        sendJson(
-          req,
-          res,
-          {
-            detail:
-              "Model provider settings cannot change while this assistant is handling a request.",
-            code: "pooled_runtime_model_provider_configuration_busy",
-          },
-          409,
-        );
+      if (routingPolicy.mode === "pooled") {
+        const mutation =
+          await runtimeWorkerCoordinator.runTenantConfigurationMutation({
+            identity: pooledIdentity,
+            mutation: () => pooledModelKeyVault.handleSecretRoute(secretInput),
+          });
+        if (mutation.status === "rejected") {
+          sendJson(
+            req,
+            res,
+            {
+              detail:
+                "Model provider settings cannot change while this assistant is handling a request.",
+              code: "pooled_runtime_model_provider_configuration_busy",
+            },
+            409,
+          );
+          return;
+        }
+        if (mutation.status === "unavailable") {
+          sendJson(
+            req,
+            res,
+            {
+              detail: "Model provider settings are temporarily unavailable.",
+              code: "pooled_runtime_model_provider_configuration_unavailable",
+            },
+            503,
+          );
+          return;
+        }
+        sendJson(req, res, mutation.value.body, mutation.value.status);
         return;
       }
-      if (mutation.status === "unavailable") {
-        sendJson(
-          req,
-          res,
-          {
-            detail: "Model provider settings are temporarily unavailable.",
-            code: "pooled_runtime_model_provider_configuration_unavailable",
-          },
-          503,
-        );
-        return;
-      }
-      sendJson(req, res, mutation.value.body, mutation.value.status);
-      return;
     }
     const result = await pooledModelKeyVault.handleSecretRoute(secretInput);
     sendJson(req, res, result.body, result.status);
@@ -4462,6 +4499,7 @@ async function proxyToGateway(
   heartbeat?.unref();
 
   let pooledRequestHandle: string | null = null;
+  let concurrentRequestHandle: string | null = null;
   let pooledLeaseBinding: RuntimeWorkerLeaseServiceBinding | null = null;
   let retainPooledRequest = false;
   try {
@@ -4545,6 +4583,68 @@ async function proxyToGateway(
     const headers = runtimeProxyHeaders(req);
     headers.set("Authorization", `Bearer ${actorToken}`);
     applyRuntimeTenantHeaders(headers, tenantContext);
+    const isConcurrentRuntime =
+      routingPolicy.mode === "dedicated" &&
+      routingPolicy.stack.provider === "concurrent_service";
+    let concurrentProvider: string | null = null;
+    if (isConcurrentRuntime && pooledModelKeyVault.enabled) {
+      const configuredProviders = pooledModelKeyVault.list(pooledIdentity);
+      const supportedProviders = configuredProviders.filter(
+        isRuntimeWorkerBootstrapInferenceProvider,
+      );
+      if (configuredProviders.length === 1 && supportedProviders.length === 1) {
+        concurrentProvider = supportedProviders[0]!;
+        headers.set(CONCURRENT_MODEL_KEY_PROVIDER_HEADER, concurrentProvider);
+      }
+    }
+    const isConcurrentMessagePost =
+      isConcurrentRuntime &&
+      req.method === "POST" &&
+      pathEquals(
+        url.pathname,
+        `/v1/assistants/${encodeURIComponent(assistant.id)}/messages`,
+      );
+    const concurrentBrowserActionsPrefix = `/v1/assistants/${encodeURIComponent(assistant.id)}/browser-broker/actions/`;
+    const browserActionRoute = pathIsOrStartsWith(
+      url.pathname,
+      concurrentBrowserActionsPrefix,
+    )
+      ? url.pathname
+          .slice(concurrentBrowserActionsPrefix.length)
+          .replace(/\/+$/u, "")
+      : "";
+    const isConcurrentBrowserResultPost =
+      isConcurrentRuntime &&
+      req.method === "POST" &&
+      /^[^/]+\/result$/u.test(browserActionRoute);
+    if (isConcurrentMessagePost && !concurrentProvider) {
+      sendJson(
+        req,
+        res,
+        {
+          detail:
+            "Connect exactly one supported model API key before starting a conversation.",
+          code: "concurrent_runtime_model_provider_not_configured",
+        },
+        409,
+      );
+      return;
+    }
+    if (
+      (isConcurrentMessagePost || isConcurrentBrowserResultPost) &&
+      concurrentProvider
+    ) {
+      concurrentRequestHandle = randomUUID();
+      headers.set(
+        CONCURRENT_MODEL_KEY_CAPABILITY_HEADER,
+        pooledModelKeyVault.mintConcurrentRequestCapability(
+          pooledIdentity,
+          concurrentRequestHandle,
+          concurrentProvider,
+          Date.now(),
+        ),
+      );
+    }
     if (pooledRequestHandle && pooledLeaseBinding) {
       // The gateway IPC fast path forwards only public Vellum headers. Pooled
       // model-key capabilities stay on the private HTTP hop and are never
@@ -4659,6 +4759,11 @@ async function proxyToGateway(
     }
     await streamRuntimeResponse(req, res, response, abortController.signal);
   } finally {
+    if (concurrentRequestHandle) {
+      pooledModelKeyVault.revokeConcurrentRequestCapability(
+        concurrentRequestHandle,
+      );
+    }
     if (pooledRequestHandle) {
       pooledModelKeyVault.revokeRequestCapability(pooledRequestHandle);
       if (!retainPooledRequest) {
@@ -5557,6 +5662,44 @@ app.post(
   }),
 );
 
+app.post(
+  CONCURRENT_MODEL_KEY_RESOLVE_PATH,
+  asyncHandler(async (req, res) => {
+    if (!pooledModelKeyVault.enabled) {
+      sendJson(req, res, { detail: "Model key service unavailable." }, 503);
+      return;
+    }
+    const authorization = req.headers.authorization ?? "";
+    const match =
+      /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u.exec(
+        authorization,
+      );
+    const body = parseJsonBody<{ provider?: unknown }>(req);
+    const result = pooledModelKeyVault.resolveConcurrentWithCapability(
+      match?.[1] ?? "",
+      body?.provider,
+      Date.now(),
+    );
+    if (!result.ok) {
+      if (result.reason === "disabled") {
+        sendJson(req, res, { detail: "Model key service unavailable." }, 503);
+        return;
+      }
+      if (result.reason === "invalid_provider") {
+        sendJson(req, res, { detail: "Invalid model provider." }, 400);
+        return;
+      }
+      sendJson(req, res, { detail: "Invalid model key capability." }, 401);
+      return;
+    }
+    if (result.value === null) {
+      sendJson(req, res, { detail: "Model provider key not found." }, 404);
+      return;
+    }
+    sendJson(req, res, { value: result.value });
+  }),
+);
+
 app.get("/healthz", (req, res) =>
   sendJson(req, res, { ok: true, release_sha: RELEASE_SHA }),
 );
@@ -5927,6 +6070,7 @@ server.on("close", () => {
     new Error("Control plane is shutting down."),
   );
   pooledModelKeyVault.revokeAllRequestCapabilities();
+  pooledModelKeyVault.revokeAllConcurrentRequestCapabilities();
   void runtimeWorkerCoordinator.fenceCoordinatorOwnership().catch(() => {
     console.error("runtime_worker_coordinator_fence_failed");
   });

@@ -6,6 +6,10 @@ import {
   tenantExecutionScopeKey,
 } from "@vellumai/service-contracts/tenant-context";
 
+import type {
+  ConcurrentProviderConfigResolver,
+  ConcurrentProviderRequestConfig,
+} from "../providers/platform-proxy/concurrent-request-context.js";
 import type { BrowserBrokerService } from "./browser-broker/service.js";
 import { FairTenantScheduler } from "./fair-scheduler.js";
 import type { ConcurrentRuntimeStore } from "./store.js";
@@ -47,6 +51,14 @@ export class ConcurrentRuntimeService {
   private readonly logger: ConcurrentRuntimeLogger;
   private readonly browserBrokerService?: BrowserBrokerService;
   private readonly activeAbortControllers = new Map<string, AbortController>();
+  private readonly providerConfigs = new Map<
+    string,
+    ConcurrentProviderRequestConfig
+  >();
+  private readonly providerConfigResolutions = new Map<
+    string,
+    Promise<ConcurrentProviderRequestConfig>
+  >();
   private readonly scheduledRuns = new Set<string>();
   private readonly conversationTails = new Map<string, Promise<void>>();
 
@@ -82,19 +94,35 @@ export class ConcurrentRuntimeService {
   async submitMessage(
     context: TenantExecutionContext,
     input: AcceptConcurrentMessageInput,
+    providerConfig?:
+      | ConcurrentProviderRequestConfig
+      | ConcurrentProviderConfigResolver,
   ): Promise<AcceptedConcurrentRun> {
     const accepted = await this.store.acceptMessage(context, input);
-    if (
+    const shouldSchedule =
       accepted.created ||
       accepted.run.status === "queued" ||
       (accepted.run.status === "processing" &&
-        (accepted.run.leaseExpiresAt ?? Number.POSITIVE_INFINITY) <= Date.now())
-    ) {
+        (accepted.run.leaseExpiresAt ?? Number.POSITIVE_INFINITY) <=
+          Date.now());
+    if (shouldSchedule) {
       const runContext: TenantExecutionContext = {
         ...context,
         conversationId: accepted.conversationId,
         idempotencyKey: accepted.run.idempotencyKey,
       };
+      if (typeof providerConfig === "function") {
+        await this.resolveProviderConfig(
+          runContext,
+          accepted.run.id,
+          providerConfig,
+        );
+      } else if (providerConfig) {
+        this.providerConfigs.set(
+          this.runScopeKey(runContext, accepted.run.id),
+          { ...providerConfig },
+        );
+      }
       this.schedule(runContext, accepted.run.id);
     }
     return accepted;
@@ -106,7 +134,9 @@ export class ConcurrentRuntimeService {
   ): Promise<boolean> {
     const key = this.runScopeKey(context, runId);
     this.activeAbortControllers.get(key)?.abort();
-    return this.store.cancelRun(context, runId);
+    const cancelled = await this.store.cancelRun(context, runId);
+    if (cancelled) this.providerConfigs.delete(key);
+    return cancelled;
   }
 
   async cancelConversation(
@@ -118,9 +148,9 @@ export class ConcurrentRuntimeService {
       conversationId,
     );
     for (const run of cancelled) {
-      this.activeAbortControllers
-        .get(this.runScopeKey(context, run.id))
-        ?.abort();
+      const key = this.runScopeKey(context, run.id);
+      this.activeAbortControllers.get(key)?.abort();
+      this.providerConfigs.delete(key);
     }
     return cancelled.length > 0;
   }
@@ -132,17 +162,25 @@ export class ConcurrentRuntimeService {
   async resumeRun(
     context: TenantExecutionContext,
     runId: string,
+    resolveProviderConfig?: ConcurrentProviderConfigResolver,
   ): Promise<void> {
     const run = await this.store.getRun(context, runId);
     if (!run || run.status !== "queued") return;
-    this.schedule(
-      {
-        ...context,
-        conversationId: run.conversationId,
-        idempotencyKey: run.idempotencyKey,
-      },
-      runId,
-    );
+    const runContext = {
+      ...context,
+      conversationId: run.conversationId,
+      idempotencyKey: run.idempotencyKey,
+    };
+    const key = this.runScopeKey(runContext, runId);
+    if (this.scheduledRuns.has(key)) return;
+    if (resolveProviderConfig && !this.providerConfigs.has(key)) {
+      await this.resolveProviderConfig(
+        runContext,
+        runId,
+        resolveProviderConfig,
+      );
+    }
+    this.schedule(runContext, runId);
   }
 
   schedulerSnapshot(): {
@@ -180,7 +218,10 @@ export class ConcurrentRuntimeService {
       leaseOwner,
       Date.now() + this.leaseDurationMs,
     );
-    if (!claimed) return;
+    if (!claimed) {
+      this.clearProviderConfig(this.runScopeKey(context, runId));
+      return;
+    }
 
     const executionContext = claimed.context;
     const conversationId = claimed.run.conversationId;
@@ -245,6 +286,10 @@ export class ConcurrentRuntimeService {
         context: executionContext,
         messages: claimed.messages,
         steps: claimed.steps,
+        providerConfig: this.providerConfigs.get(runKey),
+        ...(claimed.run.turnSequence === 0 && claimed.onboardingContext
+          ? { onboardingContext: claimed.onboardingContext }
+          : {}),
         browserEnabled: grant?.enabled === true,
         signal: abortController.signal,
         callbacks: {
@@ -362,6 +407,7 @@ export class ConcurrentRuntimeService {
     } finally {
       clearInterval(renewalTimer);
       this.activeAbortControllers.delete(runKey);
+      this.clearProviderConfig(runKey);
       if (terminal) {
         const next = await this.store.getNextQueuedRun(
           executionContext,
@@ -389,6 +435,34 @@ export class ConcurrentRuntimeService {
       ),
       runId,
     ]);
+  }
+
+  private async resolveProviderConfig(
+    context: TenantExecutionContext,
+    runId: string,
+    resolve: ConcurrentProviderConfigResolver,
+  ): Promise<ConcurrentProviderRequestConfig> {
+    const key = this.runScopeKey(context, runId);
+    const cached = this.providerConfigs.get(key);
+    if (cached) return cached;
+
+    let resolution = this.providerConfigResolutions.get(key);
+    if (!resolution) {
+      resolution = resolve()
+        .then((providerConfig) => {
+          this.providerConfigs.set(key, { ...providerConfig });
+          return providerConfig;
+        })
+        .finally(() => this.providerConfigResolutions.delete(key));
+      this.providerConfigResolutions.set(key, resolution);
+    }
+    return resolution;
+  }
+
+  private clearProviderConfig(key: string): void {
+    const providerConfig = this.providerConfigs.get(key);
+    if (providerConfig) providerConfig.key = "";
+    this.providerConfigs.delete(key);
   }
 
   private async withConversationLock(

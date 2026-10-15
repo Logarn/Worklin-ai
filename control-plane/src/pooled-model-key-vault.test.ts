@@ -277,7 +277,12 @@ describe("pooled model provider key vault", () => {
     ).toMatchObject({ status: 200 });
     const before = db
       .query<
-        { nonce: string; ciphertext: string; auth_tag: string; updated_at: string },
+        {
+          nonce: string;
+          ciphertext: string;
+          auth_tag: string;
+          updated_at: string;
+        },
         []
       >(
         `SELECT nonce, ciphertext, auth_tag, updated_at
@@ -299,8 +304,7 @@ describe("pooled model provider key vault", () => {
     expect(rejected).toEqual({
       status: 400,
       body: {
-        detail:
-          "openai API key was not saved. OpenAI rejected this API key.",
+        detail: "openai API key was not saved. OpenAI rejected this API key.",
       },
     });
     expect(JSON.stringify(rejected)).not.toContain(invalidRotation);
@@ -513,6 +517,79 @@ describe("pooled model provider key vault", () => {
     });
     expect(vault.revokeRequestCapability("request-1")).toBe(true);
     expect(vault.resolveWithCapability(capability, "openai", 1_003)).toEqual({
+      ok: false,
+      reason: "inactive_request",
+    });
+  });
+
+  test("resolves a concurrent tenant key once for its exact provider and tenant", () => {
+    const db = setupDb();
+    const vault = enabledVault(db);
+    vault.set(TENANT_ONE, "openai", "sk-tenant-one", NOW_ISO);
+    vault.set(TENANT_TWO, "openai", "sk-tenant-two", NOW_ISO);
+    const capability = vault.mintConcurrentRequestCapability(
+      TENANT_ONE,
+      "concurrent-request-1",
+      "openai",
+      1_000,
+    );
+
+    expect(
+      vault.resolveConcurrentWithCapability(capability, "openai", 1_001),
+    ).toEqual({
+      ok: true,
+      tenant: TENANT_ONE,
+      provider: "openai",
+      value: "sk-tenant-one",
+    });
+    expect(
+      vault.resolveConcurrentWithCapability(capability, "openai", 1_002),
+    ).toEqual({ ok: false, reason: "inactive_request" });
+  });
+
+  test("expires concurrent key capabilities after one minute", () => {
+    const db = setupDb();
+    const vault = enabledVault(db);
+    vault.set(TENANT_ONE, "openai", "sk-tenant-one", NOW_ISO);
+    const capability = vault.mintConcurrentRequestCapability(
+      TENANT_ONE,
+      "concurrent-request-expired",
+      "openai",
+      1_000,
+    );
+
+    expect(
+      vault.resolveConcurrentWithCapability(capability, "openai", 61_000),
+    ).toEqual({ ok: false, reason: "expired_capability" });
+  });
+
+  test("concurrent capabilities cannot change tenant or provider and revoke independently", () => {
+    const db = setupDb();
+    const vault = enabledVault(db);
+    vault.set(TENANT_ONE, "openai", "sk-tenant-one", NOW_ISO);
+    claim(db);
+    const pooled = vault.mintRequestCapability(
+      TENANT_ONE,
+      activeBinding(db),
+      "request-pooled-mixed",
+      1_001,
+    );
+    const concurrent = vault.mintConcurrentRequestCapability(
+      TENANT_ONE,
+      "request-concurrent-mixed",
+      "openai",
+      1_001,
+    );
+
+    expect(
+      vault.resolveConcurrentWithCapability(concurrent, "anthropic", 1_002),
+    ).toEqual({ ok: false, reason: "inactive_request" });
+    expect(vault.revokeAllRequestCapabilities()).toBe(1);
+    expect(
+      vault.resolveConcurrentWithCapability(concurrent, "openai", 1_002),
+    ).toMatchObject({ ok: true, value: "sk-tenant-one" });
+    expect(vault.revokeAllConcurrentRequestCapabilities()).toBe(1);
+    expect(vault.resolveWithCapability(pooled, "openai", 1_002)).toEqual({
       ok: false,
       reason: "inactive_request",
     });

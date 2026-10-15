@@ -199,7 +199,7 @@ describe("LanguageModelCard", () => {
     expect(queryByText("Manage providers")).toBeNull();
   });
 
-  test("shows the managed model surface for concurrent assistants", () => {
+  test("uses BYOK key management for concurrent assistants", () => {
     useResolvedAssistantsStore.setState({
       assistants: [
         {
@@ -218,12 +218,13 @@ describe("LanguageModelCard", () => {
       </Wrapper>,
     );
 
-    expect(getByText("Worklin managed model")).toBeTruthy();
     expect(
-      getByText(/personal API keys and custom model endpoints require/i),
+      getByText(/Shared assistants use one supported model provider/i),
     ).toBeTruthy();
-    expect(queryByText("Use my API key")).toBeNull();
-    expect(queryByText("Replace API key")).toBeNull();
+    expect(getByText("Your assistant's model")).toBeTruthy();
+    expect(getByText("Replace API key")).toBeTruthy();
+    expect(getByText("Remove API key")).toBeTruthy();
+    expect(queryByText("Worklin managed model")).toBeNull();
   });
 
   test("hides Worklin credits when managed inference is unavailable", () => {

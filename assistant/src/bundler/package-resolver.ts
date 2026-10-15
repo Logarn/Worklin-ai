@@ -26,7 +26,7 @@ export const ALLOWED_PACKAGES: readonly string[] = [
 ] as const;
 
 const INSTALL_TIMEOUT_MS = 10_000;
-const MAX_PACKAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_PACKAGE_SIZE_BYTES = 8 * 1024 * 1024; // 8 MB
 
 /** In-flight install promises keyed by package name, to deduplicate concurrent requests. */
 const inflight = new Map<string, Promise<string | null>>();

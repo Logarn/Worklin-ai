@@ -15,6 +15,7 @@ describe("concurrent runtime migrations", () => {
     ).toEqual([
       { version: 1, name: "initial_concurrent_runtime" },
       { version: 2, name: "browser_broker" },
+      { version: 3, name: "onboarding_context" },
     ]);
     expect(CONCURRENT_RUNTIME_MIGRATION_BOOTSTRAP).toContain(
       "concurrent_runtime_schema_migrations",
@@ -45,5 +46,12 @@ describe("concurrent runtime migrations", () => {
       "WHERE status IN ('processing', 'waiting_for_browser')",
     );
     expect(migration).not.toContain("DROP TABLE");
+  });
+
+  test("migration 3 stores bounded onboarding context on its conversation", () => {
+    expect(CONCURRENT_RUNTIME_MIGRATIONS[2]?.sql).toContain(
+      "ADD COLUMN IF NOT EXISTS onboarding_context JSONB",
+    );
+    expect(CONCURRENT_RUNTIME_MIGRATIONS[2]?.sql).not.toContain("DROP TABLE");
   });
 });

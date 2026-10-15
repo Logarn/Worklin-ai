@@ -37,8 +37,7 @@ export function PooledLanguageModelCard({
       (secretsQuery.data?.secrets ?? [])
         .filter(
           (secret) =>
-            secret.type === "api_key" &&
-            isPooledApiKeyProvider(secret.name),
+            secret.type === "api_key" && isPooledApiKeyProvider(secret.name),
         )
         .map((secret) => secret.name as PooledApiKeyProvider),
     [secretsQuery.data?.secrets],
@@ -106,11 +105,11 @@ export function PooledLanguageModelCard({
   return (
     <ByoServiceCard
       title="Your assistant's model"
-      subtitle="Use your own provider API key. Worklin keeps it tenant-scoped and supplies it only while your pooled assistant is handling a request."
+      subtitle="Use your own provider API key. Worklin keeps it tenant-scoped and supplies it only while your shared assistant is handling a request."
     >
       <div className="space-y-4">
         <div className="rounded-lg border border-[var(--border-base)] bg-[var(--surface-sunken)] px-4 py-3 text-body-small-default text-[var(--content-tertiary)]">
-          Pooled assistants use one supported model provider at a time. Worklin
+          Shared assistants use one supported model provider at a time. Worklin
           creates the connection automatically; custom endpoints, credential
           aliases, ChatGPT subscription sign-in, xAI, and Ollama need a
           dedicated assistant runtime.
@@ -137,7 +136,9 @@ export function PooledLanguageModelCard({
               className="text-[var(--content-tertiary)]"
             >
               Remove the current key before switching providers. Re-enter a key
-              for {PROVIDER_DISPLAY_NAMES[configuredProvider] ?? configuredProvider} to rotate it.
+              for{" "}
+              {PROVIDER_DISPLAY_NAMES[configuredProvider] ?? configuredProvider}{" "}
+              to rotate it.
             </Typography>
           ) : null}
         </div>

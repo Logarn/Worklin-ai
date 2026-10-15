@@ -97,6 +97,27 @@ provider-key isolation, assistant and organization identifier swaps, stale
 actor/service/model-key/conversation capabilities, restart quarantine, state
 export and sanitization, and exact operator recovery.
 
+### 2026-10-15 Concurrent Runtime BYOK Message Repair (PR #211, Not Deployed)
+
+The current worktree is `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`, branch `assistant/fix-concurrent-onboarding-byok`, based on `8a5585e4`, with PR `#211` open. The initial BYOK repair and package-size CI correction are pushed but not deployed; the follow-up review-fix patch is unmerged and its checks must pass before merge.
+
+The live failure came from two gaps in the shared concurrent runtime: it rejected the onboarding payload sent with the first chat message, and onboarding discarded model keys for `concurrent_service`. The repair stores bounded onboarding context on the conversation, includes it only for turn sequence `0`, and sends supported BYOK keys to the existing encrypted control-plane vault. The control plane injects a signed, one-use, 60-second capability on private runtime requests; the runtime resolves the tenant key through the control plane and keeps it only for active work, clearing it when a run parks, finishes, or loses its claim. Browser-result requests receive a fresh capability so a parked run can resume on another replica or after restart. Idempotent completed-message retries do not consume a key capability. Onboarding preferences are sent as user-message context, not appended to the system prompt, and the existing bounded `contentSourceUrl` field is accepted. Capability headers are stripped from client requests, provider errors are not persisted verbatim, and no global provider API-key environment variable is used as a fallback. Health reports the schema version from the migration registry; migration `003` adds the conversation onboarding-context column.
+
+This does not give the shared runtime filesystem, terminal, project-write, or deployment access. It can restore chat after BYOK is configured, but does not complete Worklin's ability to build and deploy a ChickMagnet landing page.
+
+Local validation completed:
+
+- Assistant concurrent-runtime focused suite: `23/23` tests passed, including completed idempotent retries, cross-replica browser resume with a fresh key capability, resume retry after a transient key-service failure, onboarding context placement, content source URL acceptance, and schema version reporting.
+- Control-plane path, vault, and worker-proxy policy suites: `50/50` tests passed.
+- Web BYOK settings and provider-key suites: `15/15` tests passed.
+- Assistant and control-plane TypeScript checks, web TypeScript check, touched Assistant/Web ESLint, formatting check, and `git diff --check` passed.
+- Assistant CI on commit `646ceb67e2ed52eeb1f28fbb6c284d7bd8c03104` passed, including the earlier 8 MiB allowlisted-package cache fix. CI for the current review-fix patch is pending.
+- `src/index-runtime-worker-pool.test.ts` could not bind its temporary loopback HTTPS listener in the sandbox (`EADDRINUSE` while requesting port `0`); no live control-plane integration result is claimed.
+
+Railway production variables are staged in the authenticated UI and have not been applied or deployed. The staged changes enable the control-plane key vault, set a newly generated vault master key stored only in Railway, and configure the worker's private control-plane URL as `http://lovely-clarity.railway.internal:8080`. Do not copy any secret values into this handoff. The worker's existing global model-key variable is deliberately ignored by the new code so one tenant cannot consume another tenant's provider credentials.
+
+Live E2E is not yet possible: these code changes need a reviewed release across Vercel, control-plane, and concurrent runtime; the control-plane vault needs a newly generated master key in Railway's secret manager; the worker needs the observed private origin `http://lovely-clarity.railway.internal:8080`; and the user must enter a valid provider API key in the live onboarding screen. Live UI inspection confirms OpenAI is selected and the key field is empty. Worklin remains free and BYOK-only. No provider key or Railway secret has been entered by this worktree. The shared concurrent runtime still does not provide filesystem, terminal, project-write, or deployment tools, so assistant chat verification must not be described as proof of a published ChickMagnet site.
+
 ## 2026-08-16 Visible Workspace Reset And Micro-Campaign Work
 
 The owner confirmed a visible Worklin reset for the active production account.

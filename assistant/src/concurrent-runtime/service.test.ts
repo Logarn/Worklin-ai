@@ -10,11 +10,13 @@ import {
   type TenantExecutionContext,
 } from "@vellumai/service-contracts/tenant-context";
 
+import type { ConcurrentProviderRequestConfig } from "../providers/platform-proxy/concurrent-request-context.js";
 import {
   BrowserBrokerService,
   hashBrowserConnectionToken,
 } from "./browser-broker/service.js";
 import { InMemoryConcurrentRuntimeStore } from "./in-memory-store.js";
+import { ConcurrentModelKeyResolutionError } from "./model-key-capability.js";
 import { ConcurrentRuntimeService } from "./service.js";
 import type {
   ConcurrentTurnCallbacks,
@@ -48,12 +50,15 @@ class RecordingExecutor implements ConcurrentTurnExecutor {
 
 class BrowserTurnExecutor implements ConcurrentTurnExecutor {
   readonly stepCounts: number[] = [];
+  readonly providerConfigKeys: Array<string | undefined> = [];
 
   async execute(input: {
     steps: readonly ConcurrentRunStep[];
     browserEnabled: boolean;
+    providerConfig?: ConcurrentProviderRequestConfig;
   }) {
     this.stepCounts.push(input.steps.length);
+    this.providerConfigKeys.push(input.providerConfig?.key);
     expect(input.browserEnabled).toBe(true);
     if (input.steps.length === 0) {
       return {
@@ -329,9 +334,17 @@ describe("ConcurrentRuntimeService", () => {
     const broker = new BrowserBrokerService({
       store,
       allowedOrigins: ["https://example.com"],
-      onRunRunnable: async (context, runId): Promise<void> => {
+      onRunRunnable: async (
+        context,
+        runId,
+        resolveProviderConfig,
+      ): Promise<void> => {
         if (!serviceRef.current) throw new Error("Service is unavailable.");
-        await serviceRef.current.resumeRun(context, runId);
+        await serviceRef.current.resumeRun(
+          context,
+          runId,
+          resolveProviderConfig,
+        );
       },
     });
     const service = new ConcurrentRuntimeService({
@@ -368,11 +381,20 @@ describe("ConcurrentRuntimeService", () => {
       enabled: true,
     });
 
-    await service.submitMessage(context, {
-      conversationId: "conv-browser",
-      content: "Open the browser",
-      clientMessageId: "message-browser",
-    });
+    await service.submitMessage(
+      context,
+      {
+        conversationId: "conv-browser",
+        content: "Open the browser",
+        clientMessageId: "message-browser",
+      },
+      async () => ({
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        displayName: "OpenAI",
+        key: "initial-key",
+      }),
+    );
     await service.onIdle();
     expect((await store.getRun(context, accepted.run.id))?.status).toBe(
       "waiting_for_browser",
@@ -390,28 +412,62 @@ describe("ConcurrentRuntimeService", () => {
     if (!event || event.event.type !== "browser_broker_command") {
       throw new Error("Expected a browser command event.");
     }
+    const resumedExecutor = new BrowserTurnExecutor();
+    const resumedService = new ConcurrentRuntimeService({
+      store,
+      executor: resumedExecutor,
+      browserBrokerService: broker,
+      maxConcurrentTurns: 2,
+      maxConcurrentTurnsPerTenant: 1,
+      leaseDurationMs: 30_000,
+    });
+    serviceRef.current = resumedService;
+    await resumedService.initialize();
+    const browserResult = {
+      protocolVersion: BROWSER_BROKER_PROTOCOL_VERSION,
+      actionId: event.event.actionId,
+      operationHash: event.event.operationHash,
+      connectionId: connection.connectionId,
+      connectionGeneration: connection.connectionGeneration,
+      resultHash: "c".repeat(64),
+      state: "succeeded" as const,
+      output: {
+        kind: "session" as const,
+        browserSessionId: "session-123",
+        tabLeaseId: "lease-123",
+        documentEpoch: 0,
+      },
+    };
+    await expect(
+      broker.recordResult(
+        context,
+        browserResult,
+        connection.resumeToken,
+        async () => {
+          throw new ConcurrentModelKeyResolutionError("unavailable");
+        },
+      ),
+    ).rejects.toBeInstanceOf(ConcurrentModelKeyResolutionError);
+    expect((await store.getRun(context, accepted.run.id))?.status).toBe(
+      "queued",
+    );
+
     await broker.recordResult(
       context,
-      {
-        protocolVersion: BROWSER_BROKER_PROTOCOL_VERSION,
-        actionId: event.event.actionId,
-        operationHash: event.event.operationHash,
-        connectionId: connection.connectionId,
-        connectionGeneration: connection.connectionGeneration,
-        resultHash: "c".repeat(64),
-        state: "succeeded",
-        output: {
-          kind: "session",
-          browserSessionId: "session-123",
-          tabLeaseId: "lease-123",
-          documentEpoch: 0,
-        },
-      },
+      browserResult,
       connection.resumeToken,
+      async () => ({
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        displayName: "OpenAI",
+        key: "fresh-key",
+      }),
     );
-    await service.onIdle();
+    await resumedService.onIdle();
 
-    expect(executor.stepCounts).toEqual([0, 2]);
+    expect(executor.stepCounts).toEqual([0]);
+    expect(resumedExecutor.stepCounts).toEqual([2]);
+    expect(resumedExecutor.providerConfigKeys[0]).toBe("fresh-key");
     expect((await store.getRun(context, accepted.run.id))?.status).toBe(
       "completed",
     );

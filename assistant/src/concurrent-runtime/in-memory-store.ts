@@ -20,6 +20,7 @@ import type {
   EnqueueBrowserActionInput,
   RecordBrowserReceiptInput,
 } from "./browser-broker/types.js";
+import type { ConcurrentOnboardingContext } from "./onboarding-context.js";
 import {
   type ConcurrentRuntimeStore,
   ConcurrentRuntimeStoreError,
@@ -86,6 +87,10 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
   private readonly events = new Map<string, ConcurrentEvent[]>();
   private readonly nextEventSequence = new Map<string, number>();
   private readonly conversationOwners = new Map<string, ConversationOwner>();
+  private readonly onboardingContexts = new Map<
+    string,
+    ConcurrentOnboardingContext
+  >();
   private readonly nextTurnSequence = new Map<string, number>();
   private readonly runSteps = new Map<string, ConcurrentRunStep[]>();
   private readonly browserConnections = new Map<
@@ -550,7 +555,14 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
           "action_conflict",
         );
       }
-      return { accepted: true, canonicalState: action.state };
+      const run = this.scopedRun(context, action.runId);
+      return {
+        accepted: true,
+        canonicalState: action.state,
+        ...(run?.status === "queued"
+          ? { runId: action.runId, conversationId: action.conversationId }
+          : {}),
+      };
     }
     action.state = result.state;
     action.resultHash = result.resultHash;
@@ -647,6 +659,19 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
           "invalid_state",
         );
       }
+      const existingConversationKey = tenantConversationScopeKey(
+        context,
+        existingRun.conversationId,
+      );
+      if (
+        input.onboardingContext &&
+        !this.onboardingContexts.has(existingConversationKey)
+      ) {
+        this.onboardingContexts.set(
+          existingConversationKey,
+          structuredClone(input.onboardingContext),
+        );
+      }
       const existingMessages =
         this.messages.get(
           tenantConversationScopeKey(context, existingRun.conversationId),
@@ -694,6 +719,15 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
     }
     const conversationKey = tenantConversationScopeKey(context, conversationId);
     this.assertOrSetConversationOwner(context, conversationKey);
+    if (
+      input.onboardingContext &&
+      !this.onboardingContexts.has(conversationKey)
+    ) {
+      this.onboardingContexts.set(
+        conversationKey,
+        structuredClone(input.onboardingContext),
+      );
+    }
     const turnSequence = this.nextTurnSequence.get(conversationKey) ?? 0;
     this.nextTurnSequence.set(conversationKey, turnSequence + 1);
 
@@ -822,6 +856,17 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
       run: cloneRun(run),
       messages: messages.slice(0, userMessageIndex + 1).map(cloneMessage),
       steps: await this.listRunSteps(context, runId),
+      ...(this.onboardingContexts.has(
+        tenantConversationScopeKey(context, run.conversationId),
+      )
+        ? {
+            onboardingContext: structuredClone(
+              this.onboardingContexts.get(
+                tenantConversationScopeKey(context, run.conversationId),
+              )!,
+            ),
+          }
+        : {}),
     };
   }
 

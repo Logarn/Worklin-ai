@@ -21,7 +21,10 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
     }),
   configPatch: (opts: SdkCall) => {
     configPatchCalls.push(opts);
-    return Promise.resolve({ data: undefined, response: { ok: true, status: 200 } });
+    return Promise.resolve({
+      data: undefined,
+      response: { ok: true, status: 200 },
+    });
   },
   inferenceProviderconnectionsByNamePatch: (_opts: SdkCall) =>
     Promise.resolve({ data: undefined, response: { ok: true, status: 200 } }),
@@ -293,20 +296,27 @@ describe("pending provider key", () => {
     },
   );
 
-  test("concurrent assistants discard the pending key and use the managed model", async () => {
+  test("concurrent assistants store the pending key in the tenant vault", async () => {
     setPendingProviderKey({
       provider: "openai",
       authType: "api_key",
       key: "test-provider-key",
     });
 
-    await applyPendingProviderKey(
-      "asst-concurrent",
-      "concurrent_service",
-    );
+    await applyPendingProviderKey("asst-concurrent", "concurrent_service");
 
     expect(peekPendingProviderKey()).toBeNull();
-    expect(secretsPostCalls).toHaveLength(0);
+    expect(secretsPostCalls).toEqual([
+      {
+        path: { assistant_id: "asst-concurrent" },
+        body: {
+          type: "api_key",
+          name: "openai",
+          value: "test-provider-key",
+        },
+        throwOnError: false,
+      },
+    ]);
     expect(connectionPostCalls).toHaveLength(0);
     expect(configPatchCalls).toHaveLength(0);
   });

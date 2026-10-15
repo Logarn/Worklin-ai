@@ -9,7 +9,8 @@ import {
   formatSseHeartbeat,
 } from "@vellumai/skill-host-contracts";
 
-import { getConcurrentManagedProviderConfig } from "../providers/platform-proxy/concurrent-provider-config.js";
+import { getConcurrentProviderConfig } from "../providers/platform-proxy/concurrent-provider-config.js";
+import type { ConcurrentProviderConfigResolver } from "../providers/platform-proxy/concurrent-request-context.js";
 import type { Scope } from "../runtime/auth/types.js";
 import { APP_VERSION } from "../version.js";
 import {
@@ -19,6 +20,15 @@ import {
 } from "./auth.js";
 import { createBrowserBrokerHttpHandler } from "./browser-broker/http-handler.js";
 import type { BrowserBrokerService } from "./browser-broker/service.js";
+import { CONCURRENT_RUNTIME_MIGRATIONS } from "./migrations/index.js";
+import {
+  CONCURRENT_MODEL_KEY_CAPABILITY_HEADER,
+  CONCURRENT_MODEL_KEY_PROVIDER_HEADER,
+  ConcurrentModelKeyResolutionError,
+  resolveConcurrentModelKey,
+  resolveConcurrentProviderConfig,
+} from "./model-key-capability.js";
+import { ConcurrentOnboardingContextSchema } from "./onboarding-context.js";
 import { ConcurrentRuntimeService } from "./service.js";
 import type { ConcurrentRuntimeStore } from "./store.js";
 import type { ConcurrentConversation } from "./types.js";
@@ -56,6 +66,10 @@ export interface ConcurrentRuntimeHttpHandlerOptions {
     request: Request,
     requiredScope: Scope,
   ) => ConcurrentAuthenticationResult;
+  resolveModelKey?: (
+    capability: string | null,
+    provider: string,
+  ) => Promise<string | null>;
 }
 
 interface SendMessageBody {
@@ -132,7 +146,6 @@ function unsupportedMessageCapability(body: SendMessageBody): string | null {
     return "attachments";
   }
   if (body.slashCommand) return "slash_commands";
-  if (body.onboarding !== undefined) return "onboarding_bootstrap";
   if (body.conversationKey && !body.conversationId) {
     return "legacy_conversation_keys";
   }
@@ -211,6 +224,7 @@ export function createConcurrentRuntimeHttpHandler(
     options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const authenticate =
     options.authenticate ?? authenticateConcurrentRuntimeRequest;
+  const resolveModelKey = options.resolveModelKey ?? resolveConcurrentModelKey;
   const browserBrokerHandler = options.browserBrokerService
     ? createBrowserBrokerHttpHandler({
         store: options.store,
@@ -219,6 +233,14 @@ export function createConcurrentRuntimeHttpHandler(
         logger,
         eventPollIntervalMs,
         heartbeatIntervalMs,
+        resolveProviderConfig:
+          (request): ConcurrentProviderConfigResolver =>
+          () =>
+            resolveConcurrentProviderConfig(
+              request.headers.get(CONCURRENT_MODEL_KEY_PROVIDER_HEADER) ?? "",
+              request.headers.get(CONCURRENT_MODEL_KEY_CAPABILITY_HEADER),
+              resolveModelKey,
+            ),
       })
     : null;
 
@@ -259,7 +281,10 @@ export function createConcurrentRuntimeHttpHandler(
         disk: null,
         memory: { currentMb: memoryMb, maxMb: memoryMb },
         cpu: { currentPercent: 0, maxCores: 1 },
-        migrations: { dbVersion: 2, lastWorkspaceMigrationId: null },
+        migrations: {
+          dbVersion: CONCURRENT_RUNTIME_MIGRATIONS.at(-1)?.version ?? 0,
+          lastWorkspaceMigrationId: null,
+        },
         ces: { connected: false },
         capabilities: { memoryOptOut: true },
       });
@@ -293,7 +318,9 @@ export function createConcurrentRuntimeHttpHandler(
     if (request.method === "GET" && pathname === "/v1/config") {
       const auth = authenticated(request, "settings.read", authenticate);
       if (!auth.ok) return auth.response;
-      const provider = getConcurrentManagedProviderConfig();
+      const provider = getConcurrentProviderConfig(
+        request.headers.get(CONCURRENT_MODEL_KEY_PROVIDER_HEADER),
+      );
       return json({
         llm: provider
           ? {
@@ -446,6 +473,28 @@ export function createConcurrentRuntimeHttpHandler(
         );
       }
 
+      const onboarding =
+        body.onboarding === undefined
+          ? undefined
+          : ConcurrentOnboardingContextSchema.safeParse(body.onboarding);
+      if (onboarding && !onboarding.success) {
+        return errorResponse(
+          400,
+          "INVALID_REQUEST",
+          "Onboarding context is invalid or too large.",
+        );
+      }
+
+      const providerId =
+        request.headers.get(CONCURRENT_MODEL_KEY_PROVIDER_HEADER) ?? "";
+      const provider = getConcurrentProviderConfig(providerId);
+      if (!provider) {
+        return errorResponse(
+          409,
+          "model_provider_not_configured",
+          "Connect one supported model API key before starting a conversation.",
+        );
+      }
       const conversationId = body.conversationId?.trim() || undefined;
       const idempotencyKey =
         body.clientMessageId?.trim() || auth.tenant.claim.request_id;
@@ -453,11 +502,37 @@ export function createConcurrentRuntimeHttpHandler(
         conversationId,
         idempotencyKey,
       });
-      const accepted = await options.service.submitMessage(context, {
-        conversationId,
-        content: body.content,
-        clientMessageId: body.clientMessageId?.trim() || undefined,
-      });
+      let accepted;
+      try {
+        accepted = await options.service.submitMessage(
+          context,
+          {
+            conversationId,
+            content: body.content,
+            clientMessageId: body.clientMessageId?.trim() || undefined,
+            ...(onboarding?.success
+              ? { onboardingContext: onboarding.data }
+              : {}),
+          },
+          (): ReturnType<ConcurrentProviderConfigResolver> =>
+            resolveConcurrentProviderConfig(
+              providerId,
+              request.headers.get(CONCURRENT_MODEL_KEY_CAPABILITY_HEADER),
+              resolveModelKey,
+            ),
+        );
+      } catch (error) {
+        if (error instanceof ConcurrentModelKeyResolutionError) {
+          return errorResponse(
+            error.code === "key_missing" ? 409 : 503,
+            error.code === "key_missing"
+              ? "model_provider_key_missing"
+              : "model_provider_unavailable",
+            error.message,
+          );
+        }
+        throw error;
+      }
       return json(
         {
           accepted: true,

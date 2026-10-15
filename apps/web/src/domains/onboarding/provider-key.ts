@@ -104,10 +104,7 @@ export function peekPendingProviderKey(
       sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
       return null;
     }
-    if (
-      scope &&
-      (!scope.userId || parsed.ownerUserId !== scope.userId)
-    ) {
+    if (scope && (!scope.userId || parsed.ownerUserId !== scope.userId)) {
       sessionStorage.removeItem(PENDING_PROVIDER_KEY_STORAGE);
       return null;
     }
@@ -323,10 +320,8 @@ export async function configureOnboardingProviderProfile(
 }
 
 /**
- * Apply the API key collected during onboarding to the freshly hatched local
- * assistant: store the secret (when a key was entered) and create the provider
- * connection so the daemon can use it. The pending key is only cleared after
- * all writes succeed so a transient gateway/auth error can be retried.
+ * Apply the onboarding key to the tenant vault for a shared cloud assistant,
+ * or create the provider connection for a dedicated assistant.
  */
 export async function applyPendingProviderKey(
   assistantId: string,
@@ -336,28 +331,27 @@ export async function applyPendingProviderKey(
   const pending = peekPendingProviderKey(scope);
   if (!pending) return;
   const authType = pendingProviderAuthType(pending);
-  if (isConcurrentRuntimeProvider(runtimeProvider)) {
-    setPendingProviderKey(null);
-    return;
-  }
-  if (isPooledRuntimeProvider(runtimeProvider)) {
+  if (
+    isPooledRuntimeProvider(runtimeProvider) ||
+    isConcurrentRuntimeProvider(runtimeProvider)
+  ) {
     if (!isPooledApiKeyProvider(pending.provider)) {
       throw new PooledProviderSetupError(
         "pooled_provider_unsupported",
         pending.provider === "openai-compatible" ||
           pending.providerOptionId === "xai"
-          ? "xAI and custom OpenAI-compatible providers are not available on pooled assistants yet. Choose Anthropic, Fireworks, Gemini, Kimi, MiniMax, OpenAI API, or OpenRouter."
+          ? "xAI and custom OpenAI-compatible providers are not available on shared cloud assistants yet. Choose Anthropic, Fireworks, Gemini, Kimi, MiniMax, OpenAI API, or OpenRouter."
           : pending.provider === "ollama"
-            ? "Ollama runs on your own computer and is not available on a pooled cloud assistant. Choose a supported API-key provider."
-            : "This provider is not available on pooled assistants yet. Choose a supported API-key provider.",
+            ? "Ollama runs on your own computer and is not available on a shared cloud assistant. Choose a supported API-key provider."
+            : "This provider is not available on shared cloud assistants yet. Choose a supported API-key provider.",
       );
     }
     if (authType !== "api_key") {
       throw new PooledProviderSetupError(
         "pooled_provider_api_key_required",
         authType === "oauth_subscription"
-          ? "ChatGPT subscription sign-in is not available on pooled assistants yet. Choose OpenAI API and enter an API key instead."
-          : "Pooled assistants currently require a supported provider API key.",
+          ? "ChatGPT subscription sign-in is not available on shared cloud assistants yet. Choose OpenAI API and enter an API key instead."
+          : "Shared cloud assistants currently require a supported provider API key.",
       );
     }
     const credentialName = credentialNameFor(
@@ -367,7 +361,7 @@ export async function applyPendingProviderKey(
     if (credentialName !== pending.provider) {
       throw new PooledProviderSetupError(
         "pooled_provider_credential_alias_unsupported",
-        "Custom credential names are not available on pooled assistants. Save this key under the selected provider instead.",
+        "Custom credential names are not available on shared cloud assistants. Save this key under the selected provider instead.",
       );
     }
     const trimmed = pending.key.trim();
@@ -383,9 +377,8 @@ export async function applyPendingProviderKey(
       pending.provider,
       trimmed,
     );
-    // The assignment bootstrap creates the provider connection and active
-    // profile from this tenant-scoped vault entry. Mutating worker-local
-    // connection/config routes here would be partial and non-durable.
+    // Shared runtimes resolve the tenant key at request time; worker-local
+    // connection and profile mutations would not be tenant-safe.
     setPendingProviderKey(null);
     return;
   }

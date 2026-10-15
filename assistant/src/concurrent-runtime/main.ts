@@ -1,8 +1,8 @@
-import { assertConcurrentManagedProviderConfiguration } from "../providers/platform-proxy/concurrent-provider-config.js";
 import {
   initAuthSigningKey,
   resolveSigningKey,
 } from "../runtime/auth/token-service.js";
+import { validateModelKeyControlPlaneUrl } from "../security/pooled-model-key-context.js";
 import { getLogger } from "../util/logger.js";
 import { BrowserBrokerService } from "./browser-broker/service.js";
 import { createConcurrentRuntimeHttpHandler } from "./http-server.js";
@@ -39,7 +39,9 @@ const databaseUrl = process.env.CONCURRENT_RUNTIME_DATABASE_URL?.trim();
 if (!databaseUrl) {
   throw new Error("CONCURRENT_RUNTIME_DATABASE_URL is required.");
 }
-assertConcurrentManagedProviderConfiguration();
+validateModelKeyControlPlaneUrl(
+  process.env.WORKLIN_CONTROL_PLANE_INTERNAL_URL ?? "",
+);
 
 initAuthSigningKey(resolveSigningKey());
 
@@ -58,11 +60,19 @@ const browserBrokerService =
     ? new BrowserBrokerService({
         store,
         allowedOrigins: commaSeparated("CONCURRENT_BROWSER_ALLOWED_ORIGINS"),
-        onRunRunnable: async (context, runId): Promise<void> => {
+        onRunRunnable: async (
+          context,
+          runId,
+          resolveProviderConfig,
+        ): Promise<void> => {
           if (!serviceRef.current) {
             throw new Error("Concurrent runtime service is not initialized.");
           }
-          await serviceRef.current.resumeRun(context, runId);
+          await serviceRef.current.resumeRun(
+            context,
+            runId,
+            resolveProviderConfig,
+          );
         },
       })
     : undefined;

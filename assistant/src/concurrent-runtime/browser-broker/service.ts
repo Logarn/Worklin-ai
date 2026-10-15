@@ -11,6 +11,7 @@ import {
 } from "@vellumai/service-contracts/browser-broker";
 import type { TenantExecutionContext } from "@vellumai/service-contracts/tenant-context";
 
+import type { ConcurrentProviderConfigResolver } from "../../providers/platform-proxy/concurrent-request-context.js";
 import { ConcurrentRuntimeStoreError } from "../store.js";
 import type {
   BrowserActionAck,
@@ -143,6 +144,7 @@ export interface BrowserBrokerServiceOptions {
   onRunRunnable?: (
     context: TenantExecutionContext,
     runId: string,
+    resolveProviderConfig?: ConcurrentProviderConfigResolver,
   ) => void | Promise<void>;
 }
 
@@ -261,6 +263,7 @@ export class BrowserBrokerService {
     context: TenantExecutionContext,
     result: BrowserBrokerResultRequest,
     connectionToken: string,
+    resolveProviderConfig?: ConcurrentProviderConfigResolver,
   ): Promise<BrowserActionAck> {
     const ack = await this.options.store.recordBrowserResult(
       context,
@@ -268,7 +271,11 @@ export class BrowserBrokerService {
       hashBrowserConnectionToken(connectionToken),
     );
     if (ack.accepted && ack.runId && this.options.onRunRunnable) {
-      await this.options.onRunRunnable(context, ack.runId);
+      await this.options.onRunRunnable(
+        context,
+        ack.runId,
+        resolveProviderConfig,
+      );
     }
     return ack;
   }

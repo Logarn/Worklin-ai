@@ -19,6 +19,7 @@ import {
 } from "../../providers/platform-proxy/context.js";
 import { getSecureKeyAsync } from "../../security/secure-keys.js";
 import { getLogger } from "../../util/logger.js";
+import { getConcurrentProviderRequestConfig } from "../platform-proxy/concurrent-request-context.js";
 import { getLlmProviderEnvVar } from "../provider-env-vars.js";
 import type { Auth, ResolvedAuth } from "./auth.js";
 import { PROVIDERS_REQUIRING_BASE_URL_AND_MODELS } from "./connections.js";
@@ -71,16 +72,13 @@ export async function resolveAuth(
 
     case "platform": {
       if (isConcurrentServiceRuntime()) {
-        const providerEnvVar = getLlmProviderEnvVar(provider);
-        const providerEnvKey = providerEnvVar
-          ? process.env[providerEnvVar]?.trim()
-          : undefined;
-        return providerEnvKey
+        const requestConfig = getConcurrentProviderRequestConfig();
+        return requestConfig?.provider === provider && requestConfig.key
           ? {
               ok: true,
               resolved: {
                 kind: "header",
-                headers: { Authorization: `Bearer ${providerEnvKey}` },
+                headers: { Authorization: `Bearer ${requestConfig.key}` },
                 ...(safeBaseUrl ? { baseUrl: safeBaseUrl } : {}),
               },
             }

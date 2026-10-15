@@ -23,8 +23,11 @@ import {
 } from "./connection-resolution.js";
 import type { ProviderConnection } from "./inference/auth.js";
 import { getConnection, listConnections } from "./inference/connections.js";
-import { getConcurrentManagedProviderConfig } from "./platform-proxy/concurrent-provider-config.js";
-import { concurrentManagedProviderContextIsActive } from "./platform-proxy/concurrent-request-context.js";
+import { getConcurrentProviderConfig } from "./platform-proxy/concurrent-provider-config.js";
+import {
+  concurrentManagedProviderContextIsActive,
+  getConcurrentProviderRequestConfig,
+} from "./platform-proxy/concurrent-request-context.js";
 import { initializeProviders, listProviders } from "./registry.js";
 import { resolveProviderFromConnection } from "./registry.js";
 import type {
@@ -94,14 +97,17 @@ async function resolveConcurrentManagedProvider(
     return null;
   }
 
-  const managed = getConcurrentManagedProviderConfig();
-  if (!managed) return null;
+  const requestConfig = getConcurrentProviderRequestConfig();
+  const providerConfig = requestConfig
+    ? getConcurrentProviderConfig(requestConfig.provider, requestConfig.model)
+    : null;
+  if (!requestConfig || !providerConfig) return null;
 
   const connection: ProviderConnection = {
-    name: `${managed.provider}-managed`,
-    provider: managed.provider,
+    name: `${providerConfig.provider}-tenant-key`,
+    provider: providerConfig.provider,
     auth: { type: "platform" },
-    label: managed.displayName,
+    label: providerConfig.displayName,
     baseUrl: null,
     models: null,
     createdAt: 0,
@@ -109,15 +115,15 @@ async function resolveConcurrentManagedProvider(
     isManaged: true,
   };
   const provider = await resolveProviderFromConnection(connection, config, {
-    model: managed.model,
+    model: providerConfig.model,
   });
   if (!provider) return null;
   return {
     provider: new CallSiteConfiguredProvider(provider, callSite, {
       ...opts,
-      modelOverride: managed.model,
+      modelOverride: providerConfig.model,
     }),
-    configuredProviderName: managed.provider,
+    configuredProviderName: providerConfig.provider,
   };
 }
 
