@@ -9,11 +9,13 @@ import {
   type TenantExecutionContext,
 } from "@vellumai/service-contracts/tenant-context";
 
+import type { ConcurrentProviderConfigResolver } from "../../providers/platform-proxy/concurrent-request-context.js";
 import type { Scope } from "../../runtime/auth/types.js";
 import {
   type ConcurrentAuthenticatedTenant,
   type ConcurrentAuthenticationResult,
 } from "../auth.js";
+import { ConcurrentModelKeyResolutionError } from "../model-key-capability.js";
 import type { ConcurrentRuntimeStore } from "../store.js";
 import { ConcurrentRuntimeStoreError } from "../store.js";
 import { BrowserBrokerService, hashBrowserConnectionToken } from "./service.js";
@@ -34,6 +36,9 @@ export interface BrowserBrokerHttpHandlerOptions {
   logger: BrowserBrokerHttpLogger;
   eventPollIntervalMs: number;
   heartbeatIntervalMs: number;
+  resolveProviderConfig?: (
+    request: Request,
+  ) => ConcurrentProviderConfigResolver;
 }
 
 function json(body: unknown, status = 200, headers?: HeadersInit): Response {
@@ -86,6 +91,15 @@ function connectionToken(request: Request): string | null {
 }
 
 function storeError(error: unknown): Response {
+  if (error instanceof ConcurrentModelKeyResolutionError) {
+    return errorResponse(
+      error.code === "key_missing" ? 409 : 503,
+      error.code === "key_missing"
+        ? "model_provider_key_missing"
+        : "model_provider_unavailable",
+      error.message,
+    );
+  }
   if (!(error instanceof ConcurrentRuntimeStoreError)) {
     return errorResponse(
       500,
@@ -349,6 +363,7 @@ export function createBrowserBrokerHttpHandler(
             context(auth.tenant),
             parsed.data,
             token,
+            options.resolveProviderConfig?.(request),
           ),
         );
       } catch (error) {

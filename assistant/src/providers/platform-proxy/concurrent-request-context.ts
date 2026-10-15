@@ -9,6 +9,9 @@ export interface ConcurrentProviderRequestConfig extends ConcurrentProviderConfi
   key: string;
 }
 
+export type ConcurrentProviderConfigResolver =
+  () => Promise<ConcurrentProviderRequestConfig>;
+
 interface ConcurrentManagedProviderScope {
   active: boolean;
   assistantId: string;

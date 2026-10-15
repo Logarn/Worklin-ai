@@ -13,6 +13,7 @@ export const ConcurrentOnboardingContextSchema = z
     assistantName: shortText.optional(),
     brandName: shortText.optional(),
     websiteUrl: z.string().max(2_048).optional(),
+    contentSourceUrl: z.string().max(2_048).optional(),
     priorAssistants: textList.optional(),
     googleConnected: z.boolean().optional(),
     googleScopes: textList.optional(),

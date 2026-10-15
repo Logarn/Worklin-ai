@@ -1423,7 +1423,25 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
             "action_conflict",
           );
         }
-        return { accepted: true, canonicalState: action.state };
+        const [run] = await tx<{ status: string }[]>`
+          SELECT status
+          FROM concurrent_runs
+          WHERE organization_id = ${context.organizationId}
+            AND assistant_id = ${context.assistantId}
+            AND user_id = ${context.userId}
+            AND actor_id = ${context.actorId}
+            AND run_id = ${action.run_id}
+        `;
+        return {
+          accepted: true,
+          canonicalState: action.state,
+          ...(run?.status === "queued"
+            ? {
+                runId: action.run_id,
+                conversationId: action.conversation_id,
+              }
+            : {}),
+        };
       }
       await tx`
         UPDATE concurrent_browser_actions

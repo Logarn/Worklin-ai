@@ -4600,8 +4600,23 @@ async function proxyToGateway(
     const isConcurrentMessagePost =
       isConcurrentRuntime &&
       req.method === "POST" &&
-      url.pathname ===
-        `/v1/assistants/${encodeURIComponent(assistant.id)}/messages`;
+      pathEquals(
+        url.pathname,
+        `/v1/assistants/${encodeURIComponent(assistant.id)}/messages`,
+      );
+    const concurrentBrowserActionsPrefix = `/v1/assistants/${encodeURIComponent(assistant.id)}/browser-broker/actions/`;
+    const browserActionRoute = pathIsOrStartsWith(
+      url.pathname,
+      concurrentBrowserActionsPrefix,
+    )
+      ? url.pathname
+          .slice(concurrentBrowserActionsPrefix.length)
+          .replace(/\/+$/u, "")
+      : "";
+    const isConcurrentBrowserResultPost =
+      isConcurrentRuntime &&
+      req.method === "POST" &&
+      /^[^/]+\/result$/u.test(browserActionRoute);
     if (isConcurrentMessagePost && !concurrentProvider) {
       sendJson(
         req,
@@ -4615,7 +4630,10 @@ async function proxyToGateway(
       );
       return;
     }
-    if (isConcurrentMessagePost && concurrentProvider) {
+    if (
+      (isConcurrentMessagePost || isConcurrentBrowserResultPost) &&
+      concurrentProvider
+    ) {
       concurrentRequestHandle = randomUUID();
       headers.set(
         CONCURRENT_MODEL_KEY_CAPABILITY_HEADER,

@@ -555,7 +555,14 @@ export class InMemoryConcurrentRuntimeStore implements ConcurrentRuntimeStore {
           "action_conflict",
         );
       }
-      return { accepted: true, canonicalState: action.state };
+      const run = this.scopedRun(context, action.runId);
+      return {
+        accepted: true,
+        canonicalState: action.state,
+        ...(run?.status === "queued"
+          ? { runId: action.runId, conversationId: action.conversationId }
+          : {}),
+      };
     }
     action.state = result.state;
     action.resultHash = result.resultHash;

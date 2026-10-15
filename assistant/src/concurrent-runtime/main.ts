@@ -60,11 +60,19 @@ const browserBrokerService =
     ? new BrowserBrokerService({
         store,
         allowedOrigins: commaSeparated("CONCURRENT_BROWSER_ALLOWED_ORIGINS"),
-        onRunRunnable: async (context, runId): Promise<void> => {
+        onRunRunnable: async (
+          context,
+          runId,
+          resolveProviderConfig,
+        ): Promise<void> => {
           if (!serviceRef.current) {
             throw new Error("Concurrent runtime service is not initialized.");
           }
-          await serviceRef.current.resumeRun(context, runId);
+          await serviceRef.current.resumeRun(
+            context,
+            runId,
+            resolveProviderConfig,
+          );
         },
       })
     : undefined;

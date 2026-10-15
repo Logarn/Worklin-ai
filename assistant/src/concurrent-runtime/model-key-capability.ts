@@ -1,4 +1,5 @@
 import { getConcurrentProviderConfig } from "../providers/platform-proxy/concurrent-provider-config.js";
+import type { ConcurrentProviderRequestConfig } from "../providers/platform-proxy/concurrent-request-context.js";
 import { validateModelKeyControlPlaneUrl } from "../security/pooled-model-key-context.js";
 
 export const CONCURRENT_MODEL_KEY_CAPABILITY_HEADER =
@@ -14,6 +15,38 @@ export type ConcurrentModelKeyFetch = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
+
+export class ConcurrentModelKeyResolutionError extends Error {
+  constructor(readonly code: "key_missing" | "unavailable") {
+    super(
+      code === "key_missing"
+        ? "Reconnect your model API key, then try again."
+        : "Your model provider could not be reached. Try again shortly.",
+    );
+    this.name = "ConcurrentModelKeyResolutionError";
+  }
+}
+
+export async function resolveConcurrentProviderConfig(
+  providerId: string,
+  capability: string | null,
+  resolveModelKey: (
+    capability: string | null,
+    provider: string,
+  ) => Promise<string | null> = resolveConcurrentModelKey,
+): Promise<ConcurrentProviderRequestConfig> {
+  const provider = getConcurrentProviderConfig(providerId);
+  if (!provider) throw new ConcurrentModelKeyResolutionError("key_missing");
+
+  let key: string | null;
+  try {
+    key = await resolveModelKey(capability, provider.provider);
+  } catch {
+    throw new ConcurrentModelKeyResolutionError("unavailable");
+  }
+  if (!key) throw new ConcurrentModelKeyResolutionError("key_missing");
+  return { ...provider, key };
+}
 
 export async function resolveConcurrentModelKey(
   capability: string | null,

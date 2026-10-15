@@ -75,16 +75,26 @@ function createHarness() {
     _request: Request,
     _scope: Scope,
   ): ConcurrentAuthenticationResult => ({ ok: true, tenant });
+  let resolvedModelKeys = 0;
   const handler = createConcurrentRuntimeHttpHandler({
     store,
     service,
     authenticate,
-    resolveModelKey: async (capability, provider) =>
-      capability === "test-capability" && provider === "openai"
+    resolveModelKey: async (capability, provider) => {
+      resolvedModelKeys += 1;
+      return capability === "test-capability" && provider === "openai"
         ? "test-provider-key"
-        : null,
+        : null;
+    },
   });
-  return { handler, service, store, tenant, executor };
+  return {
+    handler,
+    service,
+    store,
+    tenant,
+    executor,
+    getResolvedModelKeys: () => resolvedModelKeys,
+  };
 }
 
 describe("concurrent runtime HTTP handler", () => {
@@ -108,6 +118,7 @@ describe("concurrent runtime HTTP handler", () => {
             tone: "warm",
             brandName: "ChickMagnet",
             websiteUrl: "https://chickmagnet.xyz",
+            contentSourceUrl: "https://chickmagnet.xyz/about",
           },
         }),
       }),
@@ -125,6 +136,7 @@ describe("concurrent runtime HTTP handler", () => {
       tone: "warm",
       brandName: "ChickMagnet",
       websiteUrl: "https://chickmagnet.xyz",
+      contentSourceUrl: "https://chickmagnet.xyz/about",
     });
     const transcript = await handler(
       new Request(
@@ -187,6 +199,29 @@ describe("concurrent runtime HTTP handler", () => {
     expect(executor.onboardingContext).toBeUndefined();
   });
 
+  test("does not resolve a one-use model key for a completed idempotent retry", async () => {
+    const { handler, service, getResolvedModelKeys } = createHarness();
+    await service.initialize();
+    const send = () =>
+      handler(
+        new Request("http://runtime.test/v1/messages", {
+          method: "POST",
+          headers: providerRequestHeaders(),
+          body: JSON.stringify({
+            conversationId: "conversation-retry",
+            content: "hello once",
+            clientMessageId: "message-retry",
+          }),
+        }),
+      );
+
+    expect((await send()).status).toBe(202);
+    await service.onIdle();
+    expect(getResolvedModelKeys()).toBe(1);
+    expect((await send()).status).toBe(202);
+    expect(getResolvedModelKeys()).toBe(1);
+  });
+
   test("exposes read-only web bootstrap compatibility routes", async () => {
     const { handler, service } = createHarness();
     await service.initialize();
@@ -205,6 +240,7 @@ describe("concurrent runtime HTTP handler", () => {
     expect(await health.json()).toMatchObject({
       status: "ok",
       version: APP_VERSION,
+      migrations: { dbVersion: 3 },
       capabilities: { memoryOptOut: true },
     });
 
