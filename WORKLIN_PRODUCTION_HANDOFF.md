@@ -67,7 +67,7 @@ Verified topology and gates:
   process health truthfully while keeping unrestricted hatching unavailable.
 
 Authenticated production verification on 2026-10-15 recovered assistant
-`worklin-1b6adaff-d8f8-424c-bc66-5103ce5c5c97` from persisted
+`[redacted production canary assistant]` from persisted
 `runtime_status: failed` and `Managed assistant runtime provisioning is
 unavailable.` A hatch retry returned HTTP `200`, changed the runtime provider to
 `concurrent_service`, changed runtime status/state to `active`/`ready`, cleared
@@ -777,7 +777,7 @@ Production status on 2026-07-15:
 
 ### Pooled release gate that must remain on every future handoff
 
-The tenant-safe pooled execution plane is merged and locally verified through PR `#139`; the current production source is `0d037e9`. The task remains P0 until the infrastructure and product acceptance gates pass. Do not close it until all of the following are true:
+The tenant-safe pooled execution plane is merged and locally verified through PR `#139`; the current production release is `1ab4bd78`. The task remains P0 until the infrastructure and product acceptance gates pass. Do not close it until all of the following are true:
 
 1. Arbitrary new users can complete signup, consent, BYOK provider setup, assistant creation, and a real agent turn without an operator editing infrastructure.
 2. Every request carries authenticated organization, user, and assistant context through conversation, memory, credential, file, artifact, tool, background-job, and voice-session operations.
@@ -1044,7 +1044,7 @@ ElevenLabs is configured as the current private-pilot engine for the production 
 Non-secret provider configuration:
 
 - Speech Engine ID: `seng_9801kxgndkvqe3v93h0wmebr3bqy`
-- Speech Engine upstream: `wss://worklin-ai-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`
+- Speech Engine upstream: `wss://lovely-clarity-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`
 - Worklin engine: `elevenlabs`
 - Pilot allowlist: the current authenticated user only
 - Provider privacy configuration: do not retain raw voice; delete provider audio
@@ -1277,7 +1277,7 @@ ElevenLabs remains disabled for general users. The account, scoped server-side c
 2. Confirm a normal typed turn succeeds under the corrected BYOK provider/model pair before spending another voice minute.
 3. Start Live Voice, confirm `Listening`, and speak a short first turn. Verify the Worklin response is both audible and persisted as the same conversation turn.
 4. Run the documented three-turn, partial/final transcript, input/output visualization, barge-in, persistence, duplicate-session, approval-safety, no-raw-audio, and latency gates.
-5. Keep the internal shared-runtime fallback limited to the one pilot assistant. Do not treat it as customer-ready or increase Railway runtime cost/capacity without explicit authorization.
+5. Keep the internal shared-runtime fallback limited to the exact two-assistant restricted canary: the existing pilot and the recovered canary assistant. Do not add a third assistant, treat the route as customer-ready, or increase Railway runtime cost/capacity without explicit authorization. After the two-tenant acceptance work is complete, remove the recovered canary assistant if it is no longer needed and verify the allowlist has returned to the intended pilot-only state.
 
 Do not declare Release B complete until the in-app and overlay surfaces both pass the same-conversation behavioral and safety suite.
 
@@ -1321,11 +1321,11 @@ Continue Worklin production work from:
 
 Read AGENTS.md and WORKLIN_PRODUCTION_HANDOFF.md completely before acting. WORKLIN_PRODUCTION_HANDOFF.md is the only authoritative handoff; do not create another dated handoff.
 
-P0 is multi-user agent-runtime capacity. The six-milestone tenant-safe pooled execution plane merged through PR `#139` as `488f4b7` and is present in production source `0d037e9`. Every pool gate remains disabled, and no worker, state bucket, paid capacity, or production pool secret exists. The existing dedicated pilot route was repaired through PRs `#147`-`#149`; authenticated Chrome proved a real reply and reload persistence on the final deployment. Do not mistake that for arbitrary-new-user capacity. After explicit infrastructure approval, start with one new private worker and concurrency `1`; pass the sequential two-tenant isolation, stale-token replay, restart-quarantine, exact operator-recovery, export/sanitize, and no-secret-leakage canary before expansion. Pooled v1 does not admit live voice, terminal/ACP, background work, integrations, or executable task/work-item runs, so full parity remains a separate release gate.
+P0 is multi-user agent-runtime capacity. The six-milestone tenant-safe pooled execution plane merged through PR `#139` as `488f4b7` and is present in production release `1ab4bd78`. Every pool gate remains disabled, and no pooled state bucket, paid capacity, or production pool secret exists. A private concurrent worker now supports only the exact two-assistant internal canary with global concurrency `1`; generic hatching remains unavailable. Do not mistake that for arbitrary-new-user capacity. Pass the sequential two-tenant isolation, stale-token replay, restart-quarantine, exact operator-recovery, export/sanitize, and no-secret-leakage canary before broader placement. Pooled v1 does not admit live voice, terminal/ACP, background work, integrations, or executable task/work-item runs, so full parity remains a separate release gate.
 
-The last verified bridge state on 2026-07-15 had exactly one unclaimed pre-provisioned isolated customer runtime from commit `65ff168` and Railway deployments `d779d8d9-2c62-4652-8cd2-f30e67fda61d` plus `657367ac-fcd5-4790-b2df-cb8247cf7103`. Reverify that the slot is still unclaimed before relying on it. Its first consented assistant may atomically claim it; the gateway then permanently locks to that first valid signed assistant identity and rejects all others. Do not consume the slot with a test identity, do not add customer assistants to the legacy shared-runtime allowlist, and do not describe this as general multi-user capacity.
+The 2026-07-15 bridge state had one unclaimed pre-provisioned isolated customer runtime, but current `/readyz` reports zero available slots. Treat the old slot evidence as historical and do not rely on it. Do not add customer assistants to the internal allowlist or describe the restricted canary as general multi-user capacity.
 
-The current private-pilot engine is ElevenLabs. Its scoped credential is stored only in Worklin's server-side credential service. Speech Engine `seng_9801kxgndkvqe3v93h0wmebr3bqy` is configured with upstream `wss://worklin-ai-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`. The approved key scopes are `ElevenAgents: Write` and `Speech to Speech: Access`; unrelated scopes remain disabled. Never expose or retrieve the key.
+The current private-pilot engine is ElevenLabs. Its scoped credential is stored only in Worklin's server-side credential service. Speech Engine `seng_9801kxgndkvqe3v93h0wmebr3bqy` is configured with upstream `wss://lovely-clarity-production.up.railway.app/v1/live-voice/providers/elevenlabs/upstream`. The approved key scopes are `ElevenAgents: Write` and `Speech to Speech: Access`; unrelated scopes remain disabled. Never expose or retrieve the key.
 
 The ElevenLabs production transport now works end to end. `53e1416` fixed legacy-versus-canonical owner allowlist matching, `e2ea3b6` moved the single pilot shared-runtime assistant ID into server-only Railway configuration, and `9970ef9` aligned Worklin's Speech Engine JWT verifier with ElevenLabs' optional Bearer prefix. Railway deployment `1a145888-9100-4054-9c2d-039cdd29a9eb` is healthy. Authenticated Chrome reached `Listening`, and Railway logged the ElevenLabs Speech Engine upstream opening and closing. The immediate blocker is now the normal Worklin LLM stage: Kimi rejects configured model `claude-sonnet-4-6` with HTTP 404/permission denied. Keep the pilot on BYOK, select a model supported by the configured provider, verify one typed turn, then rerun voice. Do not silently switch to a Worklin-managed profile.
 
@@ -1335,7 +1335,7 @@ The Hume path is also configured and its connectivity is proven: Worklin bootstr
 
 The app previously hid the provider error because ChatComposer unmounted VoiceConversationPanel for failed state. The deployed fix keeps the failed panel visible with Voice unavailable plus the provider message while leaving the retry button available. Preserve all unrelated worktree changes.
 
-Production application behavior is currently recorded at `0d037e9` in the Start Here section. The dedicated pilot runtime and control plane are active, `/healthz` reports that exact SHA, runtime logs show fast HTTP 200 message reads without the recovered schema errors, and authenticated Chrome persisted both `RUNTIME READY` and `SCHEMA READY` turns across reloads. Natural-language messages, including first-turn wake-up, onboarding, connection, audit, and copy requests, reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The complete first-party catalog is bundled for every user. The live-voice card has explicit close/reopen behavior, large-orb start guidance, and Hume/ElevenLabs/Native settings consistency in production. Broader production catalog/load sampling and the live terminology sweep were blocked in another Chrome profile by an `Updated Terms` re-acceptance screen; stop there until the user reviews and accepts or declines the policies. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
+Current production application behavior is recorded at `1ab4bd78` in the Start Here section. The repaired control plane and private concurrent worker are active on Railway deployment `a510f52e-9fa7-4ea5-8808-a24d30924942`; public `/readyz` is HTTP 200 while truthfully reporting generic hatching unavailable. The authenticated recovered canary assistant is active and its health route is HTTP 200. Earlier authenticated Chrome evidence also persisted `RUNTIME READY` and `SCHEMA READY` turns across reloads and proved that natural-language requests reach the LLM instead of saved response interceptors. Worklin's existing system-access settings allow plain/catalog skill loading plus read-only Brand Brain access without an approval prompt, while Brand Brain mutations and other tools/actions still follow the selected access level. The complete first-party catalog is bundled for every user. The live-voice card has explicit close/reopen behavior, large-orb start guidance, and Hume/ElevenLabs/Native settings consistency in production. Broader production catalog/load sampling and the live terminology sweep were blocked in another Chrome profile by an `Updated Terms` re-acceptance screen; stop there until the user reviews and accepts or declines the policies. The macOS workflow is blocked before compilation by a missing GitHub App ID secret.
 
 After either provider can sustain a session, run the documented three-turn test, real-time transcript check, output-driven speaking visualization check, barge-in latency measurement, end-session and refresh persistence checks, duplicate-session rejection, approval safety test, and no-raw-audio confirmation. Use the authenticated Chrome profile requested by the user; do not switch to Safari or the in-app browser. Never repeat or expose provider credentials.
 ```
