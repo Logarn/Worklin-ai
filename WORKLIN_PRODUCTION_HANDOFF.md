@@ -1,19 +1,19 @@
 # Worklin Production Handoff
 
-Last refreshed: 2026-10-14
+Last refreshed: 2026-10-15
 
 This is the single authoritative handoff for ongoing Worklin production work. Update it in place. Do not create another dated handoff unless a separate immutable incident record is explicitly requested.
 
 ## Start Here
 
 - Canonical repo/worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current release worktree: `/Users/admin/Documents/New project 2/.tmp-worklin-redeploy`
-- Current merged and deployed frontend release: `c91efa765509b30997754ee90075fb17d4a3bdec` (`Guide retention brand onboarding`, PR `#206`). Vercel production reports success. Railway reported no deployment needed for both backend services because PR `#206` changed only the web app. Public `/readyz` reports the control plane and provisioner ready.
-- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`; production-handoff refresh PR `#180` merged as `8d47b10`; retention review bridge repair PR `#181` merged as `ac33d53`; brand-intelligence archive PR `#182` merged as `0af1b9a`; small-tranche retention review PR `#183` merged as `623310b`; retention-expression validation PR `#184` merged as `a77dcdb`.
+- Current release worktree: `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`
+- Current merged and deployed frontend release: `1ab4bd7800efbfe4e6e4d5d58348cccc1d87951c` (`Repair production backend packaging and routing`, PR `#209`). Vercel production deployment `worklin-2vz4j32k9-sautionlineai-3596s-projects.vercel.app` is Ready. Both production domains serve `/assistant` and route authentication requests to the live Railway control plane.
+- Release chain: pooled-runtime PR `#139` merged as `488f4b7`; runtime-startup/schema PR `#147` merged as `67a93bb`; Railway IPv6 PR `#148` merged as `ecee3c8`; schema-checkpoint PR `#149` merged as `0d037e9`; canonical-origin PR `#155` merged as `5f2d37e`; one-time-onboarding/provisioning PR `#156` merged as `8538177`; Qdrant container-path PR `#157` merged as `00f624b`; customer-decisioning foundation PR `#158` merged as `65a02bb`; competitor-intelligence PR `#170` merged as `b5be09c`; all-properties Klaviyo PR `#171` merged as `a5bc624`; runtime-independent retention page PR `#175` merged as `57ba1f4`; malformed-record tolerance PR `#176` merged as `6abd4ac`; bounded Klaviyo concurrency PR `#177` merged as `0b574ff`; recent-first history PR `#178` merged as `8b33b6a`; tenant-owner approval repair PR `#179` merged as `2b5ffac`; production-handoff refresh PR `#180` merged as `8d47b10`; retention review bridge repair PR `#181` merged as `ac33d53`; brand-intelligence archive PR `#182` merged as `0af1b9a`; small-tranche retention review PR `#183` merged as `623310b`; retention-expression validation PR `#184` merged as `a77dcdb`; hatching-capacity truthfulness PR `#208` merged as `335457bd`; production Docker and Vercel routing repair PR `#209` merged as `1ab4bd78`.
 - Remote: `https://github.com/Logarn/Worklin-ai.git`
 - Production frontend: `https://worklin-ai.vercel.app`
-- Production backend/runtime: `https://worklin-ai-production.up.railway.app`
-- Public `/readyz` reports the control plane and provisioner ready. This proves deployment health, not the authenticated retention pilot flow.
+- Production backend/control plane: `https://lovely-clarity-production.up.railway.app`
+- Public `/readyz` returns HTTP `200` with `runtimeMode: control-plane`, `provisionerReady: false`, `hatchingReady: false`, and `hatchingMode: unavailable`. Process health is good; unrestricted new-assistant capacity is intentionally not enabled.
 - The tenant-safe pooled code is present in the production image but every pool gate remains disabled. No pooled worker, tenant-state bucket, paid capacity, or new production secret has been created.
 - The private retention service is active at the same release SHA with migrations `001` through `006`, forced tenant isolation, and the private raw-payload bucket ready. The authenticated browser proxy and bounded assistant review bridge are enabled. External provider writes and sending remain disabled globally and per organization.
 - Railway PostgreSQL still has no managed backups or point-in-time recovery. The user explicitly approved one disposable, read-only Dr Rachael pilot because Klaviyo remains the source of truth and the imported state can be rebuilt. Verified encrypted SQL snapshots are stored outside the repo at `/Users/admin/Documents/Worklin Private Backups/retention-production-pre-005-006-20260804.sql.enc` and `/Users/admin/Documents/Worklin Private Backups/retention-production-post-006-20260804.sql.enc`; their passphrases are in macOS Keychain under the matching filenames without `.sql.enc`. The post-migration snapshot is `123152` bytes with SHA-256 `660b14e5920f3a16e73577f9a99a28b89e751c4bfdcc0088f1d85a16b52d7387` and was decrypted in memory to verify the migration ledger and `property_access_mode` schema. This exception does not authorize sending, external writes, a second brand, or ongoing production without managed backup and restore proof.
@@ -21,116 +21,81 @@ This is the single authoritative handoff for ongoing Worklin production work. Up
 
 Read `AGENTS.md` before changing code. Preserve unrelated worktree changes. Never put provider keys, browser cookies, signed connection URLs, session tokens, or other credentials in this file.
 
-## 2026-10-13 Hatching Capacity Repair (Verified Locally, Not Deployed)
+## 2026-10-15 Hatching Capacity Repair (Deployed, Restricted Canary)
 
-The current repair is isolated in
-`/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`
-on branch `assistant/fix-hatching-capacity`, based on `origin/main` at
-`e81de81e`. It has not been committed, pushed, merged, or deployed.
+PR `#208` merged the hatching-capacity and BYOK onboarding repair as
+`335457bd`. PR `#209` merged the production Docker packaging and Vercel routing
+repair as `1ab4bd78`. The fixes are deployed.
 
-A real production signup reached assistant hatching, then failed because the
-live control plane reported `Managed assistant runtime provisioning is
-unavailable.` The last observed production Vercel backend target was
-`lovely-clarity-production.up.railway.app`. That service was reachable, but the
-Railway workspace exposed through the stale connector session did not
-contain the `lovely-clarity` project. It contained only the older failed Worklin
-project whose `worklin-ai-production.up.railway.app` hostname is unavailable.
-Do not repoint production to that older project: its database and runtime state
-have not been shown to contain the live users behind `lovely-clarity`.
+The control-plane Docker build initially failed because its two repository-local
+packages were not copied into the image before `bun install`. The corrected
+Dockerfile copies `packages/retention-domain` and `packages/service-contracts`.
+A fresh Docker-layout install completed with all `217` packages, and Railway
+deployment `c0bc9bb2-4bfa-4efc-b802-ae4b7d4baafc` succeeded. The final
+restricted canary configuration is healthy on Railway deployment
+`a510f52e-9fa7-4ea5-8808-a24d30924942`; the earlier image and intermediate
+canary deployments were removed by Railway after promotion.
 
-The local repair makes runtime capacity an explicit state instead of treating a
-missing provisioner as an assistant-specific terminal failure. The control
-plane now:
+The checked-in Vercel rewrites still pointed at the retired
+`worklin-ai-production.up.railway.app` application. Before the repair, both
+`worklin-ai.vercel.app` and `dashboard.worklin.io` returned Railway
+`Application not found` for authentication routes. PR `#209` points callback,
+allauth, API, and logout traffic at
+`lovely-clarity-production.up.railway.app`. Vercel production deployment
+`worklin-2vz4j32k9-sautionlineai-3596s-projects.vercel.app` is Ready. Both
+production domains now return the expected unauthenticated `401` with Worklin
+CSRF/session headers, and both serve `/assistant` with HTTP `200`.
 
-- checks pooled, pre-provisioned, Railway, and static-template capacity before
-  hatching;
-- leaves an unallocated runtime in `provisioning` rather than mutating it to
-  `failed` when platform hosting is unconfigured;
-- returns `platform_hosted_disabled` with customer-ready copy when no hatching
-  capacity exists;
-- reports `hatchingReady`, `hatchingMode`, and available pre-provisioned slots
-  separately from process readiness at `/readyz`; and
-- permits a retry when a real pre-provisioned slot becomes available even if
-  automatic Railway provisioning remains disabled.
-
-The onboarding UI is BYOK-only for this first free phase. It requires a
-provider API key, keeps ChatGPT subscription sign-in out of the onboarding
-choice, and labels `Worklin-hosted credits` as `Unavailable`. When platform
-hosting is unavailable, hatching explains that setup is saved, removes the
-futile retry action, and returns the user to setup. Existing settings/catalog
-support remains unchanged.
-
-Focused verification on this branch:
-
-- `control-plane`: `bun test src/runtime-stacks.test.ts src/index-runtime-provisioning.test.ts`
-  passed `55/55`.
-- `control-plane`: `bunx tsc --noEmit` passed.
-- `apps/web`: `bun test src/assistant/lifecycle.test.ts src/domains/onboarding/provider-catalog.test.ts src/domains/onboarding/onboarding-lifecycle-sync.test.tsx`
-  passed `50/50`.
-- `apps/web`: `bunx tsc --noEmit` passed.
-- `apps/web`: touched-file ESLint passed.
-- `apps/web`: the production-mode Vite build passed with
-  `VITE_PLATFORM_MODE=true bun --bun vite build --configLoader runner` and
-  transformed 4,825 modules.
-- `git diff --check` passed.
-
-The unmodified default local-mode `bun run build` still exits while Vite loads
-the dynamic local-mode config with `Vite module runner has been closed`. The
-local-mode module imports successfully on its own, and the production-mode
-build passes; treat this as a separate local build-tooling issue until it is
-reproduced from an unchanged checkout.
-
-Production hatching is not restored by this branch alone. The next required
-operator action is the controlled canary and release sequence below, followed
-by deployment of this branch through the normal review path and a new
-email/password signup through the first real BYOK agent turn.
-
-### 2026-10-14 Railway ownership and capacity audit
-
-Railway browser access was restored under the project-owning account. The live
-backend is confirmed in project `respectful-peace`
+Railway browser and CLI access are authenticated to the project-owning account.
+The live backend is project `respectful-peace`
 (`f8255542-2ac7-4e97-9442-2490956a00b9`), production environment
-`04bc3681-59d7-4fe4-85ca-545737f27565`. The OAuth Railway connector remains
-authenticated to a different account and cannot read this project, so use the
-authenticated browser or deliberately reconnect the integration before relying
-on connector output.
+`04bc3681-59d7-4fe4-85ca-545737f27565`.
 
-Verified topology:
+Verified topology and gates:
 
 - `control-plane` (`f263d997-9863-472a-8c4a-1686b02c7773`) owns
-  `lovely-clarity-production.up.railway.app`, listens on port `8080`, builds
-  `control-plane/Dockerfile`, starts with `bun run src/index.ts`, uses one
-  Amsterdam replica with a persistent volume, and currently has Railway
-  serverless sleeping enabled.
-- `worker` (`c2756594-e8e1-456b-8427-8d5a47cf487c`) is a private, active
-  concurrent runtime built from `runtime/Dockerfile`, starts with
-  `/app/runtime/entrypoint.sh`, has its own volume, and does not use serverless
-  sleeping.
-- PostgreSQL is online with its own volume. The worker uses tenant-context
-  scope, tenant-scoped PostgreSQL storage, one global concurrent turn, and one
-  concurrent turn per tenant. Its BYOK path is supported by the control-plane
-  encrypted model-key vault; the managed provider variables must not be used
-  as a fallback for customer turns.
-- The control plane runs in `control-plane` mode and reaches the worker over
-  the private Railway address. Concurrent placement is `internal` with one
-  allowlisted assistant. Automatic Railway provisioning is explicitly
-  disabled. No pre-provisioned isolated slot is registered.
+  `lovely-clarity-production.up.railway.app`, uses a persistent volume, and
+  runs the repaired image.
+- `worker` (`c2756594-e8e1-456b-8427-8d5a47cf487c`) remains the private
+  concurrent runtime with one global turn and one turn per tenant.
+- `WORKLIN_CONCURRENT_RUNTIME_MODE` remains `internal`.
+- `WORKLIN_RAILWAY_PROVISIONING_ENABLED` remains `false`.
+- The internal allowlist contains exactly the existing pilot assistant and the
+  authenticated failed assistant used for this canary. Do not add arbitrary
+  customer assistants.
+- No pre-provisioned isolated slot is registered. `/readyz` therefore reports
+  process health truthfully while keeping unrestricted hatching unavailable.
 
-This is the exact production hatching failure: a new assistant is not in the
-internal allowlist, `new_assistants` is not enabled, automatic isolated-runtime
-provisioning is disabled, and there is no unclaimed prepared slot. The current
-live `/readyz` still returns `provisionerReady: true`; that is the old misleading
-readiness behavior corrected by this branch.
+Authenticated production verification on 2026-10-15 recovered assistant
+`worklin-1b6adaff-d8f8-424c-bc66-5103ce5c5c97` from persisted
+`runtime_status: failed` and `Managed assistant runtime provisioning is
+unavailable.` A hatch retry returned HTTP `200`, changed the runtime provider to
+`concurrent_service`, changed runtime status/state to `active`/`ready`, cleared
+the last error, and exposed only the `interactive_chat` runtime capability. Its
+authenticated health route returned HTTP `200`, status `ok`, and runtime version
+`0.8.12`.
 
-Do not flip `WORKLIN_CONCURRENT_RUNTIME_MODE` directly to `new_assistants`.
-The repository production instructions require a two-tenant canary before
-broad pooled placement. Keep `internal`, allowlist two independently
-authenticated test assistants, and run sequential multi-turn BYOK acceptance
-through the same single-concurrency worker. Verify transcript persistence,
+This proves the repaired control plane can recover the selected allowlisted
+assistant. It does not prove general signup capacity or two-tenant isolation.
+The browser remains on `Connect your AI provider`; no provider key was entered,
+stored, or invented. Worklin remains free and BYOK-only. A real typed model turn
+still requires the user to provide a valid provider API key.
+
+Focused code verification remains:
+
+- control-plane hatching tests passed `55/55`;
+- web onboarding tests passed `50/50`;
+- control-plane and web TypeScript checks passed;
+- touched-file ESLint passed;
+- production-mode Vite and Vercel production builds passed; and
+- `git diff --check` passed.
+
+Do not flip `WORKLIN_CONCURRENT_RUNTIME_MODE` to `new_assistants`. Before any
+broader placement, run the full sequential two-tenant BYOK acceptance suite on
+the single-concurrency worker: multi-turn replies, transcript persistence,
 provider-key isolation, assistant and organization identifier swaps, stale
-actor/service/model-key/conversation capabilities, restart quarantine, and
-exact operator recovery. Only after that evidence passes may
-`new_assistants` be proposed as the production default.
+actor/service/model-key/conversation capabilities, restart quarantine, state
+export and sanitization, and exact operator recovery.
 
 ## 2026-08-16 Visible Workspace Reset And Micro-Campaign Work
 
