@@ -2,6 +2,8 @@ FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4
 
 WORKDIR /app/control-plane
 
+COPY packages/retention-domain /app/packages/retention-domain
+COPY packages/service-contracts /app/packages/service-contracts
 COPY control-plane/package.json control-plane/tsconfig.json control-plane/bun.lock ./
 COPY control-plane/src ./src
 

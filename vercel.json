@@ -96,19 +96,19 @@
   "rewrites": [
     {
       "source": "/callback",
-      "destination": "https://worklin-ai-production.up.railway.app/callback"
+      "destination": "https://lovely-clarity-production.up.railway.app/callback"
     },
     {
       "source": "/_allauth/:path*",
-      "destination": "https://worklin-ai-production.up.railway.app/_allauth/:path*"
+      "destination": "https://lovely-clarity-production.up.railway.app/_allauth/:path*"
     },
     {
       "source": "/v1/:path*",
-      "destination": "https://worklin-ai-production.up.railway.app/v1/:path*"
+      "destination": "https://lovely-clarity-production.up.railway.app/v1/:path*"
     },
     {
       "source": "/v1/:path*/",
-      "destination": "https://worklin-ai-production.up.railway.app/v1/:path*/"
+      "destination": "https://lovely-clarity-production.up.railway.app/v1/:path*/"
     },
     {
       "source": "/assistant/:path*",
@@ -124,7 +124,7 @@
     },
     {
       "source": "/logout",
-      "destination": "https://worklin-ai-production.up.railway.app/logout"
+      "destination": "https://lovely-clarity-production.up.railway.app/logout"
     }
   ]
 }
