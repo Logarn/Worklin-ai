@@ -38,6 +38,7 @@ const MASTER_SECRET_ENV = [
  * was current when the request began.
  */
 export const POOLED_MODEL_KEY_CAPABILITY_TTL_SECONDS = 7 * 60;
+export const CONCURRENT_MODEL_KEY_CAPABILITY_TTL_SECONDS = 60;
 const CAPABILITY_HEADER = Object.freeze({
   alg: "HS256",
   kid: "pooled-model-key-v1",
@@ -48,6 +49,16 @@ const CAPABILITY_HEADER_ENCODED = Buffer.from(
 ).toString("base64url");
 const CAPABILITY_KEY_CONTEXT =
   "worklin/pooled-model-key-vault/request-capability/v1";
+const CONCURRENT_CAPABILITY_HEADER = Object.freeze({
+  alg: "HS256",
+  kid: "concurrent-model-key-v1",
+  typ: "JWT",
+});
+const CONCURRENT_CAPABILITY_HEADER_ENCODED = Buffer.from(
+  JSON.stringify(CONCURRENT_CAPABILITY_HEADER),
+).toString("base64url");
+const CONCURRENT_CAPABILITY_KEY_CONTEXT =
+  "worklin/concurrent-model-key-vault/request-capability/v1";
 const ENCRYPTION_AAD_CONTEXT = "worklin/pooled-model-key-vault/ciphertext/v1";
 const MASTER_KEY_VERIFIER_CONTEXT =
   "worklin/pooled-model-key-vault/master-key-verifier/v1";
@@ -58,6 +69,12 @@ export const POOLED_MODEL_KEY_CAPABILITY_HEADER =
   "x-worklin-pooled-model-key-capability";
 export const POOLED_MODEL_KEY_RESOLVE_PATH =
   "/internal/v1/runtime-workers/model-provider-key";
+export const CONCURRENT_MODEL_KEY_CAPABILITY_HEADER =
+  "x-worklin-concurrent-model-key-capability";
+export const CONCURRENT_MODEL_KEY_PROVIDER_HEADER =
+  "x-worklin-concurrent-model-provider";
+export const CONCURRENT_MODEL_KEY_RESOLVE_PATH =
+  "/internal/v1/concurrent-runtime/model-provider-key";
 
 export const POOLED_MODEL_KEY_PROVIDERS = Object.freeze([
   "anthropic",
@@ -112,6 +129,18 @@ interface CapabilityClaims {
   lease_generation: number;
 }
 
+interface ConcurrentCapabilityClaims {
+  version: 1;
+  iss: "worklin-control-plane";
+  aud: "worklin-concurrent-model-key-vault";
+  iat: number;
+  exp: number;
+  jti: string;
+  organization_id: string;
+  user_id: string;
+  assistant_id: string;
+}
+
 export type PooledModelKeyCapabilityResult =
   | {
       ok: true;
@@ -131,6 +160,24 @@ export type PooledModelKeyCapabilityResult =
         | "inactive_lease"
         | "stale_lease_generation"
         | "lease_binding_mismatch";
+    };
+
+export type ConcurrentModelKeyCapabilityResult =
+  | {
+      ok: true;
+      tenant: PooledModelKeyTenant;
+      provider: PooledModelKeyProvider;
+      value: string | null;
+    }
+  | {
+      ok: false;
+      reason:
+        | "disabled"
+        | "malformed_capability"
+        | "invalid_capability"
+        | "expired_capability"
+        | "invalid_provider"
+        | "inactive_request";
     };
 
 export interface PooledSecretRouteInput {
@@ -275,6 +322,12 @@ function deriveCapabilityKey(masterKey: Buffer): Buffer {
     .digest();
 }
 
+function deriveConcurrentCapabilityKey(masterKey: Buffer): Buffer {
+  return createHmac("sha256", masterKey)
+    .update(CONCURRENT_CAPABILITY_KEY_CONTEXT)
+    .digest();
+}
+
 function masterKeyVerifier(masterKey: Buffer): string {
   return createHmac("sha256", masterKey)
     .update(MASTER_KEY_VERIFIER_CONTEXT)
@@ -408,8 +461,44 @@ function parseCapabilityClaims(value: string): CapabilityClaims | null {
   }
 }
 
+function parseConcurrentCapabilityClaims(
+  value: string,
+): ConcurrentCapabilityClaims | null {
+  const record = safeJsonRecord(value);
+  if (
+    !record ||
+    record.version !== 1 ||
+    record.iss !== "worklin-control-plane" ||
+    record.aud !== "worklin-concurrent-model-key-vault" ||
+    !Number.isSafeInteger(record.iat) ||
+    !Number.isSafeInteger(record.exp) ||
+    typeof record.jti !== "string" ||
+    typeof record.organization_id !== "string" ||
+    typeof record.user_id !== "string" ||
+    typeof record.assistant_id !== "string"
+  ) {
+    return null;
+  }
+  try {
+    return {
+      version: 1,
+      iss: "worklin-control-plane",
+      aud: "worklin-concurrent-model-key-vault",
+      iat: record.iat as number,
+      exp: record.exp as number,
+      jti: assertOpaqueId(record.jti, "request"),
+      organization_id: assertOpaqueId(record.organization_id, "organization"),
+      user_id: assertOpaqueId(record.user_id, "user"),
+      assistant_id: assertOpaqueId(record.assistant_id, "assistant"),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export class PooledModelKeyVault {
   private readonly capabilityKey: Buffer | null;
+  private readonly concurrentCapabilityKey: Buffer | null;
   private readonly activeRequests = new Map<
     string,
     {
@@ -419,15 +508,26 @@ export class PooledModelKeyVault {
       expiresAtSeconds: number;
     }
   >();
+  private readonly activeConcurrentRequests = new Map<
+    string,
+    {
+      tenant: PooledModelKeyTenant;
+      provider: PooledModelKeyProvider;
+      expiresAtSeconds: number;
+      resolved: boolean;
+    }
+  >();
 
   constructor(
     private readonly db: Database,
     private readonly config: PooledModelKeyVaultConfig,
-    private readonly validateProviderKey: PooledModelKeyValidator =
-      validatePooledModelProviderKey,
+    private readonly validateProviderKey: PooledModelKeyValidator = validatePooledModelProviderKey,
   ) {
     this.capabilityKey = config.enabled
       ? deriveCapabilityKey(config.masterKey)
+      : null;
+    this.concurrentCapabilityKey = config.enabled
+      ? deriveConcurrentCapabilityKey(config.masterKey)
       : null;
     if (config.enabled) {
       ensurePooledModelKeyVaultSchema(db);
@@ -760,8 +860,152 @@ export class PooledModelKeyVault {
     };
   }
 
+  mintConcurrentRequestCapability(
+    tenantInput: PooledModelKeyTenant,
+    requestId: string,
+    providerInput: unknown,
+    nowMs: number,
+  ): string {
+    const tenant = normalizeTenant(tenantInput);
+    if (!this.config.enabled || !this.concurrentCapabilityKey) {
+      throw new Error("Model key vault is disabled.");
+    }
+    assertOpaqueId(requestId, "request");
+    const provider = canonicalPooledModelKeyProvider(providerInput);
+    if (!provider) throw new Error("Concurrent model key provider is invalid.");
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+      throw new Error("Concurrent model key capability time is invalid.");
+    }
+    const nowSeconds = Math.floor(nowMs / 1_000);
+    const expiresAtSeconds =
+      nowSeconds + CONCURRENT_MODEL_KEY_CAPABILITY_TTL_SECONDS;
+    this.pruneExpiredConcurrentRequests(nowSeconds);
+    if (this.activeConcurrentRequests.has(requestId)) {
+      throw new Error(
+        "Concurrent model key request capability is already active.",
+      );
+    }
+    const claims: ConcurrentCapabilityClaims = {
+      version: 1,
+      iss: "worklin-control-plane",
+      aud: "worklin-concurrent-model-key-vault",
+      iat: nowSeconds,
+      exp: expiresAtSeconds,
+      jti: requestId,
+      organization_id: tenant.organizationId,
+      user_id: tenant.userId,
+      assistant_id: tenant.assistantId,
+    };
+    this.activeConcurrentRequests.set(requestId, {
+      tenant,
+      provider,
+      expiresAtSeconds,
+      resolved: false,
+    });
+    const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+    const signingInput = `${CONCURRENT_CAPABILITY_HEADER_ENCODED}.${payload}`;
+    const signature = createHmac("sha256", this.concurrentCapabilityKey)
+      .update(signingInput)
+      .digest("base64url");
+    return `${signingInput}.${signature}`;
+  }
+
+  resolveConcurrentWithCapability(
+    capability: string,
+    providerInput: unknown,
+    nowMs: number,
+  ): ConcurrentModelKeyCapabilityResult {
+    if (!this.config.enabled || !this.concurrentCapabilityKey) {
+      return { ok: false, reason: "disabled" };
+    }
+    const provider = canonicalPooledModelKeyProvider(providerInput);
+    if (!provider) return { ok: false, reason: "invalid_provider" };
+    if (
+      typeof capability !== "string" ||
+      capability.length < 1 ||
+      capability.length > MAX_CAPABILITY_LENGTH ||
+      !Number.isSafeInteger(nowMs) ||
+      nowMs < 0
+    ) {
+      return { ok: false, reason: "malformed_capability" };
+    }
+    const parts = capability.split(".");
+    if (
+      parts.length !== 3 ||
+      parts[0] !== CONCURRENT_CAPABILITY_HEADER_ENCODED ||
+      !parts[1] ||
+      !parts[2]
+    ) {
+      return { ok: false, reason: "malformed_capability" };
+    }
+    const signingInput = `${parts[0]}.${parts[1]}`;
+    const expected = createHmac("sha256", this.concurrentCapabilityKey)
+      .update(signingInput)
+      .digest();
+    let provided: Buffer;
+    try {
+      provided = Buffer.from(parts[2], "base64url");
+    } catch {
+      return { ok: false, reason: "malformed_capability" };
+    }
+    if (
+      provided.length !== expected.length ||
+      !timingSafeEqual(provided, expected)
+    ) {
+      return { ok: false, reason: "invalid_capability" };
+    }
+    let claims: ConcurrentCapabilityClaims | null = null;
+    try {
+      claims = parseConcurrentCapabilityClaims(
+        Buffer.from(parts[1], "base64url").toString("utf8"),
+      );
+    } catch {
+      return { ok: false, reason: "malformed_capability" };
+    }
+    if (!claims) return { ok: false, reason: "malformed_capability" };
+    const nowSeconds = Math.floor(nowMs / 1_000);
+    this.pruneExpiredConcurrentRequests(nowSeconds);
+    if (
+      claims.exp <= nowSeconds ||
+      claims.iat > nowSeconds + 5 ||
+      claims.exp - claims.iat > CONCURRENT_MODEL_KEY_CAPABILITY_TTL_SECONDS
+    ) {
+      return { ok: false, reason: "expired_capability" };
+    }
+    const activeRequest = this.activeConcurrentRequests.get(claims.jti);
+    if (
+      !activeRequest ||
+      activeRequest.expiresAtSeconds !== claims.exp ||
+      activeRequest.provider !== provider ||
+      activeRequest.resolved ||
+      activeRequest.tenant.organizationId !== claims.organization_id ||
+      activeRequest.tenant.userId !== claims.user_id ||
+      activeRequest.tenant.assistantId !== claims.assistant_id
+    ) {
+      return { ok: false, reason: "inactive_request" };
+    }
+    activeRequest.resolved = true;
+    const tenant = {
+      organizationId: claims.organization_id,
+      userId: claims.user_id,
+      assistantId: claims.assistant_id,
+    };
+    return {
+      ok: true,
+      tenant,
+      provider,
+      value: this.get(tenant, provider),
+    };
+  }
+
   revokeRequestCapability(requestId: string): boolean {
     return this.activeRequests.delete(assertOpaqueId(requestId, "request"));
+  }
+
+  revokeConcurrentRequestCapability(requestId: string): boolean {
+    return this.activeConcurrentRequests.delete(
+      assertOpaqueId(requestId, "request"),
+    );
   }
 
   revokeAllRequestCapabilities(): number {
@@ -770,10 +1014,24 @@ export class PooledModelKeyVault {
     return revoked;
   }
 
+  revokeAllConcurrentRequestCapabilities(): number {
+    const revoked = this.activeConcurrentRequests.size;
+    this.activeConcurrentRequests.clear();
+    return revoked;
+  }
+
   private pruneExpiredRequests(nowSeconds: number): void {
     for (const [requestId, request] of this.activeRequests) {
       if (request.expiresAtSeconds <= nowSeconds) {
         this.activeRequests.delete(requestId);
+      }
+    }
+  }
+
+  private pruneExpiredConcurrentRequests(nowSeconds: number): void {
+    for (const [requestId, request] of this.activeConcurrentRequests) {
+      if (request.expiresAtSeconds <= nowSeconds) {
+        this.activeConcurrentRequests.delete(requestId);
       }
     }
   }

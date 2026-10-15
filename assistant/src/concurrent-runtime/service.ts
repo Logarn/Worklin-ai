@@ -6,6 +6,7 @@ import {
   tenantExecutionScopeKey,
 } from "@vellumai/service-contracts/tenant-context";
 
+import type { ConcurrentProviderRequestConfig } from "../providers/platform-proxy/concurrent-request-context.js";
 import type { BrowserBrokerService } from "./browser-broker/service.js";
 import { FairTenantScheduler } from "./fair-scheduler.js";
 import type { ConcurrentRuntimeStore } from "./store.js";
@@ -47,6 +48,10 @@ export class ConcurrentRuntimeService {
   private readonly logger: ConcurrentRuntimeLogger;
   private readonly browserBrokerService?: BrowserBrokerService;
   private readonly activeAbortControllers = new Map<string, AbortController>();
+  private readonly providerConfigs = new Map<
+    string,
+    ConcurrentProviderRequestConfig
+  >();
   private readonly scheduledRuns = new Set<string>();
   private readonly conversationTails = new Map<string, Promise<void>>();
 
@@ -82,14 +87,26 @@ export class ConcurrentRuntimeService {
   async submitMessage(
     context: TenantExecutionContext,
     input: AcceptConcurrentMessageInput,
+    providerConfig?: ConcurrentProviderRequestConfig,
   ): Promise<AcceptedConcurrentRun> {
     const accepted = await this.store.acceptMessage(context, input);
-    if (
+    const shouldSchedule =
       accepted.created ||
       accepted.run.status === "queued" ||
       (accepted.run.status === "processing" &&
-        (accepted.run.leaseExpiresAt ?? Number.POSITIVE_INFINITY) <= Date.now())
-    ) {
+        (accepted.run.leaseExpiresAt ?? Number.POSITIVE_INFINITY) <=
+          Date.now());
+    if (providerConfig && shouldSchedule) {
+      const runContext: TenantExecutionContext = {
+        ...context,
+        conversationId: accepted.conversationId,
+        idempotencyKey: accepted.run.idempotencyKey,
+      };
+      this.providerConfigs.set(this.runScopeKey(runContext, accepted.run.id), {
+        ...providerConfig,
+      });
+    }
+    if (shouldSchedule) {
       const runContext: TenantExecutionContext = {
         ...context,
         conversationId: accepted.conversationId,
@@ -106,7 +123,9 @@ export class ConcurrentRuntimeService {
   ): Promise<boolean> {
     const key = this.runScopeKey(context, runId);
     this.activeAbortControllers.get(key)?.abort();
-    return this.store.cancelRun(context, runId);
+    const cancelled = await this.store.cancelRun(context, runId);
+    if (cancelled) this.providerConfigs.delete(key);
+    return cancelled;
   }
 
   async cancelConversation(
@@ -118,9 +137,9 @@ export class ConcurrentRuntimeService {
       conversationId,
     );
     for (const run of cancelled) {
-      this.activeAbortControllers
-        .get(this.runScopeKey(context, run.id))
-        ?.abort();
+      const key = this.runScopeKey(context, run.id);
+      this.activeAbortControllers.get(key)?.abort();
+      this.providerConfigs.delete(key);
     }
     return cancelled.length > 0;
   }
@@ -245,6 +264,10 @@ export class ConcurrentRuntimeService {
         context: executionContext,
         messages: claimed.messages,
         steps: claimed.steps,
+        providerConfig: this.providerConfigs.get(runKey),
+        ...(claimed.run.turnSequence === 0 && claimed.onboardingContext
+          ? { onboardingContext: claimed.onboardingContext }
+          : {}),
         browserEnabled: grant?.enabled === true,
         signal: abortController.signal,
         callbacks: {
@@ -362,6 +385,7 @@ export class ConcurrentRuntimeService {
     } finally {
       clearInterval(renewalTimer);
       this.activeAbortControllers.delete(runKey);
+      if (!parkedForBrowser) this.providerConfigs.delete(runKey);
       if (terminal) {
         const next = await this.store.getNextQueuedRun(
           executionContext,

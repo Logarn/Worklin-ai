@@ -29,6 +29,10 @@ import {
   CONCURRENT_RUNTIME_MIGRATIONS,
 } from "./migrations/index.js";
 import {
+  type ConcurrentOnboardingContext,
+  ConcurrentOnboardingContextSchema,
+} from "./onboarding-context.js";
+import {
   type ConcurrentRuntimeStore,
   ConcurrentRuntimeStoreError,
 } from "./store.js";
@@ -1651,6 +1655,18 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
       `;
       const existingRun = existingRuns[0];
       if (existingRun) {
+        if (input.onboardingContext) {
+          await tx`
+            UPDATE concurrent_conversations
+            SET onboarding_context = COALESCE(
+              onboarding_context,
+              ${tx.json(input.onboardingContext)}
+            )
+            WHERE organization_id = ${context.organizationId}
+              AND assistant_id = ${context.assistantId}
+              AND conversation_id = ${existingRun.conversation_id}
+          `;
+        }
         const [messageRow] = await tx<MessageRow[]>`
           SELECT *
           FROM concurrent_messages
@@ -1690,19 +1706,24 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
           assistant_id,
           conversation_id,
           owner_user_id,
-          owner_actor_id
+          owner_actor_id,
+          onboarding_context
         ) VALUES (
           ${context.organizationId},
           ${context.assistantId},
           ${conversationId},
           ${context.userId},
-          ${context.actorId}
+          ${context.actorId},
+          ${input.onboardingContext ? tx.json(input.onboardingContext) : null}
         )
         ON CONFLICT (
           organization_id,
           assistant_id,
           conversation_id
-        ) DO NOTHING
+        ) DO UPDATE SET onboarding_context = COALESCE(
+          concurrent_conversations.onboarding_context,
+          EXCLUDED.onboarding_context
+        )
       `;
       const [sequenceRow] = await tx<{ turn_sequence: string | number }[]>`
         UPDATE concurrent_conversations
@@ -1830,9 +1851,16 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
     return this.transaction(async (tx) => {
       await setTenantContext(tx, context);
       const [target] = await tx<
-        { conversation_id: string; turn_sequence: number | string }[]
+        {
+          conversation_id: string;
+          turn_sequence: number | string;
+          onboarding_context: unknown;
+        }[]
       >`
-        SELECT run.conversation_id, run.turn_sequence
+        SELECT
+          run.conversation_id,
+          run.turn_sequence,
+          conversation.onboarding_context
         FROM concurrent_runs AS run
         JOIN concurrent_conversations AS conversation
           ON conversation.organization_id = run.organization_id
@@ -1905,11 +1933,26 @@ export class PostgresConcurrentRuntimeStore implements ConcurrentRuntimeStore {
           AND run_id = ${runId}
         ORDER BY step_index
       `;
+      const parsedOnboarding = target.onboarding_context
+        ? ConcurrentOnboardingContextSchema.safeParse(target.onboarding_context)
+        : null;
+      if (parsedOnboarding && !parsedOnboarding.success) {
+        throw new ConcurrentRuntimeStoreError(
+          "Persisted conversation onboarding context is invalid.",
+          "invalid_state",
+        );
+      }
       return {
         context: TenantExecutionContextSchema.parse(runRow.execution_context),
         run: mapRun(runRow),
         messages: messages.map(mapMessage),
         steps: steps.map(mapRunStep),
+        ...(parsedOnboarding?.success
+          ? {
+              onboardingContext:
+                parsedOnboarding.data as ConcurrentOnboardingContext,
+            }
+          : {}),
       };
     });
   }

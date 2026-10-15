@@ -1,5 +1,7 @@
 import type { TenantExecutionContext } from "@vellumai/service-contracts/tenant-context";
 
+import type { ConcurrentOnboardingContext } from "./onboarding-context.js";
+
 export type ConcurrentMessageRole = "user" | "assistant";
 export type ConcurrentRunStatus =
   | "queued"
@@ -75,6 +77,7 @@ export interface ClaimedConcurrentRun {
   run: ConcurrentRun;
   messages: ConcurrentMessage[];
   steps: ConcurrentRunStep[];
+  onboardingContext?: ConcurrentOnboardingContext;
 }
 
 export interface ConcurrentRunStep {
@@ -92,6 +95,7 @@ export interface AcceptConcurrentMessageInput {
   conversationId?: string;
   content: string;
   clientMessageId?: string;
+  onboardingContext?: ConcurrentOnboardingContext;
 }
 
 export interface CompleteConcurrentRunInput {

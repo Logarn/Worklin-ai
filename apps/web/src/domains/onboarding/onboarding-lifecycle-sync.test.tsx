@@ -815,7 +815,7 @@ describe("onboarding lifecycle sync", () => {
     applyPendingProviderKeyImpl = async () => {
       throw Object.assign(
         new Error(
-          "ChatGPT subscription sign-in is not available on pooled assistants yet. Choose OpenAI API and enter an API key instead.",
+          "ChatGPT subscription sign-in is not available on shared cloud assistants yet. Choose OpenAI API and enter an API key instead.",
         ),
         {
           code: "pooled_provider_api_key_required",
@@ -829,7 +829,7 @@ describe("onboarding lifecycle sync", () => {
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(
       screen.getByText(
-        "ChatGPT subscription sign-in is not available on pooled assistants yet. Choose OpenAI API and enter an API key instead.",
+        "ChatGPT subscription sign-in is not available on shared cloud assistants yet. Choose OpenAI API and enter an API key instead.",
       ),
     ).toBeTruthy();
     expect(applyPendingProviderKeyMock).toHaveBeenCalledWith(
@@ -881,12 +881,8 @@ describe("onboarding lifecycle sync", () => {
         "Worklin hosting is currently unavailable. Your setup is saved, but your assistant cannot start yet.",
       ),
     ).toBeTruthy();
-    expect(
-      screen.queryByRole("button", { name: "Try again" }),
-    ).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Back to setup" }),
-    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Back to setup" })).toBeTruthy();
   });
 
   test("resumable platform hatch preserves its assistant and chat handoff through provider selection", async () => {
@@ -1053,8 +1049,7 @@ describe("onboarding lifecycle sync", () => {
     expect(await screen.findByTestId("tools-continue")).toBeTruthy();
 
     const saved = JSON.parse(
-      localStorage.getItem(preChatDraftTesting.storageKey("user-1")) ??
-        "null",
+      localStorage.getItem(preChatDraftTesting.storageKey("user-1")) ?? "null",
     ) as { currentStep?: string } | null;
     expect(saved?.currentStep).toBe("tools");
 

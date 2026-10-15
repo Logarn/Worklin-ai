@@ -97,6 +97,27 @@ provider-key isolation, assistant and organization identifier swaps, stale
 actor/service/model-key/conversation capabilities, restart quarantine, state
 export and sanitization, and exact operator recovery.
 
+### 2026-10-15 Concurrent Runtime BYOK Message Repair (Local, Not Deployed)
+
+The current worktree is `/Users/admin/Documents/New project 2/.codex-worktrees/worklin-assistant-hatching`, branch `assistant/fix-concurrent-onboarding-byok`, based on `8a5585e4`. Changes are uncommitted, not pushed, and not deployed.
+
+The live failure came from two gaps in the shared concurrent runtime: it rejected the onboarding payload sent with the first chat message, and onboarding discarded model keys for `concurrent_service`. The local repair stores bounded onboarding context on the conversation, includes it only for turn sequence `0`, and sends supported BYOK keys to the existing encrypted control-plane vault. The control plane injects a signed, one-use, 60-second capability on the private runtime request; the runtime resolves the tenant key through the control plane and retains it in memory only while that run is active. The capability headers are stripped from client requests, provider errors are not persisted verbatim, and no global provider API-key environment variable is used as a fallback. Migration `003` adds the conversation onboarding-context column.
+
+This does not give the shared runtime filesystem, terminal, project-write, or deployment access. It can restore chat after BYOK is configured, but does not complete Worklin's ability to build and deploy a ChickMagnet landing page.
+
+Local validation completed:
+
+- Assistant focused runtime suite: `43/43` tests passed.
+- Control-plane vault, proxy-policy, and startup-gate suites: `56/56` tests passed.
+- Web onboarding key and lifecycle suites: `67/67` tests passed (`419` assertions).
+- Control-plane TypeScript check, web typecheck, touched Assistant/Web ESLint, and `git diff --check` passed.
+- Full Assistant TypeScript check remains blocked by package-resolution errors in local sibling packages (`@vellumai/service-contracts/credential-rpc` and `zod` from `packages/gateway-client`). The focused Assistant tests and ESLint pass.
+- `src/index-runtime-worker-pool.test.ts` could not bind its temporary loopback HTTPS listener in the sandbox (`EADDRINUSE` while requesting port `0`); no live control-plane integration result is claimed.
+
+Live Railway settings were read but not changed. The control-plane service has no `WORKLIN_POOLED_MODEL_KEY_VAULT_ENABLED` or `WORKLIN_POOLED_MODEL_KEY_VAULT_MASTER_KEY`; its non-secret `PORT` is `8080`. The concurrent `worker` lacks `WORKLIN_CONTROL_PLANE_INTERNAL_URL` and currently has legacy `CONCURRENT_RUNTIME_MANAGED_PROVIDER`, `CONCURRENT_RUNTIME_MANAGED_MODEL`, and `MOONSHOT_API_KEY` variables. The new code deliberately ignores the legacy global model key so one tenant cannot consume another tenant's provider credentials. Do not copy those secret values into this handoff.
+
+Live E2E is not yet possible: these code changes need a reviewed release across Vercel, control-plane, and concurrent runtime; the control-plane vault needs a newly generated master key in Railway's secret manager; the worker needs `http://control-plane.railway.internal:8080`; and the user must enter a valid provider API key in the live onboarding screen. Live UI inspection confirms OpenAI is selected and the key field is empty. Worklin remains free and BYOK-only. No provider key or Railway secret has been entered by this worktree.
+
 ## 2026-08-16 Visible Workspace Reset And Micro-Campaign Work
 
 The owner confirmed a visible Worklin reset for the active production account.

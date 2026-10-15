@@ -19,7 +19,9 @@ flowchart LR
     CP --> GW["Shared gateway"]
     GW --> Runtime["Concurrent runtime replicas"]
     Runtime --> PG["PostgreSQL with forced RLS"]
-    Runtime --> LLM["Managed LLM provider"]
+    Runtime -->|"one-use key capability"| CP
+    CP --> Vault["Encrypted tenant model-key vault"]
+    Runtime --> LLM["Selected LLM provider"]
     Runtime -. "semantic browser commands" .-> Extension
 ```
 
@@ -34,11 +36,12 @@ The runtime rejects pooled-worker leases, gateway service authority, missing
 tenant claims, mismatched headers, subject mismatches, and insufficient
 scopes.
 
-Managed-model inference is available only inside the validated request-local
-tenant context. The shared process does not switch a global assistant ID,
-read personal provider credentials, or cache a key-bearing adapter across
-requests. A company-owned provider key is stored only in the service's secret
-environment; tenant identity is carried separately in usage attribution.
+Model inference is available only inside the validated request-local tenant
+context. The control plane stores one supported provider key per tenant in its
+encrypted vault and grants the runtime a one-use capability for each message.
+The runtime keeps the resolved key in memory for that run and clears its
+request context when the run finishes. It does not read provider credentials
+from shared environment variables or persist them in conversation or run data.
 
 ## Supported Contract
 
@@ -195,9 +198,7 @@ RUNTIME_ASSISTANT_SCOPE_MODE=tenant_context
 CONCURRENT_RUNTIME_DATABASE_URL=<application PostgreSQL URL>
 CONCURRENT_RUNTIME_MIGRATION_DATABASE_URL=<optional migration PostgreSQL URL>
 ACTOR_TOKEN_SIGNING_KEY=<shared 64-hex control-plane signing key>
-CONCURRENT_RUNTIME_MANAGED_PROVIDER=<catalog provider id>
-CONCURRENT_RUNTIME_MANAGED_MODEL=<optional model id; defaults to provider default>
-<PROVIDER_API_KEY_ENV>=<company-owned managed inference key>
+WORKLIN_CONTROL_PLANE_INTERNAL_URL=<private control-plane origin>
 ```
 
 `WORKLIN_PLATFORM_ASSISTANT_ID` must be unset. The entrypoint starts the
@@ -218,9 +219,10 @@ CONCURRENT_RUNTIME_PORT=3001
 CONCURRENT_RUNTIME_HOST=0.0.0.0
 ```
 
-Database URLs and signing keys are secrets. Keep them in the deployment secret
-manager and never place them in a workspace, browser variable, run record, or
-log.
+Database URLs, signing keys, and the control-plane model-key vault master key
+are secrets. Keep them in the deployment secret manager and never place them
+in a workspace, browser variable, run record, or log. Provider API keys are
+encrypted in the control-plane vault and resolved for a single runtime turn.
 
 ## Release Gates
 

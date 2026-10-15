@@ -209,7 +209,7 @@ function isRailwayInternalHostname(hostname: string): boolean {
  * service or loopback tests. HTTPS is still restricted to private hosts so a
  * deployment typo cannot send a request capability to an arbitrary origin.
  */
-export function validatePooledModelKeyControlPlaneUrl(raw: string): URL {
+export function validateModelKeyControlPlaneUrl(raw: string): URL {
   if (!raw || raw !== raw.trim()) {
     throw new Error(`${CONTROL_PLANE_URL_ENV} must be a private origin.`);
   }
@@ -250,11 +250,12 @@ export function validatePooledModelKeyControlPlaneUrl(raw: string): URL {
   return new URL(url.origin);
 }
 
+export const validatePooledModelKeyControlPlaneUrl =
+  validateModelKeyControlPlaneUrl;
+
 export function assertPooledModelKeyRuntimeConfiguration(): void {
   if (!isPooledWorkerRuntime()) return;
-  validatePooledModelKeyControlPlaneUrl(
-    process.env[CONTROL_PLANE_URL_ENV] ?? "",
-  );
+  validateModelKeyControlPlaneUrl(process.env[CONTROL_PLANE_URL_ENV] ?? "");
 }
 
 function sanitizedRequest(req: Request): Request {
@@ -390,7 +391,7 @@ async function resolveProviderKey(
 
   let origin: URL;
   try {
-    origin = validatePooledModelKeyControlPlaneUrl(
+    origin = validateModelKeyControlPlaneUrl(
       options.controlPlaneUrl ?? process.env[CONTROL_PLANE_URL_ENV] ?? "",
     );
   } catch {
